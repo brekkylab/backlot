@@ -34,7 +34,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import HTTPException, Request, Response
 
-from backlot import java_timsort
+from backlot import java_timsort, utf8_escapes
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -186,8 +186,9 @@ def json_media_type(path: str, status_code: int) -> str | None:
 # include the other Unicode space separators. Measured on both products, 2026-09-15: a value
 # holding U+00A0, U+2007 or U+202F between its digits is a 400 naming that value, while the same
 # value holding U+2003, U+0020, a tab or a newline is thirty-four. Python's own `str.isspace()`
-# calls all seven whitespace, so the three are put back by hand.
-_JAVA_NON_WHITESPACE = "\u00a0\u2007\u202f"
+# calls all seven whitespace, so the three are put back by hand, and so is U+0085, the one other
+# character Python calls whitespace and Java does not (`%C2%852` is a 400 naming it, 2026-11-04).
+_JAVA_NON_WHITESPACE = "\u00a0\u2007\u202f\u0085"
 
 
 def strip_java_whitespace(raw: str) -> str:
@@ -265,6 +266,26 @@ def _jira_tomcat_refusal(status: int, headers: dict[str, str]) -> AtlassianError
     )
 
 
+def _spring_number_failure(text: str) -> str:
+    """The `NumberFormatException` message Spring's `NumberUtils.parseNumber` throws for ``text``,
+    the value already cleaned of whitespace. Past an optional `-`, `0x`, `0X` or `#` sends it to
+    Java's `Integer.decode`, which throws on a sign behind the prefix and otherwise retries the
+    digits with the `-` put back in front, so the radix-16 message names those; any other value
+    goes to `Integer.valueOf`, whose message names it whole and carries no radix. Measured on
+    Confluence's space and content listings, 2026-11-04: `0x` and `#` name `""`, `-0xZ` names
+    `"-Z"`, `0x80000000` names `"80000000"` and `0x-2` is the sign message."""
+    index = 1 if text.startswith("-") else 0
+    if text.startswith(("0x", "0X"), index):
+        digits = text[index + 2 :]
+    elif text.startswith("#", index):
+        digits = text[index + 1 :]
+    else:
+        return f'For input string: "{text}"'
+    if digits.startswith(("-", "+")):
+        return "Sign character in wrong position"
+    return f'For input string: "{text[:index]}{digits}" under radix 16'
+
+
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
     """The 400 either product answers for a query parameter it cannot read as an ``int``, which
     Jira also answers for one it cannot read as a boolean and for a path variable it cannot read as
@@ -299,7 +320,7 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
                     "org.springframework.web.method.annotation."
                     "MethodArgumentTypeMismatchException: Failed to convert value of type "
                     f"'{java_type}' to required type 'int'; nested exception is "
-                    f'java.lang.NumberFormatException: For input string: "{shown}"'
+                    f"java.lang.NumberFormatException: {_spring_number_failure(shown)}"
                 ),
             },
         )
@@ -2550,9 +2571,15 @@ def cdn_bad_request(method: str, raw_path: str) -> str:
     return _cloudfront(400, CDN_BAD_REQUEST, method, raw_path)
 
 
-def cdn_too_long(status: int, method: str, raw_path: str) -> str:
-    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`), 414 for a
-    request line it stops reading and 494 for a header line (``backlot.head_bounds``)."""
+def cdn_refused_host(method: str, raw_path: str) -> str:
+    """The CDN's 403 page, which it answers a `Host` it does not serve with
+    (``backlot.bracketed_host``)."""
+    return _cloudfront(403, CDN_BAD_REQUEST, method, raw_path)
+
+
+def cdn_page(status: int, method: str, raw_path: str) -> str:
+    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`), at the
+    status ``backlot.head_bounds`` or ``backlot.parser_refusals`` sends."""
     return _cloudfront(status, CDN_BAD_REQUEST, method, raw_path)
 
 
@@ -2628,7 +2655,13 @@ def front_door(
     answered both with 200 (2026-10-13). Each layer's answer is the same whatever the credential,
     and the gateway's Connect-token 403 comes after all of them. Which product a path is the
     gateway's to decide, and it reads the path with each run of slashes as one:
-    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
+    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13). Jira answers Tomcat's 400
+    (:func:`tomcat_page`) for a path whose escapes do not decode to UTF-8
+    (``backlot.utf8_escapes.decodes``) anywhere outside `/wiki`, on its API and off it
+    (`/nope%80x`), where Confluence reads such a path on: measured on 2026-10-30 (UTC) for `GET`,
+    `HEAD`, which gets no body, `OPTIONS`, `POST`, `PUT` and `DELETE` with an API token, behind the
+    edge's `;` and the gateway's `PATCH` and beside an encoded backslash, and for a `GET` with no
+    token or under an `Accept` of `text/html`.
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -2654,10 +2687,14 @@ def front_door(
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
     if (
-        collapsed.startswith(f"{WIKI}/")
-        and not encoded.startswith(f"{WIKI}/spaces/")
-        and ("%2f" in encoded or "%5c" in encoded)
-    ) or (serves_the_jira_api(collapsed) and "%5c" in encoded):
+        (
+            collapsed.startswith(f"{WIKI}/")
+            and not encoded.startswith(f"{WIKI}/spaces/")
+            and ("%2f" in encoded or "%5c" in encoded)
+        )
+        or (serves_the_jira_api(collapsed) and "%5c" in encoded)
+        or (not confluence and not utf8_escapes.decodes(raw_path))
+    ):
         return FrontDoor(
             400, "gateway", TOMCAT_MEDIA_TYPE, tomcat_page(400), {"Content-Language": "en"}
         )

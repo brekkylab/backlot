@@ -635,8 +635,13 @@ def test_linear_search_finds_an_issue_by_the_spellings_real_reads(tmp_path):
         assert numbered[1][0] == "ENG-21" and numbered[1][1] < 1
 
 
-# The read documents mirage 0.0.7's `LinearVFS` sends (`mirage.core.linear.queries`), trimmed to
-# what each selects past what other tests cover.
+# The read documents mirage 0.0.7's and 0.0.8's `LinearVFS` send (`mirage.core.linear.queries`),
+# trimmed to what each selects past what other tests cover. 0.0.8's `TeamIssues` passes its issue
+# filter as an `$filter: IssueFilter` variable, null or `list_team_issues`'s project filter.
+_TEAM_ISSUES = (
+    "query($teamId: String!, $filter: IssueFilter) { team(id: $teamId) { issues(first: 50,"
+    " filter: $filter) { nodes { identifier } pageInfo { hasNextPage endCursor } } } }"
+)
 _MIRAGE_DOCUMENTS = {
     "Teams": "query { teams(first: 50) { nodes { id key name description timezone updatedAt"
     " states { nodes { id name type } } } pageInfo { hasNextPage endCursor } } }",
@@ -655,13 +660,28 @@ _MIRAGE_DOCUMENTS = {
     " state { id name } assignee { id displayName email } url } } }",
     "IssueLookup": 'query { issues(filter: {team: {key: {eq: "ENG"}}, number: {eq: 101}}, first: 1)'
     " { nodes { id identifier } } }",
+    "TeamIssues": _TEAM_ISSUES,
+    "TeamIssues, project filter": _TEAM_ISSUES,
+}
+_ENG = synth.linear_team_id("engineering")
+_MIRAGE_VARIABLES = {
+    "TeamDocuments": {"teamId": _ENG},
+    "TeamIssues": {"teamId": _ENG, "filter": None},
+    "TeamIssues, project filter": {
+        "teamId": _ENG,
+        "filter": {"project": {"id": {"in": [synth.linear_project_id("runtime-stability")]}}},
+    },
+}
+# The issues each `TeamIssues` row answers, in the order served.
+_MIRAGE_TEAM_ISSUES = {
+    "TeamIssues": ["ENG-102", "ENG-101", "ENG-103"],
+    "TeamIssues, project filter": ["ENG-102", "ENG-101"],
 }
 
 
 @pytest.mark.parametrize("name", list(_MIRAGE_DOCUMENTS))
 def test_mirage_linear_documents_are_answered(client, admin_h, name):
-    variables = {"teamId": synth.linear_team_id("engineering")} if name == "TeamDocuments" else {}
-    r = gql(client, _MIRAGE_DOCUMENTS[name], admin_h, **variables)
+    r = gql(client, _MIRAGE_DOCUMENTS[name], admin_h, **_MIRAGE_VARIABLES.get(name, {}))
     assert r.status_code == 200
     assert "errors" not in r.json(), r.json()["errors"]
     if name == "TeamDocuments":
@@ -670,6 +690,9 @@ def test_mirage_linear_documents_are_answered(client, admin_h, name):
             "nodes": [],
             "pageInfo": {"hasNextPage": False, "endCursor": None},
         }
+    if name in _MIRAGE_TEAM_ISSUES:
+        nodes = r.json()["data"]["team"]["issues"]["nodes"]
+        assert [node["identifier"] for node in nodes] == _MIRAGE_TEAM_ISSUES[name]
     if name == "IssueLookup":
         assert r.json()["data"]["issues"]["nodes"][0]["identifier"] == "ENG-101"
 

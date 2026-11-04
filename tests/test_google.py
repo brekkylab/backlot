@@ -8,13 +8,17 @@ splitting them would put two halves of the same contract in two places.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import csv
 import datetime
+import functools
+import gzip
 import io
 import json
 import re
 import unicodedata
+import zlib
 from unittest.mock import ANY
 from urllib.parse import parse_qsl, quote, urlencode
 
@@ -23,15 +27,17 @@ import jwt
 import pytest
 import yaml
 
-from backlot import gdocs, gsheets, oauth, store, synth
+from backlot import gdocs, gsheets, oauth, request_target, store, synth
 from backlot.config import Settings
 from backlot.errors import google as gerr
 from tests._helpers import (
+    Chunked,
     client_for,
     corpus_client,
     crawl_drive,
     crawl_gmail,
     db_count,
+    outcome,
     sent_as,
     served_id,
     tiny_corpus,
@@ -865,6 +871,23 @@ def _runs(*runs: str | tuple[str, str] | dict, style: str | None = None) -> dict
             run.update({"link": f"https://e.com/{c}" for c in marks if c.isdigit()})
         out.append(run)
     return {"runs": out, **({"style": style} if style else {})}
+
+
+# A page break and a footnote as a record's runs state them, and a plain export's page-break line.
+_PB = {"pageBreak": True}
+_RULE = "_" * 16
+
+
+def _note(*lines: str) -> dict:
+    return {"footnote": [{"text": line} for line in lines]}
+
+
+def _SEGMENTED_TAB(word: str, note: str, header: str, footer: str) -> dict:
+    return {
+        "paragraphs": [_runs(word, _note(note), " body")],
+        "header": [_runs(header)],
+        "footer": [_runs(footer)],
+    }
 
 
 # Paragraphs of real's Docs, as one Doc, for the mark writer of `gdocs.markdown` and for
@@ -1765,15 +1788,182 @@ _DOCS_EXPORTS = {
         "﻿p000\r\n\r\n\r\n\r\n\r\np001",
         "p000\n\np001",
     ),
+    # page breaks, footnotes, headers and footers, and tabs (`gdocs.plain_text`, `gdocs.markdown`)
+    "pb_mid": ({"paragraphs": [_runs("ab", _PB), _runs("cd")]}, "\ufeffab\r\n" + _RULE + "\r\ncd", "ab  \ncd"),
+    "pb_end": ({"paragraphs": [_runs("ab", _PB), {"text": ""}, _runs("cd")]}, "\ufeffab\r\n" + _RULE + "\r\n\r\n\r\ncd", "ab\n\ncd"),
+    "pb_start": ({"paragraphs": [_runs("ab"), _runs(_PB), _runs("cd")]}, "\ufeffab\r\n" + _RULE + "\r\n\r\n\r\ncd", "ab\n\ncd"),
+    "pb_two": (
+        {"paragraphs": [_runs("ab", _PB), _runs(_PB), {"text": ""}, _runs("cd")]},
+        "\ufeffab\r\n" + _RULE + "\r\n" + _RULE + "\r\n\r\n\r\n\r\n\r\ncd",
+        "ab\n\ncd",
+    ),
+    "pb_last": ({"paragraphs": [_runs("ab", _PB), {"text": ""}]}, "\ufeffab\r\n" + _RULE, "ab  \n"),
+    "pb_inline": ({"paragraphs": [_runs("ab", _PB, "cd")]}, "\ufeffab\r\n" + _RULE + "\r\ncd", "abcd"),
+    "pb_alone": (
+        {"paragraphs": [_runs("a"), _runs(_PB, _PB), _runs("XX"), _runs("z"), _runs(_PB, _PB, style="HEADING_3"), _runs("XX", style="HEADING_3"), _runs("z"), _runs(_PB, _PB, style="HEADING_1"), _runs("XX", style="HEADING_1"), _runs("z"), _runs(_PB, "cd", style="HEADING_3"), _runs("z"), _runs("ab", _PB, "cd", style="HEADING_3"), _runs("z"), _runs(_PB, _PB, "cd", style="HEADING_3"), _runs("z"), _runs(_PB, _PB, "cd"), _runs("z"), _runs("ab", _PB, _PB, style="HEADING_3"), _runs("XX", style="HEADING_3"), _runs("z")]},
+        "\ufeffa\r\n________________\r\n________________\r\n\r\n\r\nXX\r\nz\r\n________________\r\n________________\r\nXX\r\nz\r\n________________\r\n________________\r\nXX\r\nz\r\n________________\r\ncd\r\nz\r\nab\r\n________________\r\ncd\r\nz\r\n________________\r\n________________\r\ncd\r\nz\r\n________________\r\n________________\r\ncd\r\nz\r\nab\r\n________________\r\n________________\r\nXX\r\nz",
+        "a\n\nXX  \nz\n\n### \n\n### XX\n\nz\n\n# \n\n# XX\n\nz\n\n### cd\n\nz\n\n### abcd\n\nz\n\n### cd\n\nz  \ncd  \nz\n\n### ab\n\n### XX\n\nz",
+    ),
+    "pb_vt": (
+        {"paragraphs": [_runs("a"), _runs(_PB, "\x0b"), _runs("XX"), _runs("z"), _runs(_PB, "\x0b", style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB), _runs("XX"), _runs("z"), _runs("\x0b", _PB, style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0bcd"), _runs("z"), _runs(_PB, "\x0bcd", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\n________________\r\n\r\n\r\n\r\nXX\r\nz\r\n________________\r\n\r\nXX\r\nz\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n\r\n________________\r\nXX\r\nz\r\n________________\r\n\r\ncd\r\nz\r\n________________\r\n\r\ncd\r\nz",
+        "a\n\nXX  \nz\n\n##  \n\n## XX\n\nz\n\nXX  \nz\n\n##  \n\n## XX\n\nz\n\ncd  \nz\n\n##  cd\n\nz",
+    ),
+    "fn_vt": (
+        {"paragraphs": [_runs("a"), _runs("\x0b", _note("")), _runs("z"), _runs("\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs("\x0b", _note(""), "cd"), _runs("z"), _runs("\x0b", _note(""), "cd", style="TITLE"), _runs("z"), _runs("\x0b", _note(""), "cd", style="HEADING_2"), _runs("z"), _runs("\x0b\x0b", _note("")), _runs("z"), _runs("\x0b\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs(_note(""), "\x0b"), _runs("z"), _runs(_note(""), "\x0b", style="TITLE"), _runs("z"), _runs(_note(""), "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", _note("")), _runs("XX"), _runs("z"), _runs(_PB, "\x0b", _note(""), style="TITLE"), _runs("XX", style="TITLE"), _runs("z"), _runs(_PB, "\x0b", _note(""), style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", _note(""), "cd"), _runs("z"), _runs(_PB, "\x0b", _note(""), "cd", style="TITLE"), _runs("z"), _runs(_PB, "\x0b", _note(""), "cd", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\n\r\n\r\n[1]\r\nz\r\n\r\n\r\n[2]\r\nz\r\n\r\n[3]\r\nz\r\n\r\n\r\n[4]cd\r\nz\r\n\r\n\r\n[5]cd\r\nz\r\n\r\n[6]cd\r\nz\r\n\r\n\r\n\r\n[7]\r\nz\r\n\r\n\r\n\r\n[8]\r\nz\r\n\r\n\r\n[9]\r\nz\r\n[10]\r\n\r\nz\r\n[11]\r\n\r\nz\r\n[12]\r\n\r\nz\r\n________________\r\n\r\n\r\n[13]\r\nXX\r\nz\r\n________________\r\n\r\n\r\n[14]\r\nXX\r\nz\r\n________________\r\n\r\n[15]\r\nXX\r\nz\r\n________________\r\n\r\n\r\n[16]cd\r\nz\r\n________________\r\n\r\n\r\n[17]cd\r\nz\r\n________________\r\n\r\n[18]cd\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3] \r\n[4] \r\n[5] \r\n[6] \r\n[7] \r\n[8] \r\n[9] \r\n[10] \r\n[11] \r\n[12] \r\n[13] \r\n[14] \r\n[15] \r\n[16] \r\n[17] \r\n[18]",
+        "a\n\n[^1]  \nz\n\n#  [^2]\n\nz\n\n##  [^3]\n\nz\n\n[^4]cd  \nz\n\n#  [^5]cd\n\nz\n\n##  [^6]cd\n\nz\n\n[^7]  \nz\n\n#   [^8]\n\nz\n\n##   [^9]\n\nz  \n[^10]\n\nz\n\n# [^11] \n\nz\n\n## [^12] \n\nz\n\n[^13]  \nXX  \nz\n\n#  [^14]\n\n# XX\n\nz\n\n##  [^15]\n\n## XX\n\nz\n\n[^16]cd  \nz\n\n#  [^17]cd\n\nz\n\n##  [^18]cd\n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  \n\n[^4]:  \n\n[^5]:  \n\n[^6]:  \n\n[^7]:  \n\n[^8]:  \n\n[^9]:  \n\n[^10]:  \n\n[^11]:  \n\n[^12]:  \n\n[^13]:  \n\n[^14]:  \n\n[^15]:  \n\n[^16]:  \n\n[^17]:  \n\n[^18]:  ",
+    ),
+    "fn_last_tab": (
+        {"tabs": [{"paragraphs": [_runs("a", _note(""), "z")]}, {"paragraphs": [_runs(_PB), {"text": ""}]}]},
+        "\ufeffa[1]z\r\n________________\r\n\r\n\r\n\r\n\r\n________________\r\n[1]",
+        "a[^1]z\n\n[^1]:  ",
+    ),
+    "fn_trail": (
+        {"paragraphs": [_runs("a", _note(""), "z"), {"text": ""}, {"text": ""}]},
+        "\ufeffa[1]z\r\n\r\n\r\n\r\n\r\n________________\r\n[1]",
+        "a[^1]z\n\n[^1]:  ",
+    ),
+    "vt_leads": (
+        {"paragraphs": [_runs("a"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note("")), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note(""), style="TITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note(""), style="SUBTITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note(""), style="HEADING_2"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note(""), "cd"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note(""), "cd", style="TITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note(""), "cd", style="SUBTITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _note(""), "cd", style="HEADING_2"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, "cd"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, "cd", style="TITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, "cd", style="SUBTITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _note("")), _runs("z"), _runs("\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b", _note(""), style="SUBTITLE"), _runs("z"), _runs("\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs("\x0b", _note(""), "cd"), _runs("z"), _runs("\x0b", _note(""), "cd", style="TITLE"), _runs("z"), _runs("\x0b", _note(""), "cd", style="SUBTITLE"), _runs("z"), _runs("\x0b", _note(""), "cd", style="HEADING_2"), _runs("z"), _runs("\x0b\x0b", _note("")), _runs("z"), _runs("\x0b\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b\x0b", _note(""), style="SUBTITLE"), _runs("z"), _runs("\x0b\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, _note("")), _runs("XX"), _runs("z"), _runs("\x0b", _PB, _note(""), style="TITLE"), _runs("XX", style="TITLE"), _runs("z"), _runs("\x0b", _PB, _note(""), style="SUBTITLE"), _runs("XX", style="SUBTITLE"), _runs("z"), _runs("\x0b", _PB, _note(""), style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, "cd"), _runs("z"), _runs("\x0b", _PB, "cd", style="TITLE"), _runs("z"), _runs("\x0b", _PB, "cd", style="SUBTITLE"), _runs("z"), _runs("\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, "cd"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, "cd", style="TITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, "cd", style="SUBTITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _note(""), "\x0b"), _runs("z"), _runs("\x0b", _note(""), "\x0b", style="TITLE"), _runs("z"), _runs("\x0b", _note(""), "\x0b", style="SUBTITLE"), _runs("z"), _runs("\x0b", _note(""), "\x0b", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\n\r\n\r\n\r\n[1]\r\nz\r\n\r\n\r\n\r\n[2]\r\nz\r\n\r\n\r\n\r\n[3]\r\nz\r\n\r\n[4]\r\nz\r\n\r\n\r\n\r\n[5]cd\r\nz\r\n\r\n\r\n\r\n[6]cd\r\nz\r\n\r\n\r\n\r\n[7]cd\r\nz\r\n\r\n[8]cd\r\nz\r\n\r\n\r\n\r\ncd\r\nz\r\n\r\n\r\n\r\ncd\r\nz\r\n\r\n\r\n\r\ncd\r\nz\r\n\r\ncd\r\nz\r\n\r\n\r\n[9]\r\nz\r\n\r\n\r\n[10]\r\nz\r\n\r\n\r\n[11]\r\nz\r\n\r\n[12]\r\nz\r\n\r\n\r\n[13]cd\r\nz\r\n\r\n\r\n[14]cd\r\nz\r\n\r\n\r\n[15]cd\r\nz\r\n\r\n[16]cd\r\nz\r\n\r\n\r\n\r\n[17]\r\nz\r\n\r\n\r\n\r\n[18]\r\nz\r\n\r\n\r\n\r\n[19]\r\nz\r\n\r\n\r\n[20]\r\nz\r\n\r\n\r\n________________\r\n[21]\r\nXX\r\nz\r\n\r\n\r\n________________\r\n[22]\r\nXX\r\nz\r\n\r\n\r\n________________\r\n[23]\r\nXX\r\nz\r\n\r\n________________\r\n[24]\r\nXX\r\nz\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n[25]\r\n\r\nz\r\n\r\n\r\n[26]\r\n\r\nz\r\n\r\n\r\n[27]\r\n\r\nz\r\n\r\n[28]\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3] \r\n[4] \r\n[5] \r\n[6] \r\n[7] \r\n[8] \r\n[9] \r\n[10] \r\n[11] \r\n[12] \r\n[13] \r\n[14] \r\n[15] \r\n[16] \r\n[17] \r\n[18] \r\n[19] \r\n[20] \r\n[21] \r\n[22] \r\n[23] \r\n[24] \r\n[25] \r\n[26] \r\n[27] \r\n[28]",
+        "a\n\n[^1]  \nz\n\n#  [^2]\n\nz\n\n##  [^3]\n\nz\n\n##  [^4]\n\nz\n\n[^5]cd  \nz\n\n#  [^6]cd\n\nz\n\n##  [^7]cd\n\nz\n\n##  [^8]cd\n\nz\n\ncd  \nz\n\n#  cd\n\nz\n\n##  cd\n\nz\n\n##  cd\n\nz\n\n[^9]  \nz\n\n#  [^10]\n\nz\n\n##  [^11]\n\nz\n\n##  [^12]\n\nz\n\n[^13]cd  \nz\n\n#  [^14]cd\n\nz\n\n##  [^15]cd\n\nz\n\n##  [^16]cd\n\nz\n\n[^17]  \nz\n\n#   [^18]\n\nz\n\n##   [^19]\n\nz\n\n##   [^20]\n\nz\n\n[^21]  \nXX  \nz\n\n#  [^22]\n\n# XX\n\nz\n\n##  [^23]\n\n## XX\n\nz\n\n##  [^24]\n\n## XX\n\nz\n\ncd  \nz\n\n#  cd\n\nz\n\n##  cd\n\nz\n\n##  cd\n\nz\n\ncd  \nz\n\n#  cd\n\nz\n\n##  cd\n\nz\n\n##  cd\n\nz\n\n[^25]\n\nz\n\n#  [^26] \n\nz\n\n##  [^27] \n\nz\n\n##  [^28] \n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  \n\n[^4]:  \n\n[^5]:  \n\n[^6]:  \n\n[^7]:  \n\n[^8]:  \n\n[^9]:  \n\n[^10]:  \n\n[^11]:  \n\n[^12]:  \n\n[^13]:  \n\n[^14]:  \n\n[^15]:  \n\n[^16]:  \n\n[^17]:  \n\n[^18]:  \n\n[^19]:  \n\n[^20]:  \n\n[^21]:  \n\n[^22]:  \n\n[^23]:  \n\n[^24]:  \n\n[^25]:  \n\n[^26]:  \n\n[^27]:  \n\n[^28]:  ",
+    ),
+    "vt_pb": (
+        {"paragraphs": [_runs("a"), _runs("\x0b", _PB), _runs("XX"), _runs("z"), _runs("\x0b", _PB, style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, _PB, "cd"), _runs("z"), _runs("\x0b", _PB, _PB, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b\x0b", _PB, "cd"), _runs("z"), _runs("\x0b\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, "\x0bcd"), _runs("z"), _runs("\x0b", _PB, "\x0bcd", style="HEADING_2"), _runs("z"), _runs("ab\x0b", _PB, "cd"), _runs("z"), _runs("ab\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs("ab\x0b", _PB), _runs("XX"), _runs("z"), _runs("ab\x0b", _PB, style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, _note("")), _runs("XX"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, _note(""), style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n\r\n________________\r\nXX\r\nz\r\n\r\n\r\n________________\r\n________________\r\ncd\r\nz\r\n\r\n________________\r\n________________\r\ncd\r\nz\r\n\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\ncd\r\nz\r\n\r\n________________\r\n\r\ncd\r\nz\r\nab\r\n\r\n________________\r\ncd\r\nz\r\nab\r\n\r\n________________\r\ncd\r\nz\r\nab\r\n\r\n________________\r\nXX\r\nz\r\nab\r\n\r\n________________\r\nXX\r\nz\r\n\r\n\r\n\r\n________________\r\n[1]\r\nXX\r\nz\r\n\r\n________________\r\n[2]\r\nXX\r\nz\r\n________________\r\n[1] \r\n[2]",
+        "a\n\nXX  \nz\n\n##  \n\n## XX\n\nz\n\ncd  \nz\n\n##  cd\n\nz\n\ncd  \nz\n\n##   cd\n\nz\n\ncd  \nz\n\n##   cd\n\nz  \nab  \ncd  \nz\n\n## ab cd\n\nz  \nab\n\nXX  \nz\n\n## ab \n\n## XX\n\nz\n\n[^1]  \nXX  \nz\n\n##  [^2]\n\n## XX\n\nz\n\n[^1]:  \n\n[^2]:  ",
+    ),
+    "vt_pb_links": (
+        {"paragraphs": [_runs("a"), _runs("\x0b", _PB, "\x0b", _PB, "cd"), _runs("z"), _runs(_PB, "\x0b", _PB, "\x0bcd"), _runs("z"), _runs("\x0b", _PB, "\x0b", _PB), _runs("XX"), _runs("z"), _runs("\x0b", _PB, "\x0b", _note("")), _runs("z"), _runs("\x0b", _note(""), "\x0bcd"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, "\x0b", _note("")), _runs("z"), _runs("\x0b", {"text": "\x0b", "link": "https://example.com/"}, _note("")), _runs("z"), _runs({"text": "\x0b\x0b", "link": "https://example.com/"}, _note("")), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, {"text": "\x0b", "link": "https://example.com/"}, "cd"), _runs("z"), _runs("\x0b", _PB, {"text": "\x0b", "link": "https://example.com/"}, _note("")), _runs("z"), _runs("\x0b", _note(""), _note("")), _runs("z"), _runs(_PB, "\x0b", _PB, "cd"), _runs("z"), _runs("ab\x0b", _PB, "\x0bcd"), _runs("z"), _runs("ab", {"text": "\x0b", "link": "https://example.com/"}, _note("")), _runs("z"), _runs("ab", {"text": "\x0b", "link": "https://example.com/"}, "cd"), _runs("z"), _runs("\x0b", _PB, _PB, "\x0bcd"), _runs("z"), _runs("\x0b\x0b", _PB, "\x0b\x0b"), _runs("z")]},
+        "\ufeffa\r\n\r\n\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\n\r\n\r\n________________\r\n\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n[1]\r\nz\r\n\r\n\r\n[2]\r\ncd\r\nz\r\n\r\n\r\n\r\n\r\n\r\n[3]\r\nz\r\n\r\n\r\n\r\n\r\n\r\n[4]\r\nz\r\n\r\n\r\n\r\n\r\n[5]\r\nz\r\n\r\n\r\n\r\n________________\r\n\r\n\r\n\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\n[6]\r\nz\r\n\r\n\r\n[7][8]\r\nz\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\nab\r\n\r\n________________\r\n\r\ncd\r\nz\r\nab\r\n[9]\r\nz\r\nab\r\ncd\r\nz\r\n\r\n\r\n________________\r\n________________\r\n\r\ncd\r\nz\r\n\r\n\r\n\r\n________________\r\n\r\n\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3] \r\n[4] \r\n[5] \r\n[6] \r\n[7] \r\n[8] \r\n[9]",
+        "a\n\ncd  \nz\n\ncd  \nz\n\nXX  \nz\n\n[^1]  \nz\n\n[^2]  \ncd  \nz\n\n[^3]  \nz\n\n[^4]  \nz\n\n[^5]  \nz\n\ncd  \nz\n\n[^6]  \nz\n\n[^7][^8]  \nz\n\ncd  \nz  \nab\n\ncd  \nz  \nab  \n[^9]  \nz  \nab  \ncd  \nz\n\ncd  \nz\n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  \n\n[^4]:  \n\n[^5]:  \n\n[^6]:  \n\n[^7]:  \n\n[^8]:  \n\n[^9]:  ",
+    ),
+    "vt_pb_links_heading": (
+        {"paragraphs": [_runs("a"), _runs("\x0b", _PB, "\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", _PB, "\x0bcd", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, "\x0b", _PB, style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, "\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs("\x0b", _note(""), "\x0bcd", style="HEADING_2"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, "\x0b", _note(""), style="HEADING_2"), _runs("z"), _runs("\x0b", {"text": "\x0b", "link": "https://example.com/"}, _note(""), style="HEADING_2"), _runs("z"), _runs({"text": "\x0b\x0b", "link": "https://example.com/"}, _note(""), style="HEADING_2"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, {"text": "\x0b", "link": "https://example.com/"}, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, {"text": "\x0b", "link": "https://example.com/"}, _note(""), style="HEADING_2"), _runs("z"), _runs("\x0b", _note(""), _note(""), style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs("ab\x0b", _PB, "\x0bcd", style="HEADING_2"), _runs("z"), _runs("ab", {"text": "\x0b", "link": "https://example.com/"}, _note(""), style="HEADING_2"), _runs("z"), _runs("ab", {"text": "\x0b", "link": "https://example.com/"}, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, _PB, "\x0bcd", style="HEADING_2"), _runs("z"), _runs("\x0b\x0b", _PB, "\x0b\x0b", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\n\r\n________________\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\n\r\n________________\r\n\r\ncd\r\nz\r\n\r\n________________\r\n\r\n________________\r\nXX\r\nz\r\n\r\n________________\r\n\r\n[1]\r\nz\r\n\r\n[2]\r\ncd\r\nz\r\n\r\n\r\n[3]\r\nz\r\n\r\n\r\n[4]\r\nz\r\n\r\n\r\n[5]\r\nz\r\n\r\n________________\r\n\r\ncd\r\nz\r\n\r\n________________\r\n\r\n[6]\r\nz\r\n\r\n[7][8]\r\nz\r\n________________\r\n\r\n________________\r\ncd\r\nz\r\nab\r\n\r\n________________\r\n\r\ncd\r\nz\r\nab\r\n[9]\r\nz\r\nab\r\ncd\r\nz\r\n\r\n________________\r\n________________\r\n\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3] \r\n[4] \r\n[5] \r\n[6] \r\n[7] \r\n[8] \r\n[9]",
+        "a\n\n##   cd\n\nz\n\n##   cd\n\nz\n\n##   \n\n## XX\n\nz\n\n##   [^1]\n\nz\n\n##  [^2] cd\n\nz\n\n##   [^3]\n\nz\n\n##   [^4]\n\nz\n\n##   [^5]\n\nz\n\n##   cd\n\nz\n\n##   [^6]\n\nz\n\n##  [^7][^8]\n\nz\n\n##  cd\n\nz\n\n## ab  cd\n\nz\n\n## ab [^9]\n\nz\n\n## ab cd\n\nz\n\n##   cd\n\nz\n\n##     \n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  \n\n[^4]:  \n\n[^5]:  \n\n[^6]:  \n\n[^7]:  \n\n[^8]:  \n\n[^9]:  ",
+    ),
+    "vt_pb_links_title": (
+        {"paragraphs": [_runs("a"), _runs("\x0b", _PB, "\x0b", _PB, "cd", style="TITLE"), _runs("z"), _runs(_PB, "\x0b", _PB, "\x0bcd", style="TITLE"), _runs("z"), _runs("\x0b", _PB, "\x0b", _PB, style="TITLE"), _runs("XX", style="TITLE"), _runs("z"), _runs("\x0b", _PB, "\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b", _note(""), "\x0bcd", style="TITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, "\x0b", _note(""), style="TITLE"), _runs("z"), _runs("\x0b", {"text": "\x0b", "link": "https://example.com/"}, _note(""), style="TITLE"), _runs("z"), _runs({"text": "\x0b\x0b", "link": "https://example.com/"}, _note(""), style="TITLE"), _runs("z"), _runs({"text": "\x0b", "link": "https://example.com/"}, _PB, {"text": "\x0b", "link": "https://example.com/"}, "cd", style="TITLE"), _runs("z"), _runs("\x0b", _PB, {"text": "\x0b", "link": "https://example.com/"}, _note(""), style="TITLE"), _runs("z"), _runs("\x0b", _note(""), _note(""), style="TITLE"), _runs("z"), _runs(_PB, "\x0b", _PB, "cd", style="TITLE"), _runs("z"), _runs("ab\x0b", _PB, "\x0bcd", style="TITLE"), _runs("z"), _runs("ab", {"text": "\x0b", "link": "https://example.com/"}, _note(""), style="TITLE"), _runs("z"), _runs("ab", {"text": "\x0b", "link": "https://example.com/"}, "cd", style="TITLE"), _runs("z"), _runs("\x0b", _PB, _PB, "\x0bcd", style="TITLE"), _runs("z"), _runs("\x0b\x0b", _PB, "\x0b\x0b", style="TITLE"), _runs("z")]},
+        "\ufeffa\r\n\r\n\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\n\r\n\r\n________________\r\n\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n[1]\r\nz\r\n\r\n\r\n[2]\r\ncd\r\nz\r\n\r\n\r\n\r\n\r\n\r\n[3]\r\nz\r\n\r\n\r\n\r\n\r\n\r\n[4]\r\nz\r\n\r\n\r\n\r\n\r\n[5]\r\nz\r\n\r\n\r\n\r\n________________\r\n\r\n\r\n\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\n[6]\r\nz\r\n\r\n\r\n[7][8]\r\nz\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\nab\r\n\r\n________________\r\n\r\ncd\r\nz\r\nab\r\n[9]\r\nz\r\nab\r\ncd\r\nz\r\n\r\n\r\n________________\r\n________________\r\n\r\ncd\r\nz\r\n\r\n\r\n\r\n________________\r\n\r\n\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3] \r\n[4] \r\n[5] \r\n[6] \r\n[7] \r\n[8] \r\n[9]",
+        "a\n\n#   cd\n\nz\n\n#   cd\n\nz\n\n#   \n\n# XX\n\nz\n\n#   [^1]\n\nz\n\n#  [^2] cd\n\nz\n\n#   [^3]\n\nz\n\n#   [^4]\n\nz\n\n#   [^5]\n\nz\n\n#   cd\n\nz\n\n#   [^6]\n\nz\n\n#  [^7][^8]\n\nz\n\n#  cd\n\nz\n\n# ab  cd\n\nz\n\n# ab [^9]\n\nz\n\n# ab cd\n\nz\n\n#   cd\n\nz\n\n#     \n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  \n\n[^4]:  \n\n[^5]:  \n\n[^6]:  \n\n[^7]:  \n\n[^8]:  \n\n[^9]:  ",
+    ),
+    "vt_pb_text": (
+        {"paragraphs": [_runs("a"), _runs("ab", _PB, "\x0b", _PB, "cd"), _runs("z"), _runs(_PB, "\x0b\x0b", _PB, "cd"), _runs("z"), _runs("\x0b", _PB, "\x0b\x0b", _PB), _runs("XX"), _runs("z"), _runs(_PB, "\x0b", _PB, "\x0b", _PB, "cd"), _runs("z"), _runs("\x0b", _PB, "ab\x0b", _PB, "cd"), _runs("z"), _runs(_PB, "ab", _PB, "cd"), _runs("z"), _runs("\x0b", _PB, "\x0b"), _runs("z"), _runs("\x0b", _note(""), _PB, "\x0bcd"), _runs("z"), _runs(_PB, "\x0bab", _PB, "cd"), _runs("z")]},
+        "\ufeffa\r\nab\r\n________________\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\n\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n________________\r\n\r\n\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\nab\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\nab\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\nz\r\n\r\n\r\n[1]\r\n________________\r\n\r\ncd\r\nz\r\n________________\r\n\r\nab\r\n________________\r\ncd\r\nz\r\n________________\r\n[1]",
+        "a  \nab  \ncd  \nz\n\ncd  \nz\n\nXX  \nz\n\ncd  \nz\n\nab  \ncd  \nz  \nabcd  \nz\n\nz\n\n[^1]  \ncd  \nz\n\nabcd  \nz\n\n[^1]:  ",
+    ),
+    "vt_pb_text_heading": (
+        {"paragraphs": [_runs("a"), _runs("ab", _PB, "\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, "\x0b\x0b", _PB, style="HEADING_2"), _runs("XX", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", _PB, "\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, "ab\x0b", _PB, "cd", style="HEADING_2"), _runs("z"), _runs(_PB, "ab", _PB, "cd", style="HEADING_2"), _runs("z"), _runs("\x0b", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs("\x0b", _note(""), _PB, "\x0bcd", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0bab", _PB, "cd", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\nab\r\n________________\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n________________\r\n\r\n\r\n________________\r\nXX\r\nz\r\n________________\r\n\r\n________________\r\n\r\n________________\r\ncd\r\nz\r\n\r\n________________\r\nab\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\nab\r\n________________\r\ncd\r\nz\r\n\r\n________________\r\n\r\nz\r\n\r\n[1]\r\n________________\r\n\r\ncd\r\nz\r\n________________\r\n\r\nab\r\n________________\r\ncd\r\nz\r\n________________\r\n[1]",
+        "a\n\n## ab cd\n\nz\n\n##   cd\n\nz\n\n##    \n\n## XX\n\nz\n\n##   cd\n\nz\n\n##  ab cd\n\nz\n\n## abcd\n\nz\n\n##   \n\nz\n\n##  [^1] cd\n\nz\n\n##  abcd\n\nz\n\n[^1]:  ",
+    ),
+    "vt_pb_text_subtitle": (
+        {"paragraphs": [_runs("a"), _runs("ab", _PB, "\x0b", _PB, "cd", style="SUBTITLE"), _runs("z"), _runs(_PB, "\x0b\x0b", _PB, "cd", style="SUBTITLE"), _runs("z"), _runs("\x0b", _PB, "\x0b\x0b", _PB, style="SUBTITLE"), _runs("XX", style="SUBTITLE"), _runs("z"), _runs(_PB, "\x0b", _PB, "\x0b", _PB, "cd", style="SUBTITLE"), _runs("z"), _runs("\x0b", _PB, "ab\x0b", _PB, "cd", style="SUBTITLE"), _runs("z"), _runs(_PB, "ab", _PB, "cd", style="SUBTITLE"), _runs("z"), _runs("\x0b", _PB, "\x0b", style="SUBTITLE"), _runs("z"), _runs("\x0b", _note(""), _PB, "\x0bcd", style="SUBTITLE"), _runs("z"), _runs(_PB, "\x0bab", _PB, "cd", style="SUBTITLE"), _runs("z")]},
+        "\ufeffa\r\nab\r\n________________\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\n\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\n________________\r\n\r\nXX\r\nz\r\n________________\r\n\r\n\r\n________________\r\n\r\n\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\nab\r\n\r\n________________\r\ncd\r\nz\r\n________________\r\nab\r\n________________\r\ncd\r\nz\r\n\r\n\r\n________________\r\n\r\n\r\n\r\nz\r\n\r\n\r\n[1]\r\n________________\r\n\r\ncd\r\nz\r\n________________\r\n\r\nab\r\n________________\r\ncd\r\nz\r\n________________\r\n[1]",
+        "a\n\n## ab cd\n\nz\n\n##   cd\n\nz\n\n##    \n\n## XX\n\nz\n\n##   cd\n\nz\n\n##  ab cd\n\nz\n\n## abcd\n\nz\n\n##   \n\nz\n\n##  [^1] cd\n\nz\n\n##  abcd\n\nz\n\n[^1]:  ",
+    ),
+    "pb_vt_end": (
+        {"paragraphs": [_runs("a"), _runs("ab", _PB, "\x0b"), _runs("z"), _runs("ab", _PB, {"text": "\x0b", "link": "https://example.com/"}), _runs("z"), _runs("ab\x0b", _PB, "\x0b"), _runs("z"), _runs("ab", _PB, "\x0b\x0b"), _runs("z"), _runs("ab", _PB, _PB, "\x0b"), _runs("z"), _runs("\x0bab", _PB, "\x0b"), _runs("z"), _runs(_PB, "ab", _PB, "\x0b"), _runs("z"), _runs(_note(""), _PB, "\x0b"), _runs("z"), _runs(_note(""), _note(""), _PB, "\x0b"), _runs("z"), _runs(_PB, "\x0b"), _runs("z"), _runs(_PB, "\x0b\x0b"), _runs("z")]},
+        "\ufeffa\r\nab\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\nz\r\nab\r\n\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\n\r\nz\r\nab\r\n________________\r\n________________\r\n\r\nz\r\n\r\nab\r\n________________\r\n\r\nz\r\n________________\r\nab\r\n________________\r\n\r\nz\r\n[1]\r\n________________\r\n\r\nz\r\n[2][3]\r\n________________\r\n\r\nz\r\n________________\r\n\r\n\r\n\r\nz\r\n________________\r\n\r\n\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3]",
+        "a  \nab\n\nz  \nab\n\nz  \nab\n\nz  \nab\n\nz  \nab\n\nz\n\nab\n\nz  \nab\n\nz  \n[^1]\n\nz  \n[^2][^3]\n\nz\n\nz\n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  ",
+    ),
+    "pb_vt_end_heading": (
+        {"paragraphs": [_runs("a"), _runs("ab", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs("ab", _PB, {"text": "\x0b", "link": "https://example.com/"}, style="HEADING_2"), _runs("z"), _runs("ab\x0b", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs("ab", _PB, "\x0b\x0b", style="HEADING_2"), _runs("z"), _runs("ab", _PB, _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs("\x0bab", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "ab", _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_note(""), _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_note(""), _note(""), _PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b", style="HEADING_2"), _runs("z"), _runs(_PB, "\x0b\x0b", style="HEADING_2"), _runs("z")]},
+        "\ufeffa\r\nab\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\nz\r\nab\r\n\r\n________________\r\n\r\nz\r\nab\r\n________________\r\n\r\n\r\nz\r\nab\r\n________________\r\n________________\r\n\r\nz\r\n\r\nab\r\n________________\r\n\r\nz\r\n________________\r\nab\r\n________________\r\n\r\nz\r\n[1]\r\n________________\r\n\r\nz\r\n[2][3]\r\n________________\r\n\r\nz\r\n________________\r\n\r\nz\r\n________________\r\n\r\n\r\nz\r\n________________\r\n[1] \r\n[2] \r\n[3]",
+        "a\n\n## ab \n\nz\n\n## ab \n\nz\n\n## ab  \n\nz\n\n## ab  \n\nz\n\n## ab \n\nz\n\n##  ab \n\nz\n\n## ab \n\nz\n\n## [^1] \n\nz\n\n## [^2][^3] \n\nz\n\n##  \n\nz\n\n##   \n\nz\n\n[^1]:  \n\n[^2]:  \n\n[^3]:  ",
+    ),
+    # footnotes ending in empty paragraphs, after a body ending in them too
+    "notes_trail": (
+        {"paragraphs": [_runs("a", _note("x", ""), "b", _note("y", "", ""), "c")]},
+        "\ufeffa[1]b[2]c\r\n________________\r\n[1] x\r\n\r\n\r\n[2] y",
+        "a[^1]b[^2]c\n\n[^1]:  x  \n\n\n[^2]:  y\n\n",
+    ),
+    "notes_trail_first": (
+        {"paragraphs": [_runs("a", _note("x", "", ""), "b", _note("y"), "c")]},
+        "\ufeffa[1]b[2]c\r\n________________\r\n[1] x\r\n\r\n\r\n\r\n\r\n[2] y",
+        "a[^1]b[^2]c\n\n[^1]:  x\n\n\n\n[^2]:  y",
+    ),
+    "notes_blank": (
+        {"paragraphs": [_runs("a", _note("", ""), "b", _note("", ""), "c")]},
+        "\ufeffa[1]b[2]c\r\n________________\r\n[1] \r\n\r\n\r\n[2]",
+        "a[^1]b[^2]c\n\n[^1]:    \n\n\n[^2]:    \n",
+    ),
+    "notes_body_trail": (
+        {"paragraphs": [_runs("a", _note("x", "", ""), "b", _note("y", "")), {"text": ""}, {"text": ""}]},
+        "\ufeffa[1]b[2]\r\n\r\n\r\n\r\n\r\n________________\r\n[1] x\r\n\r\n\r\n\r\n\r\n[2] y",
+        "a[^1]b[^2]\n\n[^1]:  x\n\n\n\n[^2]:  y  \n",
+    ),
+    "pb_heading": (
+        {"paragraphs": [_runs("ab"), _runs(_PB, style="HEADING_2"), _runs("cd", style="HEADING_2"), _runs(_PB, style="TITLE"), _runs("ef", style="TITLE"), _runs("gh")]},
+        "\ufeffab\r\n" + _RULE + "\r\ncd\r\n" + _RULE + "\r\n\r\n\r\nef\r\ngh",
+        "ab\n\n## \n\n## cd\n\n# \n\n# ef\n\ngh",
+    ),
+    "segments": (
+        {
+            "paragraphs": [
+                _runs("Intro", _note("First note"), " text here"),
+                _runs(_PB),
+                _runs("Secon", _note("Second *note*", "more"), "d para"),
+                _runs("Third"),
+            ],
+            "header": [_runs("HEAD")],
+            "footer": [_runs("FOOT")],
+        },
+        "\ufeffHEAD\r\nIntro[1] text here\r\n" + _RULE + "\r\n\r\n\r\nSecon[2]d para\r\nThird\r\nFOOT\r\n"
+        + _RULE + "\r\n[1] First note\r\n[2] Second *note*\r\nmore",
+        "Intro[^1] text here\n\nSecon[^2]d para  \nThird\n\n[^1]:  First note\n\n[^2]:  Second \\*note\\*  \n    more",
+    ),
+    "edges": (
+        {
+            "paragraphs": [
+                _runs(_PB, "cd"),
+                _runs("ab", _PB, _PB),
+                {"text": ""},
+                _runs(("bold", "b"), {**_note(""), "bold": True}, (" ref", "b"), {**_note(""), "bold": True}, " here"),
+                _runs("x"),
+            ],
+            "header": [{"text": ""}],
+            "footer": [{"text": ""}],
+        },
+        "\ufeff" + _RULE + "\r\ncd\r\nab\r\n" + _RULE + "\r\n" + _RULE + "\r\n\r\n\r\nbold[1] ref[2] here\r\nx\r\n\r\n\r\n"
+        + _RULE + "\r\n[1] \r\n[2]",
+        "cd  \nab\n\n**bold[^1] ref[^2]** here  \nx\n\n[^1]:  \n\n[^2]:  ",
+    ),
+    "tabs": (
+        {
+            "tabs": [
+                {"paragraphs": [_runs("alpha")]},
+                {"title": "Second", "paragraphs": [_runs("beta"), _runs("gamma")], "tabs": [{"title": "Kid", "paragraphs": [_runs("delta")]}]},
+                {"title": "Empty", "paragraphs": [{"text": ""}]},
+                {"title": "# *x* _y_", "paragraphs": [_runs("Head", style="HEADING_1"), _runs("body *star*")]},
+                {"title": "Last", "paragraphs": [_runs("omega")]},
+            ]
+        },
+        "\ufeffalpha\r\nbeta\r\ngamma\r\ndelta\r\n\r\n\r\nHead\r\nbody *star*\r\nomega",
+        "alpha  \nbeta  \ngamma  \ndelta\n\n# Head\n\nbody \\*star\\*  \nomega",
+    ),
+    "tab_segments": (
+        {"tabs": [_SEGMENTED_TAB("one", "N1", "H1", "F1"), {"title": "Two", **_SEGMENTED_TAB("two", "N2", "H2", "F2")}]},
+        "\ufeffH1\r\none[1] body\r\ntwo[2] body\r\nF1\r\n" + _RULE + "\r\n[1] N1\r\n[2] N2",
+        "one[^1] body  \ntwo[^2] body\n\n[^1]:  N1\n\n[^2]:  N2",
+    ),
+    "tab_segments_zero": (
+        {"tabs": [{"title": "Zero", "paragraphs": [{"text": ""}]}, _SEGMENTED_TAB("one", "N1", "H1", "F1"), {"title": "Two", **_SEGMENTED_TAB("two", "N2", "H2", "F2")}]},
+        "\ufeffone[1] body\r\ntwo[2] body\r\n" + _RULE + "\r\n[1] N1\r\n[2] N2",
+        "  \none[^1] body  \ntwo[^2] body\n\n[^1]:  N1\n\n[^2]:  N2",
+    ),
 }
 # fmt: on
 
 
-def test_a_docs_text_export_is_rendered_from_its_body_as_real_renders_it(tmp_path):
+def test_a_docs_text_export_is_rendered_from_its_tabs_as_real_renders_it(tmp_path):
     """`files.export` of a Doc as `text/plain`, `text/markdown` and `text/x-markdown` is what real
-    exported, byte for byte, for the Doc each record states as `content` or as `paragraphs`: no
-    title, a byte-order mark and CRLFs in plain text, and the named styles, marks and escapes of
-    `gdocs.markdown`."""
+    exported, byte for byte, for the Doc each record states as `content`, as `paragraphs` or as
+    `tabs`: no title, a byte-order mark and CRLFs in plain text, and the named styles, marks and
+    escapes of `gdocs.markdown`; every tab one after another, the first tab's header and footer,
+    and the footnotes numbered across the tabs."""
     records = [
         {
             "source_type": "google_drive",
@@ -3049,6 +3239,7 @@ _SERVED = (200, None, None, None)
 _TYPED = (400, "invalid", None, None)
 _RANGE = (400, "invalidParameter", "page_size", None)
 _Q_REFUSED = (400, "invalid", "q", "Invalid Value")
+_PATH_400 = (400, "badRequest", None, "Bad Request")
 
 
 def _mask_refused(subject: str) -> tuple:
@@ -3056,6 +3247,23 @@ def _mask_refused(subject: str) -> tuple:
 
 
 _DOC = "/drive/v3/files/{doc}"
+# A query value's escapes as sent, beside the value ``backlot.utf8_escapes.google_query`` reads them
+# as.
+_VALUE_ESCAPES = [
+    ("a%80b", "a b"),
+    ("a%e9b", "a b"),
+    ("a%FFb", "a b"),
+    ("a%C3b", "a b"),
+    ("a%C0%80b", "a  b"),
+    ("a%E2%82b", "a  b"),
+    ("a%ED%A0%80b", "a   b"),
+    ("a%F4%90%80%80b", "a    b"),
+    ("a%FF%FEb", "a  b"),
+    ("a%00b", "a%00b"),
+    ("a%01b", "a\x01b"),
+    ("a%7Fb", "a\x7fb"),
+    ("a%C3%A9b", "a\u00e9b"),
+]
 _PERMS_OF_DOC = "/drive/v3/files/{doc}/permissions"
 # Masks real refused on a Google Workspace member's `files.get`, `files.list`, `permissions.list`,
 # `drives.list` and `about`: a mask that is not one is named whole, an unknown name alone, the first
@@ -3362,6 +3570,10 @@ _DRIVE_CHECK_ROWS = [
     # does not exist
     ("/drive/v3/files/{folder}/export", "mimeType=text/plain", "admin", (403, "fileNotExportable", None, "Export only supports Docs Editors files.")),
     ("/drive/v3/files/{doc}", "alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
+    # a download reads no `fields` mask
+    ("/drive/v3/files/{doc}", "alt=media&fields=id%2C", "admin", (403, "fileNotDownloadable", "alt", None)),
+    ("/drive/v3/files/{pdf}", "alt=media&fields=id%2C", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}", "alt=media&fields=nope(", "admin", _SERVED),
     # the shared-drive items need a companion flag, which the same spelling turns on
     ("/drive/v3/files", "includeItemsFromAllDrives=true", "admin", _SHARED_DRIVES),
     ("/drive/v3/files", "includeItemsFromAllDrives=TRUE", "admin", _SHARED_DRIVES),
@@ -3469,24 +3681,49 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/drives", "fields=bogus&pageToken=x", "admin", (400, "invalid", "pageToken", "Invalid Value")),
     ("/drive/v3/drives", "fields=bogus&useDomainAdminAccess=true", "admin", _ADMIN_ONLY),
     ("/drive/v3/drives", "fields=bogus&q=bogus", "admin", _Q_REFUSED),
+    # the path ``backlot.routers.google._refuse_an_undecodable_path`` refuses among the other
+    # refusals, in the order it records, beside one whose escapes decode
+    *[("/drive/v3/files/nope%80x", query, "admin", _PATH_400) for query in ("", "alt=media", "fields=nope(", "fields=id%2C", "acknowledgeAbuse=true", "prettyPrint=nope")],
+    ("/drive/v3/files/nope%80x/export", "mimeType=nope", "admin", _PATH_400),
+    ("/drive/v3/files/nope%80x/export", "mimeType=text/plain", "admin", _PATH_400),
+    ("/drive/v3/files/nope%80x/permissions", "fields=nope(", "admin", _PATH_400),
+    ("/drive/v3/files/nope%80x", "supportsAllDrives=nope", "admin", _TYPED),
+    ("/drive/v3/files/nope%80x", "alt=media&acknowledgeAbuse=nope", "admin", _TYPED),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=nope", "admin", _TYPED),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=500", "admin", _RANGE),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=0", "admin", _RANGE),
+    *[("/drive/v3/files/nope%80x/permissions", query, "admin", _PATH_400) for query in ("pageToken=nope", "pageSize=5&pageSize=6", "useDomainAdminAccess=true", "fields=permissions(id),")],
+    ("/drive/v3/files/nope%80x/export", "", "admin", (400, "required", "mimeType", None)),
+    ("/drive/v3/files/nope%C3%A9x", "", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/nope%C3%A9x/permissions", "", "admin", (404, "notFound", "fileId", None)),
+    # a mask's escapes as Drive reads them
+    *[(_DOC, f"fields={mask}", "admin", _mask_refused(read)) for mask, read in _VALUE_ESCAPES],
 ]
 # fmt: on
 
 
 @pytest.fixture(scope="module")
 def drive_check_ids(client, admin_h):
-    """The files `_DRIVE_CHECK_ROWS` names, and a page token `permissions.list` issued for {doc}."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
+    """The files `_DRIVE_CHECK_ROWS` names, found in one listing that sends no escape, and a page
+    token `permissions.list` issued for {doc}, or None where it issued none."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()[
+        "files"
+    ]
+
+    def named(part):
+        return next(f["id"] for f in files if part in f["name"])
+
+    doc = named("Brand")
     issued = client.get(
         f"/drive/v3/files/{doc}/permissions", headers=admin_h, params={"pageSize": 1}
     )
     return {
         "doc": doc,
-        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
-        "folder": _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}'")[0],
-        "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "pdf": named("Whitepaper"),
+        "folder": next(f["id"] for f in files if f["mimeType"] == FOLDER_MIME),
+        "hidden": named("Q1 Revenue Model"),
         "nope": "nosuchfile000",
-        "issued": issued.json()["nextPageToken"],
+        "issued": issued.json().get("nextPageToken"),
     }
 
 
@@ -3523,9 +3760,10 @@ def test_drive_answers_every_other_check_with_reals_status_and_reason(
 ):
     """The rest of `_DRIVE_CHECK_ROWS`, each sent by the admin token, as ``{row: answer}``."""
     rows = [row for row in _DRIVE_CHECK_ROWS if "{hidden}" not in row[0]]
-    assert {
+    answers = {
         row[:2]: _drive_check(client, admin_h, drive_check_ids, *row[:2], row[3]) for row in rows
-    } == {row[:2]: row[3] for row in rows}
+    }
+    assert answers == {row[:2]: row[3] for row in rows}
 
 
 def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
@@ -4326,10 +4564,11 @@ def test_every_google_operation_declares_the_system_parameters_and_reads_them(cl
                 if declared != _SYSTEM_PARAMETERS:
                     missing.append(f"{method.upper()} {path}")
                 url = re.sub(r"\{[^}]+\}", "dummy", path)
-                r = client.request(method.upper(), f"{url}?$.xgafv=0", json={})
+                body = None if method == "get" else {}
+                r = client.request(method.upper(), f"{url}?$.xgafv=0", json=body)
                 if r.status_code != 400 or "system query parameter" not in r.text:
                     unchecked.append(f"{method.upper()} {path} -> {r.status_code}")
-                r = client.request(method.upper(), f"{url}?access_token=ya29.x", json={})
+                r = client.request(method.upper(), f"{url}?access_token=ya29.x", json=body)
                 if r.headers.get("www-authenticate") != _CHALLENGED:
                     unchecked.append(f"{method.upper()} {path} access_token -> {r.status_code}")
             elif path.startswith("/batch") and declared:
@@ -4406,6 +4645,12 @@ _NO_CREDENTIAL_ROWS = [
     # its front end's HTML 404
     ("PUT", "/gmail/v1/users/me/profile", 405, 405),
     ("PUT", "/drive/v3/files/{doc}", 405, 405),
+    # the path ``backlot.routers.google._refuse_an_undecodable_path`` refuses, read after the
+    # credential
+    ("GET", "/drive/v3/files/nope%80x", 403, 400),
+    ("GET", "/sheets/v4/spreadsheets/nope%80x", 403, 400),
+    ("GET", "/docs/v1/documents/nope%80x", 401, 400),
+    ("GET", "/slides/v1/presentations/nope%80x", 401, 400),
 ]
 # fmt: on
 
@@ -4513,6 +4758,7 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token=ya29.x&oauth_token={t}&oauth_token={t}", _CHALLENGE),
     (None, "access_token=ya29.x&access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token=ya29.x&oauth_token={m}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%80", _CHALLENGED),
     # beside a header: a credential, a bare scheme and `Bearer ,` outrank the query, a scheme run
     # into its token reads it without the gate, and a header that is no credential leaves it alone
     ("Bearer {t}", "access_token=ya29.x", _SERVED),
@@ -5363,10 +5609,9 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
     split the way real splits it.
 
     Every family GET is sent a name that cannot be a JavaScript one and has to refuse it. Every
-    family POST is sent the same name and has to IGNORE it: measured on Sheets, a `callback` on
-    `values:batchGetByDataFilter` and on `spreadsheets:getByDataFilter` is not honoured and not even
-    validated, where the same POST honours `$.xgafv` and `prettyPrint` — JSONP is what a `<script>`
-    element fetches, and a `<script>` element issues a GET.
+    other family operation is sent the same name and has to IGNORE it, and a name it could call
+    leaves its answer unwrapped: GET is the only method real reads `callback` for, as
+    ``errors.google.jsonp_callback`` records.
 
     `callback` is NOT declared router-wide beside `$.xgafv` — Sheets is the only family whose
     SUCCESS is wrapped, and `qp` declares only what Backlot honours — so this is the whole of what
@@ -5392,7 +5637,8 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
             if method not in ("get", "post", "put", "patch", "delete"):
                 continue
             url = re.sub(r"\{[^}]+\}", "dummy", path)
-            r = client.request(method.upper(), f"{url}?callback=a%20b", json={})
+            body = None if method == "get" else {}
+            r = client.request(method.upper(), f"{url}?callback=a%20b", json=body)
             refused = r.status_code == 200 and "Invalid JSONP callback name" in r.text
             if method == "get":
                 gets += 1
@@ -5402,6 +5648,15 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
                 posts += 1
                 if refused:
                     wrong.append(f"{method.upper()} {path} refused where real ignores")
+                called = client.request(method.upper(), f"{url}?callback=cb", json=body)
+                if "// API callback" in called.text:
+                    wrong.append(f"{method.upper()} {path} wrapped where real does not")
+    # Two methods the document does not declare on Drive's files; real's answer to each under a
+    # callback is in ``errors.google.jsonp_callback``.
+    for method in ("DELETE", "PATCH"):
+        called = client.request(method, "/drive/v3/files/dummy?callback=cb")
+        if "// API callback" in called.text:
+            wrong.append(f"{method} /drive/v3/files/dummy wrapped where real does not")
     assert wrong == []
     assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 
@@ -7759,7 +8014,8 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     counts two; a `headingId` on a heading alone; adjacent runs of one style as one; a link
     underlined in the link colour; and the newline in its paragraph's last run's style, but for a
     link and the underline it brought. A document stating no paragraphs is read without the
-    characters `insertText` strips, `\r` among them."""
+    characters `insertText` strips, `\r` among them. A document stating tabs is served as real
+    serves tabs, headers, footers, footnotes and page breaks."""
     url = "https://example.com/"
     link = {
         "underline": True,
@@ -7828,6 +8084,28 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         "author_email": "owner@acme.com",
         "content": "one\r\ntwo\x01\ue000\t\x0b\uf900\ufdcf\ufdf0",
     }
+    tabbed = {
+        "source_type": "google_drive",
+        "doc_id": "tabbed",
+        "title": "Tabbed",
+        "author_email": "owner@acme.com",
+        "tabs": [
+            {
+                "paragraphs": [
+                    {"runs": [{"text": "and "}, {"footnote": [{"text": "Footnote text"}]}]},
+                    {"runs": [{"pageBreak": True}]},
+                ],
+                "header": [{"text": "Header text"}],
+                "footer": [{"text": "Footer text"}],
+            },
+            {
+                "title": "Second",
+                "icon": "\U0001f600",
+                "paragraphs": [{"text": "two"}],
+                "tabs": [{"title": "Kid", "paragraphs": [{"text": "kid"}]}],
+            },
+        ],
+    }
 
     def para(start, end, runs, style="NORMAL_TEXT"):
         elements, at = [], start
@@ -7855,11 +8133,14 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
             },
         }
 
-    with corpus_client(tmp_path, [record, prose]) as (client, settings):
+    with corpus_client(tmp_path, [record, prose, tabbed]) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         fid = served_id("google_drive", "plan")
         doc = client.get(f"/docs/v1/documents/{fid}", headers=h).json()
         crlf = client.get(f"/docs/v1/documents/{served_id('google_drive', 'crlf')}", headers=h)
+        tid = served_id("google_drive", "tabbed")
+        flat = client.get(f"/docs/v1/documents/{tid}", headers=h).json()
+        tabs = client.get(f"/docs/v1/documents/{tid}", headers=h, params=_TABS).json()["tabs"]
     assert doc["body"]["content"][1:] == [
         para(1, 16, [("Quarterly plan\n", {}, 15)], "TITLE"),
         para(
@@ -7941,6 +8222,100 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         "link",
     ]
     assert list(newline["textRun"]["textStyle"]) == ["bold", "italic", "strikethrough"]
+
+    # A header, footer and footnote as real served the ones its editor, `createFooter` and
+    # `createFootnote` made (`gdocs.document_tab`): each keyed by its id, opening at 0, a
+    # footnote with a space in 10 PT; the reference numbered, and a page break, an element each.
+    assert list(flat) == [
+        "title",
+        "body",
+        "headers",
+        "footers",
+        "footnotes",
+        "documentStyle",
+        "namedStyles",
+        "suggestionsViewMode",
+        "documentId",
+        "commentsViewMode",
+    ]
+    (header,) = flat["headers"]
+    (footer,) = flat["footers"]
+    (note,) = flat["footnotes"]
+    assert [list(flat["documentStyle"])[:3], *flat["documentStyle"].values()][:3] == [
+        ["background", "defaultHeaderId", "defaultFooterId"],
+        {"color": {}},
+        header,
+    ]
+    assert flat["documentStyle"]["defaultFooterId"] == footer
+    assert re.fullmatch(r"kix[.][a-z0-9]{12}", header) and len({header, footer, note}) == 3
+
+    def segment(text, style=None, spacing=None):
+        style = style or {}
+        end = len(text)
+        return [
+            {
+                "endIndex": end,
+                "paragraph": {
+                    "elements": [
+                        {"endIndex": end, "textRun": {"content": text, "textStyle": style}}
+                    ],
+                    "paragraphStyle": {
+                        "namedStyleType": "NORMAL_TEXT",
+                        **(spacing or {}),
+                        "direction": "LEFT_TO_RIGHT",
+                    },
+                },
+            }
+        ]
+
+    assert flat["headers"] == {header: {"headerId": header, "content": segment("Header text\n")}}
+    assert flat["footers"] == {footer: {"footerId": footer, "content": segment("Footer text\n")}}
+    ten = {"fontSize": {"magnitude": 10, "unit": "PT"}}
+    assert flat["footnotes"] == {
+        note: {
+            "footnoteId": note,
+            "content": segment(" Footnote text\n", ten, {"lineSpacing": 100}),
+        }
+    }
+    assert [p["paragraph"]["elements"] for p in flat["body"]["content"][1:]] == [
+        [
+            {"startIndex": 1, "endIndex": 5, "textRun": {"content": "and ", "textStyle": {}}},
+            {
+                "startIndex": 5,
+                "endIndex": 6,
+                "footnoteReference": {"footnoteId": note, "footnoteNumber": "1", "textStyle": {}},
+            },
+            {"startIndex": 6, "endIndex": 7, "textRun": {"content": "\n", "textStyle": {}}},
+        ],
+        [
+            {"startIndex": 7, "endIndex": 8, "pageBreak": {"textStyle": {}}},
+            {"startIndex": 8, "endIndex": 9, "textRun": {"content": "\n", "textStyle": {}}},
+        ],
+    ]
+    # The tabs as real served two tabs and `addDocumentTab`'s children (`_docs_tabs`): the first
+    # `t.0`, a child's parent and depth beside its index, and the tab holding its child tabs
+    # before its contents; the first tab is what the flat read served.
+    first, second = tabs
+    assert first == {
+        "tabProperties": {"tabId": "t.0", "title": "Tab 1", "index": 0},
+        "documentTab": {k: flat[k] for k in list(flat)[1:7]},
+    }
+    assert list(second) == ["tabProperties", "childTabs", "documentTab"]
+    assert re.fullmatch(r"t[.][a-z0-9]{12}", second["tabProperties"]["tabId"])
+    assert second["tabProperties"] == {
+        "tabId": second["tabProperties"]["tabId"],
+        "title": "Second",
+        "index": 1,
+        "iconEmoji": "\U0001f600",
+    }
+    (kid,) = second["childTabs"]
+    assert list(kid["tabProperties"].items())[1:] == [
+        ("title", "Kid"),
+        ("parentTabId", second["tabProperties"]["tabId"]),
+        ("index", 0),
+        ("nestingLevel", 1),
+    ]
+    assert list(kid["documentTab"]) == ["body", "documentStyle", "namedStyles"]
 
 
 _DOCS_FLAT = [
@@ -9077,6 +9452,131 @@ def _bad_request(violations):
             "fieldViolations": [{"field": f, "description": m} for f, m in violations],
         }
     ]
+
+
+_SHEETS_TYPE = "type.googleapis.com/google.apps.sheets.v4"
+
+
+def _editor_refused(code, message, status, violations=()):
+    error = {"code": code, "message": message, "status": status}
+    if violations:
+        error["details"] = _bad_request(list(violations))
+    return (code, {"error": error})
+
+
+def _invalid_value(field, kind, value):
+    message = f"Invalid value at '{field}' ({kind}), \"{value}\""
+    return _editor_refused(400, message, "INVALID_ARGUMENT", [(field, message)])
+
+
+_EDITOR_PATH_400 = _editor_refused(400, INVALID_ARG, "INVALID_ARGUMENT")
+_EDITOR_NOT_FOUND = _editor_refused(404, NOT_FOUND, "NOT_FOUND")
+_EDITOR_MASK = _editor_refused(
+    400,
+    INVALID_ARG,
+    "INVALID_ARGUMENT",
+    [("nope(", "Invalid FieldMask 'nope('. Cannot find matching ')' for all '('.")],
+)
+_UNDECODED = ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+_DOCS_INSERT = '{"requests": [{"insertText": {"text": "a", "location": {"index": 1}}}]}'
+_UNKNOWN_NOPE = _editor_refused(
+    400,
+    'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    "INVALID_ARGUMENT",
+)
+_UNKNOWN_NOPE[1]["error"]["details"] = [
+    {
+        "@type": "type.googleapis.com/google.rpc.BadRequest",
+        "fieldViolations": [{"description": _UNKNOWN_NOPE[1]["error"]["message"]}],
+    }
+]
+
+# A Docs, Sheets or Slides read per row, `{doc}`, `{sheet}` and `{deck}` files the admin token
+# reads, beside real's status and error: an undecodable path
+# (``backlot.routers.google._refuse_an_undecodable_path``) beside each refusal it was measured with,
+# a path whose escapes decode, and a query value's escapes as Docs and Sheets read them. A row with
+# a fourth value is a Docs batchUpdate that POSTs it as the body.
+# fmt: off
+_EDITOR_ESCAPE_ROWS = [
+    *[(f"/docs/v1/documents/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
+    *[(f"/sheets/v4/spreadsheets/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
+    *[(f"/slides/v1/presentations/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
+    ("/docs/v1/documents/{doc}%80", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/{sheet}%80", "", _EDITOR_PATH_400),
+    ("/slides/v1/presentations/{deck}%80", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/nope%80x", "prettyPrint=nope", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/nope%80x/values/A1", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/nope%80x/values:batchGet", "ranges=A1", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A%80", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A1%80:B2", "", _EDITOR_PATH_400),
+    ("/docs/v1/documents/nope%80x", "fields=nope(", _EDITOR_MASK),
+    ("/sheets/v4/spreadsheets/nope%80x", "fields=nope(", _EDITOR_MASK),
+    ("/sheets/v4/spreadsheets/nope%80x", "alt=nope",
+     _editor_refused(400, "Invalid value \"nope\" for query parameter 'alt'", "INVALID_ARGUMENT")),
+    ("/docs/v1/documents/nope%80x", "suggestionsViewMode=nope",
+     _invalid_value("suggestions_view_mode", _DOCS_SUGGESTIONS, "nope")),
+    ("/docs/v1/documents/nope%80x", "includeTabsContent=nope",
+     _invalid_value("include_tabs_content", "TYPE_BOOL", "nope")),
+    ("/sheets/v4/spreadsheets/nope%80x", "includeGridData=nope",
+     _invalid_value("include_grid_data", "TYPE_BOOL", "nope")),
+    ("/sheets/v4/spreadsheets/nope%80x/values/A1", "majorDimension=nope",
+     _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", "nope")),
+    ("/sheets/v4/spreadsheets/nope%80x/values/A1", "valueRenderOption=nope",
+     _invalid_value("value_render_option", f"{_SHEETS_TYPE}.ValueRenderOption", "nope")),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A1%80", "majorDimension=nope",
+     _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", "nope")),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _EDITOR_PATH_400, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _EDITOR_PATH_400, '{"requests": []}'),
+    ("/docs/v1/documents/nope%80:batchUpdate", "fields=nope(", _EDITOR_MASK, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _UNKNOWN_NOPE, '{"nope": 1}'),
+    ("/docs/v1/documents/nope:batchUpdate", "", _EDITOR_NOT_FOUND, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
+    ("/sheets/v4/spreadsheets/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
+    ("/slides/v1/presentations/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
+    ("/docs/v1/documents/{doc}%C3%A9", "", _EDITOR_NOT_FOUND),
+    ("/sheets/v4/spreadsheets/{sheet}%C3%A9", "", _EDITOR_NOT_FOUND),
+    ("/slides/v1/presentations/{deck}%C3%A9", "", _EDITOR_NOT_FOUND),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A%C3%A9", "",
+     _editor_refused(400, "Unable to parse range: A\u00e9", "INVALID_ARGUMENT")),
+    *[
+        ("/docs/v1/documents/{doc}", f"fields={mask}", _editor_refused(400, INVALID_ARG, "INVALID_ARGUMENT", [
+            (read, f"Error expanding 'fields' parameter. Cannot find matching fields for path '{read}'."),
+        ]))
+        for mask, read in _VALUE_ESCAPES
+    ],
+    *[
+        ("/sheets/v4/spreadsheets/{sheet}/values/A1", f"majorDimension={value}",
+         _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", read))
+        for value, read in _VALUE_ESCAPES
+    ],
+]
+# fmt: on
+
+
+def test_editor_apis_read_an_escape_as_real_reads_it(client, admin_h, document_id):
+    """The rows `_EDITOR_ESCAPE_ROWS` records, as ``{row: (status, body)}``."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()[
+        "files"
+    ]
+    ids = {
+        "doc": document_id,
+        "sheet": next(f["id"] for f in files if "Q1 Revenue Model" in f["name"]),
+        "deck": next(
+            f["id"] for f in files if f["mimeType"] == "application/vnd.google-apps.presentation"
+        ),
+    }
+
+    def answer(path, query, body=None):
+        url = path.format(**ids) + (f"?{query}" if query else "")
+        if body is None:
+            r = client.get(url, headers=admin_h)
+        else:
+            headers = {**admin_h, "Content-Type": "application/json"}
+            r = client.post(url, headers=headers, content=body)
+        return (r.status_code, r.json())
+
+    answers = {(*row[:2], *row[3:]): answer(*row[:2], *row[3:]) for row in _EDITOR_ESCAPE_ROWS}
+    assert answers == {(*row[:2], *row[3:]): row[2] for row in _EDITOR_ESCAPE_ROWS}
 
 
 _DIM = "Invalid value at 'major_dimension' (type.googleapis.com/google.apps.sheets.v4.Dimension), "
@@ -14592,51 +15092,103 @@ _OVERRIDE_ROWS = [
     ("/drive/v3/about", "", "", "fields=kind", "text/plain", "GET"),
     ("/drive/v3/about", "", "", '{"fields": "kind"}', "application/json", "GET"),
     ("/drive/v3/about", "fields=user", "fields=user", "fields=kind", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&x=%8B", "", b"fields=kind&x=\x8b", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%8Bnd", "", b"fields=ki\x8bnd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%8B", "", b"fields=kind&\x8b", _FORM, "GET"),
+    ("/drive/v3/about", "%8B&fields=kind", "", b"\x8b&fields=kind", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%C3%A9nd", "", b"fields=ki\xc3\xa9nd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%7F", "", b"fields=kind&\x7f", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%7Fnd", "", b"fields=ki\x7fnd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%80", "", b"fields=kind&\x80", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%80nd", "", b"fields=ki\x80nd", _FORM, "GET"),
+    ("/drive/v3/about", "fields=kind&%FF", "", b"fields=kind&\xff", _FORM, "GET"),
+    ("/drive/v3/about", "fields=ki%FFnd", "", b"fields=ki\xffnd", _FORM, "GET"),
+    ("/drive/v3/about", "", "", gzip.compress(b"fields=kind", mtime=0)[:-8], _FORM, "GET"),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "callback=foo", "", _FORM, "GET"),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "callback=a-b", "", _FORM, "GET"),
+    ("/sheets/v4/spreadsheets/{sheet}", "", "", "callback=foo", _FORM, "GET"),
+    ("/drive/v3/files/{file}", "fields=a%80b", "", "fields=a%80b", _FORM, "GET"),
+    ("/drive/v3/files/{file}", "fields=a%00b", "", "fields=a%00b", _FORM, "GET"),
+    ("/docs/v1/documents/{doc}", "fields=a%80b", "", "fields=a%80b", _FORM, "GET"),
+    ("/docs/v1/documents/{doc}", "fields=a%00b", "", "fields=a%00b", _FORM, "GET"),
+    (
+        "/sheets/v4/spreadsheets/{sheet}/values/A1",
+        "majorDimension=a%80b",
+        "",
+        "majorDimension=a%80b",
+        _FORM,
+        "GET",
+    ),
 ]
 
 
-@pytest.mark.parametrize(
-    "path, get, query, body, content_type, override",
-    _OVERRIDE_ROWS,
-    ids=[
-        "files-list",
-        "about",
-        "files-get",
-        "drives",
-        "gmail-labels",
-        "gmail-head",
-        "docs",
-        "sheets",
-        "sheets-tab-get",
-        "lower-case-get",
-        "spaced-get",
-        "head",
-        "mixed-case-head",
-        "no-content-type",
-        "form-with-charset",
-        "form-in-capitals",
-        "form-after-another-type",
-        "form-less-a-letter",
-        "text-plain",
-        "json",
-        "url-query-first",
-    ],
-)
-def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(
-    client, admin_h, path, get, query, body, content_type, override
-):
+_OVERRIDE_IDS = [
+    "files-list",
+    "about",
+    "files-get",
+    "drives",
+    "gmail-labels",
+    "gmail-head",
+    "docs",
+    "sheets",
+    "sheets-tab-get",
+    "lower-case-get",
+    "spaced-get",
+    "head",
+    "mixed-case-head",
+    "no-content-type",
+    "form-with-charset",
+    "form-in-capitals",
+    "form-after-another-type",
+    "form-less-a-letter",
+    "text-plain",
+    "json",
+    "url-query-first",
+    "byte-0x8b-in-a-value",
+    "byte-0x8b-in-the-mask",
+    "byte-0x8b-as-a-name",
+    "byte-0x8b-as-the-first-name",
+    "utf-8-in-the-mask",
+    "byte-0x7f-as-a-name",
+    "byte-0x7f-in-the-mask",
+    "byte-0x80-as-a-name",
+    "byte-0x80-in-the-mask",
+    "byte-0xff-as-a-name",
+    "byte-0xff-in-the-mask",
+    "gzip-member-cut-short",
+    "callback-in-the-url",
+    "uncallable-callback-in-the-url",
+    "callback-in-the-body",
+    "drive-form-escape-not-utf-8",
+    "drive-form-nul-escape",
+    "docs-form-escape-not-utf-8",
+    "docs-form-nul-escape",
+    "sheets-form-escape-not-utf-8",
+]
+
+
+def test_google_read_sent_as_a_post_with_a_get_override_is_the_get(client, admin_h):
     """Each row is how `answer_a_google_read_sent_as_a_post` reads its POST: as the GET of the
     query in the second column."""
     files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": "100"}).json()
     sheet = next(f["id"] for f in files["files"] if f["mimeType"].endswith("spreadsheet"))
     doc = next(f["id"] for f in files["files"] if f["mimeType"].endswith("document"))
-    url = path.format(file=files["files"][0]["id"], sheet=sheet, doc=doc)
-    headers = {**admin_h, "X-HTTP-Method-Override": override}
-    if content_type is not None:
-        headers["Content-Type"] = content_type
-    got = client.get(f"{url}?{get}", headers=admin_h)
-    posted = client.post(f"{url}?{query}", headers=headers, content=body)
-    assert (posted.status_code, posted.content) == (got.status_code, got.content)
+
+    def posted(url, headers, body):
+        r = client.post(url, headers=headers, content=body)
+        return r.status_code, r.content
+
+    got, expected = {}, {}
+    rows = zip(_OVERRIDE_IDS, _OVERRIDE_ROWS, strict=True)
+    for row, (path, get, query, body, content_type, override) in rows:
+        url = path.format(file=files["files"][0]["id"], sheet=sheet, doc=doc)
+        headers = {**admin_h, "X-HTTP-Method-Override": override}
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        the_get = client.get(f"{url}?{get}", headers=admin_h)
+        got[row] = outcome(posted, f"{url}?{query}", headers, body)
+        expected[row] = (the_get.status_code, the_get.content)
+    assert got == expected
 
 
 @pytest.mark.parametrize(
@@ -14696,6 +15248,492 @@ def test_google_request_whose_override_is_not_read_goes_on_as_sent(
     posted = sent_as(client, method, url, named, content=b"fields=kind")
     control = sent_as(client, method, url, plain, content=b"fields=kind")
     assert (posted.status_code, posted.content) == (control.status_code, control.content)
+
+
+# --- The front end's reading of a request's body -------------------------------------------------
+
+_UNSUPPORTED = "Unsupported Content-Encoding; only identity/gzip are supported."
+_TOO_LARGE = "Request payload size exceeds the limit: 134217728 bytes."
+
+
+def _front_end_page(code: int, message: str, reason: str, status: str, listed: bool) -> bytes:
+    """A front-end error as real wrote it, two-space indented and ending in a newline, with
+    `errors[]` where ``listed``."""
+    error = {"code": code, "message": message}
+    if listed:
+        error["errors"] = [{"message": message, "domain": "global", "reason": reason}]
+    return (json.dumps({"error": {**error, "status": status}}, indent=2) + "\n").encode()
+
+
+_415 = _front_end_page(415, _UNSUPPORTED, "failedPrecondition", "FAILED_PRECONDITION", True)
+_415_BARE = _front_end_page(415, _UNSUPPORTED, "failedPrecondition", "FAILED_PRECONDITION", False)
+_413 = _front_end_page(400, _TOO_LARGE, "badRequest", "INVALID_ARGUMENT", True)
+_413_BARE = _front_end_page(400, _TOO_LARGE, "badRequest", "INVALID_ARGUMENT", False)
+_JSON_UTF8 = "application/json; charset=UTF-8"
+_JS = "text/javascript; charset=UTF-8"
+
+# The `Content-Encoding` values sent on 2026-10-30 (UTC) with no credential, each as its own header,
+# and whether real answered the 415 or the route's 401: a `GET` on Drive's `about` where the row
+# has no body, and a `POST` on `files` with the row's body.
+_GZIPPED = gzip.compress(b"{}", mtime=0)
+_CODINGS = [
+    (["br"], None, 415),
+    (["BR"], None, 415),
+    (["Br"], None, 415),
+    (["DEFLATE"], None, 415),
+    (["X-GZIP"], None, 415),
+    (["compress"], None, 415),
+    (["*"], None, 415),
+    ([" br"], None, 415),
+    (["br "], None, 415),
+    (["\tbr"], None, 415),
+    (["gzip, br"], None, 415),
+    (["br, gzip"], None, 415),
+    (["identity, br"], None, 415),
+    (["gzip", "br"], None, 415),
+    (["br", "gzip"], None, 415),
+    (["", "br"], None, 415),
+    (["br"], b"{}", 415),
+    (["deflate"], b"{}", 415),
+    (["x-gzip"], b"{}", 415),
+    (["foo"], b"{}", 415),
+    (["Gzip"], None, 401),
+    (["IDENTITY"], None, 401),
+    (["  "], None, 401),
+    (["gzip, gzip"], None, 401),
+    (["gzip, identity"], None, 401),
+    (["identity,identity"], None, 401),
+    (["gzip,"], None, 401),
+    (["gzip", "gzip"], None, 401),
+    ([], b"{}", 401),
+    (["gzip"], b"{}", 401),
+    (["gzip"], _GZIPPED, 401),
+    (["GZIP"], _GZIPPED, 401),
+    (["gzip"], b"\x1f\x8b" + b"garbage-not-deflate" * 3, 401),
+    (["gzip"], _GZIPPED[:-8], 401),
+    (["gzip"], _GZIPPED[:-4], 401),
+    (["gzip"], _GZIPPED[:-8] + b"\x00" * 4 + _GZIPPED[-4:], 401),
+    (["gzip"], _GZIPPED + b"\x00", 401),
+    (["gzip"], gzip.compress(b"{", mtime=0) + gzip.compress(b"}", mtime=0), 401),
+    (["gzip"], b"\x1f\x8b", 401),
+    (["gzip"], b"\x1f{}", 401),
+    (["gzip"], gzip.compress(b"", mtime=0), 401),
+    (["gzip"], b"", 401),
+    (["identity"], b"{}", 401),
+    ([""], b"{}", 401),
+    (["\xa0gzip"], None, 415),
+    (["gzip\xa0"], None, 415),
+    (["\x85gzip"], None, 415),
+    (["gzip\x85"], None, 415),
+    (["\xa0"], None, 415),
+    (["\x85"], None, 415),
+]
+
+
+def test_google_refuses_a_coding_its_front_end_does_not_read(client):
+    got = {}
+    for values, body, _ in _CODINGS:
+        headers = [("Content-Encoding", value) for value in values]
+        if body is None:
+            r = sent_as(client, "GET", "/drive/v3/about", headers)
+        else:
+            headers.append(("Content-Type", "application/json"))
+            r = sent_as(client, "POST", "/drive/v3/files", headers, content=body)
+        refusal = (r.headers["content-type"], r.content) if r.status_code == 415 else ()
+        got[tuple(values), body] = (r.status_code, *refusal)
+    assert got == {
+        (tuple(values), body): (415, _JSON_UTF8, _415) if status == 415 else (status,)
+        for values, body, status in _CODINGS
+    }
+
+
+# The `Content-Encoding` values and bodies a one-part batch was sent to Drive's batch endpoint with
+# on 2026-10-30 (UTC), with no credential, here `{}` in its place: gzipped, then cut, extended or
+# spoilt, or not gzipped. ``backlot.routers.google.inflated`` decompresses the body where the
+# endpoint split a gzipped batch, and reads it as sent where it split one that is not gzip or
+# answered a 400.
+_GZIP_READS = [
+    (["gzip"], _GZIPPED, True),
+    (["gzip, identity"], _GZIPPED, True),
+    (["identity, gzip"], _GZIPPED, True),
+    (["gzip,"], _GZIPPED, True),
+    (["gzip", "gzip"], _GZIPPED, True),
+    (["GZIP"], _GZIPPED, False),
+    (["Gzip"], _GZIPPED, False),
+    (["identity"], _GZIPPED, False),
+    ([""], _GZIPPED, False),
+    (["gzip"], b"{}", False),
+    (["gzip"], _GZIPPED + gzip.compress(b"", mtime=0), False),
+    (["gzip"], gzip.compress(b"{", mtime=0) + gzip.compress(b"}", mtime=0), False),
+    (["gzip"], _GZIPPED + b"\x00", False),
+    (["gzip"], _GZIPPED + b"\x1f\x8b\x08" + b"\x00" * 7, False),
+    (["gzip"], _GZIPPED[:-8], False),
+    (["gzip"], _GZIPPED[:-4], False),
+    (["gzip"], _GZIPPED[:-8] + b"\x00" * 4 + _GZIPPED[-4:], False),
+    (["gzip"], _GZIPPED[:-4] + b"\x00" * 4, False),
+]
+
+
+def test_google_decompresses_a_body_only_as_one_whole_gzip_member():
+    from backlot.routers import google
+
+    got = {
+        (tuple(values), body): outcome(google.inflated, body, values)
+        for values, body, _ in _GZIP_READS
+    }
+    assert got == {
+        (tuple(values), body): b"{}" if decompressed else body
+        for values, body, decompressed in _GZIP_READS
+    }
+
+
+#: The headers of a read sent as a POST, its form body read as its query.
+_READ_AS_A_GET = {"X-HTTP-Method-Override": "GET", "Content-Type": _FORM}
+
+# Requests with `Content-Encoding: br` and no credential but where a row names one, beside what real
+# answered on 2026-10-30 (UTC), and to the rows sent as a POST with a `callback` on the day
+# `errors.google.jsonp_callback` gives: the status, `Content-Type` and body, the body's length the
+# one real sent, and for a `HEAD` its `Content-Length`; or `without` where the answer was the one
+# real gives the same request with no coding, which here is this server's answer to it.
+_CODING_ANSWERS = [
+    ("GET", "/drive/v3/about", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/gmail/v1/users/me/labels", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/docs/v1/documents/x", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/sheets/v4/spreadsheets/x", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/slides/v1/presentations/x", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/drive/v3/about?%24.xgafv=2", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/sheets/v4/spreadsheets/x?%24.xgafv=1", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/sheets/v4/spreadsheets/x?%24.xgafv=2", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/docs/v1/documents/x?%24.xgafv=1", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/gmail/v1/users/me/labels?%24.xgafv=2", {}, 415, _JSON_UTF8, _415_BARE),
+    ("GET", "/drive/v3/about?%24.xgafv=3", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?alt=zzz", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?prettyPrint=false", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?access_token=ya29.x7q", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about", BAD_TOKEN, 415, _JSON_UTF8, _415),
+    ("POST", "/drive/v3/files", {"Accept": "text/html"}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about/", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/files/x", {}, 415, _JSON_UTF8, _415),
+    ("GET", "/drive/v3/about?callback=cb", {}, 200, _JS, b"// API callback\ncb(" + _415 + b");"),
+    ("GET", "/drive/v3/about?callback=a-b", {}, 200, _JS, b"// API callback\na-b(" + _415 + b");"),
+    (
+        "GET",
+        "/sheets/v4/spreadsheets/x?callback=cb",
+        {},
+        200,
+        _JS,
+        b"// API callback\ncb(" + _415_BARE + b");",
+    ),
+    ("HEAD", "/drive/v3/about", {}, 415, _JSON_UTF8, None),
+    ("HEAD", "/gmail/v1/users/me/labels", {}, 415, _JSON_UTF8, None),
+    ("HEAD", "/docs/v1/documents/x", {}, 415, "text/html", "0"),
+    ("HEAD", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", "0"),
+    ("HEAD", "/slides/v1/presentations/x", {}, 415, "text/html", "0"),
+    ("HEAD", "/sheets/v4/nosuch", {}, 415, "text/html", "0"),
+    ("GET", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("POST", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("PUT", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("PATCH", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("DELETE", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("OPTIONS", "/sheets/v4/nosuch", {}, 415, "text/html", b""),
+    ("GET", "/docs/v1/nosuch", {}, 415, "text/html", b""),
+    ("GET", "/slides/v1/nosuch", {}, 415, "text/html", b""),
+    ("PUT", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", b""),
+    ("DELETE", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", b""),
+    ("POST", "/sheets/v4/spreadsheets/x", {}, 415, "text/html", b""),
+    ("GET", "/drive/v3/nosuch", {}, "without", None, None),
+    ("POST", "/drive/v3/nosuch", {}, "without", None, None),
+    ("GET", "/gmail/v1/nosuch", {}, "without", None, None),
+    ("GET", "/drive/v3/about%2F", {}, "without", None, None),
+    ("PUT", "/drive/v3/about", {}, "without", None, None),
+    ("POST", "/drive/v3/about", {}, "without", None, None),
+    ("TRACE", "/drive/v3/about", {}, "without", None, None),
+    ("POST", "/drive/v3/about?callback=foo", _READ_AS_A_GET, 415, _JSON_UTF8, _415),
+    ("POST", "/drive/v3/about?callback=a-b", _READ_AS_A_GET, 415, _JSON_UTF8, _415),
+    ("POST", "/gmail/v1/users/me/labels?callback=foo", _READ_AS_A_GET, 415, _JSON_UTF8, _415),
+]
+
+
+def test_google_answers_a_coding_it_does_not_read_ahead_of_the_route(client):
+    got, expected = {}, {}
+    for method, url, headers, status, media_type, answer in _CODING_ANSWERS:
+        content = b"{}" if method in ("POST", "PUT", "PATCH") else None
+        sent = {**headers, "Content-Encoding": "br"}
+        if content is not None:
+            sent.setdefault("Content-Type", "application/json")
+        r = client.request(method, url, headers=sent, content=content)
+        row = (method, url, *headers.items())
+        if status == "without":
+            without = client.request(
+                method, url, headers={k: v for k, v in sent.items() if k != "Content-Encoding"}
+            )
+            got[row] = (r.status_code, r.content)
+            expected[row] = (without.status_code, without.content)
+        else:
+            body = r.headers.get("content-length") if method == "HEAD" else r.content
+            got[row] = (r.status_code, r.headers["content-type"], body)
+            expected[row] = (status, media_type, answer)
+    assert got == expected
+
+
+# A `GET` or `HEAD` with a body, each with no credential but where a row names one, beside what real
+# answered on 2026-10-29 and 2026-10-30 (UTC): its front door's 400, or `without` where it was the
+# answer real gives the same request with no body, which here is this server's answer to it.
+_BODIES = [
+    ("GET", "/drive/v3/about", {}, b"x", "page"),
+    ("GET", "/drive/v3/about", {"Accept": "application/json"}, b"x", "page"),
+    ("GET", "/drive/v3/about", BAD_TOKEN, b"x", "page"),
+    ("GET", "/drive/v3/about", {"X-HTTP-Method-Override": "POST"}, b"x", "page"),
+    ("GET", "/drive/v3/about", {"Content-Encoding": "br"}, b"x", "page"),
+    ("GET", "/drive/v3/about", {"Content-Encoding": "gzip"}, b"x", "page"),
+    ("GET", "/gmail/v1/users/me/labels", {}, b"x", "page"),
+    ("GET", "/docs/v1/documents/x", {}, b"x", "page"),
+    ("GET", "/sheets/v4/spreadsheets/x", {}, b"x", "page"),
+    ("GET", "/slides/v1/presentations/x", {}, b"x", "page"),
+    ("GET", "/batch/drive/v3", {}, b"x", "page"),
+    ("HEAD", "/drive/v3/about", {}, b"x", "head"),
+    ("HEAD", "/gmail/v1/users/me/labels", {}, b"x", "head"),
+    ("HEAD", "/sheets/v4/spreadsheets/x", {}, b"x", "head"),
+    ("GET", "/drive/v3/about", {"Content-Length": "0"}, b"", "without"),
+    ("GET", "/drive/v3/about", {"Content-Length": "00"}, b"", "without"),
+    ("GET", "/drive/v3/about", {}, Chunked(b"x"), "without"),
+    ("OPTIONS", "/drive/v3/about", {}, b"x", "without"),
+    ("DELETE", "/drive/v3/files/x", {}, b"x", "without"),
+    ("GET", "/hubspot/crm/v3/objects/contacts", {}, b"x", "without"),
+]
+
+
+def test_google_refuses_a_body_on_a_get_or_head_ahead_of_the_route(client):
+    def answered(method, url, headers, body, answer):
+        if isinstance(body, Chunked):
+            r = sent_as(client, method, url, headers, content=body.chunks())
+        else:
+            r = client.request(method, url, headers=headers, content=body or None)
+        if answer == "without":
+            return r.status_code, r.content
+        return (
+            r.status_code,
+            r.headers["content-type"],
+            r.content,
+            r.headers["connection"],
+            r.headers.get("referrer-policy"),
+        )
+
+    got, expected = {}, {}
+    for method, url, headers, body, answer in _BODIES:
+        row = (method, url, *headers.items(), body, isinstance(body, Chunked))
+        got[row] = outcome(answered, method, url, headers, body, answer)
+        if answer == "without":
+            without = client.request(method, url)
+            expected[row] = (without.status_code, without.content)
+            continue
+        page = answer == "page"
+        expected[row] = (
+            400,
+            "text/html; charset=UTF-8",
+            request_target.GOOGLE_PAGE_1555 if page else b"",
+            "close",
+            "no-referrer" if page else None,
+        )
+    assert got == expected
+
+
+# A body under a coding, with the admin's token, beside what real answered on 2026-10-23 (UTC) with
+# a Workspace member's token: Sheets' `values:batchGetByDataFilter` with a JSON body, and Drive's
+# `about` with a form body under `X-HTTP-Method-Override: GET`. `plain` is the answer to the body
+# sent with no coding and not gzipped, a 200 on both, and `as sent` the answer to the same bytes
+# with no coding, a 400 on both. `gzipped and cut short` is the gzipped body without its last 8
+# bytes, measured on 2026-10-30.
+_BODY_CODINGS = [
+    ("sheets", "gzip", "gzipped", "plain"),
+    ("sheets", "gzip", "plain", "plain"),
+    ("sheets", "identity", "plain", "plain"),
+    ("sheets", "", "plain", "plain"),
+    ("sheets", "GZIP", "gzipped", "as sent"),
+    ("sheets", "deflate", "plain", 415),
+    ("sheets", "br", "plain", 415),
+    ("sheets", "x-gzip", "plain", 415),
+    ("about", "gzip", "gzipped", "plain"),
+    ("about", "gzip", "gzipped and cut short", "as sent"),
+    ("about", "deflate", "plain", 415),
+    ("about", "x-gzip", "plain", 415),
+    ("about", "foo", "plain", 415),
+]
+
+
+def test_google_reads_a_body_under_its_coding_as_its_front_end_does(client, admin_h):
+    sheet = _drive_find(client, admin_h, "Q1 Revenue Model")["id"]
+    routes = {
+        "sheets": (
+            f"/sheets/v4/spreadsheets/{sheet}/values:batchGetByDataFilter",
+            json.dumps({"dataFilters": [{"a1Range": "A1"}]}).encode(),
+            {**admin_h, "Content-Type": "application/json"},
+        ),
+        "about": (
+            "/drive/v3/about",
+            b"fields=kind",
+            {**admin_h, "Content-Type": _FORM, "X-HTTP-Method-Override": "GET"},
+        ),
+    }
+
+    def answered(url, headers, body):
+        r = client.post(url, headers=headers, content=body)
+        return r.status_code, r.content
+
+    got, expected = {}, {}
+    for route, coding, sent, answer in _BODY_CODINGS:
+        url, plain, headers = routes[route]
+        gzipped = gzip.compress(plain)
+        body = {"plain": plain, "gzipped": gzipped, "gzipped and cut short": gzipped[:-8]}[sent]
+        row = (route, coding, sent)
+        got[row] = outcome(answered, url, {**headers, "Content-Encoding": coding}, body)
+        if answer == 415:
+            expected[row] = (415, _415_BARE if route == "sheets" else _415)
+            continue
+        want = outcome(answered, url, headers, plain if answer == "plain" else body)
+        got[row] = (got[row], want if isinstance(want, str) else want[0])
+        expected[row] = (want, 200 if answer == "plain" else 400)
+    assert got == expected
+
+
+def test_google_decompresses_the_form_body_of_a_read_sent_as_a_post_once(client, monkeypatch):
+    """`answer_a_google_read_sent_as_a_post` reads the form body under its coding, and
+    `_ReadAGoogleBodyUnderItsCoding` hands that read on rather than decompressing the body again."""
+    from backlot.routers import google
+
+    sizes = []
+
+    def inflated(body, codings):
+        sizes.append(len(body))
+        return real(body, codings)
+
+    real = google.inflated
+    monkeypatch.setattr(google, "inflated", inflated)
+    body = gzip.compress(b"fields=kind")
+    r = client.post(
+        "/drive/v3/about", headers={**_READ_AS_A_GET, "Content-Encoding": "gzip"}, content=body
+    )
+    assert (r.status_code, sizes) == (401, [len(body)])
+
+
+@functools.cache
+def _gzipped_to(size: int) -> bytes:
+    """`{}` and spaces, gzipped to decompress to ``size`` bytes."""
+    deflater = zlib.compressobj(9, zlib.DEFLATED, 31)
+    return deflater.compress(b"{}" + b" " * (size - 2)) + deflater.flush()
+
+
+_PAST_THE_LIMIT = [
+    ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", {}, 134_217_728, None),
+    ("/sheets/v4/spreadsheets/x/values:batchGetByDataFilter", {}, 134_217_729, _413_BARE),
+    ("/drive/v3/files", {}, 134_217_729, _413),
+    ("/drive/v3/nosuch", {}, 134_217_729, "without"),
+    ("/drive/v3/about", {}, 134_217_729, "without"),
+    ("/drive/v3/about", _READ_AS_A_GET, 134_217_729, _413),
+    ("/drive/v3/about?callback=foo", _READ_AS_A_GET, 134_217_729, _413),
+    ("/drive/v3/about?callback=foo", _READ_AS_A_GET, 134_217_728, None),
+    ("/drive/v3/about?callback=foo", {"X-HTTP-Method-Override": "GET"}, 134_217_729, _413),
+    ("/sheets/v4/nosuch", {}, 134_217_729, "without"),
+]
+
+
+def test_google_refuses_a_body_that_decompresses_past_its_front_ends_limit(client):
+    """A body gzipped to decompress to a row's size, `POST`ed with the row's headers and no
+    credential: real's 400 ahead of the credential on 2026-10-30 (UTC), and beside a `callback` on
+    the day `errors.google.jsonp_callback` gives, where the row's answer is one; the route's 401
+    where it is ``None``; and where it is `without`, the answer to the same `POST` with no body, as
+    real's was its answer to a path or method it does not route."""
+
+    def answered(path, headers, size, answer):
+        sent = {"Content-Type": "application/json", "Content-Encoding": "gzip", **headers}
+        r = client.post(path, headers=sent, content=_gzipped_to(size))
+        return (r.status_code,) if answer is None else (r.status_code, r.content)
+
+    got, expected = {}, {}
+    for path, headers, size, answer in _PAST_THE_LIMIT:
+        row = (path, *headers.items(), size)
+        got[row] = outcome(answered, path, headers, size, answer)
+        if answer == "without":
+            without = client.post(path, headers={"Content-Type": "application/json"})
+            expected[row] = (without.status_code, without.content)
+        elif answer is None:
+            expected[row] = (401,)
+        else:
+            expected[row] = (400, answer)
+    assert got == expected
+
+
+#: The server's messages for a `POST` to Drive's `files` under `gzip`, what the route behind the
+#: layer read of them and the status of each answer sent.
+_HANDED = [
+    (
+        "the route reads past the body",
+        [
+            {"type": "http.request", "body": _GZIPPED, "more_body": False},
+            {"type": "http.disconnect"},
+        ],
+        [
+            {"type": "http.request", "body": b"{}", "more_body": False},
+            {"type": "http.disconnect"},
+        ],
+        [204],
+    ),
+    (
+        "the client leaves mid-body",
+        [
+            {"type": "http.request", "body": _GZIPPED[:5], "more_body": True},
+            {"type": "http.disconnect"},
+        ],
+        [],
+        [],
+    ),
+    (
+        "a body past the limit",
+        [{"type": "http.request", "body": _gzipped_to(134_217_729), "more_body": False}],
+        [],
+        [400],
+    ),
+]
+
+
+def test_google_hands_the_route_the_body_it_read_and_nothing_once_it_has_answered():
+    """Each row's messages through the layer that reads the body, over a route that reads two
+    messages and answers 204: what the route read, and the status of each answer sent."""
+    from backlot import main as main_module
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 50000),
+        "root_path": "",
+        "path": "/drive/v3/files",
+        "raw_path": b"/drive/v3/files",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json"), (b"content-encoding", b"gzip")],
+    }
+
+    def handed(incoming):
+        pending, read, sent = list(incoming), [], []
+
+        async def route(scope, receive, send):
+            read.extend([await receive(), await receive()])
+            await send({"type": "http.response.start", "status": 204, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        async def receive():
+            return pending.pop(0)
+
+        async def send(message):
+            sent.append(message)
+
+        asyncio.run(main_module._ReadAGoogleBodyUnderItsCoding(route)(scope, receive, send))
+        return read, [m["status"] for m in sent if m["type"] == "http.response.start"]
+
+    got = {row: outcome(handed, incoming) for row, incoming, _, _ in _HANDED}
+    assert got == {row: (read, statuses) for row, _, read, statuses in _HANDED}
 
 
 # --- Sheets `values` writes --------------------------------------------------------------------
@@ -14805,6 +15843,41 @@ WRITE_RECORDS = [
             {"text": "ab"},
             {"runs": [{"text": "cd", "underline": True}]},
             {"runs": [{"text": "x"}, {"text": "YZ", "bold": True}]},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
+        "doc_id": "wr-tabs",
+        "subtype": "document",
+        "title": "Tabs",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "tabs": [
+            {
+                "paragraphs": [
+                    {
+                        "runs": [
+                            {"text": "alpha "},
+                            {"text": "beta", "bold": True},
+                            {"text": " gamma"},
+                        ]
+                    },
+                    {"text": "x\U0001f600y e\u0301z"},
+                    {"runs": [{"text": "ref"}, {"footnote": [{"text": "note"}]}, {"text": " end"}]},
+                ],
+                "header": [{"text": "head"}],
+                "footer": [{"text": "foot"}],
+            },
+            {
+                "title": "Second",
+                "icon": "\U0001f4cc",
+                "paragraphs": [{"text": "two"}],
+                "tabs": [{"title": "Kid", "paragraphs": [{"text": "kid zz"}]}],
+            },
+            {"title": "Third", "paragraphs": [{"text": "zz three"}]},
         ],
         "created": "2026-07-01T09:00:00Z",
         "updated": "2026-07-14T17:20:00Z",
@@ -15262,7 +16335,7 @@ def test_an_editor_post_or_put_with_no_credential_names_its_rpc(wc, wbook, metho
     the spreadsheet the path suffixes, any other by its path and its whole name."""
     if "." not in rpc:
         suffix, rpc = f"{wbook}{suffix}", f"sheets.v4.SpreadsheetsService.{rpc}"
-    r = wc.request(method, suffix, params=_RAW, json={})
+    r = wc.request(method, suffix, params=_RAW, json=None if method == "GET" else {})
     assert r.status_code == 401
     assert r.json()["error"]["details"] == [
         {
@@ -17202,6 +18275,10 @@ def test_a_create_real_refuses_is_refused_with_reals_message(wc, wh, route, para
 # a HEADING_1 `Title line` [1, 12); `plain ` [12, 18), bold `BOLD` [18, 22), ` tail` [22, 28); a
 # link `link` [28, 32), ` here` [32, 38); struck `struck` [38, 45), its newline struck too; italic
 # `BOLDSTART` [45, 54), ` x` [54, 57); an empty paragraph [57, 58); `last` [58, 63).
+# `wr-tabs` states, by index in its first tab: `alpha ` [1, 7), bold `beta` [7, 11), ` gamma`
+# [11, 18); `x😀y é` with a combining mark and `z` [18, 27); `ref` [27, 30), a footnote reference
+# [30, 31), ` end` [31, 36). Its header is `head`, its footer `foot` and its footnote ` note`; its
+# tabs are that one, `Second` (📌) holding `Kid`, and `Third`.
 
 
 def _docs_write(wc, h, doc, body, **params):
@@ -17214,8 +18291,8 @@ def _docs_write(wc, h, doc, body, **params):
 def _docs_runs(wc, h, doc) -> list[str]:
     """A Doc's paragraphs as `<style><headingId> <runs>`: the style `H1` or `N`, the headingId
     `#orig` when it is the one `wr-styled` starts with and `#new` otherwise, and each run as its
-    marks (`b`, `i`, `u`, `s`, `L` for a link with its underline and colour) before its text, runs
-    joined by `|`."""
+    marks (`b`, `i`, `u`, `s`, `L` for a link with its underline and colour) before its text, a
+    footnote reference as `[fn]` and a page break as `[PB]`, runs joined by `|`."""
     from tests._helpers import served_id
 
     did = served_id("google_drive", doc)
@@ -17231,14 +18308,15 @@ def _docs_runs(wc, h, doc) -> list[str]:
             tag += "#orig" if style["headingId"] == orig else "#new"
         runs = []
         for pe in p["elements"]:
-            run = pe["textRun"]
+            run = pe.get("textRun") or pe.get("footnoteReference") or pe["pageBreak"]
             style = run["textStyle"]
+            text = run.get("content", "[fn]" if "footnoteReference" in pe else "[PB]")
             m = "".join(
                 v
                 for k, v in marks.items()
                 if k in style and (k != "underline" or "link" not in style)
             )
-            runs.append(f"{m}:{run['content']}" if m else run["content"])
+            runs.append(f"{m}:{text}" if m else text)
         out.append(f"{tag} {'|'.join(runs)}")
     return out
 
@@ -17256,6 +18334,31 @@ _STYLED = [
 
 def _ins(index, text):
     return {"insertText": {"location": {"index": index}, "text": text}}
+
+
+def _fn(index):
+    return {"createFootnote": {"location": {"index": index}}}
+
+
+def _pb(index):
+    return {"insertPageBreak": {"location": {"index": index}}}
+
+
+def _add_g() -> dict:
+    """A tab under `wr-tabs`' `Kid`, at `nestingLevel` 2; the first tab a write makes is `$NEW0`."""
+    return {"addDocumentTab": {"tabProperties": {"title": "G", "parentTabId": "$KID"}}}
+
+
+def _upd(props: dict, fields: str | None) -> dict:
+    return {
+        "updateDocumentTabProperties": {
+            "tabProperties": props,
+            **({"fields": fields} if fields is not None else {}),
+        }
+    }
+
+
+_TABS_ROWS = ["N alpha |b:beta| gamma\n", "N x\U0001f600y e\u0301z\n", "N ref|[fn]| end\n"]
 
 
 def _del(start, end):
@@ -17323,10 +18426,115 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     )
     f = wc.get(f"/drive/v3/files/{blank}", headers=h, params=fields).json()
     assert (f["version"], f["size"], quota()) == ("2", "1024", used + 1024)
+    # a lone untitled first tab's `Tab 1` makes an added `Tab 1` the default, and once the Doc
+    # holds two tabs the first holds it as its own
+    tab1 = {"requests": [{"addDocumentTab": {"tabProperties": {"title": "Tab 1"}}}]}
+    added = wc.post(f"/docs/v1/documents/{blank}:batchUpdate", headers=h, json=tab1)
+    assert added.json()["replies"][0]["addDocumentTab"]["tabProperties"]["title"] == "Tab 2"
+    again = wc.post(f"/docs/v1/documents/{blank}:batchUpdate", headers=h, json=tab1)
+    assert again.json()["error"]["message"].endswith("Tab title must be unique")
     found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains 'ABell0'"})
     assert [x["id"] for x in found.json()["files"]] == [did]
     exported = wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"})
     assert exported.content.decode("utf-8") == "\ufeffABell0 w0rld\r\nSec0nd para"
+
+    # and a header's, a footer's, a footnote's and a tab title's words as well as the body's, a
+    # phrase within a line only and not by stem, but no lone tab's default title
+    def searched(q):
+        found = wc.get("/drive/v3/files", headers=h, params={"q": f"fullText contains '{q}'"})
+        return did in {x["id"] for x in found.json()["files"]}
+
+    assert not searched("Tab")
+    made = {
+        "requests": [
+            {"createHeader": {"type": "DEFAULT"}},
+            _fn(1),
+            {"createFooter": {"type": "DEFAULT"}},
+        ]
+    }
+    replies = wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=made).json()
+    header, note = replies["replies"][0]["createHeader"]["headerId"], replies["replies"][1]
+    words = {
+        "requests": [
+            {"insertText": {"location": {"segmentId": header, "index": 0}, "text": "wombat"}},
+            {
+                "insertText": {
+                    "location": {"segmentId": note["createFootnote"]["footnoteId"], "index": 1},
+                    "text": "numbat",
+                }
+            },
+            {
+                "insertText": {
+                    "location": {"segmentId": replies["replies"][2]["createFooter"]["footerId"]},
+                    "text": "quoll",
+                }
+            },
+        ]
+    }
+    assert (
+        wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=words).status_code == 200
+    )
+    lone = {"requests": [_upd({"tabId": "t.0", "title": "solotitle"}, "title")]}
+    assert _docs_write(wc, h, "wr-text", lone).status_code == 200
+    assert searched("solotitle")
+    titled = {"requests": [{"addDocumentTab": {"tabProperties": {"title": "wallaby"}}}]}
+    added = wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json=titled).json()
+    renamed = _upd(
+        {
+            "tabId": added["replies"][0]["addDocumentTab"]["tabProperties"]["tabId"],
+            "title": "lorikeet",
+        },
+        "title",
+    )
+    wc.post(f"/docs/v1/documents/{did}:batchUpdate", headers=h, json={"requests": [renamed]})
+    line = "cr\u00e8me br\u00fbl\u00e9e pbleftpbright vtalpha\x0bvtbeta fnleftfnright the runners jumped\n"
+    at = 1 + line.index("pbright")
+    parted = [_ins(1, line), _fn(1 + line.index("fnright")), _pb(at), _del(at + 1, at + 2)]
+    parted.append(_ins(1, "qzua_qzub \u0130qztr qzts cre\u0301me qznf\n"))
+    assert _docs_write(wc, h, "wr-text", {"requests": parted}).status_code == 200
+    for q, hit in [
+        ("wombat", True),
+        ("numbat", True),
+        ("quoll", True),
+        ("solotitle", True),
+        ("wallaby", False),
+        ("lorikeet", True),
+        ('"ABell0 w0rld"', True),
+        ('"w0rld Sec0nd"', False),
+        ('"para wombat"', False),
+        ('"creme brulee"', True),
+        ('"cr\u00e8me br\u00fbl\u00e9e"', True),
+        ("pbright", True),
+        ("pbleftpbright", False),
+        ("fnright", True),
+        ("fnleftfnright", False),
+        ("vtbeta", True),
+        ('"vtalpha vtbeta"', False),
+        ('"runners jumped"', True),
+        ('"runners jump"', False),
+        ('"jump"', False),
+        ('"qzua qzub"', True),
+        ('"iqztr qzts"', True),
+        ('"cr\u00e9me qznf"', True),
+    ]:
+        assert searched(q) == hit, q
+    # a corpus Doc of several tabs deleted back to one keeps its untitled tab's `Tab 1`
+    # a file other than a Doc is matched by the index alone, across its lines too
+    book = served_id("google_drive", "wr-book")
+    found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains '\"deals emea\"'"})
+    assert book in {x["id"] for x in found.json()["files"]}
+    tabs = served_id("google_drive", "wr-tabs")
+    gone = [{"deleteTab": {"tabId": "$T2"}}, {"deleteTab": {"tabId": "$T3"}}]
+    assert _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(gone, tabs)}).status_code == 200
+    found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains '\"Tab 1\"'"})
+    assert tabs in {x["id"] for x in found.json()["files"]}
+    # a Doc that held two tabs keeps its lone tab's default title
+    gone = {
+        "deleteTab": {"tabId": renamed["updateDocumentTabProperties"]["tabProperties"]["tabId"]}
+    }
+    back = _upd({"tabId": "t.0", "title": "Tab 1"}, "title")
+    assert _docs_write(wc, h, "wr-text", {"requests": [gone, back]}).status_code == 200
+    assert searched("Tab")
 
 
 def _searched(seed, *replace):
@@ -17587,6 +18795,20 @@ _SEARCH_ROWS = [
         ("wr-links", [_ins(20, "X")], [*_LINKS[:4], "N u:Xcd\n", _LINKS[5]], None),
         ("wr-links", [_ins(20, "\n")], [*_LINKS[:4], "N u:\n", "N u:cd\n", _LINKS[5]], None),
         ("wr-links", [_rep("YZ", "Q", matchCase=True)], [*_LINKS[:5], "N x|b:Q\n"], None),
+        # a footnote reference and a page break take the style text inserted there takes, and are
+        # no run for text beside them to join (`gdocs.Body._run_between`)
+        *(
+            ("wr-tabs", requests, [*first, _TABS_ROWS[1], *rest], None)
+            for requests, first, rest in [
+                ([_fn(9)], ["N alpha |b:be|b:[fn]|b:ta| gamma\n"], [_TABS_ROWS[2]]),
+                ([_fn(7)], ["N alpha |[fn]|b:beta| gamma\n"], [_TABS_ROWS[2]]),
+                ([_fn(11)], ["N alpha |b:beta|b:[fn]| gamma\n"], [_TABS_ROWS[2]]),
+                ([_pb(9)], ["N alpha |b:be|b:[PB]|b:\n", "N b:ta| gamma\n"], [_TABS_ROWS[2]]),
+                ([_ins(31, "Z")], [_TABS_ROWS[0]], ["N ref|[fn]|Z end\n"]),
+                ([_ins(30, "Y")], [_TABS_ROWS[0]], ["N refY|[fn]| end\n"]),
+                ([_del(30, 31)], [_TABS_ROWS[0]], ["N ref end\n"]),
+            ]
+        ),
         # what `replaceAllText` matches, each row a seed, a search, its criteria, the text left
         # and, where measured, the matches it counted
         *(
@@ -17603,6 +18825,549 @@ def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs
     if changed is not None:
         count = {"occurrencesChanged": changed} if changed else {}
         assert r.json()["replies"][-1] == {"replaceAllText": count}
+
+
+def _docs_outline(wc, h, doc) -> list[str]:
+    """A Doc's tabs, depth first, each as `<indent><title>[ <icon>]: <body>` and its header
+    `H:`, footer `F:` and footnotes `N<n>:`, a segment's paragraphs joined by `/`, a reference
+    written `[<n>]` and a page break `[PB]`."""
+    from tests._helpers import served_id
+
+    did = served_id("google_drive", doc)
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+
+    def text(content):
+        lines = []
+        for el in content:
+            if "paragraph" not in el:
+                continue
+            line = ""
+            for pe in el["paragraph"]["elements"]:
+                if "textRun" in pe:
+                    line += pe["textRun"]["content"].removesuffix("\n")
+                elif "footnoteReference" in pe:
+                    line += f"[{pe['footnoteReference']['footnoteNumber']}]"
+                else:
+                    line += "[PB]"
+            lines.append(line)
+        return "/".join(lines)
+
+    out = []
+
+    def walk(tabs, depth):
+        for tab in tabs:
+            props, dt = tab["tabProperties"], tab["documentTab"]
+            icon = f" {props['iconEmoji']}" if "iconEmoji" in props else ""
+            line = f"{'  ' * depth}{props['title']}{icon}: {text(dt['body']['content'])}"
+            style = dt["documentStyle"]
+            for kind, key, mark in (
+                ("headers", "defaultHeaderId", "H"),
+                ("footers", "defaultFooterId", "F"),
+            ):
+                for sid, segment in dt.get(kind, {}).items():
+                    assert style[key] == sid
+                    line += f" {mark}:{text(segment['content'])}"
+            numbers = {
+                pe["footnoteReference"]["footnoteId"]: pe["footnoteReference"]["footnoteNumber"]
+                for el in dt["body"]["content"]
+                if "paragraph" in el
+                for pe in el["paragraph"]["elements"]
+                if "footnoteReference" in pe
+            }
+            assert set(numbers) == set(dt.get("footnotes", {}))
+            for sid, n in sorted(numbers.items(), key=lambda kv: int(kv[1])):
+                line += f" N{n}:{text(dt['footnotes'][sid]['content'])}"
+            out.append(line)
+            walk(tab.get("childTabs", []), depth + 1)
+
+    walk(read["tabs"], 0)
+    return out
+
+
+_TABS_START = [
+    "Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/ref[1] end H:head F:foot N1: note",
+    "Second \U0001f4cc: two",
+    "  Kid: kid zz",
+    "Third: zz three",
+]
+
+
+def _tab_props(title, index, parent=None, depth=0):
+    """The properties `addDocumentTab` answers, the new id any."""
+    return {
+        "addDocumentTab": {
+            "tabProperties": {
+                "tabId": "$ANY",
+                "title": title,
+                **({"parentTabId": parent} if parent else {}),
+                "index": index,
+                **({"nestingLevel": depth} if depth else {}),
+            }
+        }
+    }
+
+
+# `(requests, outline, replies[, moves])`: each as real answered a Doc of the same shape, written
+# as `wr-tabs` writes its ids (`_with_tab_ids`), a new id `$ANY`; `replies` None where every reply
+# is `{}`, and `moves` False where real kept the `revisionId`.
+_TAB_WRITES = [
+    # a new tab is a blank one, `Tab n` when untitled, last or at its index, under its parent
+    ([{"addDocumentTab": {}}], [*_TABS_START, "Tab 5: "], [_tab_props("Tab 5", 3)]),
+    # a title another tab has in another case, spacing, width or normal form is its own
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "kid"}}},
+            {"addDocumentTab": {"tabProperties": {"title": "Kid "}}},
+            {"addDocumentTab": {"tabProperties": {"title": "\uff2b\uff49\uff44"}}},
+            {"addDocumentTab": {"tabProperties": {"title": "Caf\u00e9"}}},
+            {"addDocumentTab": {"tabProperties": {"title": "Cafe\u0301"}}},
+        ],
+        [*_TABS_START, "kid: ", "Kid : ", "\uff2b\uff49\uff44: ", "Caf\u00e9: ", "Cafe\u0301: "],
+        [
+            _tab_props("kid", 3),
+            _tab_props("Kid ", 4),
+            _tab_props("\uff2b\uff49\uff44", 5),
+            _tab_props("Caf\u00e9", 6),
+            _tab_props("Cafe\u0301", 7),
+        ],
+    ),
+    # a title's line breaks one space, a blank one or one taken once rewritten the default, and
+    # U+00A0 and U+007F kept
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": title}}}
+            for title in ("a\rb", "a\nb", "\t", "q\u00a0\x7f")
+        ],
+        [*_TABS_START, "a b: ", "Tab 6: ", "Tab 7: ", "q\u00a0\x7f: "],
+        [
+            _tab_props("a b", 3),
+            _tab_props("Tab 6", 4),
+            _tab_props("Tab 7", 5),
+            _tab_props("q\u00a0\x7f", 6),
+        ],
+    ),
+    # an update taken once rewritten leaves the title, and a blank one takes the default
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "a b"}}},
+            _upd({"tabId": "$T3", "title": "a\nb"}, "title"),
+            _upd({"tabId": "$T2", "title": "x\r\ny"}, "title"),
+            _upd({"tabId": "$KID", "title": "\n"}, "title"),
+        ],
+        [
+            _TABS_START[0],
+            "x y \U0001f4cc: two",
+            "  Tab 5: kid zz",
+            _TABS_START[3],
+            "a b: ",
+        ],
+        [_tab_props("a b", 3), {}, {}, {}],
+    ),
+    # a title taken once rewritten is left as it was, though the revision moves
+    ([_upd({"tabId": "$T2", "title": "Tab\n1"}, "title")], _TABS_START, None),
+    # `index` named with none stated moves the tab last among its siblings
+    (
+        [_upd({"tabId": "$T2"}, "index")],
+        [_TABS_START[0], _TABS_START[3], *_TABS_START[1:3]],
+        None,
+    ),
+    # with `t.0` deleted, a tab under a named parent is updated and moved
+    (
+        [
+            {"deleteTab": {"tabId": "t.0"}},
+            _upd({"tabId": "$KID", "title": "K2"}, "title"),
+            _upd({"tabId": "$KID", "parentTabId": "$T3"}, "parentTabId"),
+        ],
+        [_TABS_START[1], _TABS_START[3], "  K2: kid zz"],
+        None,
+    ),
+    # a bare code point Unicode also lists with U+FE0F, and a sequence listed both ways
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"iconEmoji": icon}}}
+            for icon in ("\u2139", "\u2328", "\U0001f4f2", "\u26f9\u200d\u2640")
+        ],
+        [
+            *_TABS_START,
+            *(
+                f"Tab {5 + i} {icon}: "
+                for i, icon in enumerate(("\u2139", "\u2328", "\U0001f4f2", "\u26f9\u200d\u2640"))
+            ),
+        ],
+        [
+            {
+                "addDocumentTab": {
+                    "tabProperties": {
+                        **_tab_props(f"Tab {5 + i}", 3 + i)["addDocumentTab"]["tabProperties"],
+                        "iconEmoji": icon,
+                    }
+                }
+            }
+            for i, icon in enumerate(("\u2139", "\u2328", "\U0001f4f2", "\u26f9\u200d\u2640"))
+        ],
+    ),
+    # an icon `fields` does not name is not read
+    (
+        [_upd({"tabId": "$T2", "title": "Z", "iconEmoji": "a"}, "title")],
+        [_TABS_START[0], "Z \U0001f4cc: two", *_TABS_START[2:]],
+        None,
+    ),
+    # climbing past a title another tab has
+    (
+        [
+            _upd({"tabId": "t.0", "title": "Tab 6"}, "title"),
+            {"addDocumentTab": {}},
+            {"addDocumentTab": {}},
+            {"addDocumentTab": {}},
+        ],
+        ["Tab 6" + _TABS_START[0][5:], *_TABS_START[1:], "Tab 5: ", "Tab 7: ", "Tab 8: "],
+        [{}, _tab_props("Tab 5", 3), _tab_props("Tab 7", 4), _tab_props("Tab 8", 5)],
+    ),
+    (
+        [{"addDocumentTab": {"tabProperties": {"iconEmoji": "\U0001f1ea\U0001f1fa"}}}],
+        [*_TABS_START, "Tab 5 \U0001f1ea\U0001f1fa: "],
+        [
+            {
+                "addDocumentTab": {
+                    "tabProperties": {
+                        **_tab_props("Tab 5", 3)["addDocumentTab"]["tabProperties"],
+                        "iconEmoji": "\U0001f1ea\U0001f1fa",
+                    }
+                }
+            }
+        ],
+    ),
+    (
+        [{"addDocumentTab": {"tabProperties": {"title": "Z", "index": 0}}}],
+        ["Z: ", *_TABS_START],
+        [_tab_props("Z", 0)],
+    ),
+    (
+        [{"addDocumentTab": {"tabProperties": {"title": "K0", "parentTabId": "$T2", "index": 0}}}],
+        [*_TABS_START[:2], "  K0: ", *_TABS_START[2:]],
+        [_tab_props("K0", 0, "$T2", 1)],
+    ),
+    (
+        [{"addDocumentTab": {"tabProperties": {"parentTabId": "$KID", "iconEmoji": "1\u20e3"}}}],
+        [*_TABS_START[:3], "    Tab 5 1\u20e3: ", _TABS_START[3]],
+        [
+            {
+                "addDocumentTab": {
+                    "tabProperties": {
+                        **_tab_props("Tab 5", 0, "$KID", 2)["addDocumentTab"]["tabProperties"],
+                        "iconEmoji": "1\u20e3",
+                    }
+                }
+            }
+        ],
+    ),
+    # a move: before the sibling at the index, counting the tab itself, or last under a parent
+    (
+        [_upd({"tabId": "$T2", "index": 0}, "index")],
+        [*_TABS_START[1:3], _TABS_START[0], _TABS_START[3]],
+        None,
+    ),
+    # a location naming no tab writes the first, `t.0` or not
+    (
+        [_upd({"tabId": "$T2", "index": 0}, "index"), _ins(1, "Q")],
+        ["Second \U0001f4cc: Qtwo", _TABS_START[2], _TABS_START[0], _TABS_START[3]],
+        None,
+    ),
+    ([_upd({"tabId": "t.0", "index": 3}, "index")], [*_TABS_START[1:], _TABS_START[0]], None),
+    ([_upd({"tabId": "t.0", "index": 1}, "index")], _TABS_START, None, False),
+    (
+        [_upd({"tabId": "$KID", "parentTabId": ""}, "parentTabId")],
+        [*_TABS_START[:2], _TABS_START[3], "Kid: kid zz"],
+        None,
+    ),
+    (
+        [_upd({"tabId": "$KID", "index": 1}, "parentTabId,index")],
+        [_TABS_START[0], "Kid: kid zz", _TABS_START[1], _TABS_START[3]],
+        None,
+    ),
+    ([_upd({"tabId": "t.0"}, "parentTabId")], [*_TABS_START[1:], _TABS_START[0]], None),
+    (
+        [_upd({"tabId": "$T3", "parentTabId": "$KID"}, "parentTabId")],
+        [*_TABS_START[:3], "    Third: zz three"],
+        None,
+    ),
+    # `*` sets every property, so a tab with no index or parent stated goes last at the root
+    (
+        [_upd({"tabId": "$T2", "title": "S"}, "*")],
+        [_TABS_START[0], _TABS_START[3], "S: two", "  Kid: kid zz"],
+        None,
+    ),
+    (
+        [_upd({"tabId": "$T2", "iconEmoji": ""}, "iconEmoji")],
+        [_TABS_START[0], "Second: two", *_TABS_START[2:]],
+        None,
+    ),
+    # a bare arrow shown as emoji by default
+    (
+        [
+            _upd({"tabId": "$T2", "iconEmoji": "\U0001f3f9"}, "iconEmoji"),
+            _upd({"tabId": "$T3", "iconEmoji": "\U0001f504"}, "iconEmoji"),
+        ],
+        [_TABS_START[0], "Second \U0001f3f9: two", _TABS_START[2], "Third \U0001f504: zz three"],
+        None,
+    ),
+    # `fields` names trimmed and read by their `snake_case` spelling, an empty name or part dropped
+    (
+        [
+            _upd(
+                {"tabId": "$T3", "title": "T", "index": 0, "iconEmoji": "\u2b50"},
+                " TITLE , index,icon_emoji,",
+            )
+        ],
+        ["T \u2b50: zz three", *_TABS_START[:3]],
+        None,
+    ),
+    ([_upd({"tabId": "$T2", "title": "x"}, " , ")], _TABS_START, None, False),
+    (
+        [_upd({"tabId": "$T3", "title": "T", "parentTabId": ""}, "title.,parentTABId")],
+        [*_TABS_START[:3], "T: zz three"],
+        None,
+    ),
+    # a title, an index or a parent the tab already has changes nothing, an icon it has does
+    (
+        [
+            _upd({"tabId": "$T2", "title": "Second"}, "title"),
+            _upd({"tabId": "$T3", "index": 2}, "index"),
+            _upd({"tabId": "$KID", "parentTabId": "$T2"}, "parentTabId"),
+        ],
+        _TABS_START,
+        None,
+        False,
+    ),
+    ([_upd({"tabId": "$T2", "iconEmoji": "\U0001f4cc"}, "iconEmoji")], _TABS_START, None, True),
+    (
+        [
+            _upd(
+                {"tabId": "$T2", "title": "Second", "nestingLevel": 4},
+                "title,nestingLevel,tabId",
+            )
+        ],
+        _TABS_START,
+        None,
+        False,
+    ),
+    # a delete takes the child tabs; the first tab then is the one after it
+    ([{"deleteTab": {"tabId": "$T2"}}], [_TABS_START[0], _TABS_START[3]], None),
+    # the only root deleted, its child with it, leaves a fresh `Tab 1`
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "K", "parentTabId": "t.0"}}},
+            {"deleteTab": {"tabId": "$T2"}},
+            {"deleteTab": {"tabId": "$T3"}},
+            {"deleteTab": {"tabId": "t.0"}},
+        ],
+        ["Tab 1: "],
+        [_tab_props("K", 0, "t.0", 1), {}, {}, {}],
+    ),
+    (
+        [{"deleteTab": {"tabId": "t.0"}}, {"addDocumentTab": {}}],
+        [*_TABS_START[1:], "Tab 4: "],
+        [{}, _tab_props("Tab 4", 2)],
+    ),
+    # the text requests in a tab, and `replaceAllText` across tabs and their segments
+    (
+        [
+            {"insertText": {"location": {"index": 1, "tabId": "$T2"}, "text": "in "}},
+            {"insertText": {"endOfSegmentLocation": {"tabId": "$KID"}, "text": " end"}},
+            {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 4, "tabId": "$T3"}}},
+        ],
+        [_TABS_START[0], "Second \U0001f4cc: in two", "  Kid: kid zz end", "Third: three"],
+        None,
+    ),
+    (
+        [_rep("zz", "Q")],
+        [*_TABS_START[:2], "  Kid: kid Q", "Third: Q three"],
+        [{"replaceAllText": {"occurrencesChanged": 2}}],
+    ),
+    (
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zz"},
+                    "replaceText": "Q",
+                    "tabsCriteria": {"tabIds": ["$KID", "$KID"]},
+                }
+            }
+        ],
+        [*_TABS_START[:2], "  Kid: kid Q", _TABS_START[3]],
+        [{"replaceAllText": {"occurrencesChanged": 1}}],
+    ),
+    (
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zz"},
+                    "replaceText": "Q",
+                    "tabsCriteria": {},
+                }
+            }
+        ],
+        _TABS_START,
+        [{"replaceAllText": {}}],
+        False,
+    ),
+    # an empty id names `t.0`, not the first tab, and with `t.0` beside it counts once
+    (
+        [
+            _upd({"tabId": "$T2", "index": 0}, "index"),
+            {
+                "replaceAllText": {
+                    **_rep("o", "0")["replaceAllText"],
+                    "tabsCriteria": {"tabIds": [""]},
+                }
+            },
+            {
+                "replaceAllText": {
+                    **_rep("0", "0")["replaceAllText"],
+                    "tabsCriteria": {"tabIds": ["", "t.0"]},
+                }
+            },
+        ],
+        [
+            *_TABS_START[1:3],
+            "Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/ref[1] end H:head F:f00t N1: n0te",
+            _TABS_START[3],
+        ],
+        [
+            {},
+            {"replaceAllText": {"occurrencesChanged": 3}},
+            {"replaceAllText": {"occurrencesChanged": 3}},
+        ],
+    ),
+    (
+        [_rep("o", "0")],
+        [
+            "Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/ref[1] end H:head F:f00t N1: n0te",
+            "Second \U0001f4cc: tw0",
+            *_TABS_START[2:],
+        ],
+        [{"replaceAllText": {"occurrencesChanged": 4}}],
+    ),
+    # a reference reads as U+001B and a page break as U+000C, and a match over one takes it
+    (
+        [_rep("f.", "F", searchByRegex=True)],
+        ["Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/reF end H:head F:Fot", *_TABS_START[1:]],
+        [{"replaceAllText": {"occurrencesChanged": 2}}],
+    ),
+    ([_rep("f end", "!")], _TABS_START, [{"replaceAllText": {}}]),
+    (
+        [_rep("\x1b", "R")],
+        ["Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/refR end H:head F:foot", *_TABS_START[1:]],
+        [{"replaceAllText": {"occurrencesChanged": 1}}],
+    ),
+    (
+        [_pb(1), _rep("\x0c", "P")],
+        ["Tab 1: P/" + _TABS_START[0][7:], *_TABS_START[1:]],
+        [{}, {"replaceAllText": {"occurrencesChanged": 1}}],
+    ),
+    # headers, footers and footnotes: created, written from 0, numbered by place, deleted
+    (
+        [
+            {"insertText": {"location": {"index": 0, "segmentId": "$H"}, "text": "X"}},
+            {"insertText": {"endOfSegmentLocation": {"segmentId": "$F"}, "text": " end"}},
+            {"insertText": {"location": {"index": 0, "segmentId": "$N"}, "text": "N"}},
+            {"deleteContentRange": {"range": {"startIndex": 0, "endIndex": 1, "segmentId": "$H"}}},
+        ],
+        [
+            "Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/ref[1] end H:head F:foot end N1:N note",
+            *_TABS_START[1:],
+        ],
+        None,
+    ),
+    (
+        [_fn(4), {"createFootnote": {"endOfSegmentLocation": {}}}],
+        [
+            "Tab 1: alp[1]ha beta gamma/x\U0001f600y e\u0301z/ref[2] end[3] H:head F:foot N1:  N2: note N3: ",
+            *_TABS_START[1:],
+        ],
+        [{"createFootnote": {"footnoteId": "$ANY"}}] * 2,
+    ),
+    (
+        [_pb(9), {"insertPageBreak": {"endOfSegmentLocation": {}}}],
+        [
+            "Tab 1: alpha be[PB]/ta gamma/x\U0001f600y e\u0301z/ref[1] end[PB]/ H:head F:foot N1: note",
+            *_TABS_START[1:],
+        ],
+        None,
+    ),
+    (
+        [
+            {"deleteHeader": {"headerId": "$H"}},
+            {"deleteFooter": {"footerId": "$F", "tabId": "t.0"}},
+            _del(30, 31),
+        ],
+        ["Tab 1: alpha beta gamma/x\U0001f600y e\u0301z/ref end", *_TABS_START[1:]],
+        None,
+    ),
+    (
+        [
+            {"deleteFooter": {"footerId": "$F"}},
+            {"createFooter": {"type": "DEFAULT"}},
+            {"createHeader": {"type": 1, "sectionBreakLocation": {"index": 0, "tabId": "$T2"}}},
+            {
+                "createFooter": {
+                    "type": "DEFAULT",
+                    "sectionBreakLocation": {"index": 0, "segmentId": "$H", "tabId": "$T3"},
+                }
+            },
+            _fn(2),
+        ],
+        [
+            "Tab 1: a[1]lpha beta gamma/x\U0001f600y e\u0301z/ref[2] end H:head F: N1:  N2: note",
+            "Second \U0001f4cc: two H:",
+            "  Kid: kid zz",
+            "Third: zz three F:",
+        ],
+        [
+            {},
+            {"createFooter": {"footerId": "$ANY"}},
+            {"createHeader": {"headerId": "$ANY"}},
+            {"createFooter": {"footerId": "$ANY"}},
+            {"createFootnote": {"footnoteId": "$ANY"}},
+        ],
+    ),
+]
+
+
+def test_a_tab_or_segment_write_changes_the_doc_as_real_does(write_settings, wh):
+    """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`: its replies, the tabs and segments it
+    leaves, whether the `revisionId` moved (a batch real keeps the revision for keeps it, so a
+    write pinned to it is taken), and the flat read being the first tab's, whatever its id."""
+    from tests._helpers import client_for, served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", "wr-tabs")
+    got, want = [], []
+    for requests, outline, replies, moves in ((*row, True)[:4] for row in _TAB_WRITES):
+        with client_for(write_settings, reload=True) as wc:
+            before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
+            r = _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(requests, did)})
+            answer = r.json()
+            after = answer.get("writeControl", {}).get("requiredRevisionId")
+            left = _docs_outline(wc, h, "wr-tabs")
+            pinned = {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": before}}
+            pinned_status = _docs_write(wc, h, "wr-tabs", pinned).status_code
+            flat = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+            tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+            first = tabbed["tabs"][0]["documentTab"]["body"]
+            got.append(
+                (
+                    r.status_code,
+                    answer.get("replies"),
+                    left,
+                    after != before,
+                    pinned_status,
+                    flat["body"] == first,
+                )
+            )
+        replied = _with_tab_ids(replies or [{}] * len(requests), did)
+        want.append((200, replied, outline, moves, 400 if moves else 200, True))
+    assert got == want
 
 
 _GRAPHEME = (
@@ -17795,6 +19560,7 @@ _DOCS_BATCH_REFUSALS = [
     ([_ins(1, "﷐"), _ins(0, "a")], 400, _IN_PARAGRAPH.replace("[0]", "[1]")),
     ([_ins(1, "a"), _ins(1, "﷐")], 500, "Internal error encountered."),
     ([_rep("world", "﷐")], 500, "Internal error encountered."),
+    # but an unknown tab in `tabsCriteria` is the 500 at its own request
     (
         [
             {
@@ -17807,6 +19573,26 @@ _DOCS_BATCH_REFUSALS = [
         ],
         500,
         "Internal error encountered.",
+    ),
+    (
+        [
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "zzz"},
+                    "replaceText": "x",
+                    "tabsCriteria": {"tabIds": ["t.nope"]},
+                }
+            },
+            _ins(0, "a"),
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    # a Doc's only tab (`_docs_delete_tab`)
+    (
+        [{"deleteTab": {"tabId": "t.0"}}],
+        400,
+        "Invalid requests[0].deleteTab: Cannot delete the only tab in a document.",
     ),
     # what is not served here names itself
     (
@@ -17903,11 +19689,791 @@ _DOCS_BATCH_REFUSALS = [
 ]
 
 
-@pytest.mark.parametrize("body,status,message", _DOCS_BATCH_REFUSALS)
-def test_a_batch_update_real_refuses_is_refused_with_reals_message(wc, wh, body, status, message):
+def _tab_refusal(kind: str, message: str, i: int = 0) -> str:
+    return f"Invalid requests[{i}].{kind}: {message}"
+
+
+def _tab_refusals(kind: str, rows) -> list:
+    return [(requests, 400, _tab_refusal(kind, message, i)) for requests, message, i in rows]
+
+
+# Refused on `wr-tabs` as real refused them, its ids written `$H`, `$F` and `$N` for its header,
+# footer and footnote and `$T2`, `$KID` and `$T3` for its tabs past the first.
+_NO_SEGMENT_N = _NO_SEGMENT.replace("kix.nope", "$N")
+_DOCS_TAB_REFUSALS = [
+    *_tab_refusals(
+        "createHeader",
+        [
+            ([{"createHeader": {"type": "DEFAULT"}}], "Default header already exists.", 0),
+            ([{"createHeader": {}}], "Header type not specified.", 0),
+            # `FIRST_PAGE`, which the discovery document leaves out, 0 and below are not
+            # specified, and a number above the enum's unrecognized
+            *(
+                ([{"createHeader": {"type": kind}}], "Header type not specified.", 0)
+                for kind in ("FIRST_PAGE", "first_page", "first-page", "2", 2, -1)
+            ),
+            ([{"createHeader": {"type": 3}}], "Unrecognized header type.", 0),
+            (
+                [{"createHeader": {"sectionBreakLocation": {"tabId": "t.nope"}}}],
+                "Cannot apply request to an invalid tab ID.",
+                0,
+            ),
+            (
+                [{"createHeader": {"type": "HEADER_FOOTER_TYPE_UNSPECIFIED"}}],
+                "Header type not specified.",
+                0,
+            ),
+            (
+                [
+                    {
+                        "createHeader": {
+                            "type": 1,
+                            "sectionBreakLocation": {"index": 0, "tabId": "t.nope"},
+                        }
+                    }
+                ],
+                "Cannot apply request to an invalid tab ID.",
+                0,
+            ),
+        ],
+    ),
+    *_tab_refusals(
+        "createFooter",
+        [
+            ([{"createFooter": {}}], "Footer type not specified.", 0),
+            ([{"createFooter": {"type": -2}}], "Footer type not specified.", 0),
+            ([{"createFooter": {"type": 99}}], "Unrecognized footer type.", 0),
+            (
+                [
+                    {"deleteFooter": {"footerId": "$F"}},
+                    {"createFooter": {"type": "DEFAULT"}},
+                    {"createFooter": {"type": "DEFAULT"}},
+                ],
+                "Default footer already exists.",
+                2,
+            ),
+        ],
+    ),
+    (
+        [{"createFooter": {"type": "DEFAULT", "sectionBreakLocation": {"index": 1}}}],
+        500,
+        "Internal error encountered.",
+    ),
+    (
+        [
+            {"createFooter": {"type": "DEFAULT", "sectionBreakLocation": {"index": 1}}},
+            {"insertText": {"location": {"index": 0}, "text": "x"}},
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    # an empty id in `tabsCriteria` once `t.0` is gone
+    (
+        [
+            {"deleteTab": {"tabId": "t.0"}},
+            {
+                "replaceAllText": {
+                    **_rep("o", "0")["replaceAllText"],
+                    "tabsCriteria": {"tabIds": [""]},
+                }
+            },
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    # sic: with `t.0` deleted, real reads the root as it and fails a root tab's update or a move
+    # to the root
+    *(
+        ([{"deleteTab": {"tabId": "t.0"}}, update], 500, "Internal error encountered.")
+        for update in (
+            _upd({"tabId": "$T2", "title": "x"}, "title"),
+            _upd({"tabId": "$T2", "index": 1}, "index"),
+            _upd({"tabId": "$KID", "parentTabId": ""}, "parentTabId"),
+        )
+    ),
+    # the first tab of a corpus Doc of several tabs holds `Tab 1` as its own
+    (
+        [{"addDocumentTab": {"tabProperties": {"title": "Tab 1"}}}],
+        400,
+        "Invalid requests[0].addDocumentTab: Tab title must be unique",
+    ),
+    # the tab left once the only root is deleted is titled `Tab 1`, not untitled as a new Doc's
+    # first tab is
+    (
+        [
+            {"addDocumentTab": {"tabProperties": {"title": "K", "parentTabId": "t.0"}}},
+            {"deleteTab": {"tabId": "$T2"}},
+            {"deleteTab": {"tabId": "$T3"}},
+            {"deleteTab": {"tabId": "t.0"}},
+            {"addDocumentTab": {"tabProperties": {"title": "Tab 1"}}},
+        ],
+        400,
+        "Invalid requests[4].addDocumentTab: Tab title must be unique",
+    ),
+    # a `fields` name of dots alone, before any other name and at its own request
+    *(
+        ([_upd({"tabId": "$T2", "title": "x"}, f)], 500, "Internal error encountered.")
+        for f in (".", "..", "nope,.")
+    ),
+    (
+        [
+            _upd({"tabId": "$T2", "title": "x"}, "."),
+            {"insertText": {"location": {"index": 0}, "text": "x"}},
+        ],
+        500,
+        "Internal error encountered.",
+    ),
+    *_tab_refusals(
+        "createFootnote",
+        [
+            ([{"createFootnote": {}}], "No footnote location set.", 0),
+            (
+                [{"createFootnote": {"location": {"index": 1, "segmentId": "$H"}}}],
+                "Cannot insert a footnote reference in a header.",
+                0,
+            ),
+            (
+                [{"createFootnote": {"endOfSegmentLocation": {"segmentId": "$F"}}}],
+                "Cannot insert a footnote reference in a footer.",
+                0,
+            ),
+            (
+                [{"createFootnote": {"location": {"index": 0, "segmentId": "$N"}}}],
+                "Cannot insert a footnote reference in a footnote.",
+                0,
+            ),
+            (
+                [{"createFootnote": {"location": {"index": 99, "segmentId": "$H"}}}],
+                "Index 99 must be less than the end index of the referenced segment, 5.",
+                0,
+            ),
+            (
+                [_fn(0)],
+                "The insertion index must be inside the bounds of an existing paragraph.",
+                0,
+            ),
+            ([_fn(20)], "The insertion index cannot be within a grapheme cluster.", 0),
+            ([_fn(24)], "The insertion index cannot be within a grapheme cluster.", 0),
+            ([_fn(-1)], "Index must be greater than or equal to 0.", 0),
+            (
+                [_fn(999)],
+                "Index 999 must be less than the end index of the referenced segment, 36.",
+                0,
+            ),
+            (
+                [{"createFootnote": {"location": {"index": 3, "tabId": "t.nope"}}}],
+                "Cannot apply request to an invalid tab ID.",
+                0,
+            ),
+            (
+                [{"createFootnote": {"location": {"index": 1, "segmentId": "kix.nope"}}}],
+                _NO_SEGMENT,
+                0,
+            ),
+        ],
+    ),
+    *_tab_refusals(
+        "insertPageBreak",
+        [
+            ([{"insertPageBreak": {}}], "No insertion location set.", 0),
+            (
+                [{"insertPageBreak": {"location": {"index": 0, "segmentId": "$H"}}}],
+                "Cannot insert page break in a header.",
+                0,
+            ),
+            (
+                [{"insertPageBreak": {"endOfSegmentLocation": {"segmentId": "$F"}}}],
+                "Cannot insert page break in a footer.",
+                0,
+            ),
+            (
+                [{"insertPageBreak": {"location": {"index": 1, "segmentId": "$N"}}}],
+                "Cannot insert page break in a footnote.",
+                0,
+            ),
+            (
+                [_pb(0)],
+                "The insertion index must be inside the bounds of an existing paragraph.",
+                0,
+            ),
+            ([_pb(24)], "The insertion index cannot be within a grapheme cluster.", 0),
+            ([_pb(-1)], "Index must be greater than or equal to 0.", 0),
+        ],
+    ),
+    # an index below zero comes before the segment, an index past the end after it
+    *(
+        (
+            [{kind: {where: {"index": -1, "segmentId": "kix.nope"}, **extra}}],
+            400,
+            _tab_refusal(kind, "Index must be greater than or equal to 0."),
+        )
+        for kind, where, extra in [
+            ("insertText", "location", {"text": "x"}),
+            ("createFootnote", "location", {}),
+            ("insertPageBreak", "location", {}),
+        ]
+    ),
+    (
+        [
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": -1, "endIndex": 3, "segmentId": "kix.nope"}
+                }
+            }
+        ],
+        400,
+        _tab_refusal("deleteContentRange", "Index must be greater than or equal to 0."),
+    ),
+    (
+        [{"deleteContentRange": {"range": {"endIndex": 3, "segmentId": "kix.nope"}}}],
+        400,
+        _tab_refusal("deleteContentRange", "Invalid range: must contain a start and end index"),
+    ),
+    (
+        [
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": 50, "endIndex": 60, "segmentId": "kix.nope"}
+                }
+            }
+        ],
+        400,
+        _tab_refusal("deleteContentRange", _NO_SEGMENT),
+    ),
+    (
+        [{"insertText": {"location": {"index": -1, "segmentId": "kix.nope"}}}],
+        400,
+        _tab_refusal("insertText", "Insert text requests must specify text to insert."),
+    ),
+    (
+        [{"createFootnote": {"location": {"index": 1}, "endOfSegmentLocation": {}}}],
+        400,
+        "Invalid value at 'requests[0].create_footnote' (oneof), oneof field 'footnote_reference_location' is already set. Cannot set 'endOfSegmentLocation'",
+    ),
+    (
+        [{"insertPageBreak": {"location": {"index": 1}, "endOfSegmentLocation": {}}}],
+        400,
+        "Invalid value at 'requests[0].insert_page_break' (oneof), oneof field 'insertion_location' is already set. Cannot set 'endOfSegmentLocation'",
+    ),
+    *_tab_refusals(
+        "deleteHeader",
+        [
+            ([{"deleteHeader": {}}], "Header ID can not be empty.", 0),
+            (
+                [{"deleteHeader": {"tabId": "t.nope"}}],
+                "Cannot apply request to an invalid tab ID.",
+                0,
+            ),
+            ([{"deleteHeader": {"headerId": "$F"}}], "Header does not exist.", 0),
+            (
+                [{"deleteHeader": {"headerId": "$H", "tabId": "t.nope"}}],
+                "Cannot apply request to an invalid tab ID.",
+                0,
+            ),
+            ([{"deleteHeader": {"headerId": "$H", "tabId": "$T2"}}], "Header does not exist.", 0),
+            (
+                [{"deleteHeader": {"headerId": "$H"}}, {"deleteHeader": {"headerId": "$H"}}],
+                "Header does not exist.",
+                1,
+            ),
+        ],
+    ),
+    *_tab_refusals(
+        "deleteFooter",
+        [
+            ([{"deleteFooter": {}}], "Footer ID can not be empty.", 0),
+            ([{"deleteFooter": {"footerId": "$H"}}], "Footer does not exist.", 0),
+        ],
+    ),
+    *_tab_refusals(
+        "insertText",
+        [
+            (
+                [{"insertText": {"location": {"index": 10, "segmentId": "$H"}, "text": "x"}}],
+                "Index 10 must be less than the end index of the referenced segment, 5.",
+                0,
+            ),
+            (
+                [
+                    {
+                        "insertText": {
+                            "location": {"index": 0, "segmentId": "$H", "tabId": "$T2"},
+                            "text": "x",
+                        }
+                    }
+                ],
+                _NO_SEGMENT.replace("kix.nope", "$H"),
+                0,
+            ),
+            (
+                [
+                    _del(30, 31),
+                    {"insertText": {"location": {"index": 0, "segmentId": "$N"}, "text": "x"}},
+                ],
+                _NO_SEGMENT_N,
+                1,
+            ),
+            (
+                [
+                    {"deleteHeader": {"headerId": "$H"}},
+                    {"insertText": {"location": {"index": 0, "segmentId": "$H"}, "text": "x"}},
+                ],
+                _NO_SEGMENT.replace("kix.nope", "$H"),
+                1,
+            ),
+            (
+                [
+                    {"deleteTab": {"tabId": "t.0"}},
+                    {"insertText": {"location": {"index": 1, "tabId": "t.0"}, "text": "x"}},
+                ],
+                "Cannot apply request to an invalid tab ID.",
+                1,
+            ),
+        ],
+    ),
+    (
+        [{"deleteContentRange": {"range": {"startIndex": 0, "endIndex": 5, "segmentId": "$H"}}}],
+        400,
+        "Invalid requests[0].deleteContentRange: The range cannot include the newline character at the end of the segment.",
+    ),
+    *_tab_refusals(
+        "addDocumentTab",
+        [
+            (
+                [{"addDocumentTab": {"tabProperties": {"tabId": "t.mine"}}}],
+                "Tab ID should not be specified in the properties when adding a tab.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"parentTabId": "t.nope"}}}],
+                'A parent tab with ID "t.nope" does not exist.',
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"index": -1}}}],
+                "Index must be non-negative.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"index": 4}}}],
+                "Index must be less than or equal to the number of unnested tabs.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"parentTabId": "$T2", "index": 2}}}],
+                "Index must be less than or equal to the number of tabs within the specified parent tab.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"title": "y" * 51}}}],
+                "The tab title cannot be longer than 50 characters.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"title": "\U0001f600" * 26}}}],
+                "The tab title cannot be longer than 50 characters.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"title": "Kid"}}}],
+                "Tab title must be unique",
+                0,
+            ),
+            (
+                [
+                    {"addDocumentTab": {"tabProperties": {"title": "A"}}},
+                    {"addDocumentTab": {"tabProperties": {"title": "A"}}},
+                ],
+                "Tab title must be unique",
+                1,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"iconEmoji": "#"}}}],
+                "Not a valid emoji input.",
+                0,
+            ),
+            # the order: a stated id, the title, the icon, the parent, its depth, the index
+            (
+                [{"addDocumentTab": {"tabProperties": {"tabId": "t.x", "parentTabId": "t.nope"}}}],
+                "Tab ID should not be specified in the properties when adding a tab.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"title": "Kid", "parentTabId": "t.nope"}}}],
+                "Tab title must be unique",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"title": "x" * 60, "iconEmoji": "a"}}}],
+                "The tab title cannot be longer than 50 characters.",
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"parentTabId": "t.nope", "index": -1}}}],
+                'A parent tab with ID "t.nope" does not exist.',
+                0,
+            ),
+            (
+                [{"addDocumentTab": {"tabProperties": {"index": 99, "iconEmoji": "a"}}}],
+                "Not a valid emoji input.",
+                0,
+            ),
+            (
+                [
+                    {
+                        "addDocumentTab": {
+                            "tabProperties": {"parentTabId": "t.nope", "iconEmoji": "a"}
+                        }
+                    }
+                ],
+                "Not a valid emoji input.",
+                0,
+            ),
+            # an icon is an emoji of Emoji 15.0, a flag an RGI one
+            *(
+                (
+                    [{"addDocumentTab": {"tabProperties": {"iconEmoji": icon}}}],
+                    "Not a valid emoji input.",
+                    0,
+                )
+                for icon in (
+                    "\U0001fae9",
+                    "\U0001f426\u200d\U0001f525",
+                    "\U0001faff",
+                    "\u2b50\ufe0f",
+                    "\U0001f600\ufe0f",
+                    "\u27a1",
+                    "\u203c",
+                    "\u2049",
+                    "\u00a9\ufe0f",
+                )
+            ),
+            *(
+                (
+                    [{"addDocumentTab": {"tabProperties": {"iconEmoji": flag}}}],
+                    "Not a valid emoji input.",
+                    0,
+                )
+                for flag in (
+                    "\U0001f1ff\U0001f1ff",
+                    "\U0001f1e6\U0001f1e7",
+                    "\U0001f1e8\U0001f1f6",
+                    "\U0001f3f4\U000e0075\U000e0073\U000e0074\U000e0078\U000e007f",
+                )
+            ),
+            # three levels of tabs at most, a fourth refused before its index
+            (
+                [_add_g(), {"addDocumentTab": {"tabProperties": {"parentTabId": "$NEW0"}}}],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [
+                    _add_g(),
+                    {"addDocumentTab": {"tabProperties": {"parentTabId": "$NEW0", "index": 5}}},
+                ],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [
+                    _add_g(),
+                    {
+                        "addDocumentTab": {
+                            "tabProperties": {"parentTabId": "$NEW0", "iconEmoji": "a"}
+                        }
+                    },
+                ],
+                "Not a valid emoji input.",
+                1,
+            ),
+            (
+                [
+                    {"deleteTab": {"tabId": "t.0"}},
+                    {"addDocumentTab": {"tabProperties": {"parentTabId": "t.0"}}},
+                ],
+                'A parent tab with ID "" does not exist.',
+                1,
+            ),
+        ],
+    ),
+    *_tab_refusals(
+        "deleteTab",
+        [
+            ([{"deleteTab": {}}], "Tab ID not specified.", 0),
+            ([{"deleteTab": {"tabId": "t.nope"}}], "A tab with ID t.nope does not exist.", 0),
+            (
+                [{"deleteTab": {"tabId": "$T2"}}, {"deleteTab": {"tabId": "$KID"}}],
+                "A tab with ID $KID does not exist.",
+                1,
+            ),
+            (
+                [{"deleteTab": {"tabId": "t.0"}}, {"deleteTab": {"tabId": "t.0"}}],
+                "A tab with ID  does not exist.",
+                1,
+            ),
+        ],
+    ),
+    *_tab_refusals(
+        "updateDocumentTabProperties",
+        [
+            (
+                [_upd({"tabId": "$T2", "title": "x"}, None)],
+                "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)",
+                0,
+            ),
+            ([_upd({"tabId": "t.nope"}, "nope")], "Invalid field: nope", 0),
+            ([_upd({"title": "x"}, "title")], "Tab ID must be specified in the properties.", 0),
+            (
+                [_upd({"tabId": "t.nope", "title": "x"}, "title")],
+                "At tab with ID t.nope does not exist.",
+                0,
+            ),
+            ([_upd({"tabId": "t.nope"}, "parentTabId")], "A tab with ID t.nope does not exist.", 0),
+            (
+                [_upd({"tabId": "t.nope", "title": "x"}, "*")],
+                "A tab with ID t.nope does not exist.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2"}, "*")],
+                "Invalid `tabProperties.title`. Must provide a valid non-empty string.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "title": ""}, "title")],
+                "Invalid `tabProperties.title`. Must provide a valid non-empty string.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "title": "y" * 51}, "title")],
+                "The tab title cannot be longer than 50 characters.",
+                0,
+            ),
+            ([_upd({"tabId": "$T2", "title": "Third"}, "title")], "Tab title must be unique", 0),
+            # the first tab of a Doc of several tabs holds `Tab 1` as its own
+            ([_upd({"tabId": "$T2", "title": "Tab 1"}, "title")], "Tab title must be unique", 0),
+            # the length is the title's as sent
+            (
+                [_upd({"tabId": "$T2", "title": "x" * 50 + "\n"}, "title")],
+                "The tab title cannot be longer than 50 characters.",
+                0,
+            ),
+            # an index past the named parent's tabs before the parent being the tab or its child
+            (
+                [_upd({"tabId": "t.0", "index": 1, "parentTabId": "t.0"}, "index,parentTabId")],
+                "Index must be less than or equal to the number of tabs within the specified "
+                "parent tab.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "index": 3, "parentTabId": "$KID"}, "index,parentTabId")],
+                "Index must be less than or equal to the number of tabs within the specified "
+                "parent tab.",
+                0,
+            ),
+            # sic: real reads the root as `t.0`, which under a tab is that tab's own child
+            (
+                [
+                    _upd({"tabId": "t.0", "parentTabId": "$T2"}, "parentTabId"),
+                    _upd({"tabId": "$T2", "title": "x"}, "title"),
+                ],
+                "Cannot move a parent tab to be nested under one of its own child tabs.",
+                1,
+            ),
+            (
+                [_upd({"tabId": "$T2", "title": "x"}, "\x1ftitle")],
+                "Invalid field: \x1ftitle",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "iconEmoji": "x"}, "iconEmoji")],
+                "Not a valid emoji input.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "parentTabId": "t.nope"}, "parentTabId")],
+                'A parent tab with ID "t.nope" does not exist.',
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "parentTabId": "$T2"}, "parentTabId")],
+                "Cannot make a tab a child of itself.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "parentTabId": "$KID"}, "parentTabId")],
+                "Cannot move a parent tab to be nested under one of its own child tabs.",
+                0,
+            ),
+            ([_upd({"tabId": "$T2", "index": -1}, "index")], "Index must be non-negative.", 0),
+            (
+                [_upd({"tabId": "$T2", "index": 9}, "index")],
+                "Index must be less than or equal to the number of unnested tabs.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$KID", "index": 5}, "index")],
+                "Index must be less than or equal to the number of tabs within the specified parent tab.",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "iconEmoji": "\U0001fae9"}, "iconEmoji")],
+                "Not a valid emoji input.",
+                0,
+            ),
+            # `fields` read as real reads it: each name by its `snake_case`, then each path
+            *(
+                ([_upd({"tabId": "$T2", "title": "x"}, fields)], f"Invalid field: {named}", 0)
+                for fields, named in [
+                    ("TItle", "t_itle"),
+                    ("iconEMOji", "icon_em_oji"),
+                    ("tab Id", "tab _id"),
+                    ("title.fooBar", "title.foo_bar"),
+                    ("\u00c9CLAT", "\u00c9_clat"),
+                ]
+            ),
+            *(
+                ([_upd({"tabId": "$T2", "title": "x"}, fields)], f"Invalid field: {named}", 0)
+                for fields, named in [
+                    ("_title", "_title"),
+                    ("ti_tle", "ti_tle"),
+                    ("PARENTTABID", "parenttabid"),
+                    ("NOPE", "nope"),
+                    ("fooBar", "foo_bar"),
+                    ("title.x,nope", "nope"),
+                    ("icon_emoji.x", "iconEmoji.x"),
+                    ("TITLE.x", "title.x"),
+                ]
+            ),
+            (
+                [_upd({"tabId": "$T2", "title": "x"}, ",")],
+                "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)",
+                0,
+            ),
+            (
+                [_upd({"tabId": "$T2", "title": "x"}, "tabProperties.title")],
+                "Invalid field: tab_properties",
+                0,
+            ),
+            ([_upd({"tabId": "$T2", "title": "x"}, "title.x")], "Invalid field: title.x", 0),
+            ([_upd({"tabId": "$T2", "title": "x"}, "*,title")], "Invalid field: *", 0),
+            # a gone `t.0` named as nothing, but for `At tab`
+            (
+                [
+                    {"deleteTab": {"tabId": "t.0"}},
+                    _upd({"tabId": "$T2", "parentTabId": "t.0"}, "parentTabId"),
+                ],
+                'A parent tab with ID "" does not exist.',
+                1,
+            ),
+            (
+                [{"deleteTab": {"tabId": "t.0"}}, _upd({"tabId": "t.0"}, "parentTabId")],
+                "A tab with ID  does not exist.",
+                1,
+            ),
+            (
+                [{"deleteTab": {"tabId": "t.0"}}, _upd({"tabId": "t.0", "title": "x"}, "title")],
+                "At tab with ID t.0 does not exist.",
+                1,
+            ),
+            (
+                [
+                    {"addDocumentTab": {"tabProperties": {"title": "K", "parentTabId": "t.0"}}},
+                    {"deleteTab": {"tabId": "$T2"}},
+                    {"deleteTab": {"tabId": "$T3"}},
+                    {"deleteTab": {"tabId": "t.0"}},
+                    _upd({"tabId": "t.0", "title": "x"}, "title"),
+                ],
+                "At tab with ID t.0 does not exist.",
+                4,
+            ),
+            # the depth of the tab, then an index below zero, itself, its children, the index past
+            # its siblings, then its children's depth
+            (
+                [
+                    _add_g(),
+                    _upd({"tabId": "$T2", "parentTabId": "$T3", "index": 9}, "parentTabId,index"),
+                ],
+                "Index must be less than or equal to the number of tabs within the specified parent tab.",
+                1,
+            ),
+            (
+                [
+                    _add_g(),
+                    _upd(
+                        {"tabId": "$T3", "parentTabId": "$NEW0", "index": -1}, "parentTabId,index"
+                    ),
+                ],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [_add_g(), _upd({"tabId": "$NEW0", "parentTabId": "$NEW0"}, "parentTabId")],
+                "Tab nesting level cannot exceed 3.",
+                1,
+            ),
+            (
+                [_upd({"tabId": "$T2", "parentTabId": "$T2", "index": -1}, "parentTabId,index")],
+                "Index must be non-negative.",
+                0,
+            ),
+            (
+                [_add_g(), _upd({"tabId": "$T2", "parentTabId": "$T3"}, "parentTabId")],
+                "Moving this tab will cause child tabs to exceed the tab nesting level. Tab nesting level cannot exceed 3.",
+                1,
+            ),
+        ],
+    ),
+]
+
+
+def _tab_ids(did: str) -> dict[str, str]:
+    """`wr-tabs`' ids by the names its rows write them as."""
+    return {
+        "$H": gdocs.segment_id(did, "header"),
+        "$F": gdocs.segment_id(did, "footer"),
+        "$N": gdocs.segment_id(did, "2.1"),
+        "$T2": gdocs.tab_id(did, "1"),
+        "$KID": gdocs.tab_id(did, "2"),
+        "$T3": gdocs.tab_id(did, "3"),
+        "$NEW0": gdocs.tab_id(did, "r1.0"),
+    }
+
+
+def _with_tab_ids(value, did: str):
+    """``value`` with `wr-tabs`' ids in place of their names, and `$ANY` matching any value."""
+    text = json.dumps(value)
+    for name, real in sorted(_tab_ids(did).items(), key=lambda kv: -len(kv[0])):
+        text = text.replace(name, real)
+
+    def any_of(v):
+        if v == "$ANY":
+            return ANY
+        if isinstance(v, dict):
+            return {k: any_of(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [any_of(x) for x in v]
+        return v
+
+    return any_of(json.loads(text))
+
+
+@pytest.mark.parametrize(
+    "doc,body,status,message",
+    [("wr-text", *row) for row in _DOCS_BATCH_REFUSALS]
+    + [("wr-tabs", *row) for row in _DOCS_TAB_REFUSALS],
+)
+def test_a_batch_update_real_refuses_is_refused_with_reals_message(
+    wc, wh, doc, body, status, message
+):
+    from tests._helpers import served_id
+
+    did = served_id("google_drive", doc)
     body = {"requests": body} if isinstance(body, list) and body != [1] else body
-    r = _docs_write(wc, wh[_OWNER], "wr-text", body)
-    assert (r.status_code, r.json()["error"]["message"]) == (status, message)
+    r = _docs_write(wc, wh[_OWNER], doc, _with_tab_ids(body, did))
+    expected = _with_tab_ids(message, did)
+    assert (r.status_code, r.json()["error"]["message"]) == (status, expected)
     assert wc.get("/_meta/overlay").json()["gdrive_doc_bodies"] == []
 
 

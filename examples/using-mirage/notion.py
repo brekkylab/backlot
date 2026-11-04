@@ -104,26 +104,26 @@ async def main(vfs) -> None:
 
 def main_fuse(vfs) -> None:
     """--fuse: mount the Notion tree as a *real* filesystem, then read it with ordinary tools."""
-    try:
-        with Workspace({"/notion": vfs}, mode=MountMode.READ) as ws:
+    with Workspace({"/notion": vfs}, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/notion")  # "/notion" is now a real directory on disk
-            print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            pages = sorted(os.listdir(f"{mnt}/pages"))
-            if pages:
-                page_json = f"{mnt}/pages/{pages[0]}/page.json"
-                print(f"\n$ head -c 200 pages/{pages[0]}/page.json")
-                print(
-                    "  " + open(page_json, encoding="utf-8").read(200).replace("\n", " ")
-                )  # a genuine open() via FUSE
-                count = subprocess.run(
-                    ["grep", "-c", ".", page_json], capture_output=True, text=True, encoding="utf-8"
-                )
-                print(
-                    f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
-                )
-            print(f"\nexplore it live in another terminal:  ls {mnt}/pages {mnt}/databases")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+        except (RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
+        pages = sorted(os.listdir(f"{mnt}/pages"))
+        if pages:
+            page_json = f"{mnt}/pages/{pages[0]}/page.json"
+            print(f"\n$ head -c 200 pages/{pages[0]}/page.json")
+            print(
+                "  " + open(page_json, encoding="utf-8").read(200).replace("\n", " ")
+            )  # a genuine open() via FUSE
+            count = subprocess.run(
+                ["grep", "-c", ".", page_json], capture_output=True, text=True, encoding="utf-8"
+            )
+            print(
+                f"\n$ grep -c . <that file>   # a separate process reads the mount → {count.stdout.strip()}"
+            )
+        print(f"\nexplore it live in another terminal:  ls {mnt}/pages {mnt}/databases")
 
 
 def _parse_args() -> argparse.Namespace:

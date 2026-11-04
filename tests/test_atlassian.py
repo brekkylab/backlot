@@ -2030,12 +2030,9 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 
 
 def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
-    """Measured on Confluence Cloud: a bare `content/{id}` — and one sent `expand=` empty —
-    expands `space`, `history` and `version` and no body; a sent `expand` expands exactly
-    the properties it names, read up to the first dot, so `expand=version` carries no
-    `history`, `expand=bogus` nothing, and `expand=body.export_view.value` serves `body`'s
-    export_view; and the rows of `content`, `content/{id}/child/page` and the CQL search
-    carry none of the four."""
+    """`content/{id}` expands what `confluence_content_get` and `_confluence_page` say real
+    expands for each `expand`, and the rows of `content`, `content/{id}/child/page` and the CQL
+    search carry none of the four."""
     page = {
         "source_type": "confluence",
         "doc_id": "p",
@@ -2064,6 +2061,8 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
     ]
     nine_storage = [name for name in ten if name != "storage"]
     nine_export_view = [name for name in ten if name != "export_view"]
+    nine_view = [name for name in ten if name != "view"]
+    nine_adf = [name for name in ten if name != "atlas_doc_format"]
     # Each row: (expand, served properties, body members, the four names still listed under
     # `_expandable`, `body._expandable` or None when no body is served).
     rows = (
@@ -2093,6 +2092,20 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             ["_expandable", "export_view"],
             ["history", "space", "version"],
             nine_export_view,
+        ),
+        (
+            "body.view",
+            ["body"],
+            ["_expandable", "view"],
+            ["history", "space", "version"],
+            nine_view,
+        ),
+        (
+            "body.atlas_doc_format",
+            ["body"],
+            ["_expandable", "atlas_doc_format"],
+            ["history", "space", "version"],
+            nine_adf,
         ),
         ("history.lastUpdated", ["history"], [], ["body", "space", "version"], None),
         ("version.by", ["version"], [], ["body", "history", "space"], None),
@@ -2134,6 +2147,11 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         # Unexpanded, `space` is listed under `_expandable` with the link `container` carries.
         versioned = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "version"}).json()
         assert versioned["_expandable"]["space"] == versioned["_expandable"]["container"]
+        # A served `ancestors` leaves `_expandable`, as the four do.
+        cid = served_id("confluence", "c")
+        child_j = c.get(f"{api}/content/{cid}", headers=h, params={"expand": "ancestors"}).json()
+        assert [a["title"] for a in child_j["ancestors"]] == ["probe"]
+        assert "ancestors" not in child_j["_expandable"]
 
 
 # --- Jira ------------------------------------------------------------------------

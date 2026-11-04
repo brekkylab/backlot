@@ -19,6 +19,7 @@ import quopri
 import re
 import string
 import time
+import unicodedata
 import xml.parsers.expat
 import zlib
 from collections.abc import Callable
@@ -2781,17 +2782,43 @@ def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
     Real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact phrase (tokens
     adjacent); unquoted is separate terms. A grep push-down sends the quoted form for a literal
     pattern, so the exact doc surfaces instead of being buried under coincidental docs that merely
-    contain the words scattered."""
+    contain the words scattered. A Doc's phrase matches within one line of its title or its text
+    (`gdocs.document_text`), a vertical tab ending a line too, its words with their accents or
+    without but not by their stem: measured 2026-11-03, real matched none across two paragraphs,
+    two of a Doc's segments or tabs, a footnote reference, a page break or a vertical tab, matched
+    `"creme brulee"` and `"crème brûlée"` both ways, and matched `"runners jumped"` but not
+    `"runners jump"`."""
     out: dict[str, list] = {}
     for term in _drive_q_terms(node):
         if term.field != "fullText" or term.value in out:
             continue
         raw = term.value
         phrase = len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"'
-        out[raw] = store.search_documents(
+        rows = store.search_documents(
             conn, raw[1:-1] if phrase else raw, "google_drive", ids, limit=10_000, phrase=phrase
         )
+        if phrase:
+            words = _words(raw[1:-1])
+            rows = [r for r in rows if _drive_mime(r) != DRIVE_DOC_MIME or _in_a_line(r, words)]
+        out[raw] = rows
     return out
+
+
+def _in_a_line(row, words: list[str]) -> bool:
+    """Whether one line of ``row``'s title or content holds ``words`` one after another."""
+    for line in [row["title"], *re.split("[\n\x0b]", row["content"])]:
+        found = _words(line)
+        if any(found[i : i + len(words)] == words for i in range(len(found))):
+            return True
+    return False
+
+
+def _words(text: str) -> list[str]:
+    """``text``'s words without their accents, in lower case, an underscore parting two:
+    measured 2026-11-03, `"qzua qzub"` found `qzua_qzub`, `"iqztr qzts"` found `İqztr qzts`, and a
+    precomposed `"crème"` found a decomposed one."""
+    bare = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return re.findall(r"[^\W_]+", bare.lower())
 
 
 def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
@@ -3875,7 +3902,7 @@ _DRIVE_EXPORT_FORMATS = {
     ],
 }
 
-# The formats a Doc exports to that are rendered from its body.
+# The formats a Doc exports to that are rendered from its tabs.
 _DOCS_TEXT_EXPORTS = {
     "text/plain": gdocs.plain_text,
     "text/markdown": gdocs.markdown,
@@ -4331,7 +4358,7 @@ async def drive_files_export(file_id: str, request: Request):
     target = requested.casefold()
     if target not in {f.casefold() for f in _DRIVE_EXPORT_FORMATS.get(native[0], ())}:
         raise gerr.unsupported_conversion()
-    # A Doc's text formats are rendered from its body (`gdocs.plain_text`, `gdocs.markdown`); CSV
+    # A Doc's text formats are rendered from its tabs (`gdocs.plain_text`, `gdocs.markdown`); CSV
     # and TSV serve a spreadsheet's cells, and every other format the title and `content`.
     #
     # CSV needs no branch for either kind of document: a document that STATES a grid has its
@@ -4347,9 +4374,9 @@ async def drive_files_export(file_id: str, request: Request):
             return Response(gsheets.to_tsv(grid), headers={"content-type": requested})
     render = _DOCS_TEXT_EXPORTS.get(target) if native[0] == DRIVE_DOC_MIME else None
     if render is not None:
-        stored = store.gdrive_doc_body_for(conn, file_id)
-        content = stored if stored is not None else gdocs.from_text(row["content"])
-        return Response(render(content), headers={"content-type": requested})
+        stored = store.gdrive_doc_for(conn, file_id)
+        document = stored if stored is not None else gdocs.from_prose(row["content"])
+        return Response(render(document), headers={"content-type": requested})
     plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return Response(body, headers={"content-type": requested})
@@ -4568,9 +4595,10 @@ def _editor_batch(
 
     Every request sets a kind (`_editor_requests`). Measured 2026-10-29 on Docs'
     `documents.batchUpdate`: a refusal names its request and kind and only the first is answered,
-    and a 500 a request leads to comes after the refusals of every request behind it. A kind
-    ``apply`` lacks is refused naming itself. The caller keeps what the functions changed only
-    once this returns."""
+    and a 500 a request leads to comes after the refusals of every request behind it. A 500 a
+    function raises, rather than answers as failing, comes at its own request. A kind ``apply``
+    lacks is refused naming itself. The caller keeps what the functions changed only once this
+    returns."""
     replies = []
     fails = False
     for i, req in enumerate(requests):

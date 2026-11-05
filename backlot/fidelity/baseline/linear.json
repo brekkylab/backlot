@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-04",
+  "measured": "2026-11-05",
   "root": {
     "query": "Query"
   },
@@ -6383,6 +6383,20 @@
             }
           }
         },
+        "jiraProject": {
+          "status": "missing",
+          "type": "JiraProject!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot serves no Jira integration, as with the other Jira and integration roots recorded here. Measured against api.linear.app on 2026-11-05 with a personal API key: `{ jiraProject(id:\"x\"){ id } }` answers 400 `INPUT_ERROR`, \"Feature 'Jira projects unified UI' is not enabled\", so no success shape can be compared."
+        },
+        "jiraProjects": {
+          "status": "missing",
+          "type": "JiraProjectConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot serves no Jira integration, as with the other Jira and integration roots recorded here. Measured against api.linear.app on 2026-11-05 with a personal API key: `{ jiraProjects(first:1){ nodes{ id } } }` answers 400 `INPUT_ERROR`, \"Feature 'Jira projects unified UI' is not enabled\", so no success shape can be compared."
+        },
         "latestReleaseByAccessKey": {
           "status": "missing",
           "type": "AccessKeyRelease",
@@ -6450,6 +6464,13 @@
           "type": "Organization!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "organizationCodingInferenceAnthropicAvailable": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot serves no coding-inference surface, as with the other `organizationCodingInference*` roots recorded here. Measured against api.linear.app on 2026-11-05 with a personal API key: `{ organizationCodingInferenceAnthropicAvailable }` answers 403 `FORBIDDEN`, \"Using an unexpected authentication method (apiKey) for an operation\", so no value can be compared."
         },
         "organizationCodingInferenceKeys": {
           "status": "missing",

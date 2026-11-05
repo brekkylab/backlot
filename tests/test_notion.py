@@ -122,10 +122,43 @@ def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(cl
     assert first.json()["request_id"] != other.json()["request_id"]
 
 
+# A path sent as written, with `{bot}` for the bot user's id, and the value real's validator named
+# reading it; the measurements are dated in `backlot.main.route_a_notion_path_as_sent`.
+_ESCAPED_VALUE_ROWS = [
+    ("/notion/v1/users/m%65", "me"),
+    ("/notion/v1/users/%6De", "me"),
+    ("/notion/v1/users/m%65/", "me"),
+    ("/notion/v1/users/me%2F", "me/"),
+    ("/notion/v1/users/{bot}%2F", "{bot}/"),
+    ("/notion/v1/users/{bot}%2f", "{bot}/"),
+]
+
+
+def test_notion_an_escape_in_a_path_segment_is_read_as_sent(client, notion_h):
+    """`/v1/users/me` is the bot user, so the `{bot}` rows spell its id. The slash after `/notion`
+    is the mount's, so escaping it still reaches that user."""
+    me = client.get("/notion/v1/users/me", headers=notion_h)
+    assert me.status_code == 200
+    bot = me.json()["id"]
+    mounted = client.get("/notion%2Fv1/users/me", headers=notion_h)
+    assert mounted.status_code == 200
+    assert mounted.json()["id"] == bot
+    for path, value in _ESCAPED_VALUE_ROWS:
+        path, value = path.format(bot=bot), value.format(bot=bot)
+        r = client.get(path, headers=notion_h)
+        assert r.status_code == 400, path
+        body = r.json()
+        assert body["code"] == "validation_error", path
+        assert body["message"] == (
+            f'path failed validation: path.user_id should be a valid uuid, instead was `"{value}"`.'
+        ), path
+
+
 _ID = "5c6a2821-6bb1-4a7e-b6e1-c50111515c3d"
 
-# URLs Notion does not publish: paths it has no operation on, and paths it publishes only under
-# another method
+# URLs Notion does not publish: paths it has no operation on, paths it publishes only under another
+# method, and paths with an escape outside the route's values, which
+# `backlot.main.route_a_notion_path_as_sent` routes as sent
 _UNPUBLISHED_ROWS = [
     ("GET", "/notion/v1/nonexistent_thing/xyz"),
     ("GET", "/notion/v1/pages"),
@@ -136,6 +169,12 @@ _UNPUBLISHED_ROWS = [
     ("GET", "/notion/v1/oauth/token"),
     ("POST", "/notion/v1/oauth/other"),
     ("GET", f"/notion/v1/ai/skills/{_ID}/upload"),
+    ("GET", "/notion/v1/user%73/me"),
+    ("GET", "/notion/v1%2Fusers/me"),
+    ("GET", "/notion/v1/users%2Fme"),
+    ("GET", "/notion/%761/users/me"),
+    ("GET", "/notion/v%31/users/me"),
+    ("GET", "/notion/v1/%75sers/me"),
 ]
 
 

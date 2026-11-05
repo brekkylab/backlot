@@ -1447,9 +1447,7 @@ def _docs_replace_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, boo
     `revisionId`, and an empty name is taken; a range holding its segment's last newline is refused
     naming its id, and so is one starting before the body's first index or with either end between
     the halves of a character outside the BMP, measured 2026-11-04; the characters `insertText`
-    strips are stripped, and one in `gdocs.UNWRITABLE` fails the batch once every request is read. A
-    named range of several ranges has its first replaced and the rest deleted, as the discovery
-    document says."""
+    strips are stripped, and one in `gdocs.UNWRITABLE` fails the batch once every request is read."""
     if "named_range_id" not in req and "named_range_name" not in req:
         raise _EditorRefused("Must specify a named range reference")
     tabs = _docs_named_tabs(doc, req)

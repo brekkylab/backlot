@@ -1773,9 +1773,6 @@ class Body:
     def bullet(self, p: int) -> dict | None:
         return self.paragraphs[p].get("bullet")
 
-    def paragraph_style(self, p: int) -> dict:
-        return self.paragraphs[p]["paragraphStyle"]
-
     def find(self, text: str, *, match_case: bool, regex: bool) -> list[tuple[int, int]]:
         """Each match of ``text``, left to right, as the ``[start, end)`` characters it replaces,
         compared as `_fold` folds them: measured, a match may cross paragraphs, `aa` matches `aaa`
@@ -1998,23 +1995,18 @@ class Document:
                 body.ranges = [r for r in body.ranges if id(r) not in gone]
 
     def replace_range(self, tab: dict, named: dict, text: str, sent: str) -> None:
-        """The text of ``named``'s first range replaced by ``text``, styled as the character it
-        replaces first, and the text of its other ranges deleted; the range then covers ``text``
-        alone, or is gone with an empty one. Measured 2026-11-03: a range from a bold run took
-        `NEW` bold, `x\ny` split its paragraph and stayed over both lines, and the range's length
-        is that of the text as ``sent``, before `STRIPPED` (`a\x01b` left `ab` and a range of
-        three)."""
+        """The text of ``named``'s range replaced by ``text``, styled as the character it replaces
+        first; the range then covers ``text`` alone, or is gone with an empty one. Measured
+        2026-11-03: a range from a bold run took `NEW` bold, `x\ny` split its paragraph and stayed
+        over both lines, and the range's length is that of the text as ``sent``, before `STRIPPED`
+        (`a\x01b` left `ab` and a range of three)."""
         self.forget(tab, named)
-        first, *rest = named["ranges"]
-        for r in sorted(rest, key=lambda r: r["startIndex"], reverse=True):
-            body = self.open(tab, r.get("segmentId", ""))
-            body.delete(body.cut(r["startIndex"]), body.cut(r["endIndex"]))
+        [first] = named["ranges"]
         body = self.open(tab, first.get("segmentId", ""))
         start = first["startIndex"]
         pos = body.cut(start)
         body.replace([(pos, body.cut(first["endIndex"]))], text)
         first["endIndex"] = start + utf16_len(sent)
-        named["ranges"] = [first]
         body.ranges.append(first)
 
     def heading_ids(self, tab: dict) -> set[str]:

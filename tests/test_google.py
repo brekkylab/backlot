@@ -2014,6 +2014,17 @@ _DOCS_EXPORTS = {
         "\ufeff* a\r\n      * b\r\n   * c\r\n         * d",
         "- a  \n  * b  \n  * c  \n    * d",
     ),
+    # an empty item then a paragraph outside the list, which takes the item's marker in plain text
+    "held_out": (
+        {"paragraphs": [_listed("a", "NUMBERED_DECIMAL_ALPHA_ROMAN", 0), _listed("", "NUMBERED_DECIMAL_ALPHA_ROMAN", 0), {"text": "after"}]},
+        "\ufeff1. a\r\n2. after",
+        "1. a  \n2. \n\nafter",
+    ),
+    "held_out_checkbox": (
+        {"paragraphs": [_listed("a", "BULLET_CHECKBOX", 0), _listed("", "BULLET_CHECKBOX", 0), {"text": "after"}]},
+        "\ufeff* a\r\n* after",
+        "- [ ] a  \n- [ ] \n\nafter",
+    ),
     "presets": (
         {"paragraphs": [*(p for preset in gdocs.PRESETS for p in (_listed(preset, preset, 0), {"text": "sep"})), {"text": "end"}]},
         "\ufeff* BULLET_DISC_CIRCLE_SQUARE\r\nsep\r\n* BULLET_DIAMONDX_ARROW3D_SQUARE\r\nsep\r\n* BULLET_CHECKBOX\r\nsep\r\n* BULLET_ARROW_DIAMOND_DISC\r\nsep\r\n* BULLET_STAR_CIRCLE_SQUARE\r\nsep\r\n* BULLET_ARROW3D_CIRCLE_SQUARE\r\nsep\r\n* BULLET_LEFTTRIANGLE_DIAMOND_DISC\r\nsep\r\n* BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE\r\nsep\r\n* BULLET_DIAMOND_CIRCLE_SQUARE\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS\r\nsep\r\n1. NUMBERED_DECIMAL_NESTED\r\nsep\r\n1. NUMBERED_UPPERALPHA_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL\r\nsep\r\n1. NUMBERED_ZERODECIMAL_ALPHA_ROMAN\r\nsep\r\nend",
@@ -18487,7 +18498,8 @@ def _rep(text, by, **criteria):
 def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left(wc, wh):
     """Measured: each request's indices count what the ones before it inserted, the answer is one
     reply and one suggestion response per request with `replaceAllText`'s count left out at zero,
-    every write moves the `revisionId` the next read serves, and Drive reads the written text,
+    every write moves the `revisionId` the next read serves but a `replaceNamedRangeContent` of a
+    name no range has, and Drive reads the written text,
     with `modifiedTime` the write's, and `size` and `version` as `docs_batch_update` stores
     them."""
     from tests._helpers import served_id
@@ -18518,7 +18530,11 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         "replies": [{"replaceAllText": {"occurrencesChanged": 3}}, {"replaceAllText": {}}]
     }
     unchanged = _docs_write(wc, h, "wr-text", {"requests": [_rep("zzz", "y")]}).json()
-    assert unchanged["writeControl"]["requiredRevisionId"] not in (before, revision)
+    moved = unchanged["writeControl"]["requiredRevisionId"]
+    assert moved not in (before, revision)
+    nameless = {"replaceNamedRangeContent": {"namedRangeName": "nobody", "text": "X"}}
+    kept = _docs_write(wc, h, "wr-text", {"requests": [nameless]}).json()
+    assert (kept["replies"], kept["writeControl"]["requiredRevisionId"]) == ([{}], moved)
     fields = {"fields": "modifiedTime,version,size,quotaBytesUsed"}
     f = wc.get(f"/drive/v3/files/{did}", headers=h, params=fields).json()
     assert f["modifiedTime"] > "2026-07-14T17:20:00.000Z"
@@ -19250,6 +19266,14 @@ _STYLE_RUN_ROWS = [
             ([_wf(4, 7, 100, bold=True), _ts(4, 7)], _lato(400)),
             ([_wf(4, 7, 800, bold=False), _ts(4, 7)], _lato(400)),
             ([_wf(4, 7, 800), _ts(4, 7)], _lato(800)),
+            (
+                [
+                    _wf(4, 7, 800, bold=False),
+                    _ts(4, 7, "italic", italic=True),
+                    _ts(4, 7, bold=True),
+                ],
+                {"italic": True} | _lato(800),
+            ),
         ]
     ),
     # runs of one served style stay apart where the weights they keep differ or a bold was taken

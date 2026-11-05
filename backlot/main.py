@@ -446,8 +446,8 @@ async def refuse_a_credential_on_an_agent_path(request: Request, call_next):
     )
 )
 async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
-    """An operation HubSpot publishes that no route here serves is refused for its credential as a
-    served route refuses one, ahead of the router's 404 or 405
+    """An operation HubSpot publishes that no route here serves is refused for its `Accept` or its
+    credential as a served route refuses one, ahead of the router's 404 or 405
     (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
     refusal = await hubspot.refuse_an_unserved_operation(request)
     if refusal is not None:

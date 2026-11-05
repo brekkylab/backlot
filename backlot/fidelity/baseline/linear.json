@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-04",
+  "measured": "2026-11-05",
   "root": {
     "query": "Query"
   },
@@ -6383,6 +6383,20 @@
             }
           }
         },
+        "jiraProject": {
+          "status": "missing",
+          "type": "JiraProject!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description: \"One Jira project that the Jira projects table lists. Poll it until its import completes and its sync starts: `importStatus` is `imported`, `failed`, or `expired`, and `syncStatus` is no longer `afterImport`.\" A Jira project belongs to one of the workspace's Jira integrations, and Backlot serves no integration: `Query.integration` and `Query.integrations` are gaps in this file, as is every other `Query` root with `Jira` or `jira` in its name, `integrationJiraProjectStatuses`, `integrationJiraSyncHealthCheck` and `jiraProjects`. Measured against api.linear.app on 2026-11-05: it takes one argument, `id: String!`, and answers `JiraProject!`. Asked with a personal API key whose owner is a workspace admin, for `id` `x`, it answered a 200 whose body is `data: null` and an `errors` member, `Feature 'Jira projects unified UI' is not enabled` with `INPUT_ERROR`, so what it answers for a Jira project that exists was not observed. This schema declares no `JiraProject`."
+        },
+        "jiraProjects": {
+          "status": "missing",
+          "type": "JiraProjectConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description: \"Jira projects that the workspace syncs with a Linear team or imported issues from, with the sync and import status of the Jira projects table in the settings.\" A Jira project belongs to one of the workspace's Jira integrations, and Backlot serves no integration: `Query.integration` and `Query.integrations` are gaps in this file, as is every other `Query` root with `Jira` or `jira` in its name, `integrationJiraProjectStatuses`, `integrationJiraSyncHealthCheck` and `jiraProject`. Measured against api.linear.app on 2026-11-05: it takes `filter: JiraProjectFilter`, `before`, `after`, `first`, `last`, `includeArchived` and `orderBy`, and answers `JiraProjectConnection!`. Asked with a personal API key whose owner is a workspace admin, for `first: 1`, it answered a 200 whose body is `data: null` and an `errors` member, `Feature 'Jira projects unified UI' is not enabled` with `INPUT_ERROR`, so no page of Jira projects was observed. This schema declares no `JiraProjectConnection`."
+        },
         "latestReleaseByAccessKey": {
           "status": "missing",
           "type": "AccessKeyRelease",
@@ -6450,6 +6464,13 @@
           "type": "Organization!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "organizationCodingInferenceAnthropicAvailable": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[Internal] Whether this workspace can connect an Anthropic organization to bill Claude Code sessions.\" It answers for the workspace, whose root `Query.organization` is a gap in this file, as is `Query.organizationCodingInferenceKeys`, the one other `Query` root with `CodingInference` in its name. Measured against api.linear.app on 2026-11-05: it takes no argument and answers `Boolean!`. Asked with a personal API key whose owner is a workspace admin, it answered a 200 whose body is `data: null` and an `errors` member, `Using an unexpected authentication method (apiKey) for an operation` with `FORBIDDEN`. Its answer to any other credential was not measured: the measurement held a personal API key and no other."
         },
         "organizationCodingInferenceKeys": {
           "status": "missing",

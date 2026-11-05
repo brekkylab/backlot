@@ -6,6 +6,7 @@ or call the response builder directly.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import urllib.parse
@@ -1546,6 +1547,50 @@ def test_slack_users_list_reads_the_cursor_before_a_negative_limit(client, admin
     assert got == {(c, limit): {"ok": False, "error": e} for c, limit, e in rows}
 
 
+# (max_page_size, limit, messages served, has_more): the measurement on `_limit` at the default
+# `max_page_size`, then a `max_page_size` above real's 1000 and one below it.
+_HISTORY_LIMITS = [
+    (1000, "201", 201, True),
+    (1000, "1000", 330, False),
+    (1000, "1000.5", 330, False),
+    (1000, "1001", 100, True),
+    (1000, "2000", 100, True),
+    (1000, "9223372036854775807", 100, True),
+    (5000, "2000", 100, True),
+    (250, "300", 250, True),
+]
+
+
+def test_slack_conversations_history_large_limits(tmp_path, monkeypatch):
+    """`conversations.history` on a channel of 330 messages, for each row of `_HISTORY_LIMITS`."""
+    records = [
+        {
+            "source_type": "slack",
+            "channel": "general",
+            "content": f"msg {n}",
+            "author_email": "ava@x.com",
+            "visibility": "public",
+            "created": f"2026-01-{(n // 24) + 1:02d}T{n % 24:02d}:00:00Z",
+        }
+        for n in range(330)
+    ]
+    s = tiny_corpus(tmp_path, records)
+    with client_for(s, reload=True) as c:
+        h = {"Authorization": f"Bearer {s.admin_token}"}
+        channels = c.get("/slack/api/conversations.list", headers=h).json()["channels"]
+        cid = next(ch["id"] for ch in channels if ch["name"] == "general")
+        got = []
+        for ceiling, limit, _, _ in _HISTORY_LIMITS:
+            monkeypatch.setattr(slack.get_settings(), "max_page_size", ceiling)
+            j = c.get(
+                "/slack/api/conversations.history",
+                headers=h,
+                params={"channel": cid, "limit": limit},
+            ).json()
+            got.append((ceiling, limit, len(j["messages"]), j["has_more"]))
+    assert got == _HISTORY_LIMITS
+
+
 def test_slack_search_all_answers_both_blocks_and_search_files_only_its_own(client, admin_h):
     # slack-go's Search()/SearchContext() hits search.all; it must return both messages + files.
     j = client.post("/slack/api/search.all", headers=admin_h, data={"query": "the"}).json()
@@ -1558,12 +1603,10 @@ def test_slack_search_all_answers_both_blocks_and_search_files_only_its_own(clie
     assert set(f) == {"ok", "query", "files"}
 
 
-def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
-    # A search hit that lands on a REPLY yields that reply's ts; conversations.replies must return
-    # the whole thread from it (Slack accepts any in-thread ts), not thread_not_found. The SAMPLE
-    # 'incidents' 502 thread's replies include "Rolled back; 502s clearing." Without this,
-    # replies resolved only thread ROOTS, so a search->replies chain broke whenever the hit was a
-    # reply (the common case — real MCP clients pass the hit's own ts).
+def test_slack_replies_answer_a_reply_ts_with_that_reply(client, admin_h):
+    # A search hit that lands on a REPLY yields that reply's ts, and `conversations_replies` answers
+    # it with the reply alone. The SAMPLE 'incidents' 502 thread's replies include "Rolled back;
+    # 502s clearing."
     sr = client.post(
         "/slack/api/search.messages", headers=admin_h, data={"query": "Rolled back"}
     ).json()
@@ -1579,9 +1622,8 @@ def test_slack_replies_resolve_from_a_reply_ts(client, admin_h):
     assert rep.get("ok"), rep
     # No `latest` or `oldest` beside them, which `conversations.history` echoes.
     assert set(rep) == {"ok", "messages", "has_more"}
-    texts = " ".join(m["text"] for m in rep["messages"])
-    assert "Anyone else seeing 502s" in texts  # thread root is returned
-    assert "Rolled back" in texts  # the reply we searched for is in the same thread
+    assert [m["ts"] for m in rep["messages"]] == [hit["ts"]]
+    assert rep["messages"][0]["thread_ts"] == hit["thread_ts"]
 
 
 # --- Slack: enrichment did not change the responses ---------------------------------------
@@ -2141,7 +2183,7 @@ def test_thread_rooted_at_epoch_zero_stays_coherent(tmp_path):
 def test_slack_chronology_is_numeric_not_lexicographic(tmp_path):
     """A ts is TEXT (`"<seconds>.<fraction>"`, the spelling Slack's own API uses), so ordering by
     it compares digit by digit and puts second 9 after second 10. Every slack listing orders by
-    the integer second first, with the ts breaking ties so an offset page still cannot skip a row.
+    the integer second first, with the ts breaking ties so a page boundary cannot skip a row.
 
     Seconds 9 and 10 rather than something larger: a digit-count change is the whole failure, and
     the 1970 era where one happens is a corpus this project supports."""
@@ -3817,6 +3859,7 @@ def test_slack_refuses_a_body_before_the_method_runs(
 
 
 _PAGE = "<real's 404 page>"
+_FILE_NOT_FOUND = "<Apache's 404 page>"
 _ROUTED = "<the route's answer>"
 _LEFT = "<the router's 404>"
 _RETIRED_MESSAGE = (
@@ -3850,220 +3893,276 @@ _RETIRED = (
 )
 
 
-@pytest.mark.parametrize(
-    "verb, path, credential, content_type, body, want",
-    [
-        # a name Slack has no method by, before the credential
-        *(
-            (
-                "GET",
-                "nonexistent.method",
-                cred,
-                None,
-                None,
-                ("unknown_method", "nonexistent.method"),
-            )
-            for cred in (None, "admin")
-        ),
-        # names of each shape, with no token
-        *(
-            ("GET", name, None, None, None, ("unknown_method", name))
-            for name in ("a.b", "A.B", "1.2", "a", "a..b", "api.test.x")
-        ),
-        ("GET", "chat.postmessage", None, None, None, ("unknown_method", "chat.postmessage")),
-        ("GET", "a%2Eb", None, None, None, ("unknown_method", "a.b")),
+#: A path under `/slack/api/` that none of the routes serves: (verb, path, credential,
+#: `Content-Type`, body, real's answer), as the test below reads ``want``.
+_NO_ROUTE_ROWS = [
+    # a name Slack has no method by, before the credential
+    *(
         (
-            "POST",
+            "GET",
             "nonexistent.method",
+            cred,
             None,
-            "application/json",
-            b"{}",
+            None,
             ("unknown_method", "nonexistent.method"),
-        ),
-        ("POST", "nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
-        # a name real has retired
-        *(("GET", name, None, None, None, ("unknown_method", name)) for name in _RETIRED),
-        *(("POST", name, None, _FORM, b"", ("unknown_method", name)) for name in _RETIRED),
-        # an unserved published method, with a `token` query parameter and with a body; the test
-        # below sends each one the other two credentials
-        ("GET", "emoji.list", "query", None, None, "invalid_auth"),
-        ("POST", "emoji.list", "query", _FORM, b"token=", "not_authed"),
-        ("POST", "emoji.list", "query", _FORM, b"a=b", "invalid_auth"),
-        ("POST", "emoji.list", None, "application/json", b"{}", "not_authed"),
-        ("POST", "emoji.list", None, None, b"{}", "missing_post_type"),
-        ("POST", "emoji.list", None, "text/html", b"{}", "invalid_post_type"),
-        # real's 404 page
-        *(
-            ("GET", path, None, None, None, _PAGE)
-            for path in (
-                "nonexistent-xyz",
-                "a-b.c",
-                "a_b.c",
-                "%C3%A9.x",
-                "a.b;c",
-                "a/b.c",
-                "/a/b.c",
-                "/a-b",
-                "a//b.c",
-                "a\\b.c",
-            )
-        ),
-        ("POST", "nonexistent-xyz", None, "application/json", b"{}", _PAGE),
-        ("POST", "nonexistent-xyz", None, None, b"{}", _PAGE),
-        # the other methods of `slack.UNSERVED_METHODS`, answered as a `GET` is once a body is read
-        ("PUT", "nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
-        *(
-            (verb, "emoji.list", None, None, None, "not_authed")
-            for verb in ("PUT", "PATCH", "DELETE")
-        ),
-        ("PUT", "emoji.list", "bogus", None, None, "invalid_auth"),
-        ("PUT", "nonexistent-xyz", None, None, None, _PAGE),
-        ("PUT", "emoji.list", None, _FORM, b"token=xoxb-not-a-real-token", "invalid_auth"),
-        ("PUT", "emoji.list", None, _MULTIPART, _one_part("token", "xoxb-nope"), "invalid_auth"),
-        ("PUT", "emoji.list", None, "text/html", b"token=xoxb-not-a-real-token", "not_authed"),
-        ("PUT", "emoji.list", None, _FORM, b"{}", "not_authed"),
-        ("PUT", "emoji.list", None, _FORM, b"a{=b", "invalid_arg_name"),
-        ("PUT", "emoji.list", None, _FORM, b"a[b]=c", "invalid_array_arg"),
-        ("PUT", "nonexistent.method", None, _FORM, b"a{=b", "invalid_arg_name"),
-        ("PUT", "oauth.v2.access", None, _FORM, b"token=xoxb-not-a-real-token", "invalid_auth"),
-        # the methods that answer `invalid_code`, by their credential: a refused one, and one that
-        # resolves
-        ("GET", "oauth.v2.access", "query", None, None, "invalid_auth"),
-        ("GET", "oauth.v2.access", "admin", None, None, "invalid_code"),
-        ("GET", "oauth.access", "admin", None, None, "invalid_code"),
-        ("GET", "oauth.v2.user.access", "admin", None, None, "invalid_code"),
-        ("GET", "openid.connect.token", "bogus", None, None, "invalid_auth"),
-        # a method of `slack._ANSWERED_BY_ARGUMENTS`, answered before its arguments are read (its
-        # comment)
-        ("GET", "tooling.tokens.rotate", "bogus", None, None, "invalid_auth"),
-        *(
-            (verb, "blocks.validate", "bogus", None, None, "invalid_auth")
-            for verb in ("PUT", "PATCH", "DELETE")
-        ),
-        ("GET", "blocks.validate", "admin", None, None, "unsupported_http_method"),
-        # a name `slack_sdk` calls that the baseline does not list (`slack._OTHER_ANSWERS`)
-        *(
-            ("GET", name, None, None, None, _MARK_RETIRED)
-            for name in ("channels.mark", "groups.mark", "im.mark", "mpim.mark")
-        ),
-        *(("GET", name, None, None, None, _LIST_RETIRED) for name in ("im.list", "mpim.list")),
-        ("GET", "channels.mark", "admin", None, None, _MARK_RETIRED),
-        ("GET", "channels.mark", "bogus", None, None, "invalid_auth"),
-        ("POST", "im.list", None, _FORM, b"", _LIST_RETIRED),
-        ("GET", "channels.list", None, None, None, ("unknown_method", "channels.list")),
-        ("GET", "im.open", "bogus", None, None, ("unknown_method", "im.open")),
-        # a method a route serves, for another HTTP method, is the route's to answer
-        *((verb, m, None, None, None, _ROUTED) for verb, m in _ROUTED_ROWS),
-        # a name after two `/`s or a `\\` is the method it names (the dedicated test below pins
-        # the served ones; these are the ones this layer answers)
-        ("GET", "/nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
-        ("GET", "//emoji.list", "bogus", None, None, "invalid_auth"),
-        ("GET", "//emoji.list", None, None, None, "not_authed"),
-        ("GET", "/oauth.access", "admin", None, None, "invalid_code"),
-        ("GET", "\\nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
-        ("POST", "/nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
-        # left to the router: a token that resolves, a method of `slack._ANSWERED_BY_ARGUMENTS`, a
-        # path ending in `/`, the dot segments, a name after a `/` or `\\` sent escaped, and a
-        # method outside `slack.UNSERVED_METHODS`, its body unread
-        ("GET", "emoji.list", "admin", None, None, _LEFT),
-        ("GET", "files.getUploadURLExternal", "admin", None, None, _LEFT),
-        ("POST", "blocks.validate", None, _FORM, b"", _LEFT),
-        *(
-            (verb, "blocks.validate", None, None, None, _LEFT)
-            for verb in ("PUT", "PATCH", "DELETE")
-        ),
-        ("POST", "tooling.tokens.rotate", None, _FORM, b"refresh_token=xoxe-1-bogus", _LEFT),
-        ("GET", "oauth.v2.exchange", "bogus", None, None, _LEFT),
-        ("GET", "emoji.list/", None, None, None, _LEFT),
-        ("GET", "%2E", None, None, None, _LEFT),
-        ("GET", "%2E%2E", None, None, None, _LEFT),
-        ("GET", "%2Fapi.test", None, None, None, _LEFT),
-        ("GET", "%5Capi.test", None, None, None, _LEFT),
-        ("GET", "/%2Fapi.test", None, None, None, _LEFT),
-        ("POST", "%2E", None, None, b"{}", _LEFT),
-        ("POST", "%2E%2E", None, None, b"{}", _LEFT),
-        ("OPTIONS", "nonexistent.method", None, None, None, _LEFT),
-        ("OPTIONS", "nonexistent.method", None, _FORM, b"a{=b", _LEFT),
-    ],
-)
-def test_slack_answers_a_path_no_route_serves_as_real_does(
-    client, admin_h, verb, path, credential, content_type, body, want
-):
-    """A path under `/slack/api/` that none of the routes serves, answered as slack.com/api answered
-    each row but a ``_LEFT`` one (the comment above ``slack.UNSERVED_METHODS`` dates the
-    measurement): ``want`` is the error, (error, `req_method`) for `unknown_method`, the whole
-    answer, or real's 404 page. A `POST` with a JSON body carries the `missing_charset` warning, as
-    each of real's answers to one did but the page. A ``_ROUTED`` row only says this layer leaves it
-    be: real runs the method. A ``_LEFT`` row is one this layer leaves to the router, which real
-    answers otherwise."""
-    headers = {}
-    url = f"/slack/api/{path}"
-    if credential == "admin":
-        headers.update(admin_h)
-    elif credential == "bogus":
-        headers["Authorization"] = "Bearer xoxb-not-a-real-token"
-    elif credential == "query":
-        url += "?token=xoxb-not-a-real-token"
-    if content_type is not None:
-        headers["Content-Type"] = content_type
-    r = client.request(verb, url, headers=headers, content=body)
-    if want == _ROUTED:
-        assert b"unknown_method" not in r.content
-        return
-    if want == _LEFT:
-        assert (r.status_code, r.content) == (404, b'{"detail":"Not Found"}')
-        return
-    if want == _PAGE:
-        assert r.status_code == 404
-        assert r.headers["content-type"] == "text/html; charset=utf-8"
-        assert r.content == slack._NOT_FOUND_PAGE
-        return
-    if isinstance(want, dict):
-        expected = dict(want)
-    elif isinstance(want, tuple):
-        expected = {"ok": False, "error": want[0], "req_method": want[1]}
-    else:
-        expected = {"ok": False, "error": want}
-    if content_type == "application/json" and body:
-        expected |= {
-            "warning": "missing_charset",
-            "response_metadata": {"warnings": ["missing_charset"]},
-        }
-    assert r.status_code == 200
-    assert r.content == JSONResponse(expected).body
+        )
+        for cred in (None, "admin")
+    ),
+    # names of each shape, with no token
+    *(
+        ("GET", name, None, None, None, ("unknown_method", name))
+        for name in ("a.b", "A.B", "1.2", "a", "a..b", "api.test.x")
+    ),
+    ("GET", "chat.postmessage", None, None, None, ("unknown_method", "chat.postmessage")),
+    ("GET", "a%2Eb", None, None, None, ("unknown_method", "a.b")),
+    (
+        "POST",
+        "nonexistent.method",
+        None,
+        "application/json",
+        b"{}",
+        ("unknown_method", "nonexistent.method"),
+    ),
+    ("POST", "nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
+    # a name real has retired
+    *(("GET", name, None, None, None, ("unknown_method", name)) for name in _RETIRED),
+    *(("POST", name, None, _FORM, b"", ("unknown_method", name)) for name in _RETIRED),
+    # an unserved published method, with a `token` query parameter and with a body; the test
+    # below sends each one the other two credentials
+    ("GET", "emoji.list", "query", None, None, "invalid_auth"),
+    ("POST", "emoji.list", "query", _FORM, b"token=", "not_authed"),
+    ("POST", "emoji.list", "query", _FORM, b"a=b", "invalid_auth"),
+    ("POST", "emoji.list", None, "application/json", b"{}", "not_authed"),
+    ("POST", "emoji.list", None, None, b"{}", "missing_post_type"),
+    ("POST", "emoji.list", None, "text/html", b"{}", "invalid_post_type"),
+    # real's 404 page
+    *(
+        ("GET", path, None, None, None, _PAGE)
+        for path in (
+            "nonexistent-xyz",
+            "a-b.c",
+            "a_b.c",
+            "%C3%A9.x",
+            "a.b;c",
+            "a/b.c",
+            "/a/b.c",
+            "/a-b",
+            "a//b.c",
+            "a\\b.c",
+            "%20auth.test",
+            "auth.test%0C",
+            "auth.test%20x",
+        )
+    ),
+    # the run real drops off the end of a path, and an LF anywhere else (`slack.drop_the_end`)
+    *(
+        (
+            "GET",
+            f"nonexistent.method{end}",
+            None,
+            None,
+            None,
+            ("unknown_method", "nonexistent.method"),
+        )
+        for end in ("%0A", "%0D")
+    ),
+    *(
+        ("GET", path, None, None, None, _FILE_NOT_FOUND)
+        for path in (
+            "nonexistent.method%0A%0A",
+            "%0Aauth.test",
+            "auth%0A.test",
+            "auth.test%0A/",
+            "auth.test%0A+",
+            "auth.test%0D%0Ax",
+        )
+    ),
+    ("POST", "nonexistent-xyz", None, "application/json", b"{}", _PAGE),
+    ("POST", "nonexistent-xyz", None, None, b"{}", _PAGE),
+    # the other methods of `slack.UNSERVED_METHODS`, answered as a `GET` is once a body is read
+    ("PUT", "nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
+    *((verb, "emoji.list", None, None, None, "not_authed") for verb in ("PUT", "PATCH", "DELETE")),
+    ("PUT", "emoji.list", "bogus", None, None, "invalid_auth"),
+    ("PUT", "nonexistent-xyz", None, None, None, _PAGE),
+    ("PUT", "emoji.list", None, _FORM, b"token=xoxb-not-a-real-token", "invalid_auth"),
+    ("PUT", "emoji.list", None, _MULTIPART, _one_part("token", "xoxb-nope"), "invalid_auth"),
+    ("PUT", "emoji.list", None, "text/html", b"token=xoxb-not-a-real-token", "not_authed"),
+    ("PUT", "emoji.list", None, _FORM, b"{}", "not_authed"),
+    ("PUT", "emoji.list", None, _FORM, b"a{=b", "invalid_arg_name"),
+    ("PUT", "emoji.list", None, _FORM, b"a[b]=c", "invalid_array_arg"),
+    ("PUT", "nonexistent.method", None, _FORM, b"a{=b", "invalid_arg_name"),
+    ("PUT", "oauth.v2.access", None, _FORM, b"token=xoxb-not-a-real-token", "invalid_auth"),
+    # the methods that answer `invalid_code`, by their credential: a refused one, and one that
+    # resolves
+    ("GET", "oauth.v2.access", "query", None, None, "invalid_auth"),
+    ("GET", "oauth.v2.access", "admin", None, None, "invalid_code"),
+    ("GET", "oauth.access", "admin", None, None, "invalid_code"),
+    ("GET", "oauth.v2.user.access", "admin", None, None, "invalid_code"),
+    ("GET", "openid.connect.token", "bogus", None, None, "invalid_auth"),
+    # a method of `slack._ANSWERED_BY_ARGUMENTS`, answered before its arguments are read (its
+    # comment)
+    ("GET", "tooling.tokens.rotate", "bogus", None, None, "invalid_auth"),
+    *(
+        (verb, "blocks.validate", "bogus", None, None, "invalid_auth")
+        for verb in ("PUT", "PATCH", "DELETE")
+    ),
+    ("GET", "blocks.validate", "admin", None, None, "unsupported_http_method"),
+    # a name `slack_sdk` calls that the baseline does not list (`slack._OTHER_ANSWERS`)
+    *(
+        ("GET", name, None, None, None, _MARK_RETIRED)
+        for name in ("channels.mark", "groups.mark", "im.mark", "mpim.mark")
+    ),
+    *(("GET", name, None, None, None, _LIST_RETIRED) for name in ("im.list", "mpim.list")),
+    ("GET", "channels.mark", "admin", None, None, _MARK_RETIRED),
+    ("GET", "channels.mark", "bogus", None, None, "invalid_auth"),
+    ("POST", "im.list", None, _FORM, b"", _LIST_RETIRED),
+    ("GET", "channels.list", None, None, None, ("unknown_method", "channels.list")),
+    ("GET", "im.open", "bogus", None, None, ("unknown_method", "im.open")),
+    # a method a route serves, for another HTTP method, is the route's to answer
+    *((verb, m, None, None, None, _ROUTED) for verb, m in _ROUTED_ROWS),
+    # a name after two `/`s or a `\\` is the method it names (the dedicated test below pins
+    # the served ones; these are the ones this layer answers)
+    ("GET", "/nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
+    ("GET", "//emoji.list", "bogus", None, None, "invalid_auth"),
+    ("GET", "//emoji.list", None, None, None, "not_authed"),
+    ("GET", "/oauth.access", "admin", None, None, "invalid_code"),
+    ("GET", "\\nonexistent.method", None, None, None, ("unknown_method", "nonexistent.method")),
+    ("POST", "/nonexistent.method", None, _FORM, b"{}", "invalid_form_data"),
+    # left to the router: a token that resolves, a method of `slack._ANSWERED_BY_ARGUMENTS`, a
+    # path ending in `/`, the dot segments, a name after a `/` or `\\` sent escaped, and a
+    # method outside `slack.UNSERVED_METHODS`, its body unread
+    ("GET", "emoji.list", "admin", None, None, _LEFT),
+    ("GET", "files.getUploadURLExternal", "admin", None, None, _LEFT),
+    ("POST", "blocks.validate", None, _FORM, b"", _LEFT),
+    *((verb, "blocks.validate", None, None, None, _LEFT) for verb in ("PUT", "PATCH", "DELETE")),
+    ("POST", "tooling.tokens.rotate", None, _FORM, b"refresh_token=xoxe-1-bogus", _LEFT),
+    ("GET", "oauth.v2.exchange", "bogus", None, None, _LEFT),
+    ("GET", "emoji.list/", None, None, None, _LEFT),
+    ("GET", "%2E", None, None, None, _LEFT),
+    ("GET", "%2E%2E", None, None, None, _LEFT),
+    ("GET", "%2Fapi.test", None, None, None, _LEFT),
+    ("GET", "%5Capi.test", None, None, None, _LEFT),
+    ("GET", "/%2Fapi.test", None, None, None, _LEFT),
+    ("POST", "%2E", None, None, b"{}", _LEFT),
+    ("POST", "%2E%2E", None, None, b"{}", _LEFT),
+    ("OPTIONS", "nonexistent.method", None, None, None, _LEFT),
+    ("OPTIONS", "nonexistent.method", None, _FORM, b"a{=b", _LEFT),
+]
 
 
-@pytest.mark.parametrize("run", ["/", "//", "\\", "\\\\", "\\/", "/\\"])
-@pytest.mark.parametrize(
-    "verb, name, credential, body",
-    [
-        ("GET", "api.test", None, None),
-        ("GET", "api.test", "bogus", None),
-        ("POST", "api.test", None, b"a=b"),
-        ("GET", "conversations.list", None, None),
-        ("GET", "conversations.list", "bogus", None),
-        ("GET", "conversations.list", "admin", None),
-        ("GET", "conversations.list", "ava", None),
-        ("POST", "conversations.list", "ava", b""),
-    ],
+def test_slack_answers_a_path_no_route_serves_as_real_does(client, admin_h):
+    """Each row of `_NO_ROUTE_ROWS`, answered as slack.com/api answered it but a ``_LEFT`` one (the
+    comment above ``slack.UNSERVED_METHODS`` dates the measurement): ``want`` is the error, (error,
+    `req_method`) for `unknown_method`, the whole answer, or one of real's two 404 pages. A `POST`
+    with a JSON body carries the `missing_charset` warning, as each of real's answers to one did but
+    the pages. A ``_ROUTED`` row only says this layer leaves it be: real runs the method. A
+    ``_LEFT`` row is one this layer leaves to the router, which real answers otherwise."""
+    pages = {
+        _PAGE: ("text/html; charset=utf-8", slack._NOT_FOUND_PAGE),
+        _FILE_NOT_FOUND: ("text/html", slack.FILE_NOT_FOUND_PAGE),
+    }
+    got, expected = {}, {}
+    for verb, path, credential, content_type, body, want in _NO_ROUTE_ROWS:
+        headers = {}
+        url = f"/slack/api/{path}"
+        if credential == "admin":
+            headers.update(admin_h)
+        elif credential == "bogus":
+            headers["Authorization"] = "Bearer xoxb-not-a-real-token"
+        elif credential == "query":
+            url += "?token=xoxb-not-a-real-token"
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        r = client.request(verb, url, headers=headers, content=body)
+        key = f"{verb} {path} {credential} {content_type} {body!r}"
+        if want == _ROUTED:
+            got[key], expected[key] = b"unknown_method" in r.content, False
+            continue
+        if want == _LEFT:
+            got[key] = (r.status_code, r.content)
+            expected[key] = (404, b'{"detail":"Not Found"}')
+            continue
+        if want in (_PAGE, _FILE_NOT_FOUND):
+            got[key] = (r.status_code, r.headers["content-type"], r.content)
+            expected[key] = (404, *pages[want])
+            continue
+        if isinstance(want, dict):
+            answer = dict(want)
+        elif isinstance(want, tuple):
+            answer = {"ok": False, "error": want[0], "req_method": want[1]}
+        else:
+            answer = {"ok": False, "error": want}
+        if content_type == "application/json" and body:
+            answer |= {
+                "warning": "missing_charset",
+                "response_metadata": {"warnings": ["missing_charset"]},
+            }
+        got[key] = (r.status_code, r.content)
+        expected[key] = (200, JSONResponse(answer).body)
+    assert len(got) == len(_NO_ROUTE_ROWS)
+    assert got == expected
+
+
+_SERVED_CASES = [
+    ("GET", "api.test", None, None),
+    ("GET", "api.test", "bogus", None),
+    ("POST", "api.test", None, b"a=b"),
+    ("GET", "conversations.list", None, None),
+    ("GET", "conversations.list", "bogus", None),
+    ("GET", "conversations.list", "admin", None),
+    ("GET", "conversations.list", "ava", None),
+    ("POST", "conversations.list", "ava", b""),
+]
+#: The ends `slack.drop_the_end` takes off, as real was sent them, but `%0A`, which the test below
+#: sends with each case.
+_DROPPED_ENDS = (
+    *("%09 %0a %0B %0b %0D %0d %20 %2B %2b + %0D%0A %0D%0a %0D%0D %20%0A".split()),
+    *("%09%0D%0A %0B%0A %2B%0A ++%0A %20+%09 %20%20%0A %0D%0D%0A".split()),
 )
-def test_slack_a_method_after_a_run_of_slashes_is_the_method(
-    client, admin_h, tokens, run, verb, name, credential, body
+
+
+#: A served method's name with a run before or after it: (run before, run after, verb, name,
+#: credential, body).
+_AMID_ROWS = [
+    *(
+        (run, "", *case)
+        for run in ("/", "//", "\\", "\\\\", "\\/", "/\\")
+        for case in _SERVED_CASES
+    ),
+    *(("", "%0A", *case) for case in _SERVED_CASES),
+    *(("", end, "GET", "conversations.list", "ava", None) for end in _DROPPED_ENDS),
+    ("/", "%0A", "GET", "conversations.list", "ava", None),
+]
+
+
+@pytest.mark.parametrize("credential", [None, "bogus", "admin", "ava"])
+def test_slack_a_method_amid_what_real_reads_past_is_the_method(
+    client, admin_h, tokens, credential
 ):
-    """A served method's name after a run of `/`s and `\\`s, in any mix, is answered as the name on
-    its own spelling, with its credential pair, and with what the admin token and a scoped one each
-    see (``backlot.main.merge_slashes_before_a_slack_method_name`` has the measurement)."""
-    headers = {"Content-Type": _FORM} if body is not None else {}
-    if credential == "bogus":
-        headers["Authorization"] = "Bearer xoxb-not-a-real-token"
-    elif credential == "admin":
-        headers.update(admin_h)
-    elif credential == "ava":
-        headers["Authorization"] = f"Bearer {tokens['ava@acme.com']}"
-    plain = client.request(verb, f"/slack/api/{name}", headers=headers, content=body)
-    merged = client.request(verb, f"/slack/api/{run}{name}", headers=headers, content=body)
-    assert plain.status_code == 200
-    assert (merged.status_code, merged.content) == (plain.status_code, plain.content)
+    """Each row of `_AMID_ROWS` sent with ``credential``: a served method's name after a run of `/`s
+    and `\\`s, in any mix, or ahead of a run real drops off the end of the path, is answered as the
+    name on its own spelling, with its credential pair, and with what the admin token and a scoped
+    one each see (``backlot.main.merge_slashes_before_a_slack_method_name`` and
+    ``slack.drop_the_end`` have the measurement)."""
+    rows = [row for row in _AMID_ROWS if row[4] == credential]
+    got, expected = {}, {}
+    for before, after, verb, name, _, body in rows:
+        headers = {"Content-Type": _FORM} if body is not None else {}
+        if credential == "bogus":
+            headers["Authorization"] = "Bearer xoxb-not-a-real-token"
+        elif credential == "admin":
+            headers.update(admin_h)
+        elif credential == "ava":
+            headers["Authorization"] = f"Bearer {tokens['ava@acme.com']}"
+        plain = client.request(verb, f"/slack/api/{name}", headers=headers, content=body)
+        merged = client.request(
+            verb, f"/slack/api/{before}{name}{after}", headers=headers, content=body
+        )
+        key = f"{verb} {before}{name}{after} {body!r}"
+        got[key] = (plain.status_code, merged.status_code, merged.content == plain.content)
+        expected[key] = (200, 200, True)
+    assert len(got) == len(rows)
+    assert got == expected
 
 
 # The two answers here where they are not `not_authed` and `invalid_auth`: real's, or `_LEFT` for
@@ -4162,51 +4261,356 @@ def test_post_message_is_readable_back_by_the_poster(wclient, tokens):
     assert float(info(synth.slack_channel_id("eng-announcements"))["last_read"]) > 0
 
 
-@pytest.mark.parametrize(
-    "bounds, forward",
-    [
-        ({}, False),
-        ({"oldest": "0"}, False),
-        ({"latest": 4}, False),
-        ({"oldest": 1, "latest": 5}, False),
-        ({"oldest": 1}, True),
-        ({"oldest": 1, "latest": "0"}, True),
-        ({"oldest": 1, "latest": ""}, True),
-        ({"oldest": "", "latest": 4}, False),
-    ],
-)
-def test_slack_history_pages_newest_first_away_from_its_bound(wclient, tokens, bounds, forward):
-    """The pages `conversations_history` serves under each bound, as its comment records them. An
-    int bound is the index of a message, oldest first; a string is sent as is."""
-    h = _uh(tokens, "ava@acme.com")
-    cid = synth.slack_channel_id("incidents")
-    history = "/slack/api/conversations.history"
+def _six_messages(wclient, h, cid) -> list[str]:
+    """The ts of `incidents`' six messages, oldest first: the corpus's one and five posted."""
     for n in range(5):
         wclient.post(
             "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": f"m{n}"}
         )
     every = [
-        m["ts"] for m in wclient.post(history, headers=h, data={"channel": cid}).json()["messages"]
+        m["ts"]
+        for m in wclient.post(
+            "/slack/api/conversations.history", headers=h, data={"channel": cid}
+        ).json()["messages"]
     ]
     oldest_first = sorted(every, key=lambda ts: tuple(map(int, ts.split("."))))
     assert len(every) == 6 and every == oldest_first[::-1]
+    return oldest_first
 
-    sent = {k: oldest_first[v] if isinstance(v, int) else v for k, v in bounds.items()}
-    pages, cursor = [], ""
-    while True:
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode()
+
+
+def _next_ts_of(ts: str) -> str:
+    return _b64(f"next_ts:{ts.replace('.', '')}".encode())
+
+
+# Each row is the bounds `conversations.history` is sent, an int being the index of one of
+# `_six_messages`, oldest first, and a string sent as is; whether its pages walk forward; and
+# whether it posts one more message once its first page is served.
+_HISTORY_PAGE_ROWS = [
+    ({}, False, False),
+    ({"oldest": "0"}, False, False),
+    ({"latest": 4}, False, False),
+    ({"oldest": 1, "latest": 5}, False, False),
+    ({"oldest": 1}, True, False),
+    ({"oldest": 1, "latest": "0"}, True, False),
+    ({"oldest": 1, "latest": ""}, True, False),
+    ({"oldest": "", "latest": 4}, False, False),
+    ({}, False, True),
+    ({"latest": "1999999999"}, False, True),
+    ({"oldest": 1}, True, True),
+]
+
+
+def test_slack_history_pages_newest_first_away_from_its_bound(wclient, tokens):
+    """The pages `conversations_history` serves under each row of `_HISTORY_PAGE_ROWS`, as its
+    comment records them, and the cursor each page carries. A message a row posts once its first
+    page is served is one a walk back from the newest message never reaches and a walk forward
+    reaches last; the rows after it page over it as over any other."""
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    history = "/slack/api/conversations.history"
+    six = _six_messages(wclient, h, cid)
+    present = list(six)
+    got, expected = {}, {}
+    for bounds, forward, late in _HISTORY_PAGE_ROWS:
+        sent = {k: six[v] if isinstance(v, int) else v for k, v in bounds.items()}
+        before = list(present)
+        pages, cursors, cursor = [], [], ""
+        while len(pages) <= len(present):
+            body = wclient.post(
+                history, headers=h, data={"channel": cid, "limit": 2, "cursor": cursor, **sent}
+            ).json()
+            pages.append([m["ts"] for m in body["messages"]])
+            if late and len(pages) == 1:
+                present.append(
+                    wclient.post(
+                        "/slack/api/chat.postMessage",
+                        headers=h,
+                        data={"channel": cid, "text": "late"},
+                    ).json()["ts"]
+                )
+            cursor = body.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+            cursors.append(cursor)
+
+        lo, hi = bounds.get("oldest"), bounds.get("latest")
+        reached = present if forward else before
+        window = reached[lo + 1 if isinstance(lo, int) else 0 : hi if isinstance(hi, int) else None]
+        walk = window if forward else window[::-1]
+        chunks = [walk[i : i + 2] for i in range(0, len(walk), 2)]
+        key = (urllib.parse.urlencode(bounds) or "no bound") + (", late" if late else "")
+        got[key] = (pages, cursors)
+        expected[key] = (
+            [chunk[::-1] if forward else chunk for chunk in chunks],
+            [_next_ts_of(chunk[0]) for chunk in chunks[1:]],
+        )
+    assert got == expected
+
+
+def _between(older: str, newer: str) -> str:
+    """A cursor naming a ts halfway between two messages, where there is none."""
+    a, b = (int(ts.replace(".", "")) for ts in (older, newer))
+    return _b64(f"next_ts:{(a + b) // 2}".encode())
+
+
+def _url_safe(raw: str) -> str:
+    """``raw`` in URL-safe base64, where its standard spelling holds both `+` and `/`."""
+    standard = _b64(raw.encode())
+    assert "+" in standard and "/" in standard
+    return standard.translate(str.maketrans("+/", "-_"))
+
+
+def _naming(fmt: str):
+    """A row's cursor: ``fmt``, with message 3's ts in place of ``{}`` and without its dot, in
+    base64."""
+    return lambda ts: _b64(fmt.format(ts[3].replace(".", "")).encode())
+
+
+# Each row is a cursor built by hand, as `slack._next_ts` reads one, by its name and as it is built,
+# the bounds beside it and `limit`; ``served`` is the page, by index oldest first, or the error. In
+# a name, `<3>` is message 3's ts without its dot.
+_HISTORY_CURSOR_ROWS = [
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {}, 2, [3, 2]),
+    ("between <0> and <1>", lambda ts: _between(ts[0], ts[1]), {}, 2, [0]),
+    ("between <0> and <1>", lambda ts: _between(ts[0], ts[1]), {"oldest": "1"}, 2, [2, 1]),
+    ("next_ts:<3 with its dot>", lambda ts: _b64(f"next_ts:{ts[3]}".encode()), {}, 2, []),
+    ("next_ts: <3>", _naming("next_ts: {}"), {}, 2, [3, 2]),
+    ("next_ts:+<3>", _naming("next_ts:+{}"), {}, 2, [3, 2]),
+    ("next_ts:<3>abc", _naming("next_ts:{}abc"), {}, 2, [3, 2]),
+    ("next_ts:<3>LF", _naming("next_ts:{}\n"), {}, 2, [3, 2]),
+    ("next_ts:VT<3>", _naming("next_ts:\x0b{}"), {}, 2, [3, 2]),
+    ("next_ts:FF<3>", _naming("next_ts:\x0c{}"), {}, 2, [3, 2]),
+    ("next_ts:<3>, unpadded", lambda ts: _next_ts_of(ts[3]).rstrip("="), {}, 2, [3, 2]),
+    ("next_ts:<3>, padded twice", lambda ts: _next_ts_of(ts[3]) + "==", {}, 2, [3, 2]),
+    (
+        "next_ts:<3>aa?aa>, URL-safe",
+        lambda ts: _url_safe(f"next_ts:{ts[3].replace('.', '')}aa?aa>"),
+        {},
+        2,
+        [3, 2],
+    ),
+    ("next_ts:abc", lambda ts: _b64(b"next_ts:abc"), {}, 2, [5, 4]),
+    ("next_ts:abc", lambda ts: _b64(b"next_ts:abc"), {"oldest": 0}, 2, [2, 1]),
+    ("next_ts:00", lambda ts: _b64(b"next_ts:00"), {}, 2, [5, 4]),
+    ("next_ts:-1", lambda ts: _b64(b"next_ts:-1"), {}, 2, [5, 4]),
+    ("next_ts:<not UTF-8>", lambda ts: _b64(b"next_ts:\xff\xfe"), {}, 2, [5, 4]),
+    ("next_ts:NUL<3>", _naming("next_ts:\x00{}"), {}, 2, [5, 4]),
+    ("next_ts:FF", lambda ts: _b64(b"next_ts:\x0c"), {}, 2, [5, 4]),
+    ("next_ts:HTAB0", lambda ts: _b64(b"next_ts:\t0"), {}, 2, [5, 4]),
+    ("next_ts:+-1", lambda ts: _b64(b"next_ts:+-1"), {"latest": 4}, 2, [3, 2]),
+    # values below zero and at the ends of the 64-bit range
+    ("next_ts:-1", lambda ts: _b64(b"next_ts:-1"), {"latest": 1}, 2, [5, 4]),
+    ("next_ts: -1", lambda ts: _b64(b"next_ts: -1"), {"latest": 1}, 2, [5, 4]),
+    ("next_ts:-2", lambda ts: _b64(b"next_ts:-2"), {}, 2, []),
+    ("next_ts:2**63 - 1", lambda ts: _b64(f"next_ts:{2**63 - 1}".encode()), {}, 2, []),
+    ("next_ts:2**64", lambda ts: _b64(f"next_ts:{2**64}".encode()), {}, 2, []),
+    ("next_ts:20 nines", lambda ts: _b64(b"next_ts:" + b"9" * 20), {}, 2, []),
+    ("next_ts:5,000 nines", lambda ts: _b64(b"next_ts:" + b"9" * 5000), {}, 2, []),
+    ("next_ts:-1", lambda ts: _b64(b"next_ts:-1"), {"oldest": 4}, 2, [1, 0]),
+    (
+        "next_ts:1 - 2**63",
+        lambda ts: _b64(f"next_ts:{1 - 2**63}".encode()),
+        {"oldest": 4},
+        2,
+        [1, 0],
+    ),
+    ("next_ts:-2**63", lambda ts: _b64(f"next_ts:{-(2**63)}".encode()), {"oldest": 4}, 2, []),
+    ("next_ts:-(20 nines)", lambda ts: _b64(b"next_ts:-" + b"9" * 20), {"oldest": 4}, 2, []),
+    ("next_ts:-(5,000 nines)", lambda ts: _b64(b"next_ts:-" + b"9" * 5000), {"oldest": 4}, 2, []),
+    # a cursor beside a bound
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {"latest": 1}, 2, [3, 2]),
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {"oldest": 4}, 2, [4, 3]),
+    ("next_ts:<3>", lambda ts: _next_ts_of(ts[3]), {"oldest": 1, "latest": 5}, 10, [3, 2]),
+    ("next_ts:", lambda ts: _b64(b"next_ts:"), {}, 2, "invalid_cursor"),
+    ("next_ts:SP", lambda ts: _b64(b"next_ts: "), {}, 2, "invalid_cursor"),
+    ("next_ts:HTAB", lambda ts: _b64(b"next_ts:\t"), {}, 2, "invalid_cursor"),
+    ("next_ts:NUL", lambda ts: _b64(b"next_ts:\x00"), {}, 2, "invalid_cursor"),
+    ("next_ts:0", lambda ts: _b64(b"next_ts:0"), {}, 2, "invalid_cursor"),
+    ("o:2", lambda ts: _b64(b"o:2"), {}, 2, "invalid_cursor"),
+    ("NEXT_TS:<3>", _naming("NEXT_TS:{}"), {}, 2, "invalid_cursor"),
+    ("next_ts:<3>:x", _naming("next_ts:{}:x"), {}, 2, "invalid_cursor"),
+    (
+        "next_ts:<3>, not encoded",
+        lambda ts: f"next_ts:{ts[3].replace('.', '')}",
+        {},
+        2,
+        "invalid_cursor",
+    ),
+    ("zzz", lambda ts: "zzz", {}, 2, "invalid_cursor"),
+]
+
+
+def test_slack_history_reads_a_cursor_for_the_ts_it_names(wclient, tokens):
+    """Each row of `_HISTORY_CURSOR_ROWS` sent to `conversations.history` over six messages, a
+    bound given as an int being the index of a message, oldest first."""
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    ts = _six_messages(wclient, h, cid)
+    got, expected = {}, {}
+    for name, cursor, bounds, limit, served in _HISTORY_CURSOR_ROWS:
+        sent = {k: ts[v] if isinstance(v, int) else v for k, v in bounds.items()}
         body = wclient.post(
-            history, headers=h, data={"channel": cid, "limit": 2, "cursor": cursor, **sent}
+            "/slack/api/conversations.history",
+            headers=h,
+            data={"channel": cid, "limit": limit, "cursor": cursor(ts), **sent},
         ).json()
-        pages.append([m["ts"] for m in body["messages"]])
-        cursor = body.get("response_metadata", {}).get("next_cursor")
-        if not cursor:
-            break
+        key = (name, urllib.parse.urlencode(bounds), limit)
+        got[key] = body.get("error") or [ts.index(m["ts"]) for m in body["messages"]]
+        expected[key] = served
+    assert got == expected
 
-    lo, hi = bounds.get("oldest"), bounds.get("latest")
-    window = oldest_first[lo + 1 if isinstance(lo, int) else 0 : hi if isinstance(hi, int) else 6]
-    walk = window if forward else window[::-1]
-    chunks = [walk[i : i + 2] for i in range(0, len(walk), 2)]
-    assert pages == [chunk[::-1] if forward else chunk for chunk in chunks]
+
+@pytest.fixture
+def slack_thread(wclient, tokens):
+    """A parent and five replies posted to `incidents`, the second a `thread_broadcast`, and the ts
+    of each, the parent first."""
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+    post = "/slack/api/chat.postMessage"
+    parent = wclient.post(post, headers=h, data={"channel": cid, "text": "P"}).json()["ts"]
+    replies = [
+        wclient.post(
+            post,
+            headers=h,
+            data={
+                "channel": cid,
+                "text": f"r{n}",
+                "thread_ts": parent,
+                **({"reply_broadcast": "true"} if n == 2 else {}),
+            },
+        ).json()["ts"]
+        for n in range(1, 6)
+    ]
+    return h, cid, [parent, *replies]
+
+
+_GREATER = ["[ERROR] must be greater than 1 [json-pointer:/limit]"]
+_LESS = ["[ERROR] must be less than 1000 [json-pointer:/limit]"]
+
+
+# Each row is what `conversations.replies` is sent beside `channel` and the parent's `ts`, a
+# value of None not being sent; the messages it serves by place in the thread, the parent 0, or
+# the error and its lines; and the place its next cursor names. An int `ts`, bound or cursor is the
+# place of a message, and a bytes cursor is sent in base64.
+_REPLIES_ROWS = [
+    ({}, [0, 1, 2, 3, 4, 5], None),
+    ({"limit": 1}, [0, 5], 4),
+    ({"limit": 2}, [0, 4, 5], 3),
+    ({"limit": 2, "cursor": 3}, [0, 2, 3], 1),
+    ({"limit": 2, "cursor": 1}, [0, 1], None),
+    ({"limit": 3}, [0, 3, 4, 5], 2),
+    ({"limit": 1000}, [0, 1, 2, 3, 4, 5], None),
+    ({"limit": 2, "oldest": 1}, [0, 2, 3], 4),
+    ({"limit": 2, "oldest": 1, "cursor": 4}, [0, 5], None),
+    ({"limit": 2, "latest": 5}, [0, 3, 4], 2),
+    ({"limit": 2, "latest": 5, "cursor": 2}, [0, 1, 2], None),
+    ({"limit": 2, "oldest": 1, "latest": 5}, [0, 3, 4], 2),
+    ({"latest": 0}, [0], None),
+    ({"oldest": 5}, [0], None),
+    ({"latest": 1, "inclusive": "true"}, [0, 1], None),
+    ({"oldest": 1, "inclusive": "true"}, [0, 1, 2, 3, 4, 5], None),
+    ({"latest": 0, "inclusive": "true"}, [0], None),
+    ({"limit": 2, "oldest": 0, "inclusive": "true"}, [0, 1, 2], 3),
+    ({"oldest": 3, "latest": 3, "inclusive": "true"}, [0, 3], None),
+    ({"oldest": 2, "latest": 5, "inclusive": "true"}, [0, 2, 3, 4, 5], None),
+    ({"limit": 2, "oldest": 2, "latest": 5, "inclusive": "true"}, [0, 4, 5], 3),
+    ({"latest": "abc", "oldest": "nan"}, [0, 1, 2, 3, 4, 5], None),
+    # a cursor beside a bound
+    ({"limit": 2, "latest": 2, "cursor": 5}, [0, 1], None),
+    ({"limit": 2, "oldest": 3, "cursor": 1}, [0, 4, 5], None),
+    ({"limit": 2, "cursor": 0}, [0], None),
+    ({"cursor": b"next_ts:1"}, [0], None),
+    # values below zero and past the 64-bit range
+    ({"limit": 2, "cursor": b"next_ts:-1"}, [0, 4, 5], 3),
+    ({"limit": 2, "latest": 5, "cursor": b"next_ts:-1"}, [0, 3, 4], 2),
+    ({"limit": 2, "oldest": 1, "cursor": b"next_ts:-1"}, [0, 2, 3], 4),
+    ({"limit": 2, "cursor": f"next_ts:{2**63}".encode()}, [0, 4, 5], 3),
+    ({"limit": 2, "cursor": b"next_ts:" + b"9" * 5000}, [0, 4, 5], 3),
+    ({"limit": 2, "oldest": 1, "cursor": b"next_ts:-" + b"9" * 5000}, [0, 2, 3], 4),
+    ({"limit": 2, "oldest": 1, "cursor": f"next_ts:{2**63}".encode()}, [0], None),
+    # a reply's ts is that reply
+    ({"ts": 2, "limit": 1}, [2], None),
+    ({"ts": 2, "cursor": 4}, [2], None),
+    # `limit`, read as a double and held to 1 to 1000 before its integer part is served
+    *(
+        ({"limit": v}, ("invalid_arguments", _GREATER), None)
+        for v in ("0", "00", "-1", "-5", "0.9", "0.9999999999999999", "-1e400")
+    ),
+    *(
+        ({"limit": v}, ("invalid_arguments", _LESS), None)
+        for v in ("1001", "1000.5", "1000.000000000001", "1e19", "9223372036854775808", "1e400")
+    ),
+    ({"limit": "1.5"}, [0, 5], 4),
+    ({"limit": "0.99999999999999999"}, [0, 5], 4),
+    ({"limit": "999.9"}, [0, 1, 2, 3, 4, 5], None),
+    ({"limit": "1000.0000000000000001"}, [0, 1, 2, 3, 4, 5], None),
+    (
+        {"ts": 2, "limit": "abc"},
+        ("invalid_arguments", ["[ERROR] must provide a number [json-pointer:/limit]"]),
+        None,
+    ),
+    ({"cursor": b"next_ts:abc"}, ("invalid_cursor", None), None),
+    ({"cursor": b"next_ts:0"}, ("invalid_cursor", None), None),
+    ({"ts": 2, "cursor": "zzz"}, ("invalid_cursor", None), None),
+    ({"cursor": b"next_ts:-+1"}, ("invalid_cursor", None), None),
+    # the order the refusals come in: `limit`, the channel, the cursor, then the thread
+    ({"channel": "C_NOPE", "limit": "0"}, ("invalid_arguments", _GREATER), None),
+    ({"channel": "C_NOPE", "cursor": "zzz"}, ("channel_not_found", None), None),
+    ({"ts": "1.0", "cursor": "zzz"}, ("invalid_cursor", None), None),
+    ({"ts": "", "cursor": "zzz"}, ("invalid_cursor", None), None),
+    (
+        {"ts": None, "limit": "abc"},
+        ("invalid_arguments", ["[ERROR] missing required field: ts"]),
+        None,
+    ),
+]
+
+
+def _shown(value) -> str:
+    """A value as a row of `_REPLIES_ROWS` is named by: as written, and a long one by its start and
+    length."""
+    text = repr(value)
+    return text if len(text) <= 40 else f"{text[:24]}... ({len(value)} long)"
+
+
+def test_slack_replies_page_a_thread(wclient, slack_thread):
+    """`conversations_replies` on a parent and five replies, as its comments record real: each row
+    of `_REPLIES_ROWS`, with ``then`` the place the next cursor names."""
+    h, cid, ts = slack_thread
+
+    def at(k, v):
+        if isinstance(v, bytes):
+            return _b64(v)
+        if not isinstance(v, int) or k == "limit":
+            return v
+        return _next_ts_of(ts[v]) if k == "cursor" else ts[v]
+
+    got, expected = {}, {}
+    for params, served, then in _REPLIES_ROWS:
+        sent = {"channel": cid, "ts": ts[0], **{k: at(k, v) for k, v in params.items()}}
+        sent = {k: v for k, v in sent.items() if v is not None}
+        body = wclient.post("/slack/api/conversations.replies", headers=h, data=sent).json()
+        key = " ".join(f"{k}={_shown(v)}" for k, v in params.items()) or "nothing"
+        lines = body.get("response_metadata", {}).get("messages")
+        if isinstance(served, tuple):
+            got[key] = (body["ok"], body.get("error"), lines)
+            expected[key] = (False, *served)
+            continue
+        got[key] = (
+            [ts.index(m["ts"]) for m in body.get("messages", [])],
+            body.get("has_more"),
+            body.get("response_metadata"),
+        )
+        expected[key] = (
+            served,
+            then is not None,
+            None if then is None else {"next_cursor": _next_ts_of(ts[then])},
+        )
+    assert got == expected
 
 
 def test_only_post_message_takes_a_channel_by_name(wclient, tokens):
@@ -4646,6 +5050,7 @@ def test_a_deleted_thread_root_leaves_the_placeholder_real_leaves(wclient, token
     assert stub["subtype"] == "tombstone" and stub["hidden"] is True
     assert stub["user"] == slack.SLACKBOT_ID and stub["parent_user_id"] == slack.SLACKBOT_ID
     assert stub["text"] == slack.TOMBSTONE_TEXT and "team" not in stub
+    assert "bot_id" not in stub and "app_id" not in stub and "bot_profile" not in stub
     for query in ("deleted", "zarquonroot"):
         hits = wclient.post("/slack/api/search.messages", headers=h, data={"query": query}).json()[
             "messages"
@@ -5811,11 +6216,12 @@ def test_editing_a_corpus_message_leaves_one_search_hit(wclient, tokens, ro_conn
     h = _uh(tokens, email)
     cid = synth.slack_channel_id(channel)
     old_word = [w for w in content.split() if len(w) > 4][0].strip(".,?!")
-    wclient.post(
+    edited = wclient.post(
         "/slack/api/chat.update",
         headers=h,
         data={"channel": cid, "ts": ts, "text": "zarquon replaced the body"},
-    )
+    ).json()["message"]
+    assert "app_id" not in edited and "bot_profile" not in edited
     hits = wclient.post("/slack/api/search.messages", headers=h, data={"query": "zarquon"}).json()[
         "messages"
     ]
@@ -5894,6 +6300,8 @@ def test_replying_to_a_reply_lands_in_the_same_thread(wclient, tokens, ro_conn):
         "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root_ts}
     ).json()["messages"]
     assert posted["ts"] in [m["ts"] for m in thread]
+    root_user = next(m["user"] for m in thread if m["ts"] == root_ts)
+    assert posted["message"]["parent_user_id"] == root_user
 
 
 def _broadcast_thread(wclient, h, cid):
@@ -6006,6 +6414,7 @@ def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_ref
             ).json()
             assert j["ok"] is True, value
             assert "thread_ts" not in j["message"] and "root" not in j["message"], value
+            assert "parent_user_id" not in j["message"], value
             assert (j["message"].get("subtype"), "team" in j["message"]) == (
                 subtype,
                 subtype is None,
@@ -6051,26 +6460,83 @@ def test_a_thread_ts_naming_nothing_posts_top_level_and_an_unreadable_one_is_ref
     )
 
 
-@pytest.mark.parametrize("who", ["admin", "person"])
-def test_a_posted_message_carries_bot_id_and_blocks_and_no_subtype(wclient, tokens, admin_h, who):
-    # `_message` records the measurement: real carries `bot_id` and `blocks` on every message
-    # posted over the Web API, under a user token as well as a bot one, in history as well as in
-    # the echo, and no `subtype` on either. A corpus message carries `client_msg_id` and no
-    # `bot_id`, since it stands for one a Slack client posted.
-    h = admin_h if who == "admin" else _uh(tokens, "ava@acme.com")
+def test_a_posted_message_carries_bot_id_and_blocks_and_no_subtype(wclient, tokens, admin_h):
+    # `_bot_profile` records the measurement with one app's user and bot tokens: each of these
+    # six methods carries the app profile. Both tokens share the app, but have different bot ids;
+    # only the bot token's profile carries user_id. Corpus messages carry neither app field.
     cid = synth.slack_channel_id("incidents")
-    ts = wclient.post(
-        "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "ci says"}
-    ).json()["ts"]
-    hist = wclient.post(
-        "/slack/api/conversations.history", headers=admin_h, data={"channel": cid, "limit": 200}
-    ).json()["messages"]
-    msg = [m for m in hist if m["ts"] == ts][0]
-    assert "bot_id" in msg and "blocks" in msg
-    assert "subtype" not in msg and "client_msg_id" not in msg
-    corpus = [m for m in hist if m["ts"] != ts and "client_msg_id" in m]
-    assert corpus, "the sample corpus has no plain message to contrast with"
-    assert "bot_id" not in corpus[0]
+    observed, expected = [], []
+    for who, h, bot_id in (
+        ("admin", admin_h, "B0000BKLT"),
+        ("person", _uh(tokens, "ava@acme.com"), "B0000USER0"),
+    ):
+        root = wclient.post(
+            "/slack/api/chat.postMessage", headers=h, data={"channel": cid, "text": "ci says"}
+        ).json()
+        reply = wclient.post(
+            "/slack/api/chat.postMessage",
+            headers=h,
+            data={"channel": cid, "text": "reply", "thread_ts": root["ts"]},
+        ).json()
+        ts = reply["ts"]
+        edited = wclient.post(
+            "/slack/api/chat.update",
+            headers=h,
+            data={"channel": cid, "ts": ts, "text": "edited reply"},
+        ).json()["message"]
+        history = wclient.post(
+            "/slack/api/conversations.history", headers=h, data={"channel": cid, "limit": 200}
+        ).json()["messages"]
+        thread = wclient.post(
+            "/slack/api/conversations.replies", headers=h, data={"channel": cid, "ts": root["ts"]}
+        ).json()["messages"]
+        at = {"channel": cid, "timestamp": ts}
+        wclient.post("/slack/api/reactions.add", headers=h, data={**at, "name": "eyes"})
+        reacted = wclient.post("/slack/api/reactions.get", headers=h, data=at).json()["message"]
+        items = wclient.post("/slack/api/reactions.list", headers=h).json()["items"]
+        messages = [
+            ("post root", root["message"]),
+            ("post reply", reply["message"]),
+            ("update", edited),
+            ("history", next(m for m in history if m["ts"] == root["ts"])),
+            *(("replies", m) for m in thread if m["ts"] in (root["ts"], ts)),
+            ("reactions.get", reacted),
+            ("reactions.list", next(i["message"] for i in items if i["message"]["ts"] == ts)),
+        ]
+        profile = {
+            "app_id": "A0000BKLT",
+            "deleted": False,
+            "icons": {
+                f"image_{size}": f"https://avatar.example.com/A0000BKLT/{size}"
+                for size in (36, 48, 72)
+            },
+            "id": bot_id,
+            "name": "Backlot",
+            "team_id": "T0000BKLT",
+            "updated": 1730794837,
+        }
+        if who == "admin":
+            profile["user_id"] = "USERVICE0"
+        for method, msg in messages:
+            observed.append(
+                (
+                    who,
+                    method,
+                    msg.get("app_id"),
+                    msg.get("bot_id"),
+                    msg.get("bot_profile"),
+                    "blocks" in msg,
+                    "subtype" in msg,
+                    "client_msg_id" in msg,
+                )
+            )
+            expected.append((who, method, "A0000BKLT", bot_id, profile, True, False, False))
+        corpus = next(m for m in history if "client_msg_id" in m)
+        observed.append(
+            (who, "corpus", any(k in corpus for k in ("app_id", "bot_profile", "bot_id")))
+        )
+        expected.append((who, "corpus", False))
+    assert observed == expected
 
 
 def test_an_author_with_a_differently_cased_address_can_edit_their_own_message(wclient, tokens):
@@ -6105,3 +6571,55 @@ def test_a_bot_messages_author_resolves_through_users_info(wclient, admin_h):
     assert j["ok"] is True
     assert j["user"]["id"] == uid
     assert j["user"]["is_bot"] is True
+
+
+def test_a_reply_names_its_threads_root_in_parent_user_id(wclient, tokens, admin_h):
+    """The root's poster and the replier differ in each row, so a `parent_user_id` naming the
+    replier fails it."""
+    h = _uh(tokens, "ava@acme.com")
+    cid = synth.slack_channel_id("incidents")
+
+    def call(method, headers, **data):
+        return wclient.post(f"/slack/api/{method}", headers=headers, data=data).json()
+
+    def post(headers, text, **extra):
+        return call("chat.postMessage", headers, channel=cid, text=text, **extra)
+
+    by = {"admin": admin_h, "ava": h}
+    ava = synth.slack_user_id("ava@acme.com")
+    rows = [
+        # root's poster, replier, what `thread_ts` names, `reply_broadcast`, root deleted first
+        (("admin", "ava", "root", None, False), "USERVICE0"),
+        (("ava", "admin", "root", None, False), ava),
+        (("admin", "ava", "reply", None, False), "USERVICE0"),
+        (("ava", "admin", "reply", None, False), ava),
+        (("admin", "ava", "root", "", False), "USERVICE0"),
+        (("admin", "ava", "root", "false", False), "USERVICE0"),
+        (("admin", "ava", "root", "FALSE", False), "USERVICE0"),
+        (("admin", "ava", "root", "0", False), "USERVICE0"),
+        (("admin", "ava", "root", None, True), slack.SLACKBOT_ID),
+        (("ava", "admin", "reply", None, True), slack.SLACKBOT_ID),
+    ]
+    got = []
+    for (root_by, reply_by, names, broadcast, deleted), _ in rows:
+        root = post(by[root_by], "root")["ts"]
+        target = root
+        if names == "reply" or deleted:
+            first = post(by[reply_by], "first reply", thread_ts=root)["ts"]
+            target = first if names == "reply" else root
+        if deleted:
+            call("chat.delete", by[root_by], channel=cid, ts=root)
+        flags = {} if broadcast is None else {"reply_broadcast": broadcast}
+        echo = post(by[reply_by], "reply", thread_ts=target, **flags)["message"]
+        at = {"channel": cid, "timestamp": echo["ts"]}
+        edited = call("chat.update", by[reply_by], channel=cid, ts=echo["ts"], text="edited")
+        call("reactions.add", by[reply_by], name="eyes", **at)
+        reacted = call("reactions.get", by[reply_by], **at)["message"]
+        items = call("reactions.list", by[reply_by])["items"]
+        item = next(i["message"] for i in items if i["message"]["ts"] == echo["ts"])
+        listed = call("conversations.replies", h, channel=cid, ts=root)["messages"][1:]
+        answers = [echo, edited["message"], reacted, item]
+        got.append(
+            ([m.get("parent_user_id") for m in answers], {m.get("parent_user_id") for m in listed})
+        )
+    assert got == [([uid] * 4, {uid}) for _, uid in rows]

@@ -194,7 +194,7 @@ def _human_size(n: int) -> str:
     for unit, cutoff in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
         if n >= cutoff:
             return f"{n / cutoff:.1f} {unit}"
-    return f"{n} bytes"
+    return f"{n} byte(s)"
 
 
 def _unreadable_corpus(db_path: Path) -> str | None:
@@ -640,8 +640,8 @@ def status(data_dir: DataDir = None) -> None:
 
     typer.echo(f"corpus:   {settings.db_path} ({size})")
     typer.echo(
-        f"documents: {sum(counts.values())} rows"
-        + (f" from {source_docs} source documents" if source_docs else "")
+        f"documents: {sum(counts.values())} row(s)"
+        + (f" from {source_docs} source document(s)" if source_docs else "")
     )
     for src, n in sorted(counts.items()):
         if n:

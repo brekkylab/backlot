@@ -72,7 +72,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     else:
         msg = gmail.users().messages().get(userId="me", id=ids[0]["id"], format="full").execute()
         headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
-        print(f"{len(ids)} messages; first message:")
+        print(f"{len(ids)} message(s); first message:")
         print(f"  Subject: {headers['Subject']}")
         print(f"  From:    {headers.get('From')}")
         print(f"  Snippet: {msg['snippet']}")

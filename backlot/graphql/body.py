@@ -662,12 +662,35 @@ def prototype_poisoned(value: Any) -> bool:
     return False
 
 
+#: ``json``'s text for what is not a float, a list or a dict: compact, non-ASCII as itself.
+_JSON_TEXT = json.JSONEncoder(ensure_ascii=False).encode
+
+
+def _node_text(value: Any) -> str:
+    """``value`` as ``JSON.stringify`` writes it but for a lone surrogate, with a finite number as
+    :class:`Double` prints it, where ``json`` writes a float's ``repr``. graphql-core serializes a
+    Float field's ``2`` as ``2.0``; Linear wrote `cycleDuration` `2`, `position` `0` to `4` and
+    `sortOrder` down to `-3946`, and Fireflies `date` `1789711200000`, each with no fraction, on
+    2026-10-23."""
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("Out of range float values are not JSON compliant")
+        return repr(Double(value))
+    if isinstance(value, dict):
+        items = (f"{_JSON_TEXT(key)}:{_node_text(item)}" for key, item in value.items())
+        return "{" + ",".join(items) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(map(_node_text, value)) + "]"
+    return _JSON_TEXT(value)
+
+
 def node_json(value: Any) -> bytes:
     """``value`` the way ``JSON.stringify`` writes it for Express's ``res.json`` and Apollo Server:
     compact, non-ASCII as itself, and a lone surrogate as a lower-case ``\\u`` escape, which UTF-8
     cannot carry otherwise. Linear quoted half a surrogate pair back so on 2026-10-18. Sent the next
     day as an ``operationName``, in upper case or lower, one half came back so from both vendors,
     and from Linear sent as an unknown field of an input object. A float that is not finite is
-    refused, as Starlette's ``JSONResponse`` refuses one."""
-    text = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    refused, as Starlette's ``JSONResponse`` refuses one; a finite number goes out as
+    :func:`_node_text` writes it."""
+    text = _node_text(value)
     return node_utf8.LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", text).encode("utf-8")

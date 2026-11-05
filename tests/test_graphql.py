@@ -755,6 +755,30 @@ def test_node_json_refuses_a_float_that_is_not_finite(value):
         request_body.node_json({"x": value})
 
 
+@pytest.mark.parametrize(
+    ("value", "written"),
+    [
+        (2.0, "2"),
+        (-0.0, "0"),
+        (-3946.0, "-3946"),
+        (1789711200000.0, "1789711200000"),
+        (-4274.98, "-4274.98"),
+        (121.08999633789062, "121.08999633789062"),
+        (0.1 + 0.2, "0.30000000000000004"),
+        (2.0**53, "9007199254740992"),
+        (2.0**60, "1152921504606847000"),
+        (1e16, "10000000000000000"),
+        (1e21, "1e+21"),
+        (1e-5, "0.00001"),
+        (1e-7, "1e-7"),
+    ],
+)
+def test_node_json_writes_a_number_as_json_stringify_does(value, written):
+    """As Node 24.18.0's ``JSON.stringify`` writes each number, the values Linear and Fireflies
+    answered among them."""
+    assert request_body.node_json({"x": [value]}).decode() == f'{{"x":[{written}]}}'
+
+
 def _compressed():
     """Whole gzip and deflate streams, each also cut short, with a bit flipped, and followed by
     bytes that start another member or none, and the bytes of no stream, as (gzip?, bytes)."""

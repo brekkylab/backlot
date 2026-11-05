@@ -389,8 +389,8 @@ def test_drive_filesystem_exports_native_workspace_documents(drive_fs, read):
 
 def test_drive_filesystem_reports_the_size_it_will_actually_return(drive_fs):
     """`size` on a native doc is the stored content length, but the bytes a read returns are the
-    EXPORT of it, which is longer. Any consumer that trusts `size` — fsspec.fuse, a range read —
-    truncates the file without that reconciled."""
+    EXPORT of it, whose length differs. Any consumer that trusts `size` — fsspec.fuse, a range
+    read — cuts the file short without that reconciled."""
     path = "engineering-docs/Ingest Lag Runbook"
     assert drive_fs.info(path)["size"] == len(drive_fs.cat_file(path))
 

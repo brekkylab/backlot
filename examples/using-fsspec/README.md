@@ -50,10 +50,9 @@ reads are ACL-scoped by the credential you pass, exactly as against the real API
   The third is why `gdrive.py` can turn a Google Sheet into a DataFrame at all: Google Drive
   exports Sheets as CSV, and the filesystem falls back to `files.export` when a file has no binary
   content. One consequence worth knowing — a listing carries Google Drive's own `size` (the stored
-  content), while a read returns the longer export. `fs.info(path)["size"]` is reconciled with what
-  a read returns;
-  `fs.ls(..., detail=True)` is not, because reconciling a listing would mean exporting every native
-  file in it just to measure.
+  content), while a read returns the export, whose length differs. `fs.info(path)["size"]` is
+  reconciled with what a read returns; `fs.ls(..., detail=True)` is not, because reconciling a
+  listing would mean exporting every native file in it just to measure.
 
 - **GitHub** (`github.py`): a repo's file tree as a filesystem, over the Contents and Git Trees
   APIs. `GithubFileSystem` names `api.github.com` in six places and only two — the class attributes

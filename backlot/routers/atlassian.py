@@ -28,7 +28,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Path as PathParameter
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
-from starlette.convertors import PathConvertor, register_url_convertor
 from starlette.routing import Match
 
 from backlot import auth, store, synth
@@ -760,12 +759,13 @@ def _java_digit(ch: str, radix: int) -> int | None:
     return None
 
 
-def _java_long(raw: str) -> int | None:
-    """``raw`` as Spring reads a `long` path variable, or None where it cannot: whitespace removed
-    (``errors.atlassian.strip_java_whitespace``), then hexadecimal after `0x`, `0X` or `#` with an
-    optional `-` in front, otherwise decimal with an optional sign, each digit as
-    :func:`_java_digit` reads it, within a `long`. Measured on `project/{key}/role/{id}` 2026-10-13:
-    `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1` and `0x-1` do not."""
+def _java_long(raw: str, width: tuple[int, int] = (-(2**63), 2**63 - 1)) -> int | None:
+    """``raw`` as Spring's `NumberUtils.parseNumber` reads it into a Java integer of ``width``, or
+    None where it throws: whitespace removed (``errors.atlassian.strip_java_whitespace``), then
+    hexadecimal after `0x`, `0X` or `#` with an optional `-` in front, otherwise decimal with an
+    optional sign, each digit as :func:`_java_digit` reads it, within ``width``. Measured on
+    `project/{key}/role/{id}` 2026-10-13: `-%231`, `0x１` and a 1 behind 4400 zeros read, `+0x1`
+    and `0x-1` do not."""
     text = errors_atlassian.strip_java_whitespace(raw)
     negative = text.startswith("-")
     rest = text[1:] if negative else text
@@ -781,10 +781,10 @@ def _java_long(raw: str) -> int | None:
         if digit is None:
             return None
         value = value * radix + digit
-        if value > 2**63:
+        if value > -width[0]:
             return None
     value = -value if negative else value
-    return value if -(2**63) <= value < 2**63 else None
+    return value if width[0] <= value <= width[1] else None
 
 
 def _parse_long(raw: str) -> int | None:
@@ -2099,9 +2099,15 @@ async def confluence_cql_search(request: Request):
                 not_containers.add(resolved)
     _refuse_negative_page_params(limit, start)
     tokens = _cql_tokens(cql)
+    grammar = _cql_grammar_refusal(tokens)
+    if grammar is not None:
+        raise grammar
     refusal = _cql_refusal(tokens)
     if refusal is not None:
         raise refusal
+    cannot_run = _cql_cannot_run(tokens)
+    if cannot_run is not None:
+        raise cannot_run
     # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
@@ -2202,7 +2208,7 @@ async def confluence_cql_search(request: Request):
     # `not creator = currentUser()` with none, where this route answers the three (Confluence Cloud,
     # 2026-10-28). Where the tokens do not parse this way, the clause readers above stay the answer.
     try:
-        expr = _cql_parse(tokens)
+        expr = _cql_parse(tokens, caller.email)
         term_sets: dict[str, set[str]] = {}
 
         def _needed_term(node) -> str | None:
@@ -2287,7 +2293,7 @@ async def confluence_cql_search(request: Request):
         raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "version,space")
+        page = _confluence_page(conn, request, r, "")
         results.append(
             {
                 "content": page,
@@ -2398,7 +2404,13 @@ async def confluence_content_get(content_id: str, request: Request):
     row = store.confluence_by_id(conn, content_id, visible_ids=ids)
     if row is None or attachment:
         raise errors_atlassian.content_not_found("content", content_id, attachment=attachment)
-    return _confluence_page(conn, request, row, _str_param(request, "expand", "body.storage"))
+    # With no `expand` sent, or an empty one, real expands `space`, `history` and `version` and
+    # leaves the body unexpanded, measured on Confluence Cloud on 2026-10-23; a sent one expands
+    # exactly what it names (:func:`_confluence_page`).
+    expand = _str_param(request, "expand", None)
+    if not expand:
+        expand = "space,history,version"
+    return _confluence_page(conn, request, row, expand)
 
 
 @router.get(
@@ -2716,38 +2728,85 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
     # version number: BYO override, else 2 if the page was updated after creation, else 1
     vnum = row["version_number"] or (2 if row["updated_ts"] and row["updated_ts"] != created else 1)
     webui = f"/spaces/{key}/{ctype}s/{cid}"
+    # The properties `expand` names, read up to the first dot: the part before it is the
+    # property, and what follows names something inside that property — so `body.storage`
+    # expands `body`'s storage representation and `history.lastUpdated` expands `history`.
+    # Measured on Confluence Cloud on 2026-11-03; a padded term (` space`, `space `) names
+    # nothing, as real expands nothing for it, so terms are deliberately not stripped.
+    wanted: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        head, _, sub = term.partition(".")
+        if head:
+            wanted.setdefault(head, set()).update([sub.partition(".")[0]] if sub else [])
     page = {
         "id": str(cid),
         "type": ctype,
         "status": "current",
         "title": row["title"],
-        "space": {
+    }
+    if "space" in wanted:
+        page["space"] = {
             "id": synth.github_user_id(row["space"]),
             "key": key,
             "name": row["space"],
             "type": "global",
             "_links": {"webui": f"/spaces/{key}"},
-        },
-        "_links": {
-            "webui": webui,
-            "tinyui": f"/x/{cid}",
-            "editui": f"/pages/resumedraft.action?draftId={cid}",
-            "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
-        },
-        "_expandable": {
-            "childTypes": "",
-            "container": f"/rest/api/space/{key}",
-            "metadata": "",
-            "operations": "",
-            "restrictions": "",
-            "history": f"/rest/api/content/{cid}/history",
-            "ancestors": "",
-            "body": "",
-            "version": "",
-            "descendants": "",
-        },
+        }
+    page["_links"] = {
+        "webui": webui,
+        "tinyui": f"/x/{cid}",
+        "editui": f"/pages/resumedraft.action?draftId={cid}",
+        "self": f"{_site(request)}/wiki/rest/api/content/{cid}",
     }
-    if "history" in expand or "version" in expand:
+
+    # The representations this server renders for a `body` expansion, in the order they are served.
+    def atlas_doc_format() -> str:
+        import json as _json
+
+        return _json.dumps(_adf(row["content"]))
+
+    body_writers = {
+        "storage": lambda: _storage(row["content"]),
+        "view": lambda: _view(row["content"]),
+        "export_view": lambda: _export_view(row["content"]),
+        "atlas_doc_format": atlas_doc_format,
+    }
+    body_named = [name for name in body_writers if name in wanted.get("body", ())]
+    # The representations real names under `body._expandable`, in real's order, measured on
+    # Confluence Cloud on 2026-11-03: the four rendered above plus six this server does not
+    # render, which a `body.editor` expansion leaves unexpanded.
+    body_representations = (
+        "editor",
+        "atlas_doc_format",
+        "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
+    )
+    expandable = {
+        "childTypes": "",
+        "container": f"/rest/api/space/{key}",
+        "metadata": "",
+        "operations": "",
+        "restrictions": "",
+        "history": f"/rest/api/content/{cid}/history",
+        "ancestors": "",
+        "body": "",
+        "version": "",
+        "descendants": "",
+        "space": f"/rest/api/space/{key}",
+    }
+    # `space` was served above, before this dict existed, so it leaves `_expandable` here.
+    if "space" in wanted:
+        expandable.pop("space")
+    # A property that is served leaves `_expandable`: on the bare read real's `_expandable` lists
+    # `body` and none of the three that read expanded, measured on 2026-10-23.
+    if "history" in wanted:
+        expandable.pop("history")
         page["history"] = {
             "latest": True,
             "createdDate": synth.rfc3339_millis(created),
@@ -2758,7 +2817,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "number": vnum,
             },
         }
-    if "version" in expand:
+    if "version" in wanted:
+        expandable.pop("version")
         page["version"] = {
             "number": vnum,
             "when": synth.rfc3339_millis(updated),
@@ -2766,29 +2826,15 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             "minorEdit": bool(row["minor_edit"]),
             "message": row["version_message"] or "",
         }
-    if "body.storage" in expand:
-        page.setdefault("body", {})["storage"] = {
-            "value": _storage(row["content"]),
-            "representation": "storage",
-        }
-    if "body.view" in expand:
-        page.setdefault("body", {})["view"] = {
-            "value": _view(row["content"]),
-            "representation": "view",
-        }
-    if "body.export_view" in expand:
-        page.setdefault("body", {})["export_view"] = {
-            "value": _export_view(row["content"]),
-            "representation": "export_view",
-        }
-    if "body.atlas_doc_format" in expand:
-        import json as _json
-
-        page.setdefault("body", {})["atlas_doc_format"] = {
-            "value": _json.dumps(_adf(row["content"])),
-            "representation": "atlas_doc_format",
-        }
-    if "metadata.labels" in expand or "metadata" in expand:
+    if "body" in wanted:
+        expandable.pop("body")
+        body = {}
+        for name in body_named:
+            body[name] = {"value": body_writers[name](), "representation": name}
+        unexpanded = [name for name in body_representations if name not in body_named]
+        body["_expandable"] = dict.fromkeys(unexpanded, "")
+        page["body"] = body
+    if "metadata" in wanted:
         labels = store.jcol(row, "labels")
         page["metadata"] = {
             "labels": {
@@ -2806,7 +2852,8 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
                 "size": len(labels),
             }
         }
-    if "ancestors" in expand:
+        expandable.pop("metadata")
+    if "ancestors" in wanted:
         ancestors, pid = [], row["parent_id"]
         while pid:
             prow = store.get_document(conn, "confluence", pid)
@@ -2825,6 +2872,9 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
             )
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
+        expandable.pop("ancestors")
+    # `_expandable` is assigned last, so a property served above has already left it.
+    page["_expandable"] = expandable
     return page
 
 
@@ -2839,10 +2889,16 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
 #   ?maxResults=1_0       400 -- where Python's own int() reads 10
 #   ?maxResults=1.5       400
 #
-# Python's `int` agrees with all of it but three things — the underscore, the internal whitespace,
-# and the non-breaking spaces `strip_java_whitespace` exists for — so those three are handled here
-# and the rest is left to `int` rather than restated as a pattern that would then have to be kept
-# in step with it.
+# and, measured 2026-11-04 on those two, Jira's `search/jql` and `project/search`, and
+# Confluence's content, label and child listings:
+#
+#   ?maxResults=0x2       2, as are `0X2` and `%232` -- hexadecimal after `0x`, `0X` or `#`
+#   ?startAt=-0x2         0, as `-2` is -- the `-` goes in front of the prefix; `%2B0x2` and
+#                         `0x-2` are 400
+#   ?maxResults=010       10 -- a leading zero is decimal, not octal
+#
+# That is Spring's `NumberUtils.parseNumber`, which `_java_long` ports, so neither Python's `int`
+# nor a pattern stands in for it here.
 #
 # The products part on TWO cases, both of them a value that cleans away to nothing:
 #
@@ -2888,22 +2944,8 @@ def _int_param(
     cleaned = errors_atlassian.strip_java_whitespace(raw)
     if cleaned == "" and not confluence:
         return default  # Jira alone reads a whitespace-only value as absent
-    try:
-        if "_" in cleaned:
-            raise ValueError(cleaned)
-        if any(ch.isspace() for ch in cleaned):
-            # Only the three non-breaking spaces survive the cleaning, and Java throws on one
-            # WHEREVER it sits, while Python's `int()` strips a leading or trailing one itself
-            # (`int('\xa03')` is 3). Without this, only the interior spelling was refused.
-            raise ValueError(cleaned)
-        n = int(cleaned)
-    except ValueError:
-        raise errors_atlassian.integer_conversion_failure(
-            _echoed_path(request), name, values
-        ) from None
-    if not width[0] <= n <= width[1]:
-        # Python's int is unbounded, so a page size computed from a timestamp or a byte count
-        # flowed into the query where real answered 400.
+    n = _java_long(raw, width)
+    if n is None:
         raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
     return n
 
@@ -2957,13 +2999,8 @@ def _jira_long_list_param(request: Request, name: str) -> list[int]:
         cleaned = errors_atlassian.strip_java_whitespace(raw)
         if cleaned == "":
             continue
-        try:
-            if "_" in cleaned or any(ch.isspace() for ch in cleaned):
-                raise ValueError(cleaned)
-            n = int(cleaned)
-        except ValueError:
-            n = None
-        if n is None or not JAVA_LONG[0] <= n <= JAVA_LONG[1]:
+        n = _java_long(raw, JAVA_LONG)
+        if n is None:
             raise errors_atlassian.integer_conversion_failure(_echoed_path(request), name, values)
         numbers.append(n)
     return numbers
@@ -3165,7 +3202,8 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 
 # CQL as real's reader splits it, measured on Confluence Cloud on 2026-10-22 and 2026-10-25, the
 # second time with `title~a<c>b` and `title~a<c>` for each ASCII punctuation character `<c>`: a
-# quoted value in either quotes, in which a backslash keeps the next character; an operator, a
+# quoted value in either quotes, in which a backslash keeps the next character, or which runs to
+# the next quote where that reading finds no closing one (`"a\"` on 2026-11-04); an operator, a
 # bracket or a comma; a date such as `2026-01-01` and a number, both in ASCII digits; and a word of
 # ASCII letters, digits and `_`, dotted as `space.key` is. A control character, one past ASCII and
 # those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
@@ -3173,7 +3211,7 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 # fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
 # `title~a:b` cannot be parsed.
 _CQL_TOKEN = re.compile(
-    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"[^"]*"|'[^']*')"""
     r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
     r"|(?P<PUNCT>[(),])"
     r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
@@ -3184,8 +3222,158 @@ _CQL_TOKEN = re.compile(
     re.DOTALL,
 )
 _CQL_OPERATORS = frozenset(("!=", "!~", ">=", "<=", "=", "~", ">", "<"))
-_CQL_KEYWORDS = frozenset(("and", "or", "not", "in", "order", "by", "asc", "desc"))
+# The words real refuses where a value goes (Confluence Cloud, 2026-10-31):
+# sent as `type = <word>` for 181 English and SQL words, these 43 answered
+# `'<word>' is a reserved keyword.  You must surround '<word>' in quotation marks to use it.`
+# Eight of them (`and`, `or`, `not`, `in`, `order`, `by`, `asc`, `desc`) are also the grammar's
+# own: a conjunction, a negation, a list, and `order by` with a direction.
+_CQL_KEYWORDS = frozenset(
+    (
+        "after",
+        "and",
+        "as",
+        "asc",
+        "avg",
+        "before",
+        "begin",
+        "by",
+        "commit",
+        "contains",
+        "count",
+        "desc",
+        "distinct",
+        "else",
+        "empty",
+        "end",
+        "explain",
+        "from",
+        "having",
+        "if",
+        "in",
+        "inner",
+        "insert",
+        "into",
+        "is",
+        "isnull",
+        "left",
+        "like",
+        "limit",
+        "max",
+        "min",
+        "not",
+        "null",
+        "or",
+        "order",
+        "outer",
+        "right",
+        "select",
+        "sum",
+        "then",
+        "update",
+        "was",
+        "where",
+    )
+)
 _CQL_VALUES = frozenset(("WORD", "QUOTED", "NUMBER", "DATE"))
+
+
+# The CQL query functions real runs, and how many arguments each takes, measured on Confluence
+# Cloud on 2026-10-31: `currentUser`, `currentContent`, `currentSpace`, `now`, `startOfDay`,
+# `startOfWeek`, `startOfMonth`, `startOfYear`, `endOfMonth` and `recentlyViewedContent` are
+# known, and any other name is refused with `Unable to find query function`. No other name was
+# sent, so no other is known here. A date function takes an optional relative date, and
+# `recentlyViewedContent` takes exactly one count.
+_CQL_FUNCTIONS = {
+    "currentUser": (0, 0),
+    "currentContent": (0, 0),
+    "currentSpace": (0, 0),
+    "now": (0, 1),
+    "startOfDay": (0, 1),
+    "startOfWeek": (0, 1),
+    "startOfMonth": (0, 1),
+    "startOfYear": (0, 1),
+    "endOfMonth": (0, 1),
+    "recentlyViewedContent": (1, 1),
+}
+_CQL_DATE_FUNCTIONS = frozenset(
+    ("now", "startOfDay", "startOfWeek", "startOfMonth", "startOfYear", "endOfMonth")
+)
+# A relative date as a date function reads it: a sign, a number, and a unit. `now("-1d")` and
+# `now("-4w")` were measured, and `now("x")` and `now("a'b")` (Confluence Cloud, 2026-10-31) and
+# `now("1")`, `now("+1")` and `startOfDay("1")` (Confluence Cloud, 2026-11-04) were refused as
+# invalid relative dates.
+_CQL_RELATIVE_DATE = re.compile(r"[+-]?[0-9]+[yMwdhm]")
+
+
+class _CQLFunctionError(Exception):
+    """A function call whose arguments are not comma-separated values, or whose closing
+    parenthesis never comes; the callers answer it as a CQL the grammar cannot read."""
+
+
+def _cql_function_call(tokens: list[tuple[str, str]], at: int):
+    """A function call at ``tokens[at]`` as ``(name, args, next)``: ``args`` is the list of
+    argument values between the parentheses, each one a ``(kind, text)`` token, and ``next`` the
+    index past the closing parenthesis. ``tokens[at]`` is the name and ``tokens[at + 1]`` its
+    opening parenthesis. A reserved word is read as an argument like any other word, for
+    :func:`_cql_refusal` to refuse. Raises :class:`_CQLFunctionError` for a call whose arguments
+    are not comma-separated values, or whose closing parenthesis never comes."""
+    name = tokens[at][1]
+    at += 2
+    kind, text = tokens[at] if at < len(tokens) else (None, None)
+    if (kind, text) == ("PUNCT", ")"):
+        return name, [], at + 1
+    args = []
+    while True:
+        if kind not in _CQL_VALUES:
+            raise _CQLFunctionError()
+        args.append((kind, text))
+        at += 1
+        kind, text = tokens[at] if at < len(tokens) else (None, None)
+        if (kind, text) == ("PUNCT", ")"):
+            return name, args, at + 1
+        if (kind, text) != ("PUNCT", ","):
+            raise _CQLFunctionError()
+        at += 1
+        kind, text = tokens[at] if at < len(tokens) else (None, None)
+
+
+def _cql_function_arity(name: str, args: list[tuple[str, str]]) -> bool:
+    """Whether a call of ``name`` with ``args`` has the wrong arguments: too many or too few
+    for what :data:`_CQL_FUNCTIONS` records, or, for `recentlyViewedContent`, a count that is
+    no number and no quoted integer. A reserved word for the count is left to
+    :func:`_cql_refusal`, which refuses it."""
+    low, high = _CQL_FUNCTIONS[name]
+    if not low <= len(args) <= high:
+        return True
+    if name == "recentlyViewedContent":
+        kind, text = args[0]
+        if kind == "NUMBER" or kind == "WORD" and text.lower() in _CQL_KEYWORDS:
+            return False
+        return kind != "QUOTED" or not re.fullmatch(r"[+-]?[0-9]+", _cql_unquote(kind, text))
+    return False
+
+
+def _cql_function_cannot_run(name: str, args: list[tuple[str, str]]):
+    """The refusal a call of ``name`` with ``args`` is answered with where it cannot run, or
+    None for one that runs: `currentSpace()` for want of a space, and a date function whose
+    argument real cannot read as a relative date. `currentContent()` runs on this route, and
+    `currentUser()`, `now()` and `recentlyViewedContent()` run with what the route has."""
+    if name == "currentSpace":
+        return errors_atlassian.cql_function_needs_context(name, "space")
+    if name in _CQL_DATE_FUNCTIONS and args:
+        kind, text = args[0]
+        value = _cql_unquote(kind, text) if kind == "QUOTED" else text
+        if not _CQL_RELATIVE_DATE.fullmatch(value):
+            return errors_atlassian.cql_invalid_relative_date(value)
+    return None
+
+
+def _cql_function_fault(name: str, args: list[tuple[str, str]]) -> bool:
+    """Whether a call of ``name`` with ``args`` is one real refuses: a name it does not have, an
+    argument count or shape it does not take, or one that cannot run where it is called."""
+    if name not in _CQL_FUNCTIONS:
+        return True
+    return _cql_function_arity(name, args) or _cql_function_cannot_run(name, args) is not None
 
 
 def _cql_tokens(cql: str) -> list[tuple[str, str]]:
@@ -3236,20 +3424,90 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
     """``cqlQuery`` as real writes the query back: its tokens one space apart, in the case and the
     quotes they were sent in, except each value of `space.key`, which is written in single quotes
     as :func:`_cql_space_value` reads it and, when it names a space, in the spelling
-    ``space_key`` gives (Confluence Cloud, 2026-10-22, 2026-10-25, 2026-10-26 and 2026-10-30)."""
+    ``space_key`` gives (Confluence Cloud, 2026-10-22, 2026-10-25, 2026-10-26 and 2026-10-30).
+    A function on `space.key` is the exception to the single quotes: real writes the call as
+    sent, with no spaces in it, `space.key = currentUser()`, where on any other field the
+    parentheses are spaced out, `creator = currentUser ( )` (Confluence Cloud, 2026-10-31)."""
     out, key = [], False
-    for i, (kind, text) in enumerate(tokens):
+    closed = set()  # the indices closing a function call written as one piece, below
+    i = 0
+    while i < len(tokens):
+        kind, text = tokens[i]
         before = tokens[i - 1] if i else (None, None)
         if kind == "OP" or kind == "WORD" and text.lower() == "in":
             field = i - 1 - (kind == "WORD" and i > 1 and before[1].lower() == "not")
             key = field >= 0 and tokens[field][1].lower() == "space.key"
-        elif kind in ("WORD", "QUOTED") and key and (before[0] == "OP" or before[1] in "(,"):
+        elif (
+            kind in ("WORD", "QUOTED")
+            and key
+            and (before[0] == "OP" or before[1].lower() == "in" or before[1] in "(,")
+        ):
+            if kind == "WORD" and i + 1 < len(tokens) and tokens[i + 1] == ("PUNCT", "("):
+                call, depth, j = [text], 0, i + 1
+                while j < len(tokens):
+                    call.append(tokens[j][1])
+                    if tokens[j] == ("PUNCT", "("):
+                        depth += 1
+                    elif tokens[j] == ("PUNCT", ")"):
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
+                out.append("".join(call))
+                closed.add(j)
+                i = j + 1
+                continue
             value = _cql_space_value(kind, text)
             text = f"'{space_key(value) or value}'"
-        elif before[1] == ")" or kind == "WORD" and text.lower() in ("and", "or"):
+        elif (before[1] == ")" and (i - 1) not in closed) or (
+            kind == "WORD" and text.lower() in ("and", "or")
+        ):
             key = False
         out.append(text)
+        i += 1
     return " ".join(out)
+
+
+def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL the grammar cannot read with, or None for one it can, before
+    :func:`_cql_refusal` reads the faults it walks from the left: a function call with the wrong
+    arguments, a second argument or an empty `recentlyViewedContent()`, a function other than
+    `recentlyViewedContent` in place of an `in` list, and an unclosed parenthesis before a call
+    real refuses. Measured on Confluence Cloud on 2026-10-31: a second argument or an empty
+    `recentlyViewedContent()` was answered `Could not parse cql : ` beside any other wrong in the
+    CQL, even a missing value or an unknown field earlier in it, and `(label = foo()`,
+    `(space = currentSpace()` and `(created > now("x")` the same, where an unclosed parenthesis
+    with no call real refuses after it, `(type=page`, is the missing parenthesis refusal. On
+    2026-11-04 `id in now("-1d")`, `label in currentUser()`, `id in currentContent()`,
+    `id in currentSpace()`, `id in foo()`, `id in recentlyviewedcontent(5)` and
+    `space.key in now("-1d")` were answered `Could not parse cql : ` as well, and `id in now("-1d")`
+    the same after `type =` with no value, after `foo = x`, and before `and type =`."""
+    opens, failing = [], []
+    for at, (kind, text) in enumerate(tokens):
+        if (kind, text) == ("PUNCT", "("):
+            opens.append(at)
+        elif (kind, text) == ("PUNCT", ")"):
+            if opens:
+                opens.pop()
+        elif (
+            kind == "WORD"
+            and text.lower() not in _CQL_KEYWORDS
+            and at + 1 < len(tokens)
+            and tokens[at + 1] == ("PUNCT", "(")
+        ):
+            try:
+                name, args, _ = _cql_function_call(tokens, at)
+            except _CQLFunctionError:
+                return errors_atlassian.cql_not_parsed()
+            if name in _CQL_FUNCTIONS and _cql_function_arity(name, args):
+                return errors_atlassian.cql_not_parsed()
+            if name != "recentlyViewedContent" and at and tokens[at - 1][1].lower() == "in":
+                return errors_atlassian.cql_not_parsed()
+            if _cql_function_fault(name, args):
+                failing.append(at)
+    if opens and failing and opens[0] < max(failing):
+        return errors_atlassian.cql_not_parsed()
+    return None
 
 
 def _cql_refusal(tokens: list[tuple[str, str]]):
@@ -3259,12 +3517,24 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value``
     at an operator followed by nothing or by a token that is no value, and at an `in` list never
     closed; ``cql_missing_closing_parenthesis`` at a `(` never closed; and
-    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. Each one's
-    docstring gives the queries that answered it. A query read to its end is ``cql_not_parsed``
-    when a `space.key` value holds a single quote. A field CQL does not have, a field with no
-    operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
-    `type=PAGE`) are refused on real with messages of their own, and answered at 200 here."""
+    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A function
+    call real does not have is ``cql_unknown_function`` at its place among those faults, read
+    from the left, and `recentlyViewedContent`, the one function real takes in place of an `in`
+    list, is read as the list. Each one's docstring gives the queries that answered it. A reserved
+    word where a value goes, a function's argument included, is
+    ``errors.atlassian.cql_reserved_keyword`` at its place among those faults: it answers any fault
+    read after it but ``cql_not_parsed``, and a `(` before it that is never closed is the missing
+    parenthesis. Where a reserved word is a clause's whole value outside an `in` list, what follows
+    it decides whether it is that value (see :func:`value` and :func:`clause_starts`). A query read
+    to its end is ``cql_not_parsed`` when a `space.key` value holds a single quote. A field CQL does
+    not have, a field with no operator, and an operator or a value the field does not take (`foo`,
+    `type`, `type<page`, `type=PAGE`) are refused on real with messages of their own, and answered
+    at 200 here when no reserved word came before them. An escaped end quote, `title ~ "a\\"`, is
+    not refused here: it is read after this walk, beside a function that cannot run
+    (``_cql_cannot_run``)."""
     at = 0
+    reserved = None  # the place and the text, as sent, of the first reserved word read as a value
+    groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
 
     def peek(offset=0):
         return tokens[at + offset] if at + offset < len(tokens) else (None, None)
@@ -3273,38 +3543,84 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         kind, text = peek(offset)
         return kind == "WORD" and text.lower() == word
 
+    def clause_starts(pos):
+        """Whether the tokens at `pos` start a clause: a group, or a field CQL does not reserve
+        and an operator (`type = page`, `type in (page)`, `type not in (page)`)."""
+        kind, text = tokens[pos] if pos < len(tokens) else (None, None)
+        if (kind, text) == ("PUNCT", "("):
+            return True
+        if kind != "WORD" or text.lower() in _CQL_KEYWORDS:
+            return False
+        kind, text = tokens[pos + 1] if pos + 1 < len(tokens) else (None, None)
+        if kind == "OP" or (kind == "WORD" and text.lower() == "in"):
+            return True
+        if kind == "WORD" and text.lower() == "not":
+            kind, text = tokens[pos + 2] if pos + 2 < len(tokens) else (None, None)
+            return kind == "WORD" and text.lower() == "in"
+        return False
+
     class _Stop(Exception):
-        def __init__(self, refusal):
+        def __init__(self, refusal, final=False, place=None):
             self.refusal = refusal
+            self.final = final  # `cql_not_parsed`, which no reserved word before it answers
+            self.place = place  # the outermost `(` a missing parenthesis is read at
 
     def not_parsed():
-        return _Stop(errors_atlassian.cql_not_parsed())
+        return _Stop(errors_atlassian.cql_not_parsed(), final=True)
 
-    def value(operator, field):
+    def reserve(place, text):
+        nonlocal reserved
+        if reserved is None:
+            reserved = (place, text)
+
+    def value(operator, field, in_list=False):
         nonlocal at
         kind, text = peek()
         if kind is None:
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
         if kind == "NUMBER" and text.startswith("-"):  # `id = -1`, `created > -1d`
             raise not_parsed()
-        if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
+        if kind not in _CQL_VALUES:
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
+        if kind == "WORD" and text.lower() in _CQL_KEYWORDS:
+            # `and` or `or` before a clause, or `and` before one `not` and a clause, is the
+            # conjunction and the value is missing, and `order` before `by` starts `order by` and
+            # the value is missing too: both name no token after the operator (Confluence Cloud,
+            # 2026-10-31). Any other reserved word before a clause leaves the query unparsed, as a
+            # stray `)` after it does. Otherwise the word is the reserved value: recorded with its
+            # place, and read on as the value.
+            if not in_list:
+                clause_at = at + 2 if text.lower() == "and" and keyword("not", 1) else at + 1
+                if text.lower() in ("and", "or") and clause_starts(clause_at):
+                    raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
+                if text.lower() == "order" and keyword("by", 1):
+                    raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
+                if clause_starts(at + 1):
+                    raise not_parsed()
+            reserve(at, text)
         at += 1
         if peek() == ("PUNCT", "("):  # a function: now("-1d"), currentUser()
-            at += 1
-            while peek() != ("PUNCT", ")"):
-                if peek()[0] is None:
-                    raise not_parsed()
-                at += 1
-            at += 1
+            try:
+                name, args, after = _cql_function_call(tokens, at - 1)
+            except _CQLFunctionError:
+                raise not_parsed()
+            if name not in _CQL_FUNCTIONS:
+                raise _Stop(errors_atlassian.cql_unknown_function(name))
+            # `now(select)`: the arguments follow the `(`, one comma between each two.
+            for i, (kind, text) in enumerate(args):
+                if kind == "WORD" and text.lower() in _CQL_KEYWORDS:
+                    reserve(at + 1 + 2 * i, text)
+            at = after
 
     def clause():
         nonlocal at
         if peek() == ("PUNCT", "("):
+            groups.append(at)
             at += 1
             sequence()
             if peek() != ("PUNCT", ")"):
-                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis())
+                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
+            groups.pop()
             at += 1
             return
         kind, field = peek()
@@ -3315,6 +3631,10 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         if negated or keyword("in"):
             operator = "".join(text for _, text in tokens[at : at + 1 + negated])
             at += 1 + negated
+            if peek()[0] == "WORD" and peek(1) == ("PUNCT", "("):
+                # a function in place of the list: `id in recentlyViewedContent(5)`
+                value(operator, field)
+                return
             if peek() != ("PUNCT", "("):
                 raise _Stop(errors_atlassian.cql_expecting_value(operator, field, peek()[1]))
             at += 1
@@ -3323,7 +3643,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                     raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
                 if peek()[0] not in _CQL_VALUES:
                     raise not_parsed()
-                value(operator, field)
+                value(operator, field, in_list=True)
                 if peek() != ("PUNCT", ","):
                     break
                 at += 1
@@ -3334,7 +3654,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             at += 1
             return
         if peek()[0] != "OP":
-            raise _Stop(None)  # a field and no operator: refused on real with a message of its own
+            # A field and no operator: refused on real with a message of its own.
+            raise _Stop(None)
         operator = peek()[1]
         at += 1
         value(operator, field)
@@ -3379,13 +3700,60 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             if at < len(tokens):
                 raise not_parsed()
     except _Stop as stop:
+        # Measured on Confluence Cloud: `label = and and type` answered the reserved word
+        # (2026-11-04), and so did `label = select and type =`, `label = select and label = foo()`
+        # and `label = select and (type = page`, where `(label = select` and
+        # `(label = select and (type = page` answered the missing parenthesis and
+        # `label = select and type = -1` `Could not parse cql : ` (2026-11-05).
+        if (
+            reserved is not None
+            and not stop.final
+            and (stop.place is None or reserved[0] < stop.place)
+        ):
+            return errors_atlassian.cql_reserved_keyword(reserved[1])
         return stop.refusal
     # After the rest of the reading: `space.key = "a'b" b` answered `Unrecognised clause at : b`,
     # `(space.key = "a'b"` the missing parenthesis and `space.key = "a'b" and title~` the value
     # `title~` is missing (Confluence Cloud, 2026-10-30).
     if _cql_space_key_holds_quote(tokens):
         return errors_atlassian.cql_not_parsed()
+    if reserved is not None:
+        return errors_atlassian.cql_reserved_keyword(reserved[1])
     return None
+
+
+def _cql_cannot_run(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL with a function that cannot run or an escaped end quote
+    (``errors.atlassian.cql_escaped_end_quote``), or None for one with neither, after
+    :func:`_cql_refusal` and before :func:`_cql_search_after`: the first such fault from the left.
+    With an even number of backslashes before a quote, `_CQL_TOKEN` reads them in pairs and the
+    quote closes the value; with an odd number the quote is escaped, and where no later quote closes
+    the value the token ends at it all the same. Each of those tokens ends in a backslash and its
+    quote, an escaped end quote. Measured on Confluence Cloud on 2026-10-31 and 2026-11-04:
+    `space = currentSpace() or created > now("x")` was answered with the first of the two, and
+    either beside `title ~ "a\\"` with the first of the two in the CQL, and the cursor's 400 came
+    after each fault of this pass."""
+    faults = []
+    for at, (kind, text) in enumerate(tokens):
+        if (
+            kind == "WORD"
+            and text.lower() not in _CQL_KEYWORDS
+            and at + 1 < len(tokens)
+            and tokens[at + 1] == ("PUNCT", "(")
+        ):
+            try:
+                name, args, _ = _cql_function_call(tokens, at)
+            except _CQLFunctionError:
+                continue
+            if name in _CQL_FUNCTIONS:
+                fault = _cql_function_cannot_run(name, args)
+                if fault is not None:
+                    faults.append((at, fault))
+        elif kind == "QUOTED" and text[-2] == "\\":
+            faults.append((at, errors_atlassian.cql_escaped_end_quote(text)))
+    if not faults:
+        return None
+    return min(faults, key=lambda fault: fault[0])[1]
 
 
 class _CQLParseError(Exception):
@@ -3393,12 +3761,52 @@ class _CQLParseError(Exception):
     clause readers in :func:`confluence_cql_search` rather than failing the request."""
 
 
-def _cql_unquote(kind: str, text: str) -> str:
-    """A token's value: a quoted value without its quotes and with its backslash escapes
-    resolved, any other value as sent."""
+def _cql_unquote(kind: str, text: str, field: str | None = None) -> str:
+    """A token's value: a quoted value without its quotes, any other value as sent. A `\\"` reads
+    as a `"`, and where that leaves an odd number of them the last one is taken out, as
+    :func:`_cql_space_value` reads it for `space.key`; a backslash before any other character
+    stays, except in `title`, `text`, `sitesearch` and `space.title`, where it reads as that
+    character. Measured on Confluence Cloud on 2026-10-30 for `space` and `space.key` and on
+    2026-10-31 for nine more fields and for `title` and `text` under `~`: `space = "K\\"EY"` and
+    `space = "KEY\\""` found the pages of `KEY`, `space = "K\\EY"` none, and `title ~ "A\\B"` what
+    `"V"` found where `V` is the value split as `A` and `B`. `label` was not measured, since no
+    content on the measured site carried one (2026-11-04); it is read as the other structured
+    fields are, and `sitesearch` as `text` is."""
     if kind != "QUOTED":
         return text
-    return re.sub(r"\\(.)", r"\1", text[1:-1], flags=re.S)
+    value = text[1:-1].replace('\\"', '"')
+    if value.count('"') % 2:
+        value = "".join(value.rsplit('"', 1))
+    if field in ("title", "text", "sitesearch", "space.title"):
+        value = re.sub(r"\\(.)", r"\1", value, flags=re.S)
+    return value
+
+
+def _cql_function_value(name: str, args: list[tuple[str, str]], current_user: str | None) -> str:
+    """A function call's value: `currentUser()` the caller, or its name where the caller is the
+    admin token, which names no user; `currentContent()` and `recentlyViewedContent()` a value
+    naming no content, since this route has no current content and the server keeps no recently
+    viewed content; and a date function the relative date it was given, or its name with no
+    argument. On a field this route reads, `currentUser()`, `currentContent()` and
+    `recentlyViewedContent()` name no row, as real answered for `label = currentUser()`,
+    `space.key = currentUser()`, `ancestor = currentContent()` and `id in recentlyViewedContent(5)`
+    (Confluence Cloud, 2026-10-31). A date function's term names the rows holding it on a label or
+    text field: real answered `label = now("-1d")` with no rows (Confluence Cloud, 2026-10-31), and
+    `text ~ now("1d")` with none on a site where `text ~ "1d"` named none either (Confluence Cloud,
+    2026-11-04), so what real answers on a term a page holds is unmeasured. A date value never meets
+    a date field here, since `created` is among the fields this route does not read."""
+    if name == "currentUser":
+        return current_user or "currentUser"
+    if name == "currentContent":
+        return "currentContent"
+    if name == "currentSpace":
+        raise _CQLParseError()  # `_cql_cannot_run` refuses it first
+    if name == "recentlyViewedContent":
+        return "recentlyViewedContent"
+    if args:
+        kind, text = args[0]
+        return _cql_unquote(kind, text) if kind == "QUOTED" else text
+    return name
 
 
 # The fields :func:`confluence_cql_search` reads, and the operators each takes. Anything else (a
@@ -3421,16 +3829,17 @@ _CQL_READABLE = {
 }
 
 
-def _cql_parse(tokens: list[tuple[str, str]]):
+def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
     """The tokens of a CQL query as a boolean expression, over the grammar `_cql_refusal`
     walks: an `or` of `and`s of `not`s of atoms and groups, `and` binding tighter than `or`,
     a `not` only straight after `and`, stopping at `order by`.
 
     An atom is ``("atom", field, op, values, negated, readable)``: `op` is `=`, `in` or `~`,
     `negated` covers `!=`, `!~` and `not in (...)`, and `readable` says whether the field takes
-    the operator (see `_CQL_READABLE`). Raises `_CQLParseError` for anything else, including a
-    field with no operator, which real refuses with a message of its own and this server answers
-    at 200 through the clause readers."""
+    the operator (see `_CQL_READABLE`). A function value is read as :func:`_cql_function_value`
+    reads it, and `recentlyViewedContent` in place of an `in` list as its one value. Raises
+    `_CQLParseError` for anything else, including a field with no operator, which real refuses with
+    a message of its own and this server answers at 200 through the clause readers."""
     at = 0
 
     def peek(offset=0):
@@ -3446,23 +3855,16 @@ def _cql_parse(tokens: list[tuple[str, str]]):
         if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
             raise _CQLParseError()
         at += 1
-        if peek() == ("PUNCT", "("):  # a function value tail: now("..."), currentUser()
-            depth = 0
-            while True:
-                kind, _ = peek()
-                if kind is None:
-                    raise _CQLParseError()
-                if peek() == ("PUNCT", "("):
-                    depth += 1
-                elif peek() == ("PUNCT", ")"):
-                    depth -= 1
-                    if depth == 0:
-                        at += 1
-                        break
-                at += 1
+        if peek() == ("PUNCT", "("):  # a function value: now("..."), currentUser()
+            try:
+                name, args, after = _cql_function_call(tokens, at - 1)
+            except _CQLFunctionError:
+                raise _CQLParseError()
+            at = after
+            return _cql_function_value(name, args, current_user)
         if field == "space.key":  # read as real reads it, see `_cql_space_value`
             return _cql_space_value(kind, text)
-        return _cql_unquote(kind, text)
+        return _cql_unquote(kind, text, field)
 
     def atom():
         nonlocal at
@@ -3490,6 +3892,16 @@ def _cql_parse(tokens: list[tuple[str, str]]):
             return ("atom", field, op, (value(field),), negated, readable)
         else:
             raise _CQLParseError()
+        if peek()[0] == "WORD" and peek(1) == ("PUNCT", "("):
+            # a function in place of the list: `id in recentlyViewedContent(5)`
+            return (
+                "atom",
+                field,
+                "in",
+                (value(field),),
+                negated,
+                "in" in _CQL_READABLE.get(field, set()),
+            )
         if peek() != ("PUNCT", "("):
             raise _CQLParseError()
         at += 1
@@ -3816,16 +4228,6 @@ _UNMATCHED_METHODS = [m for m in errors_atlassian.SERVED_METHODS if m != "HEAD"]
 _CONFLUENCE_HTML_RESOURCES = ("space", "content")
 
 unmatched_router = APIRouter(prefix="/atlassian", include_in_schema=False)
-
-
-class _EveryPath(PathConvertor):
-    """Starlette's `path`, a newline included: its `.*` stops at one, so `GET /rest/api/3/nope%0Ax`
-    would miss the catch-all, where real answers it as any path no route matches (2026-10-18)."""
-
-    regex = "(?s:.*)"
-
-
-register_url_convertor("every_path", _EveryPath())
 
 _PACKAGE = Path(__file__).resolve().parent.parent
 
@@ -4236,6 +4638,47 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
     return _jaxrs_media_refusal(request, checks_type=checks_type)
 
 
+def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
+    """The empty 500 Confluence answers a charset Java cannot name
+    (``errors.atlassian.refuse_a_confluence_charset``) wherever its Spring application answers the
+    path, or None. That is each path an operation is published at (the baseline's and
+    :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT`), whichever method reaches it (`OPTIONS` and the 405s
+    among them), and the product's page under `/wiki/rest/` (:func:`_confluence_serves_html`).
+    Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`, :data:`_CONFLUENCE_JAXRS_GETS` and
+    its 404) answer the header with Tomcat's 400 page instead, and a Basic value Tomcat cannot read
+    is left alone, since real answers it with Tomcat's 401 first.
+
+    Measured on Confluence Cloud on 2026-10-31 with `text/plain;charset=` and no credential: of the
+    147 operations the baseline lists or :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT` names, the 102
+    Spring ones answered the 500 and the 45 JAX-RS ones the 400 page, and `OPTIONS` at each of
+    their 97 paths, and a method none of them publishes at the 95 paths that have one, answered as
+    the path's operations did. Of the paths no operation names, `space/{key}/nope`,
+    `content/{id}/nope`, `/wiki/rest/api`, `/wiki/rest/` and `/wiki/rest/nope` answered the 500, and
+    `/wiki/rest/api/` and `/wiki/rest/api/nosuch` the 400 page. With `Basic !!!` beside it, `GET`,
+    `HEAD`, `OPTIONS` and `DELETE` at `space`, `POST space/{key}/permission` and
+    `GET space/{key}/nope` answered the 401.
+    """
+    vendor_path = _vendor_path(request.scope["path"])
+    # with its trailing slash, which the routed path has lost: `/wiki/rest/api/` is Jersey's 404
+    # where `/wiki/rest/api` is the page
+    sent = _vendor_path(_echoed_path(request))
+    if not sent.startswith("/wiki/rest/"):
+        return None
+    if _is(_CONFLUENCE_JAXRS, None, vendor_path) or _is(_CONFLUENCE_JAXRS_GETS, None, vendor_path):
+        return None
+    spring = (
+        _is(_CONFLUENCE_PUBLISHED, None, vendor_path)
+        or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, None, vendor_path)
+        or _confluence_serves_html(sent)
+    )
+    if not spring or auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
+        return None
+    refused = errors_atlassian.refuse_a_confluence_charset(request.headers)
+    if refused is None:
+        return None
+    return Response(refused.body, status_code=refused.status_code)
+
+
 def _published_answer(request: Request, vendor_path: str) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to
@@ -4501,7 +4944,7 @@ def _confluence_not_found(request: Request) -> Response:
     # the query as it arrived, for the reason `normalise_the_slashes_in_an_atlassian_path` reads
     # the path from the scope
     if query := request.scope.get("query_string", b"").decode("latin-1"):
-        url = f"{url}?{query}"
+        url = f"{url}?{errors_atlassian.echoed_query(query)}"
     media_type, body = errors_atlassian.jaxrs_not_found(url, as_json=_wants_json(request))
     # JAX-RS's 404 says `no-transform` in both shapes and the page says nothing, measured 2026-09-30
     # with a credential and without one
@@ -4621,7 +5064,7 @@ def _site_surface(request: Request) -> Response:
     )
 
 
-@unmatched_router.api_route("/{rest:every_path}", methods=_UNMATCHED_METHODS)
+@unmatched_router.api_route("/{rest:path}", methods=_UNMATCHED_METHODS)
 async def unmatched_path(request: Request, rest: str) -> Response:
     """What either product answers for a path no route above serves, and for a method they do not.
 

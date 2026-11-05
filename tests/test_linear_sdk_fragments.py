@@ -137,7 +137,7 @@ def test_linear_sdk_fragments(tmp_path, capsys, schema, bundle, code, lines):
         (
             _bundle("fragment Label on Label {\n  id\n}"),
             "none.graphql",
-            "cannot read {tmp}/none.graphql: ",
+            "cannot read {schema}: ",
         ),
         (
             "export const x = 1;",
@@ -172,10 +172,11 @@ def test_linear_sdk_fragments_cannot_check_what_it_cannot_read(
         path.write_bytes(bundle)
     elif bundle is not None:
         path.write_text(bundle, encoding="utf-8")
-    argv = [str(path)] if schema is None else [str(path), "--schema", str(tmp_path / schema)]
+    schema_path = None if schema is None else tmp_path / schema
+    argv = [str(path)] if schema_path is None else [str(path), "--schema", str(schema_path)]
     assert script.main(argv) == 2
     printed = capsys.readouterr().out.splitlines()
-    assert len(printed) == 1 and printed[0].startswith(line.format(path=path, tmp=tmp_path))
+    assert len(printed) == 1 and printed[0].startswith(line.format(path=path, schema=schema_path))
 
 
 # (the schema, as in the first table; the exit code; the lines on stdout; the first line on stderr)

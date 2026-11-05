@@ -69,6 +69,36 @@ nobody. As on real, only the `title` it states is kept, from the body or from a 
 parameter, which wins; a body, tabs or styles it states are read, checked against the `Document`
 message and every message it holds, a map's entries included, and dropped.
 
+`documents.batchUpdate` applies the requests [the endpoint table](supported-sources.md) lists, to a
+Doc's text and its text and paragraph styles, its lists, its named ranges, its headers, footers,
+footnotes and page breaks, and its tabs, each request applied to the Doc the ones before it left,
+and all of them or none kept. A location or range names its tab and its header, footer or footnote
+as real's do, the first tab when it names none, and `replaceAllText` replaces in every tab and every
+segment of each unless `tabsCriteria` lists the tabs. Inserted text takes the style of the text
+beside it as real gives it, a heading a newline splits gives the new part a `headingId` of its own,
+and every write moves the Doc's `revisionId`, which `requiredRevisionId` is checked against, but for
+a batch holding only tab updates that each leave a tab's title, index and parent as they were and
+name no `iconEmoji`, and `replaceAllText` requests whose `tabsCriteria` lists no tab. A Doc whose
+corpus record states only `content` reads as one paragraph per line, and its first write stores that
+reading. `replaceAllText` compares text as real folds it (a letter with a mark as its base letter,
+`æ` as `ae`, `ß` as `ss`), and reads a regular expression with `java.util.regex`'s syntax, classes
+and properties, refusing what Java refuses; an insert inside a grapheme cluster, by Unicode's text
+segmentation, is refused. Drive reads what the write left: `files.export` and fullText search see
+the new text, `modifiedTime` moves to the write's time, and `version` moves by one while `size`
+stays what it was, a blank Doc's first write taking it from 1 to 1024 as real's does.
+
+A style is kept as real keeps it: a colour to the nearest 255th, a font size from 1 to 512 points, a
+weight of 700 as bold, bold at 400 over a weight up to 700 and not over a heavier one, the weight
+stated kept under it, a member its paragraph's named style already gives taken off, and a link
+underlined in the link colour. The runs a style change leaves are real's, a run whose style was set
+and taken off again staying apart from the text beside it, and a named style set takes off the text
+style a whole paragraph holds alike but for its links, keeping what part of it holds. A list is one
+of the presets `createParagraphBullets` names, each paragraph's level the tabs it opened with less
+the fewest any paragraph of the request opened with, at most 8, and a named range moves with the
+text written around it, as real moves one, until a delete or a replacement leaves it empty.
+`files.export` writes each list item's marker and, in Markdown, an anchor on each heading a link
+goes to.
+
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and
 the values go on the row under it from its first column. `INSERT_ROWS` inserts whole rows there,
@@ -108,10 +138,10 @@ A user token writes as that person. The admin/service token writes as `USERVICE0
 `auth.test` already reports it as — and its messages carry the `bot_message` subtype real Slack
 gives an app-posted message.
 
-A spreadsheet is written by its owner alone. Every grant a corpus states makes a reader, and a
-reader's write is the 403 real gives one, `The caller does not have permission`; so is the
-admin/service token's, which owns only the spreadsheets its service account created, and is
-answered as their owner by Drive too.
+A spreadsheet or a Doc is written by its owner alone. Every grant a corpus states makes a reader,
+and a reader's write is the 403 real gives one, `The caller does not have permission`; so is the
+admin/service token's, which owns only the files its service account created, and is answered as
+their owner by Drive too.
 
 ## What is not modelled
 
@@ -122,10 +152,6 @@ field list, so the ordering divergence below has no entry to live in and is stat
 - **OAuth scopes.** Real Slack splits some answers on scope rather than on identity: posting to a
   public channel you have not joined succeeds with `chat:write.public` and answers
   `not_in_channel` without it. Backlot has no scope concept and takes the permissive branch.
-- **An app identity.** Real adds `app_id`, `bot_profile` and `parent_user_id` to the message a
-  write echoes back. A corpus has nothing to populate them from. `bot_id` is served on every
-  written message whoever wrote it, and on no corpus message: real carries it on everything
-  posted through the Web API, over a user token as well as a bot one.
 - **Per-reaction times.** Real orders `reactions.list` by when the caller reacted and lists one
   item per reaction, so a message the caller put two emoji on appears twice. A corpus states a
   message's reactions as a set with no times in it, so Backlot orders by the message and lists
@@ -139,6 +165,33 @@ field list, so the ordering divergence below has no entry to live in and is stat
   data sources, and every cell format but a number format are read and not kept.
 - **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
   `spreadsheets.create` and `sheets.copyTo`.
+- **Docs requests past text, styles, lists, named ranges, segments and tabs.**
+  `documents.batchUpdate` applies the text, style, bullet, named-range, header, footer, footnote,
+  page-break and tab requests above. Every other request kind, and the `SUGGEST` write mode, is
+  refused naming itself, where real applies it.
+- **The order of a Doc's named ranges.** Real serves `namedRanges` in the order a Java `HashMap`
+  iterates their names, and Backlot fills one in the order the ranges were made: of 28 reads
+  measured, one served two names that share a bucket the other way round, and so did both of two
+  reads of twenty names measured 2026-11-04. A name's ranges come in the order a `HashMap` of
+  every range id in the tab iterates them, and Backlot's ids are not real's: a read of eight
+  names of three ranges each, measured 2026-11-05, served one name's ranges in another order.
+- **Collaborators.** A `targetRevisionId` naming any revision of the Doc is taken. Real refuses one
+  too far behind, and merges the write into what collaborators did since it, which here is nothing.
+- **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it
+  splits off with a newline in the style of the text before the match, where Backlot keeps that
+  newline's own style. The text is real's.
+- **A fold's match after a character outside the BMP.** A match of the first letter of `æ` or
+  another two-letter fold takes the character before it too, as real's does, but after an emoji
+  real leaves a space where the emoji was and Backlot removes it whole.
+- **Drive's timing.** Real's `version` also climbs with no write, minutes apart and often by two,
+  and a blank Doc's `size` became 1024 ten minutes on with no write; its `modifiedTime` shows at
+  most one write in a couple of minutes, later writes appearing a minute or two on or not at all.
+  Backlot moves `version` and `modifiedTime` on every write, at once, and `size` only on a
+  write.
+- **A regular expression's case inside a class.** Without `matchCase`, `[\w]` and a POSIX class
+  inside brackets take `ſ` and the Kelvin sign, which Java's do not; with `matchCase`, an ASCII-only
+  `(?i)` still folds a non-ASCII letter inside brackets.
+- **Java's grapheme boundary.** `\b{g}` matches nothing here; real reads it.
 - **Rate limits.** Real Sheets refuses a user's writes past 60 a minute with 429
   `RESOURCE_EXHAUSTED`. Backlot does not count them.
 

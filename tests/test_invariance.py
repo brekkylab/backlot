@@ -149,7 +149,7 @@ def test_a_recordings_files_are_named_with_slashes_and_found_by_either_separator
     files = {written: {"executed_lines": [1], "missing_lines": [2]}}
     (tmp_path / "coverage.json").write_text(json.dumps({"files": files}), encoding="utf-8")
     assert invariance._uncovered(tmp_path, [path]) == 0
-    listing = "backlot/x.py: 1 lines no test executes: [2]\n"
+    listing = "backlot/x.py: 1 line(s) no test executes: [2]\n"
     assert capsys.readouterr().out == (listing if listed else "")
 
 

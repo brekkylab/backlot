@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read Google Drive and Sheets, write Sheets and create a Doc, through the official
+"""Read Google Drive and Sheets, write Sheets, and create and write a Doc, through the official
 google-api-python-client — authenticating with a Google **service-account** credential, the way a
 real connector does, rather than a raw token. Self-contained.
 
@@ -127,10 +127,10 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     else:
         body = gdrive.files().export(fileId=files[0]["id"], mimeType="text/plain").execute()
         text = body.decode() if isinstance(body, bytes) else body
-        print(f"{len(files)} files:")
+        print(f"{len(files)} file(s):")
         for f in files:
             print(f"  - {f['name']}")
-        print(f"\nExported '{files[0]['name']}' as text/plain ({len(text)} bytes):")
+        print(f"\nExported '{files[0]['name']}' as text/plain ({len(text)} byte(s)):")
         print(f"  {text.splitlines()[0]}")
 
     # The same credential drives Sheets v4. A spreadsheet whose corpus record states a grid serves
@@ -140,7 +140,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     book = next((f for f in files if f["name"] == "Q1 Revenue Model"), None)
     if book:
         meta = sheets.spreadsheets().get(spreadsheetId=book["id"]).execute()
-        print(f"\n'{meta['properties']['title']}' has {len(meta['sheets'])} sheets:")
+        print(f"\n'{meta['properties']['title']}' has {len(meta['sheets'])} sheet(s):")
         for sh in meta["sheets"]:
             p = sh["properties"]
             print(f"  - [{p['index']}] {p['title']} (sheetId {p['sheetId']})")
@@ -174,7 +174,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
             )
             .execute()
         )
-        print(f"\nWrote {update['updatedCells']} cells to {update['updatedRange']}:")
+        print(f"\nWrote {update['updatedCells']} cell(s) to {update['updatedRange']}:")
         for render in ("FORMATTED_VALUE", "UNFORMATTED_VALUE"):
             row = (
                 owner.spreadsheets()
@@ -199,7 +199,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     docs = docs_as(author, s.base_url)
     made = docs.documents().create(body={"title": "Launch checklist"}).execute()
     doc_id = made["documentId"]
-    print(f"\nCreated '{made['title']}' ({doc_id}) with {len(made['tabs'])} tab")
+    print(f"\nCreated '{made['title']}' ({doc_id}) with {len(made['tabs'])} tab(s)")
     read = docs.documents().get(documentId=doc_id).execute()
     text = "".join(
         el["textRun"]["content"]
@@ -208,6 +208,36 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         for el in se["paragraph"]["elements"]
     )
     print(f"  read back: body {text!r}, same revision: {read['revisionId'] == made['revisionId']}")
+
+    # `documents.batchUpdate` writes its text: each request's index counts what the ones before
+    # it inserted, `replaceAllText` answers how many it changed, and the write's revision is the
+    # one the next read serves.
+    wrote = (
+        docs.documents()
+        .batchUpdate(
+            documentId=doc_id,
+            body={
+                "requests": [
+                    {"insertText": {"location": {"index": 1}, "text": "Ship the beta\n"}},
+                    {"insertText": {"location": {"index": 15}, "text": "Tell the team"}},
+                    {"replaceAllText": {"containsText": {"text": "beta"}, "replaceText": "v2"}},
+                ],
+                "writeControl": {"requiredRevisionId": read["revisionId"]},
+            },
+        )
+        .execute()
+    )
+    print(f"  batchUpdate replies: {wrote['replies']}")
+    read = docs.documents().get(documentId=doc_id).execute()
+    lines = [
+        (se["startIndex"], "".join(el["textRun"]["content"] for el in se["paragraph"]["elements"]))
+        for se in read["body"]["content"]
+        if "paragraph" in se
+    ]
+    print(f"  paragraphs by start index: {lines}")
+    print(
+        f"  revision moved to the write's: {read['revisionId'] == wrote['writeControl']['requiredRevisionId']}"
+    )
     drive_as_author = build(
         "drive",
         "v3",

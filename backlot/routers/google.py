@@ -19,7 +19,9 @@ import quopri
 import re
 import string
 import time
+import unicodedata
 import xml.parsers.expat
+import zlib
 from collections.abc import Callable
 from contextvars import ContextVar
 from email.parser import BytesParser
@@ -38,10 +40,12 @@ from starlette.routing import Match
 from backlot import (
     auth,
     collation,
+    gdocs,
     gsheets,
     protojson,
     store,
     synth,
+    utf8_escapes,
 )
 from backlot.acl import Caller
 from backlot.config import get_settings
@@ -371,15 +375,18 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     Three names carry a token, ``gerr.QUERY_TOKENS``, spelt exactly so. Taken in that order, the
     first the query carries is the gate and the last is the token, wherever each stands in the
     query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
-    names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
-    a token whose name the query repeats, names no token. Inside a batch a part reads each of the
-    three names from its own query where it carries that name and from the batch's where it does
-    not, so a part's values for a name stand in for the batch's rather than join them.
+    names no credential. Past the gate the token's value is read without the spaces, tabs and line
+    feeds at its two ends, so one of nothing but those is a token that does not resolve; an empty
+    one, or a token whose name the query repeats, names no token. Inside a batch a part reads each
+    of the three names from its own query where it carries that name and from the batch's where it
+    does not, so a part's values for a name stand in for the batch's rather than join them.
 
     Measured on Drive and Gmail on 2026-10-13 and 2026-10-14, with the rows ``tests/test_google.py``
     keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. The two prefixes are what a
     byte sweep found, 282 values with each of the 94 visible ASCII characters (0x21 to 0x7E) after
-    ya29 and after 1 and before a slash.
+    ya29 and after 1 and before a slash. The three characters a token loses are what a sweep on
+    Drive's `about` found on 2026-11-04, a token that resolves with each byte 0x00 to 0x20 and 0x7F
+    before it and after it, behind no header; behind `Bearer<t>` the same three read alike.
     """
     query = request.query_params
     outer = _BATCH_OUTER.get()
@@ -398,7 +405,9 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     if gated and not query.getlist(named[0])[0].startswith(_QUERY_TOKEN_PREFIXES):
         return None
     values = query.getlist(named[-1])
-    return True, (values[0] or None) if len(values) == 1 else None
+    if len(values) != 1 or not values[0]:
+        return True, None
+    return True, values[0].strip(" \t\n")
 
 
 _ESCAPED_SLASH = re.compile(r"%2F", re.I)
@@ -498,11 +507,62 @@ def refuse_an_unserved_operation(request: Request) -> None:
     callable `callback` and an uncallable one, with a trailing slash and as a `HEAD`: each refused
     as a served route of the same method does. The operation is chosen on
     :func:`_operation_path`."""
-    path = _operation_path(request)
-    if not any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED):
+    if not is_an_unserved_operation(request):
         return
     gerr.validate_system_parameters(request)
     _require(request)
+
+
+def is_an_unserved_operation(request: Request) -> bool:
+    """Whether the request names an operation in `_PUBLISHED_NOT_SERVED`, chosen on
+    :func:`_operation_path`."""
+    path = _operation_path(request)
+    return any(m == request.method and p.fullmatch(path) for m, p in _PUBLISHED_NOT_SERVED)
+
+
+#: How many bytes real reads of a body under `gzip` once decompressed
+#: (:func:`gerr.payload_too_large`): on 2026-10-30 (UTC), with no credential, a `POST` to Sheets'
+#: `values:batchGetByDataFilter` whose body decompressed to 134,217,728 bytes was the route's 401,
+#: and one of 134,217,729 that 400, as it was on Drive's `files`.
+PAYLOAD_LIMIT = 134_217_728
+
+
+def _codings(values: list[str]) -> list[str]:
+    """The members of each `Content-Encoding` value in ``values``, split on commas, with the spaces
+    and tabs around each trimmed off."""
+    return [member.strip(" \t") for value in values for member in value.split(",")]
+
+
+def refuses_coding(values: list[str]) -> bool:
+    """Whether real answers :func:`gerr.unsupported_coding` for a body under the `Content-Encoding`
+    values ``values``: a member is something but `gzip`, `identity` or nothing, in any case.
+
+    Measured on 2026-10-30 (UTC) on Drive's `about` and `files` with no credential, where the
+    route's 401 answered a coding real read."""
+    return any(member.lower() not in ("", "gzip", "identity") for member in _codings(values))
+
+
+def inflated(body: bytes, values: list[str]) -> bytes | None:
+    """``body`` as real reads it under the `Content-Encoding` values ``values``: decompressed where
+    a member is `gzip` as spelt and ``body`` is one whole gzip member, its CRC and length checked,
+    and as sent otherwise; ``None`` where it decompresses past :data:`PAYLOAD_LIMIT`.
+
+    Read off Drive's batch endpoint on 2026-10-30 (UTC), with no credential: it answers each part's
+    401 for a body it can split and a 400 for one it cannot, and under `gzip, gzip` it did not split
+    a body gzipped twice. With a credential the same day, Sheets' `values:batchGetByDataFilter`
+    and Drive's `about` read as sent the bodies sent that are not one whole member, but at some
+    lengths a member cut short, without its last 4 bytes among them, was the 400 of
+    :data:`PAYLOAD_LIMIT`, which this server does not answer."""
+    if "gzip" not in _codings(values):
+        return body
+    inflater = zlib.decompressobj(31)
+    try:
+        read = inflater.decompress(body, PAYLOAD_LIMIT + 1)
+    except zlib.error:
+        return body
+    if len(read) > PAYLOAD_LIMIT:
+        return None
+    return read if inflater.eof and not inflater.unused_data else body
 
 
 def _b64url(text: str) -> str:
@@ -2728,17 +2788,43 @@ def _drive_q_fulltext(conn, node, ids) -> dict[str, list]:
     Real Drive semantics: a quoted value (`fullText contains '"X Y"'`) is an exact phrase (tokens
     adjacent); unquoted is separate terms. A grep push-down sends the quoted form for a literal
     pattern, so the exact doc surfaces instead of being buried under coincidental docs that merely
-    contain the words scattered."""
+    contain the words scattered. A Doc's phrase matches within one line of its title or its text
+    (`gdocs.document_text`), a vertical tab ending a line too, its words with their accents or
+    without but not by their stem: measured 2026-11-03, real matched none across two paragraphs,
+    two of a Doc's segments or tabs, a footnote reference, a page break or a vertical tab, matched
+    `"creme brulee"` and `"crème brûlée"` both ways, and matched `"runners jumped"` but not
+    `"runners jump"`."""
     out: dict[str, list] = {}
     for term in _drive_q_terms(node):
         if term.field != "fullText" or term.value in out:
             continue
         raw = term.value
         phrase = len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"'
-        out[raw] = store.search_documents(
+        rows = store.search_documents(
             conn, raw[1:-1] if phrase else raw, "google_drive", ids, limit=10_000, phrase=phrase
         )
+        if phrase:
+            words = _words(raw[1:-1])
+            rows = [r for r in rows if _drive_mime(r) != DRIVE_DOC_MIME or _in_a_line(r, words)]
+        out[raw] = rows
     return out
+
+
+def _in_a_line(row, words: list[str]) -> bool:
+    """Whether one line of ``row``'s title or content holds ``words`` one after another."""
+    for line in [row["title"], *re.split("[\n\x0b]", row["content"])]:
+        found = _words(line)
+        if any(found[i : i + len(words)] == words for i in range(len(found))):
+            return True
+    return False
+
+
+def _words(text: str) -> list[str]:
+    """``text``'s words without their accents, in lower case, an underscore parting two:
+    measured 2026-11-03, `"qzua qzub"` found `qzua_qzub`, `"iqztr qzts"` found `İqztr qzts`, and a
+    precomposed `"crème"` found a decomposed one."""
+    bare = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return re.findall(r"[^\W_]+", bare.lower())
 
 
 def _drive_q_fulltext_ids(hits: dict[str, list]) -> dict[str, set[str]]:
@@ -3239,7 +3325,9 @@ def _drive_refuse_a_trailing_comma(request: Request) -> None:
     range refusals and ahead of the rest, measured 2026-10-20 beside a bad `pageToken`, `q` and
     `orderBy`, an `orderBy` naming a key twice or `starred` after another, `fullText` beside an
     `orderBy`, `includeItemsFromAllDrives` alone, `acknowledgeAbuse`, `useDomainAdminAccess`, a
-    repeated `pageSize` and a file that does not exist. A download read no mask."""
+    repeated `pageSize` and a file that does not exist. A download read no mask: on 2026-10-31
+    `alt=media` with `fields=id,` or `fields=nope(` was answered as `alt=media` alone, on a Doc and
+    on a file with content."""
     mask = gerr.first_repeat(request.query_params, "fields")
     if mask is not None and mask.rstrip(string.whitespace).endswith(","):
         raise gerr.invalid_parameter("fields", f"Invalid field selection {mask}")
@@ -3822,6 +3910,13 @@ _DRIVE_EXPORT_FORMATS = {
     ],
 }
 
+# The formats a Doc exports to that are rendered from its tabs.
+_DOCS_TEXT_EXPORTS = {
+    "text/plain": gdocs.plain_text,
+    "text/markdown": gdocs.markdown,
+    "text/x-markdown": gdocs.markdown,
+}
+
 # Source type -> the native types Drive can convert it into on upload. Google's map is longer;
 # this is the part that covers every format Backlot's own corpus contains (native editor files,
 # Office files, PDFs, delimited text, images), so a client's lookup for a real file resolves.
@@ -4178,7 +4273,8 @@ async def drive_files_get(file_id: str, request: Request):
     _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
     if download:
         caller = _require(request, download=True)
-    else:
+    _refuse_an_undecodable_path(request)
+    if not download:
         _drive_refuse_a_trailing_comma(request)
     # Measured 2026-10-04: before the lookup, so a file that does not exist is refused alike, and
     # before each `fields` refusal but `_drive_refuse_a_trailing_comma`'s. Inside a batch real
@@ -4255,6 +4351,7 @@ async def drive_files_export(file_id: str, request: Request):
         raise gerr.required("mimeType")
     if download:
         caller = _require(request, download=True)
+    _refuse_an_undecodable_path(request)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -4271,7 +4368,8 @@ async def drive_files_export(file_id: str, request: Request):
     target = requested.casefold()
     if target not in {f.casefold() for f in _DRIVE_EXPORT_FORMATS.get(native[0], ())}:
         raise gerr.unsupported_conversion()
-    # honor the requested target format; CSV/TSV serve the cells, others prefix the title.
+    # A Doc's text formats are rendered from its tabs (`gdocs.plain_text`, `gdocs.markdown`); CSV
+    # and TSV serve a spreadsheet's cells, and every other format the title and `content`.
     #
     # CSV needs no branch for either kind of document: a document that STATES a grid has its
     # `content` derived from the first sheet's CSV at import, and one that does not has the text it
@@ -4284,6 +4382,11 @@ async def drive_files_export(file_id: str, request: Request):
         if stored:
             grid = json.loads(stored[0]["grid"])
             return Response(gsheets.to_tsv(grid), headers={"content-type": requested})
+    render = _DOCS_TEXT_EXPORTS.get(target) if native[0] == DRIVE_DOC_MIME else None
+    if render is not None:
+        stored = store.gdrive_doc_for(conn, file_id)
+        document = stored if stored is not None else gdocs.from_prose(row["content"])
+        return Response(render(document), headers={"content-type": requested})
     plain = target in ("text/csv", "text/tab-separated-values")
     body = row["content"] if plain else f"{row['title']}\n\n{row['content']}"
     return Response(body, headers={"content-type": requested})
@@ -4301,6 +4404,7 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
+    _refuse_an_undecodable_path(request)
     _drive_refuse_a_trailing_comma(request)
     # Refused in real's order, measured by sending two bad values at once: the `pageToken`
     # refusals, a repeated `pageSize`'s 500, the domain-administrator refusal and the file lookup
@@ -4379,6 +4483,23 @@ _EDITOR_OFFICE_FAMILY = {
 _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 
 
+def _refuse_an_undecodable_path(request: Request) -> None:
+    """Refuse a path whose escapes do not decode to UTF-8 (``backlot.utf8_escapes.decodes``) as the
+    API behind it refuses it, after the credential, `alt`, a typed parameter, a `pageSize` out of
+    range, export's required `mimeType`, a body batchUpdate refuses and a `fields` mask Docs, Sheets
+    or Slides refuses, and ahead of a `fields` mask Drive refuses, Drive's trailing comma,
+    `acknowledgeAbuse=true`, an export `mimeType`, `text/plain` or one Drive does not convert to,
+    and on `permissions` a `pageToken`, a repeated `pageSize` and `useDomainAdminAccess=true`.
+    Measured on Drive, Docs and Sheets on 2026-10-30 (UTC), on Slides on 2026-10-31, on Docs'
+    batchUpdate on 2026-11-02 and on `permissions` on 2026-11-03, each with a Workspace member's
+    token."""
+    if utf8_escapes.decodes(request.scope["raw_path"]):
+        return
+    if gerr.family(request.url.path) == gerr.DRIVE:
+        raise gerr.bad_request()
+    raise gerr.invalid_argument(EDITOR_INVALID_ARG)
+
+
 def _editor_doc(request: Request, file_id: str, *, expect: str):
     """The Drive row behind an editor read, or the error real Google gives for a mismatch.
 
@@ -4392,6 +4513,7 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     2026-10-17."""
     conn = auth.conn(request)
     caller = _require(request)
+    _refuse_an_undecodable_path(request)
     ids = auth.visible_ids(request, caller)
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has
@@ -4471,6 +4593,62 @@ def _editor_store(
     )
 
 
+class _EditorRefused(Exception):
+    """One request of an editor's `batchUpdate` refused, worded as real words what follows
+    ``Invalid requests[i].<kind>: ``."""
+
+
+def _editor_requests(requests: list[dict]) -> list[dict]:
+    """An editor `batchUpdate`'s requests, refused when there are none or one sets no kind: measured
+    2026-10-29 on Docs, ``Must specify at least one request.`` and then
+    ``Invalid requests[i]: No request set.``, both ahead of a revision the write is pinned to and
+    of any other request's refusal."""
+    if not requests:
+        raise gerr.invalid_argument("Must specify at least one request.")
+    for i, req in enumerate(requests):
+        if not req:
+            raise gerr.invalid_argument(f"Invalid requests[{i}]: No request set.")
+    return requests
+
+
+def _editor_batch(
+    requests: list[dict],
+    kinds: dict[str, str],
+    apply: dict[str, Callable[[dict], tuple[dict, bool]]],
+    product: str,
+) -> list[dict]:
+    """The replies to an editor's `batchUpdate` requests, each checked and applied in order by
+    ``apply``'s function for its kind, which answers its reply and whether real fails on it once
+    every request has been read. ``kinds`` gives each kind's JSON name by the proto name a read
+    body carries it under, and ``product`` names the editor.
+
+    Every request sets a kind (`_editor_requests`). Measured 2026-10-29 on Docs'
+    `documents.batchUpdate`: a refusal names its request and kind and only the first is answered,
+    and a 500 a request leads to comes after the refusals of every request behind it. A 500 a
+    function raises, rather than answers as failing, comes at its own request. A kind ``apply``
+    lacks is refused naming itself. The caller keeps what the functions changed only once this
+    returns."""
+    replies = []
+    fails = False
+    for i, req in enumerate(requests):
+        kind = next(iter(req))
+        name = kinds[kind]
+        try:
+            if kind not in apply:
+                raise _EditorRefused(
+                    f"'{name}' is not served by Backlot: real {product} applies it, and nothing "
+                    "here keeps what it changes."
+                )
+            reply, failed = apply[kind](req[kind])
+        except _EditorRefused as refused:
+            raise gerr.invalid_argument(f"Invalid requests[{i}].{name}: {refused}") from None
+        replies.append(reply)
+        fails |= failed
+    if fails:
+        raise gerr.internal_error()
+    return replies
+
+
 def _enum_error(field: str, enum: protojson.Enum, value: str) -> str:
     """Google's own wording for a bad read enum — it names the proto field and message type, e.g.
     ``Invalid value at 'major_dimension' (…sheets.v4.Dimension), "DIAGONAL"``. Measured, because a
@@ -4543,16 +4721,17 @@ _PJ_SCALAR_KINDS = {"integer": "int32", "number": "double", "boolean": "bool", "
 
 
 def _pj_messages(
-    package: str, enums: dict, shapes: dict | None = None
+    package: str, enums: dict, shapes: dict | None = None, nested: dict | None = None
 ) -> Callable[[str], protojson.Message]:
     """A reader of the recorded messages of one editor API: ``package`` is its type URL prefix
     (``type.googleapis.com/google.apps.sheets.v4``), ``enums`` the `protojson.Enum` of each enum
     field by ``(message, field)``, the baseline recording an enum as `string`, and ``shapes`` what
     else the baseline cannot say of a field, by the same key: the `protojson.Field` members
     (``kind``, ``wrapper``, ``oneof``) that differ from what its recorded type gives, or for a map
-    the ``key`` kind, `string` when unsaid."""
+    the ``key`` kind, `string` when unsaid. Nor does it say which message is declared inside
+    another, which ``nested`` spells for its type URL by name."""
     built: dict[str, protojson.Message] = {}
-    shapes = shapes or {}
+    shapes, nested = shapes or {}, nested or {}
 
     def field(name: str, json_name: str, proto: str, type_: str) -> protojson.Field:
         repeated = type_.startswith("[")
@@ -4584,7 +4763,9 @@ def _pj_messages(
         fields: list[protojson.Field] = []
         # kept before its fields are read, for a message that holds itself: a Docs table cell
         # holds the structural elements that hold the table
-        built[name] = protojson.Message(f"{package}.{name.split('.', 1)[1]}", fields)
+        built[name] = protojson.Message(
+            f"{package}.{nested.get(name, name.split('.', 1)[1])}", fields
+        )
         for json_name, member in _GOOGLE_RECORDED[name].get("fields", {}).items():
             proto = re.sub(r"(?<!^)(?=[A-Z])", "_", json_name).lower()
             fields.append(field(name, json_name, proto, member.get("type", "any")))
@@ -4953,6 +5134,8 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     author = row["author_email"]
     native = _native(row)
     mime = _drive_mime(row)
+    # a Doc `documents.batchUpdate` wrote serves the `size` and `version` it stored
+    written = store.gdrive_doc_written(conn, row["id"]) if mime == DRIVE_DOC_MIME else None
     if native is not None:
         seg = native[1]
         view = (
@@ -4987,7 +5170,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "ownedByMe": owned,
         **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),
-        "version": _drive_version(row),
+        "version": str(written[1]) if written else _drive_version(row),
         "spaces": ["drive"],
         "webViewLink": view,
         "iconLink": f"https://drive.google.com/icons/{(row['subtype'] or 'document')}.png",
@@ -5001,7 +5184,7 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
     # both measured 2026-10-21/25. A native file's `size` never goes under
     # `store.DRIVE_NATIVE_MIN_BYTES`, where the measurement is recorded.
     if not is_folder:
-        nbytes = store.drive_file_bytes(row["subtype"], row["content"])
+        nbytes = written[0] if written else store.drive_file_bytes(row["subtype"], row["content"])
         f["size"] = str(nbytes)
         f["quotaBytesUsed"] = str(nbytes)
     if native is not None and not is_folder:

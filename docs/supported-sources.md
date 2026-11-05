@@ -19,7 +19,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
-| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 22 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
+| `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 23 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
 | `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
@@ -226,7 +226,9 @@ naming no token after a space, which names a third page (2026-10-26 and 2026-10-
 has a `code_search` window of its own at `limit: 0`, so code search answers a `Basic` value naming
 no token with that 403 at once (2026-10-26). `BACKLOT_GITHUB_ENFORCE_RATE_LIMITS` turns the refusal
 off (see [configuration](configuration.md#github)). `GET /rate_limit` reports the same windows, does
-not count, and is never refused — the one route a client reads its way out of a spent window with;
+not count, and is never refused — the one route a client reads its way out of a spent window with,
+but not out of `search` for a caller with no `Authorization`, which it reports unused whatever that
+address has searched, even after its searches have spent the window and been refused (2026-11-02);
 `/rate_limit/` asked with no `Authorization` header is a plain-text `404 Not Found` that carries
 none of the five and counts nowhere, spent window or not (2026-09-23). Four answers carry none of
 the five and count nowhere, as real's do not: a credential that does not resolve, unless a tab sets
@@ -239,9 +241,14 @@ an `Authorization` that carries no credential and the 401 for none at all on a `
 answered before a route runs included: five uppercase hex fields joined by colons, the last being
 the second the request arrived (measured 2026-09-22, 2026-09-23 and 2026-10-18), and a token's
 spent-window 403 quotes it and that second in its `message`. The front door's 400 for a raw byte in
-the request target carries neither it nor the five `x-ratelimit-*`, on real (2026-10-23) as here.
-Real's `Date` is the second its answer left, the id's or one past it; under `backlot serve` it is
-uvicorn's, which reads the clock once a second, so it can be one behind the id's.
+the request target (2026-10-23), its JSON 414 for a target of 8,192 bytes or more (8,174 on code
+search), its 414 and 431 for a head that has not ended by its 68,552nd byte, and its 400 page for a
+0x00 in a header value, a blank or `identity` `Transfer-Encoding` and an LF in the request target
+(2026-10-29) carry neither it nor the five `x-ratelimit-*`, on real as here. Its empty 400 for
+another control byte in a header value, from a request that sends no `Authorization`, carries the id
+with neither the five nor a `Date` (2026-10-29), on real as here. Real's `Date` is the second its
+answer left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock
+once a second, so it can be one behind the id's.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository
@@ -297,8 +304,9 @@ One `source_type` (`google_drive`) across four prefixes.
 | `/drive/v3/files/{id}/permissions` | `fields`, validated and applied to the list and its entries |
 | `/drive/v3/drives` | `q`, as a member who is not the domain's administrator may send it: `name` with `contains`/`=`/`!=`/`<`/`<=`/`>`/`>=` and `hidden` with `=`/`!=` or alone; any other term is a 400. `fields`, validated and applied to the list and its entries |
 | `/drive/v3/about` | `fields` **required**, as in real Google Drive; `storageQuota` is measured from the caller's visible corpus |
-| `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle` and each run's `textStyle`, and the `documentStyle` and `namedStyles` of a document `documents.create` makes |
+| `/docs/v1/documents/{id}` | `body.content` with each element's indices in UTF-16 code units (a `startIndex` of 0 left out, as real leaves it out), each paragraph's `paragraphStyle`, `bullet` and each run's `textStyle`, footnote references numbered by place and page breaks, the `headers`, `footers` and `footnotes`, the `documentStyle` and `namedStyles` of a document `documents.create` makes, and the `lists` and `namedRanges`; flat as the first tab, or as every tab and its child tabs under `includeTabsContent=true` |
 | `POST /docs/v1/documents` | `documents.create`: a blank Doc at the creator's My Drive root, visible to them alone, titled as the body or the `title` query parameter states; the rest of the `Document` it states is checked as real checks it and dropped |
+| `POST /docs/v1/documents/{id}:batchUpdate` | `insertText`, `deleteContentRange` and `replaceAllText`; `updateTextStyle` and `updateParagraphStyle`; `createParagraphBullets` and `deleteParagraphBullets`; `createNamedRange`, `deleteNamedRange` and `replaceNamedRangeContent`; `createHeader`, `createFooter`, `createFootnote`, `deleteHeader`, `deleteFooter` and `insertPageBreak`; `addDocumentTab`, `deleteTab` and `updateDocumentTabProperties`. Each is applied to the Doc the ones before it left, in the tab and header, footer or footnote it names, and all of them or none kept, styled as real styles them; `requiredRevisionId` and `targetRevisionId`. Any other request kind is a 400 naming it |
 | `/sheets/v4/spreadsheets/{id}` | One entry per sheet, with its own `sheetId`, `index`, `title` and `gridProperties`. Structure only — cells need `includeGridData=true`, as in real Sheets. `ranges` filters the `sheets` array itself, and gives a sheet one `data` block per range that touches it |
 | `/sheets/v4/spreadsheets/{id}/values/{range}` | A1 ranges incl. `Summary!A1:B2`, `A:A`, `1:3`, `A2:B`, a bare sheet name quoted or not, an empty one before the bang (`!A1` is the first sheet), and R1C1 — absolute (`R1C1:R2C2`) and bracketed offsets from A1 (`R[1]C[1]`), echoed as the A1 equivalent, with real's reversed-range rule. Any sheet in the workbook, matched case-insensitively; an unqualified range answers from the sheet at index 0. `majorDimension`, `valueRenderOption` |
 | `/sheets/v4/spreadsheets/{id}/values:batchGet` | As above; one unparseable range fails the whole call |
@@ -316,8 +324,8 @@ One `source_type` (`google_drive`) across four prefixes.
 The three editor APIs serve native-doc content for editor-aware clients, read structurally instead
 of via Google Drive export.
 
-Only a spreadsheet's owner may write it: every grant a corpus states makes a reader, and a
-reader's write is real's 403. A write lands in a per-server overlay and the corpus file is never
+Only a file's owner may write it: every grant a corpus states makes a reader, and a reader's
+write is real's 403. A write lands in a per-server overlay and the corpus file is never
 written; [Writes, and where they go](write-overlay.md) covers what a read then sees, what is not
 modelled, and how to read the overlay back and reset it.
 
@@ -334,10 +342,27 @@ held in a single cell verbatim, with Backlot picking no column delimiter, so spl
 cells.
 
 A document has two shapes in the same way. A record that states `paragraphs` gives each paragraph
-its named style and its runs bold, italic, underlined, struck through or linked, and its `content`
-is their text, one line each. A record that states only `content` is one plain paragraph per line
-of it. Reading a file of the wrong type through any of the three editor APIs is refused, as real
-Google does, not reinterpreted.
+its named style and its runs bold, italic, underlined, struck through or linked, its footnotes and
+page breaks, and its header and footer, or states `tabs`, each holding all of that and its child
+tabs; its `content` is the text Drive's full-text search reads, its tab titles, headers, footers and
+footnotes with the bodies, one line per paragraph. A record that states only `content` is one plain
+paragraph per line of it. Either way `files.export` renders a document's text formats from those
+paragraphs as real does, without its title: every tab one after another, `text/plain` as a
+byte-order mark and one line per paragraph, joined by CRLF, with the first tab's header and footer,
+a line of underscores for a page break and the footnotes numbered across the tabs, and
+`text/markdown` and `text/x-markdown` with its named styles as `#` headings, its bold, italic,
+strikethrough and links in Markdown, in the order real writes their delimiters, which does not
+always nest, and its footnotes as `[^n]`. A document's other formats serve its title and `content`,
+not the file real makes. Reading a file of the wrong type through any of the three editor APIs is
+refused, as real Google does, not reinterpreted.
+
+Google's front end reads a request ahead of the API, and Backlot answers what it refuses as it does.
+A `GET` or `HEAD` whose `Content-Length` is past 0 is its `400` HTML page, with no body on a `HEAD`.
+On the five APIs' paths, a request body under a `Content-Encoding` other than `gzip` or `identity`
+is its `415` where the API serves the request; on Docs, Sheets and Slides a request no route serves
+is a `415` with no body, and on Drive and Gmail it is the host's `404` page. A body under `gzip`
+reaches the API decompressed when it is one whole gzip member, and one that decompresses past
+134,217,728 bytes is a `400`.
 
 #### OAuth and batch
 
@@ -384,24 +409,25 @@ missing credential, an unparseable range and a mistyped `fields` mask, though `$
 ahead of it and an `alt` naming a format other than `json` suppresses the wrap altogether — the
 format is matched without regard to case and an empty `alt=` names none, so `alt=JSON`, `alt=Json`
 and `alt=` each ask for the JSON the default serves rather than for a format of their own. An empty
-`callback=` is no callback, and a POST ignores the parameter outright, as real does, since JSONP is
-what a `<script>` element fetches and a `<script>` element issues a GET. A Drive download — an
-export with no `alt` or with `alt=media`, or a `files.get` with `alt=media` — is not JSONP at all: a
-`callback` there is never wrapped, is ignored when the download succeeds, and turns every other
-answer into 503 `Backend Error` under `text/javascript; charset=UTF-8` with a body of real's own
-(the `errors[]` entry inline and no trailing newline), while a name that cannot be called is that
-503 even where the download would have succeeded. A missing credential on one names the missing API
-key rather than the unregistered caller, and only after the download's `mimeType` and
-typed-parameter checks, so the order a byte-stream read answers in is `$.xgafv`, a credential that
-does not resolve, a token named in the query, the `callback`, the parameters, then that 403, or a
-401 of the download server's own for a header that is no credential. Inside a batch a download is a
-302 instead where neither its query nor the batch's names a token (the `/batch` row above). A
-SUCCESS body is wrapped and indented on the `/sheets/v4` routes only; the other four families honour
-`callback` on their errors and not yet on their 200s. Measured against the live Sheets, Docs, Drive,
-Gmail and Slides APIs on 2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset
-first, the suppression across the four non-Sheets families next, and the escape set and the
-case-insensitive `alt` last; the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and
-2026-10-08, and a token named in the query on 2026-10-13.
+`callback=` is no callback, and a POST ignores the parameter outright, one read as the GET it names
+in `X-HTTP-Method-Override` included, as real does, since JSONP is what a `<script>` element fetches
+and a `<script>` element issues a GET. A Drive download — an export with no `alt` or with
+`alt=media`, or a `files.get` with `alt=media` — is not JSONP at all: a `callback` there is never
+wrapped, is ignored when the download succeeds, and turns every other answer into 503
+`Backend Error` under `text/javascript; charset=UTF-8` with a body of real's own (the `errors[]`
+entry inline and no trailing newline), while a name that cannot be called is that 503 even where the
+download would have succeeded. A missing credential on one names the missing API key rather than the
+unregistered caller, and only after the download's `mimeType` and typed-parameter checks, so the
+order a byte-stream read answers in is `$.xgafv`, a credential that does not resolve, a token named
+in the query, the `callback`, the parameters, then that 403, or a 401 of the download server's own
+for a header that is no credential. Inside a batch a download is a 302 instead where neither its
+query nor the batch's names a token (the `/batch` row above). A SUCCESS body is wrapped and indented
+on the `/sheets/v4` routes only; the other four families honour `callback` on their errors and not
+yet on their 200s. Measured against the live Sheets, Docs, Drive, Gmail and Slides APIs on
+2026-09-15, 2026-09-16 and 2026-09-17: the wrap, the indent and the charset first, the suppression
+across the four non-Sheets families next, and the escape set and the case-insensitive `alt` last;
+the download refusals on 2026-10-04, 2026-10-05, 2026-10-07 and 2026-10-08, and a token named in the
+query on 2026-10-13.
 
 **A repeated query parameter is read from the end real reads it from**, which is the first for some
 parameters and the last for others. The first repeat decides `fields`, `q`, `pageSize`, `pageToken`
@@ -774,9 +800,10 @@ here takes the 32-hex form), paging of a standard channel's members (live pages 
 shorter than `$top`; here all of the directory is one page), which unknown message ids live answers
 `403`, `404` or `400` (it depends on the number's range; here every unknown id is a `403`), the beta
 version and the service document at `/v1.0`, the request URI length past which the front end answers
-`414`, chats, writes, and real tenant authorization. Imported reply times must advance by a whole
-second, and at most 1,000 ids fit one channel-second, both because an id is a creation millisecond;
-an edit must not precede its message.
+`414` to a request line that ends (one that has not ended by its 40,960th byte is answered as real
+answers it), chats, writes, and real tenant authorization. Imported reply times must advance by a
+whole second, and at most 1,000 ids fit one channel-second, both because an id is a creation
+millisecond; an edit must not precede its message.
 
 ### Notion — `/notion/v1`
 
@@ -950,7 +977,7 @@ Each method answers on `GET` and `POST` alike, as the real Web API does.
 | `conversations.list` | `types` defaults to `public_channel` as the real API does — pass `public_channel,private_channel` to crawl both. This corpus has no DMs, so `im`/`mpim` select nothing, and an unknown value is `invalid_types` |
 | `conversations.info` | |
 | `conversations.history` | `oldest`, `latest`, `inclusive` |
-| `conversations.replies` | |
+| `conversations.replies` | `oldest`, `latest`, `inclusive`, paginated |
 | `conversations.members` | Per-channel, paginated |
 | `users.list` | |
 | `users.info` | |

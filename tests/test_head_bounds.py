@@ -161,16 +161,18 @@ _BOUNDS = [
     ("/msgraph", "/v1.0/me", 40_960, False, "graph 414", "graph 400"),
 ]
 
-#: A request line holding a byte, a broken escape or a `..` the front door refuses, and real's
-#: answer where the line reaches the bound and where a header after it does: the refusal where the
-#: front door refuses the line ahead of its bound (``backlot.request_target.refused_in_the_line``),
-#: its bound's page where it does not. The path is a row of :data:`_BOUNDS` with the bytes after it,
-#: in the path or in a query before the test's own, each latin-1, so `\xc3\xa9` is the two bytes
-#: of a UTF-8 `é`.
+#: A request line holding a byte, a broken escape, a `..`, a `#` or a leading `\` the front door
+#: refuses, and real's answer where the line reaches the bound and where a header after it does: the
+#: refusal where the front door refuses the line ahead of its bound
+#: (``backlot.request_target.refused_in_the_line``), its bound's page where it does not. The path is
+#: a row of :data:`_BOUNDS` with the bytes after it, in the path or in a query before the test's
+#: own, or with its first `/` sent as a `\`, each latin-1, so `\xc3\xa9` is the two bytes of a UTF-8
+#: `é`.
 _REFUSED_LINES = [
     ("/github", "/repos/acme/docs-site\t", "github 400", "github 400"),
     ("/github", "/repos/acme/docs-site\xc3\xa9", "github 400", "github 400"),
     ("/github", "/repos/acme/docs-site%zz", "github 414", "github 431"),
+    ("/github", "/repos/acme/docs-site#x", "github 400", "github 400"),
     ("/github", "/repos/acme/docs-site?q=\x01x", "github 400", "github 400"),
     ("/github", "/repos/acme/docs-site?pad=" + "a" * 100 + "&q=\x01x", "github 400", "github 400"),
     ("/slack", "/api/api.test\xc3\xa9", "slack", "slack 400"),
@@ -192,6 +194,8 @@ _REFUSED_LINES = [
     # A line of 20,000 bytes, which ends in the piece a head's 32,768th byte comes in.
     ("/atlassian", "/rest/api/3/myself%zz?pad=" + "a" * 19_956, "jira 414", "jira 400"),
     ("/atlassian", "/rest/api/3/myself\x01", "jira 414", "jira 494"),
+    ("/atlassian", "\\rest/api/3/myself", "jira 400", "jira 400"),
+    ("/docs", "\\v1/documents/x", "google", "google"),
     ("/notion", "/v1/users%zz", "cloudflare 414", "cloudflare bad request"),
     ("/notion", "/v1/users\r", "cloudflare bad request", "cloudflare bad request"),
     ("/notion", "/v1/x%2", "cloudflare 414", "cloudflare bad request"),
@@ -224,10 +228,11 @@ _MEASURED_PAST_THE_BOUND = {
     "/v1.0/me",
 }
 
-#: A `%00` or a `%80` in the path and a `%0A` at its end, after a row of :data:`_BOUNDS`, and real's
-#: answer where the line reaches the bound and where a header after it does, measured on 2026-11-03
-#: (UTC): the bound's page, but for a `%00` ahead of a header past the bound on Jira Cloud and
-#: behind Cloudflare, which draws the page each front door gives it in a short head.
+#: A `%00`, a `%80` or one of `"`, `{`, `|`, `\`, `<` and `#` in the path and a `%0A` at its end,
+#: after a row of :data:`_BOUNDS`, and real's answer where the line reaches the bound and where a
+#: header after it does, measured on 2026-11-03 (UTC): the bound's page, but for a `%00` ahead of a
+#: header past the bound on Jira Cloud and behind Cloudflare, which draws the page each front door
+#: gives it in a short head, and a `#` on api.github.com (:data:`_REFUSED_LINES`).
 _ESCAPES_AT_THE_BOUND = [
     ("/github", "/repos/acme/docs-site%00", "github 414", "github 431"),
     ("/github", "/repos/acme/docs-site%0A", "github 414", "github 431"),
@@ -252,9 +257,11 @@ _ESCAPES_AT_THE_BOUND = [
     ("/msgraph", "/v1.0/me%00", "graph 414", "graph 400"),
     ("/msgraph", "/v1.0/me%0A", "graph 414", "graph 400"),
     *[
-        (mount, path + "%80x", line, header)
+        (mount, path + byte + "x", line, header)
         for mount, path, _, _, line, header in _BOUNDS
         if path in _MEASURED_PAST_THE_BOUND
+        for byte in ("%80", '"', "{", "|", "\\", "<", "#")
+        if (mount, byte) != ("/github", "#")
     ],
 ]
 

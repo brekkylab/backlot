@@ -3613,16 +3613,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             at = after
 
     def clause():
+        """A clause that is not a group: :func:`sequence` reads the groups."""
         nonlocal at
-        if peek() == ("PUNCT", "("):
-            groups.append(at)
-            at += 1
-            sequence()
-            if peek() != ("PUNCT", ")"):
-                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
-            groups.pop()
-            at += 1
-            return
         kind, field = peek()
         if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
             raise not_parsed()
@@ -3661,16 +3653,28 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         value(operator, field)
 
     def sequence():
+        """Clauses joined by `and` and `or`, any of them inside groups, read in one loop with
+        `groups` as the stack of the groups open, so no depth of groups reaches Python's recursion
+        limit (real's depths: :func:`_cql_parse`)."""
         nonlocal at
-        clause()
-        while keyword("and") or keyword("or"):
+        while True:
+            while peek() == ("PUNCT", "("):
+                groups.append(at)
+                at += 1
+            clause()
+            while not (keyword("and") or keyword("or")):
+                if not groups:
+                    return
+                if peek() != ("PUNCT", ")"):
+                    raise _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
+                groups.pop()
+                at += 1
             conjunction = peek()[1].lower()
             at += 1
             if conjunction == "and" and keyword("not"):
                 at += 1
             if peek()[0] is None:
                 raise not_parsed()
-            clause()
 
     try:
         if not tokens:

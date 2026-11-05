@@ -1677,7 +1677,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
     rows = [
         # cql, the titles the admin is served, the titles ava is served. A list goes out as a
         # repeated `cql`, read from its first value as `cql_required` records, and bytes go out
-        # after `cql=` as written, `(`, `)` and `=` unescaped.
+        # after `cql=` as written.
         ("type=page", {"Guide", "Shut"}, {"Guide"}),
         ("type=blogpost", {"Post"}, {"Post"}),
         (f"space={eng}", {"Guide", "Post"}, {"Guide", "Post"}),

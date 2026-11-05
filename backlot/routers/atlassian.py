@@ -2211,9 +2211,9 @@ async def confluence_cql_search(request: Request):
         expr = _cql_parse(tokens, caller.email)
         term_sets: dict[str, set[str]] = {}
 
-        # `expr` nests a level for each `and`, `or` and `not` on its deepest path, and real answers
-        # a chain of `or`s as long as Python's recursion limit (`_cql_parse`), so each walk over
-        # it below keeps a stack rather than recursing.
+        # `expr` nests a level per operator on its deepest path, as deep as Python's recursion
+        # limit in queries real answers (`_cql_parse`), so each walk over it below keeps a stack
+        # rather than recursing.
         def _needed_term(node) -> str | None:
             pending = [node]
             while pending:
@@ -2248,7 +2248,7 @@ async def confluence_cql_search(request: Request):
 
         def _eval(node, r) -> bool:
             # `and` and `or` read their right side only where the left leaves the answer open.
-            waiting = []  # (node, right): an `and`, `or` or `not` waiting on a side's answer
+            waiting = []  # (node, right): an operator waiting on a side's answer
             while True:
                 kind = node[0]
                 if kind in ("and", "or") or (
@@ -3677,8 +3677,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
 
     def sequence():
         """Clauses joined by `and` and `or`, any of them inside groups, read in one loop with
-        `groups` as the stack of the groups open, so no depth of groups reaches Python's recursion
-        limit (real's depths: :func:`_cql_parse`)."""
+        `groups` as the stack of the groups open (the depths real reads: :func:`_cql_parse`)."""
         nonlocal at
         while True:
             while peek() == ("PUNCT", "("):
@@ -3870,8 +3869,8 @@ def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
 
     Read without recursion, with a stack of the levels the groups open, so no depth of groups
     reaches Python's recursion limit. Real answered `type=page` in 1000 pairs of parentheses, and
-    `type=page` followed by 1000 `or id=1`, sent with `(`, `)` and `=` unescaped, with the pages
-    `type=page` alone answered (Confluence Cloud, 2026-11-05)."""
+    `type=page` followed by 1000 `or id=1`, each sent unescaped, with the pages `type=page` alone
+    answered (Confluence Cloud, 2026-11-05)."""
     at = 0
 
     def peek(offset=0):

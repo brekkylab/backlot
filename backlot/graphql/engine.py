@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping
 
 from graphql import (
     DocumentNode,
+    ExecutionContext,
     ExecutionResult,
     FragmentDefinitionNode,
     GraphQLError,
@@ -37,10 +38,8 @@ from graphql import (
     GraphQLScalarType,
     GraphQLSchema,
     GraphQLSyntaxError,
-    NonNullTypeNode,
     OperationDefinitionNode,
     ValueNode,
-    VariableDefinitionNode,
     assert_valid_schema,
     build_schema,
     execute_sync,
@@ -92,58 +91,41 @@ def _ids_as_graphql_js_reads_them(value: Any, type_: Any) -> Any:
     return value
 
 
-def _read_without_a_proto_value(operation: Operation) -> Operation:
-    """``operation`` with a variable named ``__proto__`` read as having no value: its definition
-    in the chosen operation is made nullable and stripped of its default, and the caller drops
-    the name from the values the operation runs with, so the coercion graphql-core runs as the
-    operation executes finds the variable neither provided nor defaulted, and each argument
-    that reads it reads an absence. The refusals of the variable as sent — one of a required
-    type that was not sent is refused — are made before this, from the definition as sent.
+class _PlainObject(dict):
+    """The coerced variables of an operation as a JavaScript object literal holds them, where
+    ``__proto__`` is not a key of the object's own but names its prototype: a list or an object
+    the variable holds becomes the prototype, null leaves the object none, and any other value, or
+    none, leaves ``Object.prototype``, read as ``{}``. graphql-js passes a variable whole to an
+    argument or to a directive's argument only if it is a key of the object's own, so
+    ``$__proto__`` reads an absence there, and reads one inside a list or an input object by name,
+    so it reads the prototype there, and no value where there is none.
 
-    A vendor whose own layer loses the value asks for this (:meth:`Engine.run`). Measured
-    against api.linear.app on 2026-10-28 (UTC): a ``$__proto__`` sent a value, or carrying a
-    default in the document, is answered at each use as if it had none — an `Internal server
-    error` at the field where the argument is non-null, and the argument left out where it is
-    nullable (``issues`` answered every issue for ``first: $__proto__`` sent ``1``) — and one of
-    a non-null type absent from ``variables`` is graphql-js's refusal, as any variable's.
-    graphql-js gathers coerced variables in ``Object.create(null)``, where the name is an
-    ordinary key, so the layer that loses the value is the vendor's own; api.fireflies.ai
-    served a ``$__proto__`` with a default the same day, so this is not the engine's default."""
-    definitions = operation.operation.variable_definitions
-    if all(definition.variable.name.value != "__proto__" for definition in definitions):
-        return operation
-    rewritten = tuple(
-        VariableDefinitionNode(
-            variable=definition.variable,
-            type=(
-                definition.type.type
-                if isinstance(definition.type, NonNullTypeNode)
-                else definition.type
-            ),
-            default_value=None,
-            directives=definition.directives,
-            loc=definition.loc,
-        )
-        if definition.variable.name.value == "__proto__"
-        else definition
-        for definition in definitions
-    )
-    chosen = OperationDefinitionNode(
-        name=operation.operation.name,
-        operation=operation.operation.operation,
-        variable_definitions=rewritten,
-        directives=operation.operation.directives,
-        selection_set=operation.operation.selection_set,
-        loc=operation.operation.loc,
-    )
-    document = DocumentNode(
-        definitions=tuple(
-            chosen if definition is operation.operation else definition
-            for definition in operation.document.definitions
-        ),
-        loc=operation.document.loc,
-    )
-    return Operation(document, chosen, operation.variables, operation.name)
+    api.linear.app answered so on 2026-10-28 and 2026-11-04 (UTC): ``issue(id: $__proto__)`` sent
+    an issue's id, or given it as a default, was the `Internal server error` at ``issue``, and
+    ``issues(first: $__proto__)`` sent ``1`` every issue. In ``filter: {id: {eq: $__proto__}}``,
+    the id sent, given as a default or not sent was the `Argument Validation Error` of an ``eq``
+    of ``{}``, and ``null`` sent every issue; ``filter: {id: {in: $__proto__}}`` sent a list of
+    the id, or ``filter: {id: $__proto__}`` sent ``{eq: <id>}``, was that issue."""
+
+    def __init__(self, variables: Mapping[str, Any]) -> None:
+        super().__init__(variables)
+        value = self.pop("__proto__", {})
+        if value is not None:
+            self["__proto__"] = value if isinstance(value, (list, dict)) else {}
+
+    def __contains__(self, name: object) -> bool:
+        return name != "__proto__" and super().__contains__(name)
+
+
+class _PlainObjectExecution(ExecutionContext):
+    """graphql-core's execution, reading its coerced variables in a :class:`_PlainObject`."""
+
+    @classmethod
+    def build(cls, *args: Any, **kwargs: Any) -> list[GraphQLError] | ExecutionContext:
+        built = super().build(*args, **kwargs)
+        if isinstance(built, ExecutionContext):
+            built.variable_values = _PlainObject(built.variable_values)
+        return built
 
 
 # One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an
@@ -546,14 +528,18 @@ class Engine:
         )
 
     def run(
-        self, operation: Operation, *, context: Any = None, proto_is_absent: bool = False
+        self,
+        operation: Operation,
+        *,
+        context: Any = None,
+        variables_in_a_plain_object: bool = False,
     ) -> Result:
         """Coerce the variables of ``operation``, refused with Apollo Server's code, and run it
         with ``context``, the errors of the root arguments graphql-js refuses
         (:meth:`_refused_root_arguments`) ahead of the run's at the other root fields, or in its
-        place where one is a non-null field's. With ``proto_is_absent``, a variable named
-        ``__proto__`` the coercion accepted is then read as having no value
-        (:func:`_read_without_a_proto_value`), as a vendor whose own layer loses it answers."""
+        place where one is a non-null field's. With ``variables_in_a_plain_object``, both read the
+        coerced variables in a :class:`_PlainObject`, as api.linear.app does; api.fireflies.ai read
+        a ``$__proto__`` given a default as any other variable on 2026-11-04 (UTC)."""
         variables = operation.variables
         coercion = js_words.coerce_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables
@@ -580,17 +566,13 @@ class Engine:
                 name: _ids_as_graphql_js_reads_them(value, types.get(name))
                 for name, value in variables.items()
             }
-        if proto_is_absent:
-            operation = _read_without_a_proto_value(operation)
-            if variables:
-                variables = {
-                    name: value for name, value in variables.items() if name != "__proto__"
-                }
         # A root type only `self._checked` has runs there, and one neither schema has is
         # graphql-core's refusal.
         on_a_root = getattr(self.schema, f"{operation.operation.operation.value}_type") is None
         argued, nulled = (
-            ([], False) if on_a_root else self._refused_root_arguments(operation, variables)
+            ([], False)
+            if on_a_root
+            else self._refused_root_arguments(operation, variables, variables_in_a_plain_object)
         )
         if nulled:
             result = ExecutionResult(None, argued)
@@ -601,6 +583,9 @@ class Engine:
                 context_value=context,
                 variable_values=variables,
                 operation_name=operation.name,
+                execution_context_class=(
+                    _PlainObjectExecution if variables_in_a_plain_object else None
+                ),
             )
             if argued:
                 keys = {error.path[0] for error in argued}
@@ -632,7 +617,7 @@ class Engine:
         )
 
     def _refused_root_arguments(
-        self, operation: Operation, variables: Any
+        self, operation: Operation, variables: Any, in_a_plain_object: bool
     ) -> tuple[list[GraphQLError], bool]:
         """The errors of the root fields of ``operation`` whose arguments graphql-js refuses, in
         the order the fields come, and whether the last is a non-null field's, which nulls the
@@ -654,6 +639,8 @@ class Engine:
         coerced = get_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables or {}
         )
+        if in_a_plain_object:
+            coerced = _PlainObject(coerced)
         try:
             fields = collect_fields(
                 self.schema, fragments, coerced, root, operation.operation.selection_set

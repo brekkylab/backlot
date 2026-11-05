@@ -324,7 +324,9 @@ async def _apollo_server(request: Request) -> Response:
     caller = auth.resolve_api_key(request)
     if caller is None:
         if _introspection_only(resolved):
-            return _answer(seen, ENGINE.run(resolved, proto_is_absent=True), payload, request)
+            return _answer(
+                seen, ENGINE.run(resolved, variables_in_a_plain_object=True), payload, request
+            )
         return _answer(seen, None, payload)
     key = auth.api_key_token(request)
     state = request.app.state
@@ -342,7 +344,11 @@ async def _apollo_server(request: Request) -> Response:
         # (store.linear_entity_by_id, called by the resolvers' own `_by_id`).
     }
     return _answer(
-        seen, ENGINE.run(resolved, context=context, proto_is_absent=True), payload, request, key
+        seen,
+        ENGINE.run(resolved, context=context, variables_in_a_plain_object=True),
+        payload,
+        request,
+        key,
     )
 
 

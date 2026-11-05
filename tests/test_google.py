@@ -20323,6 +20323,8 @@ def _cell_style(*dropped, **changes) -> dict:
 _NORMAL = {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"}
 _PT = lambda n: {"magnitude": n, "unit": "PT"}  # noqa: E731
 _LISTED_CELL = _cell_style("spacingMode", indentFirstLine=_PT(18), indentStart=_PT(36))
+_EVEN = {"widthType": "EVENLY_DISTRIBUTED"}
+_MIN_ROW = {"minRowHeight": {"unit": "PT"}}
 _PLAIN_RUNS = [[[t + "\n", {}]] for t in ("ab", "", "c1", "c2", "c3", "c4", "cd")]
 
 
@@ -20472,6 +20474,33 @@ _TABLE_STYLE_ROWS = [
         + [[["\n", {"fontSize": _PT(14)}]], [["\n", {}]]]
         + _PLAIN_RUNS[4:],
     ),
+    # text typed into a cell `insertTable` made is one run with the cell's newline
+    (
+        "wr-table",
+        [{"insertTable": {"rows": 1, "columns": 1, "location": {"index": 1}}}, _ins(5, "a")],
+        "runs",
+        [[["\n", {}]], [["a\n", {}]], *_PLAIN_RUNS],
+    ),
+    # a new column repeats its column's properties, a new row its row's style, and a deleted
+    # column takes its properties with it
+    (
+        "wr-table",
+        [_cell("insertTableColumn", insertRight=True)],
+        "table",
+        [[2, 3, {"tableColumnProperties": [_EVEN] * 3}, [_MIN_ROW] * 2]],
+    ),
+    (
+        "wr-table",
+        [_cell("insertTableRow", insertBelow=True)],
+        "table",
+        [[3, 2, {"tableColumnProperties": [_EVEN] * 2}, [_MIN_ROW] * 3]],
+    ),
+    (
+        "wr-table",
+        [_cell("deleteTableColumn")],
+        "table",
+        [[2, 1, {"tableColumnProperties": [_EVEN]}, [_MIN_ROW] * 2]],
+    ),
 ]
 
 
@@ -20520,13 +20549,10 @@ def _docs_served(wc, h, doc: str, part: str):
             [[pe["textRun"]["content"], pe["textRun"]["textStyle"]] for pe in paragraph["elements"]]
             for paragraph in gdocs.paragraphs_of(read["body"]["content"])
         ]
-    if part == "runs":
+    if part == "table":
         return [
-            [
-                [pe["textRun"]["content"], pe["textRun"]["textStyle"]]
-                for pe in el["paragraph"]["elements"]
-            ]
-            for el in read["body"]["content"][1:]
+            [t["rows"], t["columns"], t["tableStyle"], [r["tableRowStyle"] for r in t["tableRows"]]]
+            for t in (el["table"] for el in read["body"]["content"] if "table" in el)
         ]
     if part == "rangeIds":
         return {

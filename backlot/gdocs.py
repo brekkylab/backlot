@@ -644,8 +644,8 @@ def indexed(
     its `startIndex` and `endIndex` in UTF-16 code units, those two first, and a footnote
     reference its `footnoteNumber`. Content opens at 0, a body with its section break and a header,
     footer or footnote with its first paragraph, and a zero `startIndex` is left out, as proto3
-    leaves out every zero. A link to a heading is `_linked`'s. A table takes an index at its start,
-    at each row's and cell's and at its end (`TABLE`), and serves its `rows` and `columns`."""
+    leaves out every zero. A link to a heading is `_linked`'s. A table's indices are `TABLE`'s,
+    and it serves its `rows` and `columns`."""
     return _indexed(content, 0, numbers, lone)[0]
 
 

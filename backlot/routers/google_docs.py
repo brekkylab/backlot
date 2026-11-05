@@ -639,9 +639,10 @@ def _docs_insert_element(doc: gdocs.Document, req: dict, what: str) -> tuple[dic
     """Where a footnote reference or a page break goes, in real's order of refusals, measured
     2026-11-02: no location, the tab, an index below zero, the segment, the index at or past the
     segment's end, a header, footer or footnote, then 0 and inside a grapheme cluster.
-    `endOfSegmentLocation` is before the body's last newline. Measured 2026-11-03, a page break
-    anywhere in a table is refused before the index is, its end included and its start not, and a
-    reference at a table's index is refused as at 0 (`_docs_in_paragraph`)."""
+    `endOfSegmentLocation` is before the body's last newline. Measured 2026-11-03, a page break at
+    a table's row, cell or end or in a cell's text is refused as in a table, ahead of the refusal
+    at 0; at a table's start it is refused as at 0, and so is a footnote reference at any of a
+    table's indices (`_docs_in_paragraph`)."""
     where = req.get("location", req.get("end_of_segment_location"))
     if where is None:
         raise _EditorRefused(
@@ -1424,12 +1425,12 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     many it had, at most 8, less the fewest any such paragraph of the request had, and a list the
     request makes indents each level that many tabs further (paragraphs of seven tabs made a list
     indented 252 PT more than its preset). The paragraphs join the list of the paragraph right
-    before them (`gdocs.Body.follows_paragraph`) when that list's glyphs are the preset's, else the
+    before them (`gdocs.Body.follows_paragraph`; measured 2026-11-03, two cells listed one after
+    the other in one preset made two lists) when that list's glyphs are the preset's, else the
     list of the first of them already in one, which takes the preset whole, else one new list. A
     paragraph is indented as its list's level is. Measured 2026-11-04, a paragraph already in a
     list keeps its level and its tabs: one of another list joined the first one's list, and that
-    other list kept its glyphs. Measured 2026-11-03, two cells listed one after the other in one
-    preset made two lists."""
+    other list kept its glyphs."""
     tab, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
     preset = req.get("bullet_preset", 0)
     if not 0 < preset < len(_DOCS_BULLET_PRESET.names):
@@ -1567,9 +1568,8 @@ def _docs_replace_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, boo
     `revisionId`, and an empty name is taken; a range holding its segment's last newline or part
     of a table (`gdocs.Body.cuts_table`) is refused naming its id, and so is one starting before
     the body's first index or with either end between the halves of a character outside the BMP,
-    measured 2026-11-04, while one holding a whole table replaces it, measured 2026-11-03; the
-    characters `insertText` strips are stripped, and one in `gdocs.UNWRITABLE` fails the batch
-    once every request is read."""
+    measured 2026-11-04; one holding a whole table replaces it; the characters `insertText` strips
+    are stripped, and one in `gdocs.UNWRITABLE` fails the batch once every request is read."""
     if "named_range_id" not in req and "named_range_name" not in req:
         raise _EditorRefused("Must specify a named range reference")
     tabs = _docs_named_tabs(doc, req)

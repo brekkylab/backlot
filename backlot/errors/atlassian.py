@@ -470,6 +470,19 @@ def cql_invalid_relative_date(value: str) -> AtlassianError:
     return _service_refusal(400, "api.BadRequestException", f"Invalid relative date : {value}")
 
 
+def cql_escaped_end_quote(text: str) -> AtlassianError:
+    """The CQL search's refusal of a quoted value whose closing quote follows a backslash, named
+    as sent with its quotes. On Confluence Cloud on 2026-10-30 `title ~ "a\\\\"` answered
+    `Escaped end quote in phrase query near : "a\\\\"`, and so did the same value in `label`,
+    `space` and `space.key`, in single quotes and inside an `in` list, and four backslashes before
+    the closing quote, and on 2026-11-04 one backslash and three (`title ~ "a\\"` naming `"a\\"`).
+    Two backslashes in the middle of a value were not refused (2026-10-26). Where it falls among the
+    search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(
+        400, "api.BadRequestException", f"Escaped end quote in phrase query near : {text}"
+    )
+
+
 def no_space_with_key(space_key: str) -> AtlassianError:
     """`content`'s refusal of a space key naming no space, as sent: the key is not trimmed (`' '` is
     named as a space), and a repeated one is its comma-join, which no key holds. Where it comes

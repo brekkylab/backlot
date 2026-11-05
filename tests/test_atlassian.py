@@ -1419,6 +1419,23 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + f" and space.key = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
         (three + f' and space.key = "{eng[0]}\\{eng[1:]}"', set()),
         (three + f' and space.key = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng}\\""', {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + ' and type = "pa\\"ge"', {"Guide", "Child", "Grand"}),
+        (three + ' and text ~ "De\\"ep"', {"Grand"}),
+        (three + ' and text ~ "De\\ep"', {"Grand"}),
+        (three + ' and text ~ "De\\\\ep"', set()),
+        (three + ' and title ~ "Gu\\"ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\\\ide"', set()),
+        # not real's answers: real refused `type = "pa\ge"` with a 400 naming `pa\ge`, and `label`
+        # was not measured, as no content there carried one; these pin how `_cql_unquote` reads them
+        (three + ' and type = "pa\\ge"', set()),
+        (three + ' and label = "pag\\"er"', {"Child"}),
+        (three + ' and label = "pag\\er"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
         (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
         # beside a field this route does not read, which held for each of the three
@@ -1448,6 +1465,23 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         h = {"Authorization": f"Bearer {written['admin_token']}"}
         content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
         ids = {r["title"]: r["id"] for r in content}
+        guide = str(ids["Guide"])
+        half = len(guide) // 2
+        first, second = guide[:half], guide[half:]
+        rows += [
+            (f'id = "{first}\\"{second}"', {"Guide"}),
+            (f"id = '{first}\"{second}'", {"Guide"}),
+            (f'id = "{guide}\\""', {"Guide"}),
+            (f'id in ("{first}\\"{second}")', {"Guide"}),
+            (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
+            (f'parent = "{first}\\"{second}"', {"Child"}),
+            # not real's answers: real refused each of these with 400 `Can't parse as a ContentId`;
+            # they pin the value read with its backslash kept
+            (f'id = "{first}\\"\\"{second}"', set()),
+            (f'id = "{first}\\{second}"', set()),
+            (f'ancestor = "{first}\\{second}"', set()),
+            (f'parent = "{first}\\{second}"', set()),
+        ]
         answered = {}
         for template, _ in rows:
             cql = template.format(**ids)
@@ -3998,6 +4032,7 @@ _REFUSED, _FAILED = (
 )
 
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
+_ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -4027,6 +4062,7 @@ _CQL_PAGE_ROWS = [
     ("&limit=2&cursor={c1}&cursor=", [2, 3], None),
     ("&limit=1&cursor={c1}&cursor={c2}", [2], 2),
     ("&limit=2&cursor=abc", (400, _REFUSED), None),
+    ("%20and%20title%20~%20%22a%5C%5C%22&limit=2&cursor=abc", (400, _ESCAPED_END_QUOTE), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=WyJcdDEiXQ%3D%3D_h_W10%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D_h_abc", (400, _REFUSED), None),
@@ -9267,7 +9303,15 @@ _CQL_PARSE_ROWS = [
                 "space.key in ( 'handbook' , 'ab' )",
             ),
             ('space = "han\\"dbook"', 'space = "han\\"dbook"'),
+            ("space = 'han\"dbook'", "space = 'han\"dbook'"),
+            ('space = "handbook\\""', 'space = "handbook\\""'),
+            ('space = "han\\"\\"dbook"', 'space = "han\\"\\"dbook"'),
+            ('space = "han\\dbook"', 'space = "han\\dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
+            ('type = "pa\\"ge"', 'type = "pa\\"ge"'),
+            ('type = "pa\\ge"', 'type = "pa\\ge"'),
+            ('title~"a\\b"', 'title ~ "a\\b"'),
+            ("title~'a\"b'", "title ~ 'a\"b'"),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
             ("created>startOfDay()", "created > startOfDay ( )"),
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
@@ -9335,6 +9379,28 @@ _CQL_PARSE_ROWS = [
                 'space.key = "a\'b" and title~',
                 "Expecting a value for operator '~' after field 'title'",
             ),
+            ('title ~ "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('label = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('space = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ("space.key = 'a\\\\'", "Escaped end quote in phrase query near : 'a\\\\'"),
+            (
+                'space.key in ("a\\\\", handbook)',
+                'Escaped end quote in phrase query near : "a\\\\"',
+            ),
+            ('space.key = "\\\\"', 'Escaped end quote in phrase query near : "\\\\"'),
+            ('space.key = "a\\\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\\\"'),
+            ('title ~ "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ("title ~ 'a\\'", "Escaped end quote in phrase query near : 'a\\'"),
+            ('title ~ "a\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\"'),
+            ('space.key = "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", b)', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", "b")', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and title ~ "c"', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and type = page', 'Escaped end quote in phrase query near : "a\\"'),
+            ('title ~ "a\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type in ()', _CQL_NOT_PARSED),
+            ('title ~ "a\\\\" and (type = page', "Missing closing parenthesis near field (()"),
             ("\U0001f600", _CQL_NOT_PARSED),
             ("type=page and", _CQL_NOT_PARSED),
             ("type=page or", _CQL_NOT_PARSED),
@@ -9449,13 +9515,9 @@ _CQL_PARSE_ROWS = [
             ('space = currentSpace() and title ~ "a\\"', _CQL_CURRENT_SPACE),
             (
                 'title ~ "a\\" and space = currentSpace()',
-                "Expecting a value for operator '~' after field 'title' but got '\"'",
+                'Escaped end quote in phrase query near : "a\\"',
             ),
             ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
-            (
-                'title ~ "a\\"',
-                "Expecting a value for operator '~' after field 'title' but got '\"'",
-            ),
         ]
     ],
 ]

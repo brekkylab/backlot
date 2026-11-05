@@ -3132,10 +3132,54 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
         (
             "{ users(first: 2, last: 2, sort: [{name: {order: Ascending}}], orderBy: createdAt) "
             "{ nodes { name } } }",
-            "passing both `first` and `last` is not supported",
+            "Argument Validation Error",
         ),
     ):
         assert gql(client, query, admin_h).json()["errors"][0]["message"] == message
+
+
+def test_linear_refused_root_arguments_answered_ahead_of_by_id_miss(client, admin_h):
+    """The refusal and location, as _PlainObjectExecution.execute_fields records them. Two
+    not-founds answer the first in document order."""
+    cases = (
+        (
+            '{ issue(id: "nope") { id } issues(sort: [{createdAt: {order: Descending}}], orderBy: createdAt) { nodes { id } } }',
+            ["issues"],
+            "Cannot use both sort and orderBy options",
+            28,
+        ),
+        (
+            '{ issues(sort: [{createdAt: {order: Descending}}], orderBy: createdAt) { nodes { id } } issue(id: "nope") { id } }',
+            ["issues"],
+            "Cannot use both sort and orderBy options",
+            3,
+        ),
+        (
+            '{ issue(id: "nope") { id } issues(first: 1, last: 1) { nodes { id } } }',
+            ["issues"],
+            "Argument Validation Error",
+            28,
+        ),
+        (
+            '{ team(id: "nope") { id } users(first: 1, last: 1) { nodes { id } } }',
+            ["users"],
+            "Argument Validation Error",
+            27,
+        ),
+        (
+            '{ issue(id: "nope") { id } team(id: "nope") { id } }',
+            ["issue"],
+            "Entity not found: Issue",
+            3,
+        ),
+    )
+    for query, path, message, column in cases:
+        body = gql(client, query, admin_h).json()
+        assert body["data"] is None
+        err = body["errors"][0]
+        assert err["path"] == path
+        assert err["message"] == message
+        assert err["locations"][0]["column"] == column
 
 
 # --- Linear relations / children / attachments / releases -----------------------

@@ -28,6 +28,7 @@ from graphql import (
     DocumentNode,
     ExecutionContext,
     ExecutionResult,
+    FieldNode,
     FragmentDefinitionNode,
     GraphQLError,
     GraphQLID,
@@ -126,6 +127,42 @@ class _PlainObjectExecution(ExecutionContext):
         if isinstance(built, ExecutionContext):
             built.variable_values = _PlainObject(built.variable_values)
         return built
+
+    def execute_fields(
+        self,
+        parent_type: GraphQLObjectType,
+        source_value: Any,
+        path: Any,
+        fields: dict[str, list[FieldNode]],
+    ) -> Any:
+        """Execute fields, resolving non-by-id root fields ahead of by-id root fields.
+        graphql-js reads each query root field's arguments as it starts the field, before any
+        resolver's answer arrives, as Linear's resolvers answer asynchronously. A by-id root
+        given an id Linear holds nothing for answers only after lookups complete, while a root field
+        whose arguments Linear refuses (such as ``sort`` beside ``orderBy``, or ``first`` beside
+        ``last``) refuses them synchronously as the field starts. Running non-by-id roots ahead of
+        by-id roots answers the refused argument ahead of the not-found error, as api.linear.app
+        answered on 2026-10-26 (UTC). Two not-founds answer the first in document order."""
+        if parent_type is self.schema.query_type and path is None:
+
+            def is_by_id(item: tuple[str, list[FieldNode]]) -> bool:
+                name = item[1][0].name.value
+                field = parent_type.fields.get(name)
+                return field is not None and list(field.args.keys()) == ["id"]
+
+            ordered_fields = dict(sorted(fields.items(), key=is_by_id))
+            results = super().execute_fields(parent_type, source_value, path, ordered_fields)
+            if self.is_awaitable(results):
+
+                async def reordered():
+                    res = await results
+                    return {k: res[k] for k in fields if k in res}
+
+                return reordered()
+            if isinstance(results, dict):
+                return {k: results[k] for k in fields if k in results}
+            return results
+        return super().execute_fields(parent_type, source_value, path, fields)
 
 
 # One custom scalar's coercion: ``parse_value`` takes a variable's JSON value, ``parse_literal`` an

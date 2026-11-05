@@ -104,7 +104,7 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
     when combined with ``last`` (Relay applies ``after`` first, then takes the last n of the rest).
     Asking for both ``first`` and ``last`` is a client bug the spec says to reject."""
     if first is not None and last is not None:
-        raise GraphQLError("passing both `first` and `last` is not supported")
+        raise argument_validation_error()
     start = pagination.decode_cursor(after) if after else 0
     if _backward(first, last, before):
         limit = pagination.clamp_limit(last, PAGE_DEFAULT, PAGE_MAX)

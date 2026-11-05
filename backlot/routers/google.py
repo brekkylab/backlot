@@ -45,6 +45,7 @@ from backlot import (
     protojson,
     store,
     synth,
+    utf8_escapes,
 )
 from backlot.acl import Caller
 from backlot.config import get_settings
@@ -374,15 +375,18 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     Three names carry a token, ``gerr.QUERY_TOKENS``, spelt exactly so. Taken in that order, the
     first the query carries is the gate and the last is the token, wherever each stands in the
     query. ``gated``, the gate's first value has to start `ya29.` or `1/` once decoded, or the query
-    names no credential. Past the gate the token's value is resolved as it stands; an empty one, or
-    a token whose name the query repeats, names no token. Inside a batch a part reads each of the
-    three names from its own query where it carries that name and from the batch's where it does
-    not, so a part's values for a name stand in for the batch's rather than join them.
+    names no credential. Past the gate the token's value is read without the spaces, tabs and line
+    feeds at its two ends, so one of nothing but those is a token that does not resolve; an empty
+    one, or a token whose name the query repeats, names no token. Inside a batch a part reads each
+    of the three names from its own query where it carries that name and from the batch's where it
+    does not, so a part's values for a name stand in for the batch's rather than join them.
 
     Measured on Drive and Gmail on 2026-10-13 and 2026-10-14, with the rows ``tests/test_google.py``
     keeps in `_QUERY_CREDENTIAL_ROWS`, and in `_BATCH_ROWS` for a batch. The two prefixes are what a
     byte sweep found, 282 values with each of the 94 visible ASCII characters (0x21 to 0x7E) after
-    ya29 and after 1 and before a slash.
+    ya29 and after 1 and before a slash. The three characters a token loses are what a sweep on
+    Drive's `about` found on 2026-11-04, a token that resolves with each byte 0x00 to 0x20 and 0x7F
+    before it and after it, behind no header; behind `Bearer<t>` the same three read alike.
     """
     query = request.query_params
     outer = _BATCH_OUTER.get()
@@ -401,7 +405,9 @@ def _query_credential(request: Request, *, gated: bool) -> tuple[bool, str | Non
     if gated and not query.getlist(named[0])[0].startswith(_QUERY_TOKEN_PREFIXES):
         return None
     values = query.getlist(named[-1])
-    return True, (values[0] or None) if len(values) == 1 else None
+    if len(values) != 1 or not values[0]:
+        return True, None
+    return True, values[0].strip(" \t\n")
 
 
 _ESCAPED_SLASH = re.compile(r"%2F", re.I)
@@ -3319,7 +3325,9 @@ def _drive_refuse_a_trailing_comma(request: Request) -> None:
     range refusals and ahead of the rest, measured 2026-10-20 beside a bad `pageToken`, `q` and
     `orderBy`, an `orderBy` naming a key twice or `starred` after another, `fullText` beside an
     `orderBy`, `includeItemsFromAllDrives` alone, `acknowledgeAbuse`, `useDomainAdminAccess`, a
-    repeated `pageSize` and a file that does not exist. A download read no mask."""
+    repeated `pageSize` and a file that does not exist. A download read no mask: on 2026-10-31
+    `alt=media` with `fields=id,` or `fields=nope(` was answered as `alt=media` alone, on a Doc and
+    on a file with content."""
     mask = gerr.first_repeat(request.query_params, "fields")
     if mask is not None and mask.rstrip(string.whitespace).endswith(","):
         raise gerr.invalid_parameter("fields", f"Invalid field selection {mask}")
@@ -4265,7 +4273,8 @@ async def drive_files_get(file_id: str, request: Request):
     _drive_typed(request, "acknowledgeAbuse", "supportsAllDrives", "supportsTeamDrives")
     if download:
         caller = _require(request, download=True)
-    else:
+    _refuse_an_undecodable_path(request)
+    if not download:
         _drive_refuse_a_trailing_comma(request)
     # Measured 2026-10-04: before the lookup, so a file that does not exist is refused alike, and
     # before each `fields` refusal but `_drive_refuse_a_trailing_comma`'s. Inside a batch real
@@ -4342,6 +4351,7 @@ async def drive_files_export(file_id: str, request: Request):
         raise gerr.required("mimeType")
     if download:
         caller = _require(request, download=True)
+    _refuse_an_undecodable_path(request)
     ids = auth.visible_ids(request, caller)
     row = store.gdrive_by_id(conn, file_id, visible_ids=ids)
     if row is None:
@@ -4394,6 +4404,7 @@ async def drive_files_permissions(file_id: str, request: Request):
         request, "supportsAllDrives", "supportsTeamDrives", "useDomainAdminAccess", page_size=True
     )["pageSize"]
     _drive_page_size_in_range(sizes, 100)
+    _refuse_an_undecodable_path(request)
     _drive_refuse_a_trailing_comma(request)
     # Refused in real's order, measured by sending two bad values at once: the `pageToken`
     # refusals, a repeated `pageSize`'s 500, the domain-administrator refusal and the file lookup
@@ -4472,6 +4483,23 @@ _EDITOR_OFFICE_FAMILY = {
 _EDITOR_NATIVE = frozenset(_EDITOR_OFFICE_FAMILY)
 
 
+def _refuse_an_undecodable_path(request: Request) -> None:
+    """Refuse a path whose escapes do not decode to UTF-8 (``backlot.utf8_escapes.decodes``) as the
+    API behind it refuses it, after the credential, `alt`, a typed parameter, a `pageSize` out of
+    range, export's required `mimeType`, a body batchUpdate refuses and a `fields` mask Docs, Sheets
+    or Slides refuses, and ahead of a `fields` mask Drive refuses, Drive's trailing comma,
+    `acknowledgeAbuse=true`, an export `mimeType`, `text/plain` or one Drive does not convert to,
+    and on `permissions` a `pageToken`, a repeated `pageSize` and `useDomainAdminAccess=true`.
+    Measured on Drive, Docs and Sheets on 2026-10-30 (UTC), on Slides on 2026-10-31, on Docs'
+    batchUpdate on 2026-11-02 and on `permissions` on 2026-11-03, each with a Workspace member's
+    token."""
+    if utf8_escapes.decodes(request.scope["raw_path"]):
+        return
+    if gerr.family(request.url.path) == gerr.DRIVE:
+        raise gerr.bad_request()
+    raise gerr.invalid_argument(EDITOR_INVALID_ARG)
+
+
 def _editor_doc(request: Request, file_id: str, *, expect: str):
     """The Drive row behind an editor read, or the error real Google gives for a mismatch.
 
@@ -4485,6 +4513,7 @@ def _editor_doc(request: Request, file_id: str, *, expect: str):
     2026-10-17."""
     conn = auth.conn(request)
     caller = _require(request)
+    _refuse_an_undecodable_path(request)
     ids = auth.visible_ids(request, caller)
     # A native Doc/Sheet/Slides id is the SAME id space as Drive's own file id --
     # real Google resolves docs.googleapis.com/etc. off the identical Drive file id, so this has

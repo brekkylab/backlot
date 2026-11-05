@@ -1167,6 +1167,14 @@ _LISTING = "/crm/v3/objects/contacts"
 _RECORD = "/crm/v3/objects/contacts/1"
 _V4 = "/crm/v4/objects/contacts/{ava}/associations/companies"
 _MERGE = "/crm/v3/objects/contacts/merge"
+_BATCH_CREATE = "/crm/v3/objects/contacts/batch/create"
+_BATCH_UPSERT = "/crm/v3/objects/contacts/batch/upsert"
+_PAIR = "/crm/v4/objects/contacts/1/associations/companies/2"
+_DEFAULT_PAIR = "/crm/v4/objects/contacts/1/associations/default/companies/2"
+_PAIRS_CREATE = "/crm/v4/associations/contacts/companies/batch/create"
+_LABELS_ARCHIVE = "/crm/v4/associations/contacts/companies/batch/labels/archive"
+_PAIRS_READ = "/crm/v4/associations/contacts/companies/batch/read"
+_REPORT = "/crm/v4/associations/usage/high-usage-report/1"
 _FORBIDDEN_ROWS = [
     # method, path, keyed, Accept (None sends none), status, Allow, page, `nosniff`, no-store
     ("GET", _SEARCH, True, None, 405, "POST,OPTIONS", True, True, True),
@@ -1231,6 +1239,30 @@ _FORBIDDEN_ROWS = [
     ("PATCH", _RECORD, False, "text/html", 406, None, False, False, False),
     ("DELETE", _RECORD, True, "text/html", 406, None, False, False, False),
     ("POST", _MERGE, False, "text/html", 406, None, True, False, True),
+    ("POST", _BATCH_CREATE, True, "text/html", 406, None, True, False, True),
+    ("POST", _BATCH_CREATE, True, "application/xml", 406, None, False, False, True),
+    ("POST", _BATCH_UPSERT, True, "text/html", 406, None, True, False, True),
+    ("PUT", _PAIR, True, "text/html", 406, None, False, False, False),
+    ("PUT", _PAIR, True, "application/xml", 406, None, False, False, False),
+    ("PUT", _DEFAULT_PAIR, True, "text/html", 406, None, False, False, False),
+    ("DELETE", _PAIR, True, "text/html", 406, None, False, False, False),
+    ("POST", _PAIRS_CREATE, True, "text/html", 406, None, True, True, True),
+    ("POST", _LABELS_ARCHIVE, True, "text/html", 406, None, True, True, True),
+    ("POST", _PAIRS_READ, True, "text/html", 406, None, True, True, True),
+    ("POST", _PAIRS_READ, True, "application/xml", 406, None, False, True, True),
+    ("POST", _REPORT, True, "text/html", 406, None, True, True, True),
+    ("POST", _BATCH_CREATE, False, "text/html", 406, None, True, False, True),
+    ("POST", _BATCH_CREATE, False, "application/xml", 406, None, False, False, True),
+    ("POST", _BATCH_UPSERT, False, "text/html", 406, None, True, False, True),
+    ("PUT", _PAIR, False, "text/html", 406, None, False, False, False),
+    ("PUT", _PAIR, False, "application/xml", 406, None, False, False, False),
+    ("PUT", _DEFAULT_PAIR, False, "text/html", 406, None, False, False, False),
+    ("DELETE", _PAIR, False, "text/html", 406, None, False, False, False),
+    ("POST", _PAIRS_CREATE, False, "text/html", 406, None, True, True, True),
+    ("POST", _LABELS_ARCHIVE, False, "text/html", 406, None, True, True, True),
+    ("POST", _PAIRS_READ, False, "text/html", 406, None, True, True, True),
+    ("POST", _PAIRS_READ, False, "application/xml", 406, None, False, True, True),
+    ("POST", _REPORT, False, "text/html", 406, None, True, True, True),
 ]
 
 
@@ -1240,7 +1272,8 @@ _FORBIDDEN_ROWS = [
 def test_hubspot_answers_a_method_or_accept_no_route_takes(
     client, admin_h, ava, method, path, keyed, accept, status, allow, page, nosniff, no_store
 ):
-    """Each row is what `answer_ahead_of_the_routes` in `backlot.routers.hubspot` measures."""
+    """Each row is what `answer_ahead_of_the_routes` or `refuse_an_unserved_operation` in
+    `backlot.routers.hubspot` measures."""
     body = b"{}" if method in ("POST", "PUT", "PATCH") else None
     request = client.build_request(
         method, "/hubspot" + path.format(ava=ava), headers=admin_h if keyed else {}, content=body

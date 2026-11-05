@@ -433,10 +433,9 @@ def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | N
 
 
 def _path_id(request: Request, value: str) -> str:
-    """A path parameter as the route reads it. The server decodes the whole path before
-    routing, so a value arrives decoded — unless ``backlot.main.route_a_notion_path_as_sent``
-    routed the spelling as sent, where the capture still carries its escapes and is decoded
-    here, once, the way Express decodes a parameter it captured."""
+    """The value of a path parameter: where ``backlot.main.route_a_notion_path_as_sent`` routed
+    the spelling as sent, the capture still carries its escapes, and it is decoded here, once,
+    the way Express decodes a parameter it captured."""
     return unquote(value) if request.scope.get("notion_path_as_sent") else value
 
 
@@ -452,8 +451,8 @@ def _norm(nid: str) -> str:
 
     Malformed input (the wrong length once dashes are stripped) comes back unchanged, which
     matches no stored id. Real refuses a malformed id with a 400 before it looks anything up;
-    ``list_comments`` checks its ``block_id`` that way first, and the path routes answer it the
-    404 an unknown id gets."""
+    ``list_comments`` checks its ``block_id`` that way first and :func:`get_user` its ``user_id``,
+    and the other path routes answer it the 404 an unknown id gets."""
     h = (nid or "").replace("-", "").lower()
     if len(h) != 32:
         return h
@@ -1382,10 +1381,10 @@ async def get_user(user_id: str, request: Request):
         return refusal
     if (refusal := _get(request, req.NOTHING)[1]) is not None:
         return refusal
-    # The validator reads the id as a uuid, in the shapes `_norm` reads one in (dashed, or
-    # dashless in lower case): measured on 2026-10-28, when an escape in the segment spelled
-    # `me` and the route read it as its value — `path.user_id should be a valid uuid, instead
-    # was "me"` — where this answered the bot user the decoded path routed to.
+    # Real reads the id as a uuid before it looks the user up, in the shapes `req.Uuid` reads with
+    # `dashless`: `me` spelled into the segment through an escape was the validator's 400 naming
+    # `"me"` on 2026-10-28, and on 2026-11-04 so were `nope`, a dashless id in upper case and an id
+    # in braces, where a dashed id in upper case was looked up.
     problems = req.Uuid(dashless=True).check(user_id, ("path", "user_id"))
     if problems:
         return _error(request, 400, "validation_error", req.refusal_message("path", problems))
@@ -1605,9 +1604,7 @@ def reading(scope, path: str):
     """What answers a `/notion` request whose path is read as ``path``: the route that matches
     it, or, where the catch-all (:func:`unmatched_path`) is the one, the two readings that
     handler takes off the spelling — a published operation it names, and one of the OAuth
-    client endpoints. ``backlot.main.route_a_notion_path_as_sent`` compares the reading of the
-    path as the server decoded it with the reading of the path as sent: where they differ, the
-    decoding changed the answer, and the request is routed as sent."""
+    client endpoints."""
     probe = {**scope, "path": path}
     for route in (*router.routes, *unmatched_router.routes):
         if route.matches(probe)[0] is Match.FULL:

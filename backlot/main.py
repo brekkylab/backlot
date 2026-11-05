@@ -899,29 +899,34 @@ async def route_a_notion_path_as_sent(request: Request, call_next):
     would change the answer: the scope's path is replaced with the raw path's spelling, and
     routing reads that.
 
-    The server decodes the whole path before routing, so an escape in a segment a route reads
-    as a name routes where the decoded segment routes. Measured against api.notion.com on
-    2026-10-28, Notion reads the path as sent instead: `/v1/user%73/me`,
-    `/v1%2Fusers/me`, `/v1/users%2Fme`, `/%761/users/me`, `/v%31/users/me` and
-    `/v1/%75sers/me` are the URL's 400 `invalid_request_url`, where an escape in the segment a
-    route reads as a value is decoded into the value — `/v1/users/m%65` and `/v1/users/%6De`
-    are the `users/{user_id}` route reading `me`, and `/v1/users/me%2F` that route reading
-    `me/`. Where the two spellings are answered the same
-    (:func:`backlot.routers.notion.reading` reads both), nothing is rewritten and the decoded
-    path routes as it does today.
+    The server decodes the whole path before routing, so an escape in a segment a route reads as a
+    name routes where the decoded segment routes. Measured against api.notion.com on 2026-10-28,
+    Notion reads the path as sent instead: `/v1/user%73/me`, `/v1%2Fusers/me`, `/v1/users%2Fme`,
+    `/%761/users/me`, `/v%31/users/me` and `/v1/%75sers/me` are the URL's 400 `invalid_request_url`
+    (on 2026-11-04 with no `Authorization` and with a bad token too), where an escape in the segment
+    a route reads as a value is decoded into the value: `/v1/users/m%65` and `/v1/users/%6De` are
+    the `users/{user_id}` route reading `me`, and `/v1/users/me%2F` that route reading `me/`. An
+    escaped slash at the end of a value stays in it: on 2026-11-04 `/v1/users/{id}%2F` with the
+    bot's id (and `%2f`), and `/v1/pages/{id}%2F` and `/v1/blocks/{id}%2F` with a page's id, were
+    the validator's 400 naming the id with its `/`, where `/v1/users/{id}/` and `/v1/pages/{id}/`
+    were the user and the page, and `/v1/users/m%65/` the 400 naming `me`. So, of the paths that
+    keep the slash after `/notion` (the mount's, which is not part of the path Notion reads), one
+    that ends in an escaped slash is routed as sent, which keeps the trailing-slash rewrite from
+    dropping that slash, and so is one whose two spellings :func:`backlot.routers.notion.reading`
+    reads differently; any other path is not rewritten.
 
-    Registered after :func:`report_notion_cors`, the outermost of the Notion layers, so the raw
-    path is read before the trailing-slash rewrite replaces it; the rewrite here leaves
-    `raw_path` alone, which the CORS layer inside reads the path as sent off. A route the
-    spelling as sent routes to captures a value still escaped, and decodes it itself
-    (``backlot.routers.notion._path_id``), which the `notion_path_as_sent` scope key marks."""
+    Registered after :func:`report_notion_cors`, which makes it the outermost of the Notion
+    layers: it reads the raw path before the trailing-slash rewrite replaces it. It leaves
+    `raw_path` as sent, and the CORS layer inside reads the path off that. A route the spelling
+    as sent routes to captures a value still escaped, which the `notion_path_as_sent` scope key
+    marks."""
     sent = (request.scope.get("raw_path") or b"").decode("latin-1")
-    if "%" not in sent or not sent.startswith("/notion"):
+    if "%" not in sent or not sent.startswith("/notion/"):
         return await call_next(request)
     scope = request.scope
-    if notion.reading(scope, _a_notion_path_as_routed(scope["path"])) != notion.reading(
-        scope, _a_notion_path_as_routed(sent)
-    ):
+    if sent.endswith(("%2F", "%2f")) or notion.reading(
+        scope, _a_notion_path_as_routed(scope["path"])
+    ) != notion.reading(scope, _a_notion_path_as_routed(sent)):
         request.scope["path"] = sent
         request.scope["notion_path_as_sent"] = True
     return await call_next(request)

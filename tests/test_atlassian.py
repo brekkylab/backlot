@@ -9529,9 +9529,10 @@ _CQL_PARSE_ROWS = [
         ]
     ],
     # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
-    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, the positions
-    # that settle whether `and` or `or` is the conjunction, `order` starts `order by`, or the query
-    # cannot be parsed at all, and a reserved word as a field or left after a whole query.
+    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, a reserved word
+    # before each token that changes how `_cql_refusal` reads it, a reserved word as a field or left
+    # after a whole query, a reserved word as a function's argument, and a reserved word before and
+    # after another fault.
     *[
         (cql, 400, message)
         for cql, message in [
@@ -9675,6 +9676,58 @@ _CQL_PARSE_ROWS = [
                 "label = order by created",
                 "Expecting a value for operator '=' after field 'label'",
             ),
+            ("created > now(select)", _cql_reserved("select")),
+            ("created > now(before)", _cql_reserved("before")),
+            ("created > now(and)", _cql_reserved("and")),
+            ("id in recentlyViewedContent(select)", _cql_reserved("select")),
+            ("label = currentUser(select)", _CQL_NOT_PARSED),
+            ("label = select()", _CQL_NOT_PARSED),
+            ("label = before()", _CQL_NOT_PARSED),
+            ('label = select("x")', _CQL_NOT_PARSED),
+            ("id in select()", _CQL_NOT_PARSED),
+            ("(label = select()", _CQL_NOT_PARSED),
+            ("space = currentSpace() and label = select()", _CQL_NOT_PARSED),
+            ("label = select and space = currentSpace()", _cql_reserved("select")),
+            ("space = currentSpace() and label = select", _cql_reserved("select")),
+            ("label = select and label = foo()", _cql_reserved("select")),
+            ("label = foo() and label = select", "Unable to find query function 'foo()'"),
+            ('label = select and title ~ "a\\"', _cql_reserved("select")),
+            ('title ~ "a\\" and label = select', _cql_reserved("select")),
+            (
+                "type = and created > now(select)",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("created > now(not)", _cql_reserved("not")),
+            ("created > now(in)", _cql_reserved("in")),
+            ("created > now(order)", _cql_reserved("order")),
+            ("created > now(empty)", _cql_reserved("empty")),
+            ('created > now(select, "-1d")', _CQL_NOT_PARSED),
+            ("created > now(select) and label = foo()", _cql_reserved("select")),
+            ("label = foo() and created > now(select)", "Unable to find query function 'foo()'"),
+            ("created > now(select) and type =", _cql_reserved("select")),
+            ("created > now(select) type", _cql_reserved("select")),
+            ("created > now(select) and", _CQL_NOT_PARSED),
+            ("created > now(select) and type = -1", _CQL_NOT_PARSED),
+            ("(created > now(select)", _CQL_NOT_PARSED),
+            ("label = before and created > now(select)", _cql_reserved("before")),
+            ("label = select and label = foo() and type =", _cql_reserved("select")),
+            ('label = select and created > now("-1d") and type =', _cql_reserved("select")),
+            ('label = select and created > now("-1d") type in (page)', _CQL_NOT_PARSED),
+            ("label = select and type =", _cql_reserved("select")),
+            ("label = select and title ~", _cql_reserved("select")),
+            ("label = select and type in", _cql_reserved("select")),
+            ("label = select and type in (page", _cql_reserved("select")),
+            ("label = select and type = )", _cql_reserved("select")),
+            ("label = select and type = -1", _CQL_NOT_PARSED),
+            ("label = x and label = select and type = and type = page", _cql_reserved("select")),
+            ("(label = select", "Missing closing parenthesis near field (()"),
+            ("(label = select and type = page", "Missing closing parenthesis near field (()"),
+            ("(label = select and (type = page", "Missing closing parenthesis near field (()"),
+            ("label = select and (type = page", _cql_reserved("select")),
+            ("label = select and (type =", _cql_reserved("select")),
+            ("(label = select) and (type = page", _cql_reserved("select")),
+            ("(label = select) and type =", _cql_reserved("select")),
+            ("(label = select) type", _cql_reserved("select")),
         ]
     ],
 ]

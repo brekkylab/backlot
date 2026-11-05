@@ -425,9 +425,9 @@ def cql_expecting_value(operator: str, field: str, got: str | None = None) -> At
 def cql_reserved_keyword(word: str) -> AtlassianError:
     """The CQL search's refusal of a reserved word where a value goes, quoting the word as sent.
 
-    Measured on Confluence Cloud on 2026-10-31: `label = select`, and each of the
-    other words :data:`routers.atlassian._CQL_KEYWORDS` names, answered this 400, with two spaces
-    after the first period; a quoted word is a value and answers 200.
+    Each word :data:`routers.atlassian._CQL_KEYWORDS` names answers it, as measured there, with two
+    spaces after the first period; quoted, the word is a value and answers 200 (Confluence Cloud,
+    2026-10-31).
     """
     message = (
         f"'{word}' is a reserved keyword.  You must surround '{word}' in quotation marks to use it."

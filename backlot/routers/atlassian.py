@@ -3202,7 +3202,8 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 
 # CQL as real's reader splits it, measured on Confluence Cloud on 2026-10-22 and 2026-10-25, the
 # second time with `title~a<c>b` and `title~a<c>` for each ASCII punctuation character `<c>`: a
-# quoted value in either quotes, in which a backslash keeps the next character; an operator, a
+# quoted value in either quotes, in which a backslash keeps the next character, or which runs to
+# the next quote where that reading finds no closing one (`"a\"` on 2026-11-04); an operator, a
 # bracket or a comma; a date such as `2026-01-01` and a number, both in ASCII digits; and a word of
 # ASCII letters, digits and `_`, dotted as `space.key` is. A control character, one past ASCII and
 # those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
@@ -3210,7 +3211,7 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 # fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
 # `title~a:b` cannot be parsed.
 _CQL_TOKEN = re.compile(
-    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"[^"]*"|'[^']*')"""
     r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
     r"|(?P<PUNCT>[(),])"
     r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
@@ -3470,9 +3471,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     to its end is ``cql_not_parsed`` when a `space.key` value holds a single quote. A field CQL does
     not have, a field with no operator, and an operator or a value the field does not take (`foo`,
     `type`, `type<page`, `type=PAGE`) are refused on real with messages of their own, and answered
-    at 200 here. An escaped end quote, `title ~ "a\\"`, is not refused here: its string never
-    closes, so it is read after this walk, beside a function that cannot run
-    (``_cql_cannot_run``)."""
+    at 200 here. An escaped end quote, `title ~ "a\\"`, is not refused here: it is read after this
+    walk, beside a function that cannot run (``_cql_cannot_run``)."""
     at = 0
 
     def peek(offset=0):
@@ -3496,17 +3496,6 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
         if kind == "NUMBER" and text.startswith("-"):  # `id = -1`, `created > -1d`
             raise not_parsed()
-        if kind == "OTHER" and text in ('"', "'"):
-            # an escaped end quote: `title ~ "a\"` — the string never closes, so real
-            # answers it after the faults this walk reads from the left, beside a function
-            # that cannot run (see `_cql_cannot_run`): consume the quote and the tokens up
-            # to the next quote of the same kind, and let that pass refuse it.
-            at += 1
-            while at < len(tokens) and tokens[at] != ("OTHER", text):
-                at += 1
-            if at < len(tokens):
-                at += 1
-            return
         if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
         at += 1
@@ -3614,13 +3603,16 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
 
 
 def _cql_cannot_run(tokens: list[tuple[str, str]]):
-    """The 400 real answers a CQL whose functions cannot run with, or None for one whose
-    functions run, after :func:`_cql_refusal` and before :func:`_cql_search_after`: from the
-    left, a function that cannot run or an escaped end quote. Measured on Confluence Cloud on
-    2026-10-31: `space = currentSpace() or created > now("x")` was answered with the first of
-    the two, and either beside `title ~ "a\\"` with the first of the two in the CQL, and the
-    cursor's 400 came after each function 400. An escaped end quote is the expecting-value
-    refusal of the operator and field before it, which `title ~ "a\\"` alone answers too."""
+    """The 400 real answers a CQL with a function that cannot run or an escaped end quote
+    (``errors.atlassian.cql_escaped_end_quote``), or None for one with neither, after
+    :func:`_cql_refusal` and before :func:`_cql_search_after`: the first such fault from the left.
+    With an even number of backslashes before a quote, `_CQL_TOKEN` reads them in pairs and the
+    quote closes the value; with an odd number the quote is escaped, and where no later quote closes
+    the value the token ends at it all the same. Each of those tokens ends in a backslash and its
+    quote, an escaped end quote. Measured on Confluence Cloud on 2026-10-31 and 2026-11-04:
+    `space = currentSpace() or created > now("x")` was answered with the first of the two, and
+    either beside `title ~ "a\\"` with the first of the two in the CQL, and the cursor's 400 came
+    after each fault of this pass."""
     faults = []
     for at, (kind, text) in enumerate(tokens):
         if (
@@ -3637,22 +3629,8 @@ def _cql_cannot_run(tokens: list[tuple[str, str]]):
                 fault = _cql_function_cannot_run(name, args)
                 if fault is not None:
                     faults.append((at, fault))
-        elif (
-            kind == "OTHER"
-            and text in ('"', "'")
-            and at >= 2
-            and tokens[at - 1][0] == "OP"
-            and tokens[at - 2][0] == "WORD"
-            and tokens[at - 2][1].lower() not in _CQL_KEYWORDS
-        ):
-            faults.append(
-                (
-                    at,
-                    errors_atlassian.cql_expecting_value(
-                        tokens[at - 1][1], tokens[at - 2][1], text
-                    ),
-                )
-            )
+        elif kind == "QUOTED" and text[-2] == "\\":
+            faults.append((at, errors_atlassian.cql_escaped_end_quote(text)))
     if not faults:
         return None
     return min(faults, key=lambda fault: fault[0])[1]
@@ -3663,12 +3641,25 @@ class _CQLParseError(Exception):
     clause readers in :func:`confluence_cql_search` rather than failing the request."""
 
 
-def _cql_unquote(kind: str, text: str) -> str:
-    """A token's value: a quoted value without its quotes and with its backslash escapes
-    resolved, any other value as sent."""
+def _cql_unquote(kind: str, text: str, field: str | None = None) -> str:
+    """A token's value: a quoted value without its quotes, any other value as sent. A `\\"` reads
+    as a `"`, and where that leaves an odd number of them the last one is taken out, as
+    :func:`_cql_space_value` reads it for `space.key`; a backslash before any other character
+    stays, except in `title`, `text`, `sitesearch` and `space.title`, where it reads as that
+    character. Measured on Confluence Cloud on 2026-10-30 for `space` and `space.key` and on
+    2026-10-31 for nine more fields and for `title` and `text` under `~`: `space = "K\\"EY"` and
+    `space = "KEY\\""` found the pages of `KEY`, `space = "K\\EY"` none, and `title ~ "A\\B"` what
+    `"V"` found where `V` is the value split as `A` and `B`. `label` was not measured, since no
+    content on the measured site carried one (2026-11-04); it is read as the other structured
+    fields are, and `sitesearch` as `text` is."""
     if kind != "QUOTED":
         return text
-    return re.sub(r"\\(.)", r"\1", text[1:-1], flags=re.S)
+    value = text[1:-1].replace('\\"', '"')
+    if value.count('"') % 2:
+        value = "".join(value.rsplit('"', 1))
+    if field in ("title", "text", "sitesearch", "space.title"):
+        value = re.sub(r"\\(.)", r"\1", value, flags=re.S)
+    return value
 
 
 def _cql_function_value(name: str, args: list[tuple[str, str]], current_user: str | None) -> str:
@@ -3753,7 +3744,7 @@ def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
             return _cql_function_value(name, args, current_user)
         if field == "space.key":  # read as real reads it, see `_cql_space_value`
             return _cql_space_value(kind, text)
-        return _cql_unquote(kind, text)
+        return _cql_unquote(kind, text, field)
 
     def atom():
         nonlocal at

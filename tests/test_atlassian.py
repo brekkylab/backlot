@@ -9314,6 +9314,15 @@ _CQL_NOT_PARSED = "Could not parse cql : "
 _CQL_CURRENT_SPACE = (
     "Unable to execute function 'currentSpace', the required contexts were not present : space"
 )
+
+
+def _cql_reserved(word):
+    """The message real answers a reserved word where a value goes with."""
+    return (
+        f"'{word}' is a reserved keyword.  You must surround '{word}' in quotation marks to use it."
+    )
+
+
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -9402,6 +9411,8 @@ _CQL_PARSE_ROWS = [
             ),
             ("label != currentUser()", "label != currentUser ( )"),
             ("label=a.b", "label = a.b"),
+            ('label = "select"', 'label = "select"'),
+            ("label = 'select'", "label = 'select'"),
             ("label=x order by created desc", "label = x order by created desc"),
             (
                 "type=page ORDER BY title asc, created desc",
@@ -9545,10 +9556,7 @@ _CQL_PARSE_ROWS = [
             ("space.key in currentUser()", _CQL_NOT_PARSED),
             ("label = foo() and (type = page", "Unable to find query function 'foo()'"),
             ("label = foo() and type =", "Unable to find query function 'foo()'"),
-            (
-                "type = and label = foo()",
-                "Expecting a value for operator '=' after field 'type' but got 'and'",
-            ),
+            ("type = and label = foo()", "Expecting a value for operator '=' after field 'type'"),
             ('type = and created > now("-1d", "x")', _CQL_NOT_PARSED),
             ("type = and id in recentlyViewedContent()", _CQL_NOT_PARSED),
             ('type = and id in now("-1d")', _CQL_NOT_PARSED),
@@ -9572,6 +9580,208 @@ _CQL_PARSE_ROWS = [
                 'Escaped end quote in phrase query near : "a\\"',
             ),
             ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
+        ]
+    ],
+    # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
+    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, a reserved word
+    # before each token that changes how `_cql_refusal` reads it, a reserved word as a field or left
+    # after a whole query, a reserved word as a function's argument, and a reserved word before and
+    # after another fault.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            *[
+                (f"label = {word}", _cql_reserved(word))
+                for word in (
+                    "after",
+                    "and",
+                    "as",
+                    "asc",
+                    "avg",
+                    "before",
+                    "begin",
+                    "by",
+                    "commit",
+                    "contains",
+                    "count",
+                    "desc",
+                    "distinct",
+                    "else",
+                    "empty",
+                    "end",
+                    "explain",
+                    "from",
+                    "having",
+                    "if",
+                    "in",
+                    "inner",
+                    "insert",
+                    "into",
+                    "is",
+                    "isnull",
+                    "left",
+                    "like",
+                    "limit",
+                    "max",
+                    "min",
+                    "not",
+                    "null",
+                    "or",
+                    "order",
+                    "outer",
+                    "right",
+                    "select",
+                    "sum",
+                    "then",
+                    "update",
+                    "was",
+                    "where",
+                )
+            ],
+            ("label = Select", _cql_reserved("Select")),
+            ("label = SELECT", _cql_reserved("SELECT")),
+            ("label = select and type = page", _cql_reserved("select")),
+            ("label in (select)", _cql_reserved("select")),
+            ("label in (x, empty)", _cql_reserved("empty")),
+            ("label != select", _cql_reserved("select")),
+            ("title ~ select", _cql_reserved("select")),
+            ("space.key = select", _cql_reserved("select")),
+            ("(label = select)", _cql_reserved("select")),
+            ("label = x and label = select", _cql_reserved("select")),
+            ("label = select order by created", _cql_reserved("select")),
+            ("label = x order by select", _CQL_NOT_PARSED),
+            ("label = select)", _CQL_NOT_PARSED),
+            ("label = and x", _cql_reserved("and")),
+            ("label = and type", _cql_reserved("and")),
+            ('label = and "x"', _cql_reserved("and")),
+            (
+                "label = and type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and (type = page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type =",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and not type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            ("label = select type in (page)", _CQL_NOT_PARSED),
+            ("label = and and type", _cql_reserved("and")),
+            ("label = select and type", _cql_reserved("select")),
+            ("label = and and", _CQL_NOT_PARSED),
+            ("label = select and", _CQL_NOT_PARSED),
+            ("label = and not not type = page", _CQL_NOT_PARSED),
+            ("label = and " + "not " * 1100 + "type = page", _CQL_NOT_PARSED),
+            ("label = or not type = page", _CQL_NOT_PARSED),
+            ("label = and count = page", _CQL_NOT_PARSED),
+            ("select = page", _CQL_NOT_PARSED),
+            ("type = page and count = page", _CQL_NOT_PARSED),
+            ("type = page count", _CQL_NOT_PARSED),
+            (
+                'label = and title ~ "x"',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                'label = and created > now("-1d")',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type not in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "type= and type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "type= or type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("type= and", _cql_reserved("and")),
+            ("label = not type = page", _CQL_NOT_PARSED),
+            ("label = in type = page", _CQL_NOT_PARSED),
+            ("label = order type = page", _CQL_NOT_PARSED),
+            ("label = by type = page", _CQL_NOT_PARSED),
+            ("label = asc type = page", _CQL_NOT_PARSED),
+            ("label = desc type = page", _CQL_NOT_PARSED),
+            ("label = select type = page", _CQL_NOT_PARSED),
+            (
+                "label = order by created",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            ("created > now(select)", _cql_reserved("select")),
+            ("created > now(before)", _cql_reserved("before")),
+            ("created > now(and)", _cql_reserved("and")),
+            ("id in recentlyViewedContent(select)", _cql_reserved("select")),
+            ("label = currentUser(select)", _CQL_NOT_PARSED),
+            ("label = select()", _CQL_NOT_PARSED),
+            ("label = before()", _CQL_NOT_PARSED),
+            ('label = select("x")', _CQL_NOT_PARSED),
+            ("id in select()", _CQL_NOT_PARSED),
+            ("(label = select()", _CQL_NOT_PARSED),
+            ("space = currentSpace() and label = select()", _CQL_NOT_PARSED),
+            ("label = select and space = currentSpace()", _cql_reserved("select")),
+            ("space = currentSpace() and label = select", _cql_reserved("select")),
+            ("label = select and label = foo()", _cql_reserved("select")),
+            ("label = foo() and label = select", "Unable to find query function 'foo()'"),
+            ('label = select and title ~ "a\\"', _cql_reserved("select")),
+            ('title ~ "a\\" and label = select', _cql_reserved("select")),
+            (
+                "type = and created > now(select)",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("created > now(not)", _cql_reserved("not")),
+            ("created > now(in)", _cql_reserved("in")),
+            ("created > now(order)", _cql_reserved("order")),
+            ("created > now(empty)", _cql_reserved("empty")),
+            ('created > now(select, "-1d")', _CQL_NOT_PARSED),
+            ("created > now(select) and label = foo()", _cql_reserved("select")),
+            ("label = foo() and created > now(select)", "Unable to find query function 'foo()'"),
+            ("created > now(select) and type =", _cql_reserved("select")),
+            ("created > now(select) type", _cql_reserved("select")),
+            ("created > now(select) and", _CQL_NOT_PARSED),
+            ("created > now(select) and type = -1", _CQL_NOT_PARSED),
+            ("(created > now(select)", _CQL_NOT_PARSED),
+            ("label = before and created > now(select)", _cql_reserved("before")),
+            ("label = select and label = foo() and type =", _cql_reserved("select")),
+            ('label = select and created > now("-1d") and type =', _cql_reserved("select")),
+            ('label = select and created > now("-1d") type in (page)', _CQL_NOT_PARSED),
+            ("label = select and type =", _cql_reserved("select")),
+            ("label = select and title ~", _cql_reserved("select")),
+            ("label = select and type in", _cql_reserved("select")),
+            ("label = select and type in (page", _cql_reserved("select")),
+            ("label = select and type = )", _cql_reserved("select")),
+            ("label = select and type = -1", _CQL_NOT_PARSED),
+            ("label = x and label = select and type = and type = page", _cql_reserved("select")),
+            ("(label = select", "Missing closing parenthesis near field (()"),
+            ("(label = select and type = page", "Missing closing parenthesis near field (()"),
+            ("(label = select and (type = page", "Missing closing parenthesis near field (()"),
+            ("label = select and (type = page", _cql_reserved("select")),
+            ("label = select and (type =", _cql_reserved("select")),
+            ("(label = select) and (type = page", _cql_reserved("select")),
+            ("(label = select) and type =", _cql_reserved("select")),
+            ("(label = select) type", _cql_reserved("select")),
         ]
     ],
 ]

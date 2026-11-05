@@ -439,6 +439,19 @@ def cql_expecting_value(operator: str, field: str, got: str | None = None) -> At
     return _service_refusal(400, "api.BadRequestException", message)
 
 
+def cql_reserved_keyword(word: str) -> AtlassianError:
+    """The CQL search's refusal of a reserved word where a value goes, quoting the word as sent.
+
+    Each word :data:`routers.atlassian._CQL_KEYWORDS` names answers it, as measured there, with two
+    spaces after the first period; quoted, the word is a value and answers 200 (Confluence Cloud,
+    2026-10-31).
+    """
+    message = (
+        f"'{word}' is a reserved keyword.  You must surround '{word}' in quotation marks to use it."
+    )
+    return _service_refusal(400, "api.BadRequestException", message)
+
+
 def cql_unrecognised_clause(text: str) -> AtlassianError:
     """The CQL search's refusal of words or quoted values after a whole query, named run together:
     `type=page b` answered `Unrecognised clause at : b`, `title~a b c` `… at : bc` and

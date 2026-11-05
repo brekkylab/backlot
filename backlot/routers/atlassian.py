@@ -2211,12 +2211,17 @@ async def confluence_cql_search(request: Request):
         expr = _cql_parse(tokens, caller.email)
         term_sets: dict[str, set[str]] = {}
 
+        # `expr` nests a level for each `and`, `or` and `not` on its deepest path, and real answers
+        # a chain of `or`s as long as Python's recursion limit (`_cql_parse`), so each walk over
+        # it below keeps a stack rather than recursing.
         def _needed_term(node) -> str | None:
-            if node[0] == "and":
-                left = _needed_term(node[1])
-                return left if left is not None else _needed_term(node[2])
-            if node[0] == "atom" and node[2] == "~" and node[5] and not node[4]:
-                return node[3][0]
+            pending = [node]
+            while pending:
+                node = pending.pop()
+                if node[0] == "and":
+                    pending += (node[2], node[1])
+                elif node[0] == "atom" and node[2] == "~" and node[5] and not node[4]:
+                    return node[3][0]
             return None
 
         needed = _needed_term(expr)
@@ -2242,16 +2247,29 @@ async def confluence_cql_search(request: Request):
             return term_sets[term]
 
         def _eval(node, r) -> bool:
-            kind = node[0]
-            if kind == "and":
-                return _eval(node[1], r) and _eval(node[2], r)
-            if kind == "or":
-                return _eval(node[1], r) or _eval(node[2], r)
-            if kind == "not":
-                child = node[1]
-                if child[0] == "atom" and not child[5]:
-                    return True
-                return not _eval(child, r)
+            # `and` and `or` read their right side only where the left leaves the answer open.
+            waiting = []  # (node, right): an `and`, `or` or `not` waiting on a side's answer
+            while True:
+                kind = node[0]
+                if kind in ("and", "or") or (
+                    kind == "not" and (node[1][0] != "atom" or node[1][5])
+                ):
+                    waiting.append((node, False))
+                    node = node[1]
+                    continue
+                answer = True if kind == "not" else _holds(node, r)
+                while waiting:
+                    above, right = waiting.pop()
+                    if above[0] == "not":
+                        answer = not answer
+                    elif not right and answer == (above[0] == "and"):
+                        waiting.append((above, True))
+                        node = above[2]
+                        break
+                else:
+                    return answer
+
+        def _holds(node, r) -> bool:
             _, field, op, values, negated, readable = node
             if not readable:
                 return True
@@ -2275,9 +2293,14 @@ async def confluence_cql_search(request: Request):
             return (not hit) if negated else hit
 
         def _reads(node) -> bool:
-            if node[0] == "atom":
-                return node[5]
-            return any(_reads(child) for child in node[1:])
+            pending = [node]
+            while pending:
+                node = pending.pop()
+                if node[0] != "atom":
+                    pending += node[1:]
+                elif node[5]:
+                    return True
+            return False
 
         matched = [r for r in eval_rows if _eval(expr, r)] if _reads(expr) else []
     except _CQLParseError:

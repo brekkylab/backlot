@@ -29,6 +29,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from backlot import (
     auth,
+    bracketed_host,
     errors,
     express_http,
     openapi,
@@ -37,6 +38,7 @@ from backlot import (
     store,
     synth,
     telemetry,
+    utf8_escapes,
 )
 from backlot.acl import Acl
 from backlot.config import get_settings
@@ -214,7 +216,9 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
                 vendor.headers = getattr(exc, "headers", None)
             exc = vendor
     headers = getattr(exc, "headers", None)
-    body = errors.http_body(request.url.path, exc, request.query_params)
+    # The path as routed: ``request.url.path`` drops what :data:`_REPARSED` matches, which would
+    # take `/github/rate_limit%0A` for the route it does not reach.
+    body = errors.http_body(request.scope["path"], exc, request.query_params)
     if body is None:
         body = {"detail": exc.detail}
     # A vendor may decide how the body reaches the wire as well as what is in it — Google's errors
@@ -442,8 +446,8 @@ async def refuse_a_credential_on_an_agent_path(request: Request, call_next):
     )
 )
 async def refuse_an_unserved_hubspot_operation(request: Request, call_next):
-    """An operation HubSpot publishes that no route here serves is refused for its credential as a
-    served route refuses one, ahead of the router's 404 or 405
+    """An operation HubSpot publishes that no route here serves is refused for its `Accept` or its
+    credential as a served route refuses one, ahead of the router's 404 or 405
     (``backlot.routers.hubspot.refuse_an_unserved_operation``)."""
     refusal = await hubspot.refuse_an_unserved_operation(request)
     if refusal is not None:
@@ -537,6 +541,16 @@ async def echo_github_api_version(request: Request, call_next):
         if version is not None:
             response.headers[github.SELECTED_VERSION_HEADER] = version
     return response
+
+
+@_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
+async def refuse_an_s3_path_real_cannot_read(request: Request, call_next):
+    """Answer an `/s3` path whose escapes do not decode, or whose bucket holds a character no bucket
+    name holds, as real does (``s3.path_refusal``), ahead of the route and the credential.
+    Registered before ``answer_s3_with_request_ids``, which makes it the inner of the two, so the
+    refusal carries the request's ids."""
+    refusal = s3.path_refusal(request.method, request.scope["raw_path"])
+    return refusal if refusal is not None else await call_next(request)
 
 
 @_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
@@ -701,6 +715,18 @@ async def report_notion_headers(request: Request, call_next):
     for name, value in notion.APPLICATION_HEADERS.items():
         response.headers[name] = value
     return response
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def refuse_a_notion_path_that_does_not_decode(request: Request, call_next):
+    """Answer a `/notion` path with ``notion.undecodable_url``'s 400 where it gives one. Registered
+    after ``report_notion_headers``, which makes it the outer of the two, so its 400 goes without
+    that one's headers, and before ``read_a_notion_body_as_express_does``, which makes it the inner
+    of those two, so a body Express refuses is refused first."""
+    refusal = notion.undecodable_url(request)
+    return refusal if refusal is not None else await call_next(request)
 
 
 @_middleware(lambda scope: errors.notion.owns(_url_path(scope)))
@@ -881,6 +907,55 @@ async def report_notion_cors(request: Request, call_next):
         for name, value in notion.CORS_HEADERS.items():
             response.headers[name] = value
     return response
+
+
+def _a_notion_path_as_routed(path: str) -> str:
+    """``path`` as the router will read it, under either spelling: the one trailing slash
+    :func:`serve_a_slashed_notion_path_as_the_path_without_it` drops, dropped."""
+    if path.startswith("/notion/") and path.endswith("/") and len(path) > len("/notion//"):
+        return path[:-1]
+    return path
+
+
+@_middleware(
+    lambda scope: errors.notion.owns(_url_path(scope)) and scope["method"] in notion.ROUTED_METHODS
+)
+async def route_a_notion_path_as_sent(request: Request, call_next):
+    """Route a `/notion` request by its path as sent, where reading it as the server decoded it
+    would change the answer: the scope's path is replaced with the raw path's spelling, and
+    routing reads that.
+
+    The server decodes the whole path before routing, so an escape in a segment a route reads as a
+    name routes where the decoded segment routes. Measured against api.notion.com on 2026-10-28,
+    Notion reads the path as sent instead: `/v1/user%73/me`, `/v1%2Fusers/me`, `/v1/users%2Fme`,
+    `/%761/users/me`, `/v%31/users/me` and `/v1/%75sers/me` are the URL's 400 `invalid_request_url`
+    (on 2026-11-04 with no `Authorization` and with a bad token too), where an escape in the segment
+    a route reads as a value is decoded into the value: `/v1/users/m%65` and `/v1/users/%6De` are
+    the `users/{user_id}` route reading `me`, and `/v1/users/me%2F` that route reading `me/`. An
+    escaped slash at the end of a value stays in it: on 2026-11-04 `/v1/users/{id}%2F` with the
+    bot's id (and `%2f`), and `/v1/pages/{id}%2F` and `/v1/blocks/{id}%2F` with a page's id, were
+    the validator's 400 naming the id with its `/`, where `/v1/users/{id}/` and `/v1/pages/{id}/`
+    were the user and the page, and `/v1/users/m%65/` the 400 naming `me`. So, of the paths that
+    keep the slash after `/notion` (the mount's, which is not part of the path Notion reads), one
+    that ends in an escaped slash is routed as sent, which keeps the trailing-slash rewrite from
+    dropping that slash, and so is one whose two spellings :func:`backlot.routers.notion.reading`
+    reads differently; any other path is not rewritten.
+
+    Registered after :func:`report_notion_cors`, which makes it the outermost of the Notion
+    layers: it reads the raw path before the trailing-slash rewrite replaces it. It leaves
+    `raw_path` as sent, and the CORS layer inside reads the path off that. A route the spelling
+    as sent routes to captures a value still escaped, which the `notion_path_as_sent` scope key
+    marks."""
+    sent = (request.scope.get("raw_path") or b"").decode("latin-1")
+    if "%" not in sent or not sent.startswith("/notion/"):
+        return await call_next(request)
+    scope = request.scope
+    if sent.endswith(("%2F", "%2f")) or notion.reading(
+        scope, _a_notion_path_as_routed(scope["path"])
+    ) != notion.reading(scope, _a_notion_path_as_routed(sent)):
+        request.scope["path"] = sent
+        request.scope["notion_path_as_sent"] = True
+    return await call_next(request)
 
 
 def _a_slashed_hubspot_path(scope: Scope) -> bool:
@@ -1666,6 +1741,18 @@ async def merge_slashes_before_a_slack_method_name(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: slack.drops_an_end(scope["path"]))
+async def drop_what_slack_drops_off_the_end_of_a_path(request: Request, call_next):
+    """Read a `/slack/api/` path as real does without the run at its end it drops, or answer one
+    holding an LF elsewhere with its 404 page (``slack.drop_the_end``, which has the measurement).
+    Registered after :func:`merge_slashes_before_a_slack_method_name`, which makes it the outer of
+    the two, so that a run of `/`s before the name is merged once the end is gone."""
+    answer = slack.drop_the_end(request.scope)
+    if answer is not None:
+        return answer
+    return await call_next(request)
+
+
 @_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/hubspot",))
@@ -1765,8 +1852,8 @@ _GITHUB_TARGET_TOO_LONG = (
 @_middleware(lambda scope: _at_or_under(_url_path(scope), ("/github",)))
 async def answer_a_github_request_target_past_its_bound(request: Request, call_next):
     """414 a `/github` request on any path and any method whose target is too long for real, ahead
-    of the route and its refusals, which a shorter target meets. The target is counted as
-    ``backlot.routers.github._refuse_a_long_line_or_path`` counts the request line's.
+    of the route and its refusals, which a shorter target meets
+    (``backlot.routers.github.target_past_its_bound``).
 
     On api.github.com, 2026-10-29, each request cache-busted: on `/repos/{owner}/{repo}` a `GET`, a
     `HEAD` and a `POST` with a target of 8,192 were this 414, and so were a `GET` on a path no route
@@ -1775,10 +1862,7 @@ async def answer_a_github_request_target_past_its_bound(request: Request, call_n
     raw byte in the target was the front door's 400
     (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
     `414 Request-URI Too Large`, and the answer carries no rate limit."""
-    query = request.scope["query_string"]
-    target = request.scope["raw_path"][len("/github") :] + (b"?" + query if query else b"")
-    bound = 8_174 if request.scope["path"] == "/github/search/code" else 8_192
-    if len(target) >= bound:
+    if github.target_past_its_bound(request.scope):
         return Response(
             _GITHUB_TARGET_TOO_LONG,
             status_code=414,
@@ -1805,6 +1889,23 @@ _GOOGLE_READ_OVERRIDES = {
 _GOOGLE_OVERRIDE_IN_ANY_CASE = "/drive/v3"
 _FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
 _BYTE_PAST_0X7F = re.compile(rb"[\x80-\xff]")
+
+
+@_middleware(
+    lambda scope: (
+        errors.google.family(_url_path(scope)) in (errors.google.DRIVE, errors.google.EDITOR)
+        and b"%" in scope["query_string"]
+    )
+)
+async def read_a_drive_or_editor_query_as_google_does(request: Request, call_next):
+    """Spell each escape of a Drive, Docs, Sheets or Slides query value as those APIs read it
+    (``backlot.utf8_escapes.google_query``). Gmail's `fields` quoted a byte outside any UTF-8
+    sequence back as nothing on 2026-10-30 (UTC), `a%80b` as `ab`, so a Gmail query is left to the
+    router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
+    the two, so it reads the form that one adds to the query too."""
+    query = request.scope["query_string"]
+    request.scope["query_string"] = utf8_escapes.google_query(query, errors.google.QUERY_TOKENS)
+    return await call_next(request)
 
 
 @_middleware(
@@ -1845,6 +1946,7 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
 
     Registered inside ``answer_a_raw_byte_in_the_request_target``, whose refusals real gave such a
     POST on Drive's `about` on 2026-10-25 as it gives a GET, and inside
+    ``answer_an_escape_a_front_door_refuses``, which reads the path alone, and inside
     :func:`refuse_a_body_on_a_google_get_or_head`, which reads the method as sent; and outside every
     other middleware that reads the method or the query, so they and the router see the GET. The
     request is marked ``sent_as_a_post`` on its state for ``errors.google.jsonp_callback``, which
@@ -1868,6 +1970,14 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
         request.state.sent_as_a_post = True
         request.scope["query_string"] = b"&".join(part for part in (query, body) if part)
     return await call_next(request)
+
+
+@_middleware(lambda scope: request_target.escape_answer(scope) is not None)
+async def answer_an_escape_a_front_door_refuses(request: Request, call_next):
+    """Answer a path holding an escape the vendor's front door refuses as it does
+    (``backlot.request_target.escape_answer``), ahead of every vendor's middleware, as a front door
+    answers ahead of the API behind it."""
+    return request_target.escape_answer(request.scope)
 
 
 @_middleware(
@@ -1941,13 +2051,13 @@ async def vendor_json_media_type(request: Request, call_next):
     key, and real's own spec says `application/json` there: the charset is a fact about the wire,
     not about the contract, and `backlot diff` compares the contract. Only a response that is
     exactly `application/json` is touched, so the raw, diff and text/plain answers keep their own
-    types. Registered last of the middlewares, which makes it the outermost, so a JSON body another
-    middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through it too rather
-    than around it; the route handlers and the two exception handlers above are covered from either
-    position, those handlers because they run inside ``ExceptionMiddleware``. The status goes along
-    with the path because the answer can depend on it: code search's own 200 and 422 carry no
-    charset where the gateway's 401 on the same path does. An answer given in front of Jira is not
-    Jira's, and keeps the type its layer gives (the edge's `;` 400,
+    types. Registered after every middleware above it, which makes it outside each of them, so a
+    JSON body another middleware returns (``refuse_a_bearer_jira_cannot_read``'s 403) passes through
+    it too rather than around it; the route handlers and the two exception handlers above are
+    covered from either position, those handlers because they run inside ``ExceptionMiddleware``.
+    The status goes along with the path because the answer can depend on it: code search's own 200
+    and 422 carry no charset where the gateway's 401 on the same path does. An answer given in front
+    of Jira is not Jira's, and keeps the type its layer gives (the edge's `;` 400,
     ``errors.atlassian.front_door``).
     """
     response = await call_next(request)
@@ -1958,6 +2068,20 @@ async def vendor_json_media_type(request: Request, call_next):
         if media_type is not None:
             response.headers["content-type"] = media_type
     return response
+
+
+@_middleware(bracketed_host.holds_no_address)
+async def answer_a_host_in_brackets_that_holds_no_ipv6_address(request: Request, call_next):
+    """Answer a request whose `Host` ``backlot.bracketed_host.holds_no_address`` picks as the
+    vendor's front door answers it (``backlot.bracketed_host.answer``), or hand it on without its
+    `Host`, so that ``request.url`` is built from the server's address. Registered after every
+    middleware but telemetry's, which makes it outside each of them: those read ``request.url``,
+    which cannot be built from such a `Host` (``backlot.bracketed_host`` says why)."""
+    answer = bracketed_host.answer(request.scope)
+    if answer is not None:
+        return answer
+    request.scope["headers"] = [(k, v) for k, v in request.scope["headers"] if k != b"host"]
+    return await call_next(request)
 
 
 # Registered after every middleware above, which makes it the outermost: it sees every answer,

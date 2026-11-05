@@ -1419,12 +1419,42 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + f" and space.key = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
         (three + f' and space.key = "{eng[0]}\\{eng[1:]}"', set()),
         (three + f' and space.key = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng}\\""', {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + ' and type = "pa\\"ge"', {"Guide", "Child", "Grand"}),
+        (three + ' and text ~ "De\\"ep"', {"Grand"}),
+        (three + ' and text ~ "De\\ep"', {"Grand"}),
+        (three + ' and text ~ "De\\\\ep"', set()),
+        (three + ' and title ~ "Gu\\"ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\\\ide"', set()),
+        # not real's answers: real refused `type = "pa\ge"` with a 400 naming `pa\ge`, and `label`
+        # was not measured, as no content there carried one; these pin how `_cql_unquote` reads them
+        (three + ' and type = "pa\\ge"', set()),
+        (three + ' and label = "pag\\"er"', {"Child"}),
+        (three + ' and label = "pag\\er"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
         (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
         # beside a field this route does not read, which held for each of the three
         (three + " and lastmodified > 2020-01-01", {"Guide", "Child", "Grand"}),
         (three + ' and created >= "2020-01-01"', {"Guide", "Child", "Grand"}),
         (three + " and creator = currentUser()", {"Guide", "Child", "Grand"}),
+        # a function value on a field this route reads names no row here: real answered
+        # none for each of the single-value calls, and `recentlyViewedContent` expands to
+        # no ids, since the server keeps no recently viewed content
+        ("label = currentUser()", set()),
+        ('label = now("-1d")', set()),
+        ("space.key = currentUser()", set()),
+        ("space.key = now()", set()),
+        ("ancestor = currentContent()", set()),
+        ("parent = currentContent()", set()),
+        ("id in recentlyViewedContent(5)", set()),
+        ("type=page and id in recentlyViewedContent(5)", set()),
+        (three + " and id in recentlyViewedContent(5)", set()),
+        ("id in ({Guide}, recentlyViewedContent(5))", {"Guide"}),
         (three + " and not lastmodified > 2999-01-01", {"Guide", "Child", "Grand"}),
         ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide", "Child"}),
         (three + ' and (created >= now("-4w") or id={Guide})', {"Guide", "Child", "Grand"}),
@@ -1435,6 +1465,23 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         h = {"Authorization": f"Bearer {written['admin_token']}"}
         content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
         ids = {r["title"]: r["id"] for r in content}
+        guide = str(ids["Guide"])
+        half = len(guide) // 2
+        first, second = guide[:half], guide[half:]
+        rows += [
+            (f'id = "{first}\\"{second}"', {"Guide"}),
+            (f"id = '{first}\"{second}'", {"Guide"}),
+            (f'id = "{guide}\\""', {"Guide"}),
+            (f'id in ("{first}\\"{second}")', {"Guide"}),
+            (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
+            (f'parent = "{first}\\"{second}"', {"Child"}),
+            # not real's answers: real refused each of these with 400 `Can't parse as a ContentId`;
+            # they pin the value read with its backslash kept
+            (f'id = "{first}\\"\\"{second}"', set()),
+            (f'id = "{first}\\{second}"', set()),
+            (f'ancestor = "{first}\\{second}"', set()),
+            (f'parent = "{first}\\{second}"', set()),
+        ]
         answered = {}
         for template, _ in rows:
             cql = template.format(**ids)
@@ -3985,6 +4032,7 @@ _REFUSED, _FAILED = (
 )
 
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
+_ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -4014,6 +4062,7 @@ _CQL_PAGE_ROWS = [
     ("&limit=2&cursor={c1}&cursor=", [2, 3], None),
     ("&limit=1&cursor={c1}&cursor={c2}", [2], 2),
     ("&limit=2&cursor=abc", (400, _REFUSED), None),
+    ("%20and%20title%20~%20%22a%5C%5C%22&limit=2&cursor=abc", (400, _ESCAPED_END_QUOTE), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=WyJcdDEiXQ%3D%3D_h_W10%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D_h_abc", (400, _REFUSED), None),
@@ -6978,6 +7027,21 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/nope%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB/comment?maxResults=abc", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # and on Jira, on its API and off it, an escape that does not decode to UTF-8, on each method
+    # Tomcat answers and beside a backslash
+    *[
+        ("GET", f"/rest/api/3/issue/nope{escape}x", 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for escape in ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+    ],
+    ("GET", "/rest/api/3/serverInfo%80", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/agile/1.0/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    *[
+        (method, "/rest/api/3/issue/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for method in ("HEAD", "OPTIONS", "POST", "PUT", "DELETE")
+    ],
+    ("GET", "/rest/api/3/issue/nope%5C%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/api/3/issue/nope%80%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
     # the edge's 400 for a `;`, bare or escaped in either case, wherever it stands, a `..;` the
     # firewall lets through included (the shape `Accept` picks is
     # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
@@ -7008,6 +7072,11 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/..;/nope;x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("GET", "/wiki/rest/api/space/A%2FB;x", 400, _EDGE_400, _EDGE_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/nope%80x;y", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/nope%00%80x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("PROPFIND", "/rest/api/3/issue/nope%80x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+    ("TRACE", "/rest/api/3/issue/nope%80x", 405, _CLOUDFRONT_405, _EDGE_PAGE),
+    ("PATCH", "/rest/api/3/issue/nope%80x", 400, _NGINX_400, _EDGE_PAGE),
     # a `HEAD` is the page's status and length with no body
     ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
@@ -7046,6 +7115,10 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/serverInfo?..%2F=1", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
     ("GET", "/rest/api/3/serverInfo?x=%zz", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
     ("GET", "/rest/api/3/issue/A%2FB", 404, None, errors_atlassian.PROBLEM_JSON),
+    # an escape that decodes to UTF-8, and on Confluence one that does not
+    ("GET", "/rest/api/3/issue/nope%C3%A9x", 404, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    ("GET", "/rest/api/3/serverInfo%C3%A9", 404, None, errors_atlassian.PROBLEM_JSON),
+    ("GET", "/wiki/rest/api/space/nope%80x", 404, None, "application/json"),
     # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
     ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
     ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
@@ -9184,6 +9257,9 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client):
 
 _CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
 _CQL_NOT_PARSED = "Could not parse cql : "
+_CQL_CURRENT_SPACE = (
+    "Unable to execute function 'currentSpace', the required contexts were not present : space"
+)
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -9227,11 +9303,50 @@ _CQL_PARSE_ROWS = [
                 "space.key in ( 'handbook' , 'ab' )",
             ),
             ('space = "han\\"dbook"', 'space = "han\\"dbook"'),
+            ("space = 'han\"dbook'", "space = 'han\"dbook'"),
+            ('space = "handbook\\""', 'space = "handbook\\""'),
+            ('space = "han\\"\\"dbook"', 'space = "han\\"\\"dbook"'),
+            ('space = "han\\dbook"', 'space = "han\\dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
+            ('type = "pa\\"ge"', 'type = "pa\\"ge"'),
+            ('type = "pa\\ge"', 'type = "pa\\ge"'),
+            ('title~"a\\b"', 'title ~ "a\\b"'),
+            ("title~'a\"b'", "title ~ 'a\"b'"),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
             ("created>startOfDay()", "created > startOfDay ( )"),
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
             ("id in (1,2)", "id in ( 1 , 2 )"),
+            ("label = currentUser()", "label = currentUser ( )"),
+            ("creator = currentUser()", "creator = currentUser ( )"),
+            ("ancestor = currentContent()", "ancestor = currentContent ( )"),
+            ("parent = currentContent()", "parent = currentContent ( )"),
+            ("created > now()", "created > now ( )"),
+            ('label = now("-1d")', 'label = now ( "-1d" )'),
+            ("label = currentSpace", "label = currentSpace"),
+            ("label = currentUser", "label = currentUser"),
+            ("space.key = currentUser()", "space.key = currentUser()"),
+            ("space.key = now()", "space.key = now()"),
+            ('space.key = now("-1d")', 'space.key = now("-1d")'),
+            (
+                "space.key = currentUser() and type=page",
+                "space.key = currentUser() and type = page",
+            ),
+            ("space.key in (currentUser())", "space.key in ( currentUser() )"),
+            ("space.key in (x, currentUser())", "space.key in ( 'x' , currentUser() )"),
+            ("id in recentlyViewedContent(5)", "id in recentlyViewedContent ( 5 )"),
+            ("id in recentlyViewedContent(50)", "id in recentlyViewedContent ( 50 )"),
+            (
+                "id in (1, recentlyViewedContent(5))",
+                "id in ( 1 , recentlyViewedContent ( 5 ) )",
+            ),
+            ("id not in recentlyViewedContent(5)", "id not in recentlyViewedContent ( 5 )"),
+            ("space.key in recentlyViewedContent(5)", "space.key in recentlyViewedContent(5)"),
+            ('space.key in recentlyViewedContent("5")', 'space.key in recentlyViewedContent("5")'),
+            (
+                "space.key not in recentlyViewedContent(5)",
+                "space.key not in recentlyViewedContent(5)",
+            ),
+            ("label != currentUser()", "label != currentUser ( )"),
             ("label=a.b", "label = a.b"),
             ("label=x order by created desc", "label = x order by created desc"),
             (
@@ -9264,6 +9379,28 @@ _CQL_PARSE_ROWS = [
                 'space.key = "a\'b" and title~',
                 "Expecting a value for operator '~' after field 'title'",
             ),
+            ('title ~ "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('label = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('space = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ("space.key = 'a\\\\'", "Escaped end quote in phrase query near : 'a\\\\'"),
+            (
+                'space.key in ("a\\\\", handbook)',
+                'Escaped end quote in phrase query near : "a\\\\"',
+            ),
+            ('space.key = "\\\\"', 'Escaped end quote in phrase query near : "\\\\"'),
+            ('space.key = "a\\\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\\\"'),
+            ('title ~ "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ("title ~ 'a\\'", "Escaped end quote in phrase query near : 'a\\'"),
+            ('title ~ "a\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\"'),
+            ('space.key = "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", b)', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", "b")', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and title ~ "c"', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and type = page', 'Escaped end quote in phrase query near : "a\\"'),
+            ('title ~ "a\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type in ()', _CQL_NOT_PARSED),
+            ('title ~ "a\\\\" and (type = page', "Missing closing parenthesis near field (()"),
             ("\U0001f600", _CQL_NOT_PARSED),
             ("type=page and", _CQL_NOT_PARSED),
             ("type=page or", _CQL_NOT_PARSED),
@@ -9316,6 +9453,71 @@ _CQL_PARSE_ROWS = [
                 "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
             ),
             ("(type=page", "Missing closing parenthesis near field (()"),
+            ("label = foo()", "Unable to find query function 'foo()'"),
+            ("label = Foo()", "Unable to find query function 'Foo()'"),
+            ("space.key = foo()", "Unable to find query function 'foo()'"),
+            ("creator = foo()", "Unable to find query function 'foo()'"),
+            ("space = currentSpace()", _CQL_CURRENT_SPACE),
+            ("label = currentSpace()", _CQL_CURRENT_SPACE),
+            ("space.key = currentSpace()", _CQL_CURRENT_SPACE),
+            ("space.key in (currentSpace())", _CQL_CURRENT_SPACE),
+            ("space.key in (x, currentSpace())", _CQL_CURRENT_SPACE),
+            ('created > now("x")', "Invalid relative date : x"),
+            ('label = now("x")', "Invalid relative date : x"),
+            ('created > startOfDay("x")', "Invalid relative date : x"),
+            ('created > now("a\'b")', "Invalid relative date : a'b"),
+            ('space.key = now("a\'b")', "Invalid relative date : a'b"),
+            ('created > now("1")', "Invalid relative date : 1"),
+            ('created > now("+1")', "Invalid relative date : +1"),
+            ('created > startOfDay("1")', "Invalid relative date : 1"),
+            ('label = now("1")', "Invalid relative date : 1"),
+            ('created > now("-1d", "x")', _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(5, 6)", _CQL_NOT_PARSED),
+            ('label = currentUser("x")', _CQL_NOT_PARSED),
+            ('id in recentlyViewedContent("x")', _CQL_NOT_PARSED),
+            ("(label = foo()", _CQL_NOT_PARSED),
+            ("(space = currentSpace()", _CQL_NOT_PARSED),
+            ('(created > now("x")', _CQL_NOT_PARSED),
+            ("(id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ('id in now("-1d")', _CQL_NOT_PARSED),
+            ("label in currentUser()", _CQL_NOT_PARSED),
+            ("id in currentContent()", _CQL_NOT_PARSED),
+            ("id in currentSpace()", _CQL_NOT_PARSED),
+            ("id in foo()", _CQL_NOT_PARSED),
+            ("id in recentlyviewedcontent(5)", _CQL_NOT_PARSED),
+            ("id in RECENTLYVIEWEDCONTENT(5)", _CQL_NOT_PARSED),
+            ('space.key in now("-1d")', _CQL_NOT_PARSED),
+            ("space.key in currentUser()", _CQL_NOT_PARSED),
+            ("label = foo() and (type = page", "Unable to find query function 'foo()'"),
+            ("label = foo() and type =", "Unable to find query function 'foo()'"),
+            (
+                "type = and label = foo()",
+                "Expecting a value for operator '=' after field 'type' but got 'and'",
+            ),
+            ('type = and created > now("-1d", "x")', _CQL_NOT_PARSED),
+            ("type = and id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ('type = and id in now("-1d")', _CQL_NOT_PARSED),
+            ('foo = x and id in now("-1d")', _CQL_NOT_PARSED),
+            ('id in now("-1d") and type =', _CQL_NOT_PARSED),
+            (
+                "space = currentSpace() or type =",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ('space = currentSpace() or created > now("x")', _CQL_CURRENT_SPACE),
+            ('created > now("x") or space = currentSpace()', "Invalid relative date : x"),
+            (
+                "space = currentSpace() and (type = page",
+                "Missing closing parenthesis near field (()",
+            ),
+            ('label = foo() and title ~ "a\\"', "Unable to find query function 'foo()'"),
+            ('title ~ "a\\" and label = foo()', "Unable to find query function 'foo()'"),
+            ('space = currentSpace() and title ~ "a\\"', _CQL_CURRENT_SPACE),
+            (
+                'title ~ "a\\" and space = currentSpace()',
+                'Escaped end quote in phrase query near : "a\\"',
+            ),
+            ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
         ]
     ],
 ]

@@ -1,0 +1,3 @@
+# Served byte for byte as `_BLOCK_PAGE` in backlot/routers/hubspot.py, which reads it with
+# read_bytes(), so it keeps the LF line endings of Cloudflare's page in any checkout.
+backlot/data/hubspot_block.html text eol=lf

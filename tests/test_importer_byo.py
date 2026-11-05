@@ -6131,6 +6131,17 @@ def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
             "real strips",
         ),
         ("paragraphs", {"tabs": [{"paragraphs": [{"text": "a"}]}]}, "not both"),
+        # a list is one of `createParagraphBullets`' presets, nine levels deep at most
+        (
+            "paragraphs",
+            {"paragraphs": [{"text": "a", "list": {"preset": "BULLETS"}}]},
+            "is not one of",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"text": "a", "list": {"preset": "BULLET_CHECKBOX", "level": 9}}]},
+            "greater than the maximum",
+        ),
         ("prose", {"header": [{"text": "a"}]}, "needs 'paragraphs'"),
         (
             "prose",

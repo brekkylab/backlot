@@ -3239,6 +3239,7 @@ _SERVED = (200, None, None, None)
 _TYPED = (400, "invalid", None, None)
 _RANGE = (400, "invalidParameter", "page_size", None)
 _Q_REFUSED = (400, "invalid", "q", "Invalid Value")
+_PATH_400 = (400, "badRequest", None, "Bad Request")
 
 
 def _mask_refused(subject: str) -> tuple:
@@ -3246,6 +3247,23 @@ def _mask_refused(subject: str) -> tuple:
 
 
 _DOC = "/drive/v3/files/{doc}"
+# A query value's escapes as sent, beside the value ``backlot.utf8_escapes.google_query`` reads them
+# as.
+_VALUE_ESCAPES = [
+    ("a%80b", "a b"),
+    ("a%e9b", "a b"),
+    ("a%FFb", "a b"),
+    ("a%C3b", "a b"),
+    ("a%C0%80b", "a  b"),
+    ("a%E2%82b", "a  b"),
+    ("a%ED%A0%80b", "a   b"),
+    ("a%F4%90%80%80b", "a    b"),
+    ("a%FF%FEb", "a  b"),
+    ("a%00b", "a%00b"),
+    ("a%01b", "a\x01b"),
+    ("a%7Fb", "a\x7fb"),
+    ("a%C3%A9b", "a\u00e9b"),
+]
 _PERMS_OF_DOC = "/drive/v3/files/{doc}/permissions"
 # Masks real refused on a Google Workspace member's `files.get`, `files.list`, `permissions.list`,
 # `drives.list` and `about`: a mask that is not one is named whole, an unknown name alone, the first
@@ -3552,6 +3570,10 @@ _DRIVE_CHECK_ROWS = [
     # does not exist
     ("/drive/v3/files/{folder}/export", "mimeType=text/plain", "admin", (403, "fileNotExportable", None, "Export only supports Docs Editors files.")),
     ("/drive/v3/files/{doc}", "alt=media", "admin", (403, "fileNotDownloadable", "alt", None)),
+    # a download reads no `fields` mask
+    ("/drive/v3/files/{doc}", "alt=media&fields=id%2C", "admin", (403, "fileNotDownloadable", "alt", None)),
+    ("/drive/v3/files/{pdf}", "alt=media&fields=id%2C", "admin", _SERVED),
+    ("/drive/v3/files/{pdf}", "alt=media&fields=nope(", "admin", _SERVED),
     # the shared-drive items need a companion flag, which the same spelling turns on
     ("/drive/v3/files", "includeItemsFromAllDrives=true", "admin", _SHARED_DRIVES),
     ("/drive/v3/files", "includeItemsFromAllDrives=TRUE", "admin", _SHARED_DRIVES),
@@ -3659,24 +3681,49 @@ _DRIVE_CHECK_ROWS = [
     ("/drive/v3/drives", "fields=bogus&pageToken=x", "admin", (400, "invalid", "pageToken", "Invalid Value")),
     ("/drive/v3/drives", "fields=bogus&useDomainAdminAccess=true", "admin", _ADMIN_ONLY),
     ("/drive/v3/drives", "fields=bogus&q=bogus", "admin", _Q_REFUSED),
+    # the path ``backlot.routers.google._refuse_an_undecodable_path`` refuses among the other
+    # refusals, in the order it records, beside one whose escapes decode
+    *[("/drive/v3/files/nope%80x", query, "admin", _PATH_400) for query in ("", "alt=media", "fields=nope(", "fields=id%2C", "acknowledgeAbuse=true", "prettyPrint=nope")],
+    ("/drive/v3/files/nope%80x/export", "mimeType=nope", "admin", _PATH_400),
+    ("/drive/v3/files/nope%80x/export", "mimeType=text/plain", "admin", _PATH_400),
+    ("/drive/v3/files/nope%80x/permissions", "fields=nope(", "admin", _PATH_400),
+    ("/drive/v3/files/nope%80x", "supportsAllDrives=nope", "admin", _TYPED),
+    ("/drive/v3/files/nope%80x", "alt=media&acknowledgeAbuse=nope", "admin", _TYPED),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=nope", "admin", _TYPED),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=500", "admin", _RANGE),
+    ("/drive/v3/files/nope%80x/permissions", "pageSize=0", "admin", _RANGE),
+    *[("/drive/v3/files/nope%80x/permissions", query, "admin", _PATH_400) for query in ("pageToken=nope", "pageSize=5&pageSize=6", "useDomainAdminAccess=true", "fields=permissions(id),")],
+    ("/drive/v3/files/nope%80x/export", "", "admin", (400, "required", "mimeType", None)),
+    ("/drive/v3/files/nope%C3%A9x", "", "admin", (404, "notFound", "fileId", None)),
+    ("/drive/v3/files/nope%C3%A9x/permissions", "", "admin", (404, "notFound", "fileId", None)),
+    # a mask's escapes as Drive reads them
+    *[(_DOC, f"fields={mask}", "admin", _mask_refused(read)) for mask, read in _VALUE_ESCAPES],
 ]
 # fmt: on
 
 
 @pytest.fixture(scope="module")
 def drive_check_ids(client, admin_h):
-    """The files `_DRIVE_CHECK_ROWS` names, and a page token `permissions.list` issued for {doc}."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
+    """The files `_DRIVE_CHECK_ROWS` names, found in one listing that sends no escape, and a page
+    token `permissions.list` issued for {doc}, or None where it issued none."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()[
+        "files"
+    ]
+
+    def named(part):
+        return next(f["id"] for f in files if part in f["name"])
+
+    doc = named("Brand")
     issued = client.get(
         f"/drive/v3/files/{doc}/permissions", headers=admin_h, params={"pageSize": 1}
     )
     return {
         "doc": doc,
-        "pdf": _drive_find(client, admin_h, "Whitepaper")["id"],
-        "folder": _drive_ids(client, admin_h, q=f"mimeType='{FOLDER_MIME}'")[0],
-        "hidden": _drive_find(client, admin_h, "Q1 Revenue Model")["id"],
+        "pdf": named("Whitepaper"),
+        "folder": next(f["id"] for f in files if f["mimeType"] == FOLDER_MIME),
+        "hidden": named("Q1 Revenue Model"),
         "nope": "nosuchfile000",
-        "issued": issued.json()["nextPageToken"],
+        "issued": issued.json().get("nextPageToken"),
     }
 
 
@@ -3713,9 +3760,10 @@ def test_drive_answers_every_other_check_with_reals_status_and_reason(
 ):
     """The rest of `_DRIVE_CHECK_ROWS`, each sent by the admin token, as ``{row: answer}``."""
     rows = [row for row in _DRIVE_CHECK_ROWS if "{hidden}" not in row[0]]
-    assert {
+    answers = {
         row[:2]: _drive_check(client, admin_h, drive_check_ids, *row[:2], row[3]) for row in rows
-    } == {row[:2]: row[3] for row in rows}
+    }
+    assert answers == {row[:2]: row[3] for row in rows}
 
 
 def test_reads_of_a_folder_the_caller_cannot_see(tmp_path):
@@ -4597,6 +4645,12 @@ _NO_CREDENTIAL_ROWS = [
     # its front end's HTML 404
     ("PUT", "/gmail/v1/users/me/profile", 405, 405),
     ("PUT", "/drive/v3/files/{doc}", 405, 405),
+    # the path ``backlot.routers.google._refuse_an_undecodable_path`` refuses, read after the
+    # credential
+    ("GET", "/drive/v3/files/nope%80x", 403, 400),
+    ("GET", "/sheets/v4/spreadsheets/nope%80x", 403, 400),
+    ("GET", "/docs/v1/documents/nope%80x", 401, 400),
+    ("GET", "/slides/v1/presentations/nope%80x", 401, 400),
 ]
 # fmt: on
 
@@ -4681,6 +4735,16 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token={t}", _NONE), (None, "access_token=ya29", _NONE),
     (None, "access_token=YA29.x", _NONE), (None, "access_token=%20ya29.x", _NONE),
     (None, "access_token=", _NONE), (None, "ACCESS_TOKEN=ya29.x", _NONE),
+    # the bytes around a token
+    (None, "access_token=ya29.x&oauth_token={t}%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%20%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%09", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%0A%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token=%20{t}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token=%20%09%0A{t}%0A%09%20", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%0D", _CHALLENGED),
+    (None, "access_token=ya29.x&oauth_token={t}%0B", _CHALLENGED),
+    (None, "access_token=ya29.x&oauth_token=%20", _CHALLENGED),
     # the first of `QUERY_TOKENS` the query carries is the gate, the last the token
     (None, "access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "oauth_token={t}&access_token=ya29.x", _SERVED),
@@ -4694,6 +4758,7 @@ _QUERY_CREDENTIAL_ROWS = [
     (None, "access_token=ya29.x&oauth_token={t}&oauth_token={t}", _CHALLENGE),
     (None, "access_token=ya29.x&access_token=ya29.x&oauth_token={t}", _SERVED),
     (None, "access_token=ya29.x&oauth_token={m}", _SERVED),
+    (None, "access_token=ya29.x&oauth_token={t}%80", _CHALLENGED),
     # beside a header: a credential, a bare scheme and `Bearer ,` outrank the query, a scheme run
     # into its token reads it without the gate, and a header that is no credential leaves it alone
     ("Bearer {t}", "access_token=ya29.x", _SERVED),
@@ -4707,6 +4772,8 @@ _QUERY_CREDENTIAL_ROWS = [
     ("Bearer{m}", "access_token={m}", _SERVED),
     ("Bearer{t}", "access_token=nope", _CHALLENGED), ("Bearer{t}", "access_token=", _CHALLENGE),
     ("Bearer{t}", "ACCESS_TOKEN={t}", _CHALLENGE),
+    ("Bearer{t}", "access_token=%20{t}%09%0A", _SERVED),
+    ("Bearer{t}", "access_token={t}%0D", _CHALLENGED),
     ("Bearer{t}", "access_token=&oauth_token={t}", _SERVED),
     ("Bearer{t}", "oauth_token=&access_token={t}", _CHALLENGE),
     ("bearer {t}", "access_token=ya29.x&oauth_token={t}", _SERVED),
@@ -9385,6 +9452,131 @@ def _bad_request(violations):
             "fieldViolations": [{"field": f, "description": m} for f, m in violations],
         }
     ]
+
+
+_SHEETS_TYPE = "type.googleapis.com/google.apps.sheets.v4"
+
+
+def _editor_refused(code, message, status, violations=()):
+    error = {"code": code, "message": message, "status": status}
+    if violations:
+        error["details"] = _bad_request(list(violations))
+    return (code, {"error": error})
+
+
+def _invalid_value(field, kind, value):
+    message = f"Invalid value at '{field}' ({kind}), \"{value}\""
+    return _editor_refused(400, message, "INVALID_ARGUMENT", [(field, message)])
+
+
+_EDITOR_PATH_400 = _editor_refused(400, INVALID_ARG, "INVALID_ARGUMENT")
+_EDITOR_NOT_FOUND = _editor_refused(404, NOT_FOUND, "NOT_FOUND")
+_EDITOR_MASK = _editor_refused(
+    400,
+    INVALID_ARG,
+    "INVALID_ARGUMENT",
+    [("nope(", "Invalid FieldMask 'nope('. Cannot find matching ')' for all '('.")],
+)
+_UNDECODED = ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+_DOCS_INSERT = '{"requests": [{"insertText": {"text": "a", "location": {"index": 1}}}]}'
+_UNKNOWN_NOPE = _editor_refused(
+    400,
+    'Invalid JSON payload received. Unknown name "nope": Cannot find field.',
+    "INVALID_ARGUMENT",
+)
+_UNKNOWN_NOPE[1]["error"]["details"] = [
+    {
+        "@type": "type.googleapis.com/google.rpc.BadRequest",
+        "fieldViolations": [{"description": _UNKNOWN_NOPE[1]["error"]["message"]}],
+    }
+]
+
+# A Docs, Sheets or Slides read per row, `{doc}`, `{sheet}` and `{deck}` files the admin token
+# reads, beside real's status and error: an undecodable path
+# (``backlot.routers.google._refuse_an_undecodable_path``) beside each refusal it was measured with,
+# a path whose escapes decode, and a query value's escapes as Docs and Sheets read them. A row with
+# a fourth value is a Docs batchUpdate that POSTs it as the body.
+# fmt: off
+_EDITOR_ESCAPE_ROWS = [
+    *[(f"/docs/v1/documents/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
+    *[(f"/sheets/v4/spreadsheets/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
+    *[(f"/slides/v1/presentations/nope{escape}x", "", _EDITOR_PATH_400) for escape in _UNDECODED],
+    ("/docs/v1/documents/{doc}%80", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/{sheet}%80", "", _EDITOR_PATH_400),
+    ("/slides/v1/presentations/{deck}%80", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/nope%80x", "prettyPrint=nope", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/nope%80x/values/A1", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/nope%80x/values:batchGet", "ranges=A1", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A%80", "", _EDITOR_PATH_400),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A1%80:B2", "", _EDITOR_PATH_400),
+    ("/docs/v1/documents/nope%80x", "fields=nope(", _EDITOR_MASK),
+    ("/sheets/v4/spreadsheets/nope%80x", "fields=nope(", _EDITOR_MASK),
+    ("/sheets/v4/spreadsheets/nope%80x", "alt=nope",
+     _editor_refused(400, "Invalid value \"nope\" for query parameter 'alt'", "INVALID_ARGUMENT")),
+    ("/docs/v1/documents/nope%80x", "suggestionsViewMode=nope",
+     _invalid_value("suggestions_view_mode", _DOCS_SUGGESTIONS, "nope")),
+    ("/docs/v1/documents/nope%80x", "includeTabsContent=nope",
+     _invalid_value("include_tabs_content", "TYPE_BOOL", "nope")),
+    ("/sheets/v4/spreadsheets/nope%80x", "includeGridData=nope",
+     _invalid_value("include_grid_data", "TYPE_BOOL", "nope")),
+    ("/sheets/v4/spreadsheets/nope%80x/values/A1", "majorDimension=nope",
+     _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", "nope")),
+    ("/sheets/v4/spreadsheets/nope%80x/values/A1", "valueRenderOption=nope",
+     _invalid_value("value_render_option", f"{_SHEETS_TYPE}.ValueRenderOption", "nope")),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A1%80", "majorDimension=nope",
+     _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", "nope")),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _EDITOR_PATH_400, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _EDITOR_PATH_400, '{"requests": []}'),
+    ("/docs/v1/documents/nope%80:batchUpdate", "fields=nope(", _EDITOR_MASK, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%80:batchUpdate", "", _UNKNOWN_NOPE, '{"nope": 1}'),
+    ("/docs/v1/documents/nope:batchUpdate", "", _EDITOR_NOT_FOUND, _DOCS_INSERT),
+    ("/docs/v1/documents/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
+    ("/sheets/v4/spreadsheets/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
+    ("/slides/v1/presentations/nope%C3%A9x", "", _EDITOR_NOT_FOUND),
+    ("/docs/v1/documents/{doc}%C3%A9", "", _EDITOR_NOT_FOUND),
+    ("/sheets/v4/spreadsheets/{sheet}%C3%A9", "", _EDITOR_NOT_FOUND),
+    ("/slides/v1/presentations/{deck}%C3%A9", "", _EDITOR_NOT_FOUND),
+    ("/sheets/v4/spreadsheets/{sheet}/values/A%C3%A9", "",
+     _editor_refused(400, "Unable to parse range: A\u00e9", "INVALID_ARGUMENT")),
+    *[
+        ("/docs/v1/documents/{doc}", f"fields={mask}", _editor_refused(400, INVALID_ARG, "INVALID_ARGUMENT", [
+            (read, f"Error expanding 'fields' parameter. Cannot find matching fields for path '{read}'."),
+        ]))
+        for mask, read in _VALUE_ESCAPES
+    ],
+    *[
+        ("/sheets/v4/spreadsheets/{sheet}/values/A1", f"majorDimension={value}",
+         _invalid_value("major_dimension", f"{_SHEETS_TYPE}.Dimension", read))
+        for value, read in _VALUE_ESCAPES
+    ],
+]
+# fmt: on
+
+
+def test_editor_apis_read_an_escape_as_real_reads_it(client, admin_h, document_id):
+    """The rows `_EDITOR_ESCAPE_ROWS` records, as ``{row: (status, body)}``."""
+    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 1000}).json()[
+        "files"
+    ]
+    ids = {
+        "doc": document_id,
+        "sheet": next(f["id"] for f in files if "Q1 Revenue Model" in f["name"]),
+        "deck": next(
+            f["id"] for f in files if f["mimeType"] == "application/vnd.google-apps.presentation"
+        ),
+    }
+
+    def answer(path, query, body=None):
+        url = path.format(**ids) + (f"?{query}" if query else "")
+        if body is None:
+            r = client.get(url, headers=admin_h)
+        else:
+            headers = {**admin_h, "Content-Type": "application/json"}
+            r = client.post(url, headers=headers, content=body)
+        return (r.status_code, r.json())
+
+    answers = {(*row[:2], *row[3:]): answer(*row[:2], *row[3:]) for row in _EDITOR_ESCAPE_ROWS}
+    assert answers == {(*row[:2], *row[3:]): row[2] for row in _EDITOR_ESCAPE_ROWS}
 
 
 _DIM = "Invalid value at 'major_dimension' (type.googleapis.com/google.apps.sheets.v4.Dimension), "
@@ -14915,6 +15107,18 @@ _OVERRIDE_ROWS = [
     ("/sheets/v4/spreadsheets/{sheet}", "", "callback=foo", "", _FORM, "GET"),
     ("/sheets/v4/spreadsheets/{sheet}", "", "callback=a-b", "", _FORM, "GET"),
     ("/sheets/v4/spreadsheets/{sheet}", "", "", "callback=foo", _FORM, "GET"),
+    ("/drive/v3/files/{file}", "fields=a%80b", "", "fields=a%80b", _FORM, "GET"),
+    ("/drive/v3/files/{file}", "fields=a%00b", "", "fields=a%00b", _FORM, "GET"),
+    ("/docs/v1/documents/{doc}", "fields=a%80b", "", "fields=a%80b", _FORM, "GET"),
+    ("/docs/v1/documents/{doc}", "fields=a%00b", "", "fields=a%00b", _FORM, "GET"),
+    (
+        "/sheets/v4/spreadsheets/{sheet}/values/A1",
+        "majorDimension=a%80b",
+        "",
+        "majorDimension=a%80b",
+        _FORM,
+        "GET",
+    ),
 ]
 
 
@@ -14955,6 +15159,11 @@ _OVERRIDE_IDS = [
     "callback-in-the-url",
     "uncallable-callback-in-the-url",
     "callback-in-the-body",
+    "drive-form-escape-not-utf-8",
+    "drive-form-nul-escape",
+    "docs-form-escape-not-utf-8",
+    "docs-form-nul-escape",
+    "sheets-form-escape-not-utf-8",
 ]
 
 

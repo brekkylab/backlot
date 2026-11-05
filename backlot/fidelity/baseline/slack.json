@@ -1544,6 +1544,12 @@
         }
       },
       "fields": {
+        "message.app_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
         "message.attachments": {
           "kind": "missing_field",
           "severity": "gap"
@@ -1553,6 +1559,12 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.bot_profile": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.parent_user_id": {
           "kind": "extra_field",
@@ -1675,6 +1687,12 @@
         }
       },
       "fields": {
+        "message.app_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
         "message.blocks": {
           "kind": "extra_field",
           "severity": "breaking",
@@ -1686,6 +1704,12 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. A post and an edit in one workspace echoed a message carrying `app_id`, `blocks`, `bot_id`, `bot_profile`, `team`, `text`, `type` and `user`, the edit's also `edited`, `thread_ts` and `parent_user_id`. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "message.bot_profile": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.edited": {
           "kind": "extra_field",
@@ -1797,6 +1821,12 @@
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "slack.com serves it: measured 2026-10-21 over `conversations.history` with a user token, across a workspace's 8 channels and 189 threads. The reference's examples for this method leave it out."
         },
+        "messages[].app_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
         "messages[].attachments": {
           "kind": "missing_field",
           "severity": "gap"
@@ -1812,6 +1842,12 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "Measured against slack.com on 2026-10-21: real answers this field on this method. Over 100 `reactions.list` items and 527 `conversations.history` messages, each of `bot_id`, `subtype`, `edited`, `team`, `thread_ts`, `ts`, `type`, `user` and `reactions` was present on some message. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "messages[].bot_profile": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "messages[].client_msg_id": {
           "kind": "extra_field",
@@ -2870,6 +2906,12 @@
           "kind": "missing_field",
           "severity": "gap"
         },
+        "message.app_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
         "message.blocks": {
           "kind": "extra_field",
           "severity": "breaking",
@@ -2881,6 +2923,12 @@
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "The message Backlot serves is one builder's (`slack._message`), so it carries the same fields on every method that answers one. Measured against slack.com on 2026-10-21 on the methods a read reaches: real answers this field on `reactions.list` and `conversations.history`, and `reactions.get` itself answered `edited`, `team`, `ts`, `type` and `user`. The reference's example for this method abbreviates its message."
+        },
+        "message.bot_profile": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "message.edited": {
           "kind": "extra_field",
@@ -2923,11 +2971,23 @@
           "kind": "missing_field",
           "severity": "gap"
         },
+        "items[].message.app_id": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
         "items[].message.blocks": {
           "kind": "extra_field",
           "severity": "breaking",
           "detail": "Backlot serves it; the vendor's reference documents no such field",
           "note": "Measured against slack.com on 2026-10-22: a plain-text post over a user token and over a bot token both carried `blocks`, in the echo and in `conversations.history`, as did the messages `reactions.get` and `reactions.list` answer. The reference's example for this method abbreviates its message, so this records the example being shorter than the answer rather than Backlot answering more than real does."
+        },
+        "items[].message.bot_profile": {
+          "kind": "extra_field",
+          "severity": "breaking",
+          "detail": "Backlot serves it; the vendor's reference documents no such field",
+          "note": "Measured against slack.com on 2026-11-03 in a private channel, over a user token and a bot token of one app: a message either token posted carried `app_id` and `bot_profile` in its `chat.postMessage` and `chat.update` echoes and when `conversations.history`, `conversations.replies`, `reactions.get` and `reactions.list` read it back, and the two `channel_join` messages carried neither. The reference's example for this method leaves both keys out, so this records the example being shorter than the answer rather than Backlot answering more than real does."
         },
         "items[].message.edited": {
           "kind": "extra_field",

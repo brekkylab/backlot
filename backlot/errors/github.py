@@ -176,7 +176,10 @@ def docs_url(path: str) -> str:
     """The anchor real names for the route ``path`` reaches, or the root for anything else.
 
     The root is also the honest answer for a path that matches no route: real has no endpoint
-    documentation to point at for a URL it does not serve either.
+    documentation to point at for a URL it does not serve either. Real named it on 2026-10-30 (UTC)
+    for `/rate_limit` with an escaped tab, CR, LF, `#` or `?` after it and for `/zen` with `%23` or
+    `%0D`, and named `/repos/{owner}/{repo}`'s anchor for a repository with `%0D` after its name, a
+    byte that route's parameter takes.
     """
     from starlette.routing import Match
 

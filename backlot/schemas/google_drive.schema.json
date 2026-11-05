@@ -41,6 +41,42 @@
           "items": {
             "$ref": "#/$defs/run"
           }
+        },
+        "list": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "preset"
+          ],
+          "properties": {
+            "preset": {
+              "enum": [
+                "BULLET_DISC_CIRCLE_SQUARE",
+                "BULLET_DIAMONDX_ARROW3D_SQUARE",
+                "BULLET_CHECKBOX",
+                "BULLET_ARROW_DIAMOND_DISC",
+                "BULLET_STAR_CIRCLE_SQUARE",
+                "BULLET_ARROW3D_CIRCLE_SQUARE",
+                "BULLET_LEFTTRIANGLE_DIAMOND_DISC",
+                "BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE",
+                "BULLET_DIAMOND_CIRCLE_SQUARE",
+                "NUMBERED_DECIMAL_ALPHA_ROMAN",
+                "NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS",
+                "NUMBERED_DECIMAL_NESTED",
+                "NUMBERED_UPPERALPHA_ALPHA_ROMAN",
+                "NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL",
+                "NUMBERED_ZERODECIMAL_ALPHA_ROMAN"
+              ],
+              "description": "The list's glyphs, as `createParagraphBullets` names its `bulletPreset`."
+            },
+            "level": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 8,
+              "description": "The paragraph's nesting level in the list, 0 to 8 (default: 0)."
+            }
+          },
+          "description": "The paragraph as an item of a list, served as `createParagraphBullets` makes one: a bullet, indented as its level is, and the list in the tab's `lists`. Consecutive paragraphs stating one preset are one list, as that request joins a paragraph to the list before it of its preset; files.export writes each item's marker, numbering a numbered list."
         }
       }
     },

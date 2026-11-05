@@ -1484,7 +1484,7 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
     return published.includes(_PUBLISHED_NOT_SERVED, method, path.removeprefix("/hubspot"))
 
 
-async def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
+async def refuse_an_unserved_operation(request: Request) -> Response | None:
     """The INVALID_AUTHENTICATION 401 for an operation of :data:`_PUBLISHED_NOT_SERVED` sent with no
     key or one that does not resolve, as a served route refuses it before running. With a key that
     resolves, a write is refused as real refuses it for this key, which may write none of
@@ -1528,10 +1528,19 @@ async def refuse_an_unserved_operation(request: Request) -> JSONResponse | None:
     every other operation the baseline lists answered the same 401 both ways, the v4 association
     writes and `batch/read` among them, and so did `PATCH` on `zzz/1` and `DELETE` on `2-999/1`,
     whose types real can't resolve.
+
+    Ahead of the credential, an operation of :data:`_PUBLISHED_NOT_SERVED` sent with an `Accept`
+    that does not :func:`_admits_json` is the 406 :func:`_error_page` writes, the key sent or not,
+    with `nosniff` under `/crm/v4/associations/`. Measured against api.hubapi.com on 2026-10-28 and
+    2026-11-04.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return None
     path = request.scope["path"].removeprefix("/hubspot")
+    if not _admits_json(request.headers.get("accept") or "*/*"):
+        sniff = path.startswith("/crm/v4/associations/")
+        headers = {"X-Content-Type-Options": "nosniff"} if sniff else {}
+        return _error_page(request, 406, "Not Acceptable", headers)
     if _caller(request) is None:
         return _unauthenticated()
     report = _HIGH_USAGE_REPORT.fullmatch(path)

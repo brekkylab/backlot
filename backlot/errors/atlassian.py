@@ -451,6 +451,51 @@ def cql_missing_closing_parenthesis() -> AtlassianError:
     )
 
 
+def cql_unknown_function(name: str) -> AtlassianError:
+    """The CQL search's refusal of a function call real does not have, the name as sent, with
+    `()`: `label = foo()` answered `Unable to find query function 'foo()'`, and `label = Foo()`
+    the same with `Foo()` (Confluence Cloud, 2026-10-31). Where it falls among the search's
+    other refusals is ``routers.atlassian._cql_refusal``'s."""
+    return _service_refusal(
+        400, "api.BadRequestException", f"Unable to find query function '{name}()'"
+    )
+
+
+def cql_function_needs_context(name: str, context: str) -> AtlassianError:
+    """The CQL search's refusal of a function that cannot run where it is called, for want of a
+    context: `space = currentSpace()` answered
+    `Unable to execute function 'currentSpace', the required contexts were not present : space`,
+    and so did `label = currentSpace()` (Confluence Cloud, 2026-10-31). Where it falls among the
+    search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unable to execute function '{name}', the required contexts were not present : {context}",
+    )
+
+
+def cql_invalid_relative_date(value: str) -> AtlassianError:
+    """The CQL search's refusal of a date function's argument real cannot read as a relative
+    date, the argument as sent: `created > now("x")` answered `Invalid relative date : x`, and
+    so did `label = now("x")` and `created > startOfDay("x")`, and `created > now("a'b")` the
+    same with `a'b` (Confluence Cloud, 2026-10-31). Where it falls among the search's other
+    refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(400, "api.BadRequestException", f"Invalid relative date : {value}")
+
+
+def cql_escaped_end_quote(text: str) -> AtlassianError:
+    """The CQL search's refusal of a quoted value whose closing quote follows a backslash, named
+    as sent with its quotes. On Confluence Cloud on 2026-10-30 `title ~ "a\\\\"` answered
+    `Escaped end quote in phrase query near : "a\\\\"`, and so did the same value in `label`,
+    `space` and `space.key`, in single quotes and inside an `in` list, and four backslashes before
+    the closing quote, and on 2026-11-04 one backslash and three (`title ~ "a\\"` naming `"a\\"`).
+    Two backslashes in the middle of a value were not refused (2026-10-26). Where it falls among the
+    search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(
+        400, "api.BadRequestException", f"Escaped end quote in phrase query near : {text}"
+    )
+
+
 def no_space_with_key(space_key: str) -> AtlassianError:
     """`content`'s refusal of a space key naming no space, as sent: the key is not trimmed (`' '` is
     named as a space), and a repeated one is its comma-join, which no key holds. Where it comes

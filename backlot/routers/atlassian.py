@@ -2099,9 +2099,15 @@ async def confluence_cql_search(request: Request):
                 not_containers.add(resolved)
     _refuse_negative_page_params(limit, start)
     tokens = _cql_tokens(cql)
+    grammar = _cql_grammar_refusal(tokens)
+    if grammar is not None:
+        raise grammar
     refusal = _cql_refusal(tokens)
     if refusal is not None:
         raise refusal
+    cannot_run = _cql_cannot_run(tokens)
+    if cannot_run is not None:
+        raise cannot_run
     # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
     sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
     after = _cql_search_after(sent_cursor) if sent_cursor else None
@@ -2202,7 +2208,7 @@ async def confluence_cql_search(request: Request):
     # `not creator = currentUser()` with none, where this route answers the three (Confluence Cloud,
     # 2026-10-28). Where the tokens do not parse this way, the clause readers above stay the answer.
     try:
-        expr = _cql_parse(tokens)
+        expr = _cql_parse(tokens, caller.email)
         term_sets: dict[str, set[str]] = {}
 
         def _needed_term(node) -> str | None:
@@ -3196,7 +3202,8 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 
 # CQL as real's reader splits it, measured on Confluence Cloud on 2026-10-22 and 2026-10-25, the
 # second time with `title~a<c>b` and `title~a<c>` for each ASCII punctuation character `<c>`: a
-# quoted value in either quotes, in which a backslash keeps the next character; an operator, a
+# quoted value in either quotes, in which a backslash keeps the next character, or which runs to
+# the next quote where that reading finds no closing one (`"a\"` on 2026-11-04); an operator, a
 # bracket or a comma; a date such as `2026-01-01` and a number, both in ASCII digits; and a word of
 # ASCII letters, digits and `_`, dotted as `space.key` is. A control character, one past ASCII and
 # those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
@@ -3204,7 +3211,7 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 # fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
 # `title~a:b` cannot be parsed.
 _CQL_TOKEN = re.compile(
-    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"[^"]*"|'[^']*')"""
     r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
     r"|(?P<PUNCT>[(),])"
     r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
@@ -3270,6 +3277,103 @@ _CQL_KEYWORDS = frozenset(
 _CQL_VALUES = frozenset(("WORD", "QUOTED", "NUMBER", "DATE"))
 
 
+# The CQL query functions real runs, and how many arguments each takes, measured on Confluence
+# Cloud on 2026-10-31: `currentUser`, `currentContent`, `currentSpace`, `now`, `startOfDay`,
+# `startOfWeek`, `startOfMonth`, `startOfYear`, `endOfMonth` and `recentlyViewedContent` are
+# known, and any other name is refused with `Unable to find query function`. No other name was
+# sent, so no other is known here. A date function takes an optional relative date, and
+# `recentlyViewedContent` takes exactly one count.
+_CQL_FUNCTIONS = {
+    "currentUser": (0, 0),
+    "currentContent": (0, 0),
+    "currentSpace": (0, 0),
+    "now": (0, 1),
+    "startOfDay": (0, 1),
+    "startOfWeek": (0, 1),
+    "startOfMonth": (0, 1),
+    "startOfYear": (0, 1),
+    "endOfMonth": (0, 1),
+    "recentlyViewedContent": (1, 1),
+}
+_CQL_DATE_FUNCTIONS = frozenset(
+    ("now", "startOfDay", "startOfWeek", "startOfMonth", "startOfYear", "endOfMonth")
+)
+# A relative date as a date function reads it: a sign, a number, and a unit. `now("-1d")` and
+# `now("-4w")` were measured, and `now("x")` and `now("a'b")` (Confluence Cloud, 2026-10-31) and
+# `now("1")`, `now("+1")` and `startOfDay("1")` (Confluence Cloud, 2026-11-04) were refused as
+# invalid relative dates.
+_CQL_RELATIVE_DATE = re.compile(r"[+-]?[0-9]+[yMwdhm]")
+
+
+class _CQLFunctionError(Exception):
+    """A function call whose arguments are not comma-separated values, or whose closing
+    parenthesis never comes; the callers answer it as a CQL the grammar cannot read."""
+
+
+def _cql_function_call(tokens: list[tuple[str, str]], at: int):
+    """A function call at ``tokens[at]`` as ``(name, args, next)``: ``args`` is the list of
+    argument values between the parentheses, each one a ``(kind, text)`` token, and ``next`` the
+    index past the closing parenthesis. ``tokens[at]`` is the name and ``tokens[at + 1]`` its
+    opening parenthesis. Raises :class:`_CQLFunctionError` for a call whose arguments are not
+    comma-separated values, or whose closing parenthesis never comes."""
+    name = tokens[at][1]
+    at += 2
+    kind, text = tokens[at] if at < len(tokens) else (None, None)
+    if (kind, text) == ("PUNCT", ")"):
+        return name, [], at + 1
+    args = []
+    while True:
+        if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
+            raise _CQLFunctionError()
+        args.append((kind, text))
+        at += 1
+        kind, text = tokens[at] if at < len(tokens) else (None, None)
+        if (kind, text) == ("PUNCT", ")"):
+            return name, args, at + 1
+        if (kind, text) != ("PUNCT", ","):
+            raise _CQLFunctionError()
+        at += 1
+        kind, text = tokens[at] if at < len(tokens) else (None, None)
+
+
+def _cql_function_arity(name: str, args: list[tuple[str, str]]) -> bool:
+    """Whether a call of ``name`` with ``args`` has the wrong arguments: too many or too few
+    for what :data:`_CQL_FUNCTIONS` records, or, for `recentlyViewedContent`, a count that is
+    no number and no quoted integer."""
+    low, high = _CQL_FUNCTIONS[name]
+    if not low <= len(args) <= high:
+        return True
+    if name == "recentlyViewedContent":
+        kind, text = args[0]
+        if kind == "NUMBER":
+            return False
+        return kind != "QUOTED" or not re.fullmatch(r"[+-]?[0-9]+", _cql_unquote(kind, text))
+    return False
+
+
+def _cql_function_cannot_run(name: str, args: list[tuple[str, str]]):
+    """The refusal a call of ``name`` with ``args`` is answered with where it cannot run, or
+    None for one that runs: `currentSpace()` for want of a space, and a date function whose
+    argument real cannot read as a relative date. `currentContent()` runs on this route, and
+    `currentUser()`, `now()` and `recentlyViewedContent()` run with what the route has."""
+    if name == "currentSpace":
+        return errors_atlassian.cql_function_needs_context(name, "space")
+    if name in _CQL_DATE_FUNCTIONS and args:
+        kind, text = args[0]
+        value = _cql_unquote(kind, text) if kind == "QUOTED" else text
+        if not _CQL_RELATIVE_DATE.fullmatch(value):
+            return errors_atlassian.cql_invalid_relative_date(value)
+    return None
+
+
+def _cql_function_fault(name: str, args: list[tuple[str, str]]) -> bool:
+    """Whether a call of ``name`` with ``args`` is one real refuses: a name it does not have, an
+    argument count or shape it does not take, or one that cannot run where it is called."""
+    if name not in _CQL_FUNCTIONS:
+        return True
+    return _cql_function_arity(name, args) or _cql_function_cannot_run(name, args) is not None
+
+
 def _cql_tokens(cql: str) -> list[tuple[str, str]]:
     """The tokens of ``cql`` as ``(kind, text)``, those `_CQL_TOKEN` leaves out dropped."""
     return [(m.lastgroup, m.group()) for m in _CQL_TOKEN.finditer(cql) if m.lastgroup != "DROPPED"]
@@ -3318,20 +3422,90 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
     """``cqlQuery`` as real writes the query back: its tokens one space apart, in the case and the
     quotes they were sent in, except each value of `space.key`, which is written in single quotes
     as :func:`_cql_space_value` reads it and, when it names a space, in the spelling
-    ``space_key`` gives (Confluence Cloud, 2026-10-22, 2026-10-25, 2026-10-26 and 2026-10-30)."""
+    ``space_key`` gives (Confluence Cloud, 2026-10-22, 2026-10-25, 2026-10-26 and 2026-10-30).
+    A function on `space.key` is the exception to the single quotes: real writes the call as
+    sent, with no spaces in it, `space.key = currentUser()`, where on any other field the
+    parentheses are spaced out, `creator = currentUser ( )` (Confluence Cloud, 2026-10-31)."""
     out, key = [], False
-    for i, (kind, text) in enumerate(tokens):
+    closed = set()  # the indices closing a function call written as one piece, below
+    i = 0
+    while i < len(tokens):
+        kind, text = tokens[i]
         before = tokens[i - 1] if i else (None, None)
         if kind == "OP" or kind == "WORD" and text.lower() == "in":
             field = i - 1 - (kind == "WORD" and i > 1 and before[1].lower() == "not")
             key = field >= 0 and tokens[field][1].lower() == "space.key"
-        elif kind in ("WORD", "QUOTED") and key and (before[0] == "OP" or before[1] in "(,"):
+        elif (
+            kind in ("WORD", "QUOTED")
+            and key
+            and (before[0] == "OP" or before[1].lower() == "in" or before[1] in "(,")
+        ):
+            if kind == "WORD" and i + 1 < len(tokens) and tokens[i + 1] == ("PUNCT", "("):
+                call, depth, j = [text], 0, i + 1
+                while j < len(tokens):
+                    call.append(tokens[j][1])
+                    if tokens[j] == ("PUNCT", "("):
+                        depth += 1
+                    elif tokens[j] == ("PUNCT", ")"):
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
+                out.append("".join(call))
+                closed.add(j)
+                i = j + 1
+                continue
             value = _cql_space_value(kind, text)
             text = f"'{space_key(value) or value}'"
-        elif before[1] == ")" or kind == "WORD" and text.lower() in ("and", "or"):
+        elif (before[1] == ")" and (i - 1) not in closed) or (
+            kind == "WORD" and text.lower() in ("and", "or")
+        ):
             key = False
         out.append(text)
+        i += 1
     return " ".join(out)
+
+
+def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL the grammar cannot read with, or None for one it can, before
+    :func:`_cql_refusal` reads the faults it walks from the left: a function call with the wrong
+    arguments, a second argument or an empty `recentlyViewedContent()`, a function other than
+    `recentlyViewedContent` in place of an `in` list, and an unclosed parenthesis before a call
+    real refuses. Measured on Confluence Cloud on 2026-10-31: a second argument or an empty
+    `recentlyViewedContent()` was answered `Could not parse cql : ` beside any other wrong in the
+    CQL, even a missing value or an unknown field earlier in it, and `(label = foo()`,
+    `(space = currentSpace()` and `(created > now("x")` the same, where an unclosed parenthesis
+    with no call real refuses after it, `(type=page`, is the missing parenthesis refusal. On
+    2026-11-04 `id in now("-1d")`, `label in currentUser()`, `id in currentContent()`,
+    `id in currentSpace()`, `id in foo()`, `id in recentlyviewedcontent(5)` and
+    `space.key in now("-1d")` were answered `Could not parse cql : ` as well, and `id in now("-1d")`
+    the same after `type =` with no value, after `foo = x`, and before `and type =`."""
+    opens, failing = [], []
+    for at, (kind, text) in enumerate(tokens):
+        if (kind, text) == ("PUNCT", "("):
+            opens.append(at)
+        elif (kind, text) == ("PUNCT", ")"):
+            if opens:
+                opens.pop()
+        elif (
+            kind == "WORD"
+            and text.lower() not in _CQL_KEYWORDS
+            and at + 1 < len(tokens)
+            and tokens[at + 1] == ("PUNCT", "(")
+        ):
+            try:
+                name, args, _ = _cql_function_call(tokens, at)
+            except _CQLFunctionError:
+                return errors_atlassian.cql_not_parsed()
+            if name in _CQL_FUNCTIONS and _cql_function_arity(name, args):
+                return errors_atlassian.cql_not_parsed()
+            if name != "recentlyViewedContent" and at and tokens[at - 1][1].lower() == "in":
+                return errors_atlassian.cql_not_parsed()
+            if _cql_function_fault(name, args):
+                failing.append(at)
+    if opens and failing and opens[0] < max(failing):
+        return errors_atlassian.cql_not_parsed()
+    return None
 
 
 def _cql_refusal(tokens: list[tuple[str, str]]):
@@ -3341,17 +3515,21 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value``
     at an operator followed by nothing or by a token that is no value, and at an `in` list never
     closed; ``cql_missing_closing_parenthesis`` at a `(` never closed; and
-    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. Each one's
-    docstring gives the queries that answered it. A reserved word where a value goes is
-    ``errors.atlassian.cql_reserved_keyword`` instead, once the reading reaches the query's end or
-    a field with no operator: whether `and` or `or` is that value or the conjunction, and whether
-    `order` starts `order by`, is settled by what follows it (see :func:`value` and
-    :func:`clause_starts`), and a query the reading cannot finish otherwise is the refusal the
-    unfinished reading gives, not the reserved word. A query read to its end is ``cql_not_parsed``
-    when a `space.key` value holds a single quote. A field CQL does not have, a field with no
-    operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
-    `type=PAGE`) are refused on real with messages of their own, and answered at 200 here when no
-    reserved word came before them."""
+    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A function
+    call real does not have is ``cql_unknown_function`` at its place among those faults, read
+    from the left, and `recentlyViewedContent`, the one function real takes in place of an `in`
+    list, is read as the list. Each one's docstring gives the queries that answered it. A reserved
+    word where a value goes is ``errors.atlassian.cql_reserved_keyword`` instead, once the reading
+    reaches the query's end or a field with no operator: whether `and` or `or` is that value or
+    the conjunction, and whether `order` starts `order by`, is settled by what follows it (see
+    :func:`value` and :func:`clause_starts`), and a query the reading cannot finish otherwise is
+    the refusal the unfinished reading gives, not the reserved word. A query read to its end is
+    ``cql_not_parsed`` when a `space.key` value holds a single quote. A field CQL does not have, a
+    field with no operator, and an operator or a value the field does not take (`foo`, `type`,
+    `type<page`, `type=PAGE`) are refused on real with messages of their own, and answered at 200
+    here when no reserved word came before them. An escaped end quote, `title ~ "a\\"`, is not
+    refused here: it is read after this walk, beside a function that cannot run
+    (``_cql_cannot_run``)."""
     at = 0
     reserved: list[str] = []  # the first reserved word read as a value, as sent, if any
 
@@ -3416,12 +3594,13 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 reserved.append(text)
         at += 1
         if peek() == ("PUNCT", "("):  # a function: now("-1d"), currentUser()
-            at += 1
-            while peek() != ("PUNCT", ")"):
-                if peek()[0] is None:
-                    raise not_parsed()
-                at += 1
-            at += 1
+            try:
+                name, _args, after = _cql_function_call(tokens, at - 1)
+            except _CQLFunctionError:
+                raise not_parsed()
+            if name not in _CQL_FUNCTIONS:
+                raise _Stop(errors_atlassian.cql_unknown_function(name))
+            at = after
 
     def clause():
         nonlocal at
@@ -3440,6 +3619,10 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         if negated or keyword("in"):
             operator = "".join(text for _, text in tokens[at : at + 1 + negated])
             at += 1 + negated
+            if peek()[0] == "WORD" and peek(1) == ("PUNCT", "("):
+                # a function in place of the list: `id in recentlyViewedContent(5)`
+                value(operator, field)
+                return
             if peek() != ("PUNCT", "("):
                 raise _Stop(errors_atlassian.cql_expecting_value(operator, field, peek()[1]))
             at += 1
@@ -3520,17 +3703,91 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     return None
 
 
+def _cql_cannot_run(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL with a function that cannot run or an escaped end quote
+    (``errors.atlassian.cql_escaped_end_quote``), or None for one with neither, after
+    :func:`_cql_refusal` and before :func:`_cql_search_after`: the first such fault from the left.
+    With an even number of backslashes before a quote, `_CQL_TOKEN` reads them in pairs and the
+    quote closes the value; with an odd number the quote is escaped, and where no later quote closes
+    the value the token ends at it all the same. Each of those tokens ends in a backslash and its
+    quote, an escaped end quote. Measured on Confluence Cloud on 2026-10-31 and 2026-11-04:
+    `space = currentSpace() or created > now("x")` was answered with the first of the two, and
+    either beside `title ~ "a\\"` with the first of the two in the CQL, and the cursor's 400 came
+    after each fault of this pass."""
+    faults = []
+    for at, (kind, text) in enumerate(tokens):
+        if (
+            kind == "WORD"
+            and text.lower() not in _CQL_KEYWORDS
+            and at + 1 < len(tokens)
+            and tokens[at + 1] == ("PUNCT", "(")
+        ):
+            try:
+                name, args, _ = _cql_function_call(tokens, at)
+            except _CQLFunctionError:
+                continue
+            if name in _CQL_FUNCTIONS:
+                fault = _cql_function_cannot_run(name, args)
+                if fault is not None:
+                    faults.append((at, fault))
+        elif kind == "QUOTED" and text[-2] == "\\":
+            faults.append((at, errors_atlassian.cql_escaped_end_quote(text)))
+    if not faults:
+        return None
+    return min(faults, key=lambda fault: fault[0])[1]
+
+
 class _CQLParseError(Exception):
     """A token shape the boolean reader below does not cover; the caller falls back to the
     clause readers in :func:`confluence_cql_search` rather than failing the request."""
 
 
-def _cql_unquote(kind: str, text: str) -> str:
-    """A token's value: a quoted value without its quotes and with its backslash escapes
-    resolved, any other value as sent."""
+def _cql_unquote(kind: str, text: str, field: str | None = None) -> str:
+    """A token's value: a quoted value without its quotes, any other value as sent. A `\\"` reads
+    as a `"`, and where that leaves an odd number of them the last one is taken out, as
+    :func:`_cql_space_value` reads it for `space.key`; a backslash before any other character
+    stays, except in `title`, `text`, `sitesearch` and `space.title`, where it reads as that
+    character. Measured on Confluence Cloud on 2026-10-30 for `space` and `space.key` and on
+    2026-10-31 for nine more fields and for `title` and `text` under `~`: `space = "K\\"EY"` and
+    `space = "KEY\\""` found the pages of `KEY`, `space = "K\\EY"` none, and `title ~ "A\\B"` what
+    `"V"` found where `V` is the value split as `A` and `B`. `label` was not measured, since no
+    content on the measured site carried one (2026-11-04); it is read as the other structured
+    fields are, and `sitesearch` as `text` is."""
     if kind != "QUOTED":
         return text
-    return re.sub(r"\\(.)", r"\1", text[1:-1], flags=re.S)
+    value = text[1:-1].replace('\\"', '"')
+    if value.count('"') % 2:
+        value = "".join(value.rsplit('"', 1))
+    if field in ("title", "text", "sitesearch", "space.title"):
+        value = re.sub(r"\\(.)", r"\1", value, flags=re.S)
+    return value
+
+
+def _cql_function_value(name: str, args: list[tuple[str, str]], current_user: str | None) -> str:
+    """A function call's value: `currentUser()` the caller, or its name where the caller is the
+    admin token, which names no user; `currentContent()` and `recentlyViewedContent()` a value
+    naming no content, since this route has no current content and the server keeps no recently
+    viewed content; and a date function the relative date it was given, or its name with no
+    argument. On a field this route reads, `currentUser()`, `currentContent()` and
+    `recentlyViewedContent()` name no row, as real answered for `label = currentUser()`,
+    `space.key = currentUser()`, `ancestor = currentContent()` and `id in recentlyViewedContent(5)`
+    (Confluence Cloud, 2026-10-31). A date function's term names the rows holding it on a label or
+    text field: real answered `label = now("-1d")` with no rows (Confluence Cloud, 2026-10-31), and
+    `text ~ now("1d")` with none on a site where `text ~ "1d"` named none either (Confluence Cloud,
+    2026-11-04), so what real answers on a term a page holds is unmeasured. A date value never meets
+    a date field here, since `created` is among the fields this route does not read."""
+    if name == "currentUser":
+        return current_user or "currentUser"
+    if name == "currentContent":
+        return "currentContent"
+    if name == "currentSpace":
+        raise _CQLParseError()  # `_cql_cannot_run` refuses it first
+    if name == "recentlyViewedContent":
+        return "recentlyViewedContent"
+    if args:
+        kind, text = args[0]
+        return _cql_unquote(kind, text) if kind == "QUOTED" else text
+    return name
 
 
 # The fields :func:`confluence_cql_search` reads, and the operators each takes. Anything else (a
@@ -3553,16 +3810,17 @@ _CQL_READABLE = {
 }
 
 
-def _cql_parse(tokens: list[tuple[str, str]]):
+def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
     """The tokens of a CQL query as a boolean expression, over the grammar `_cql_refusal`
     walks: an `or` of `and`s of `not`s of atoms and groups, `and` binding tighter than `or`,
     a `not` only straight after `and`, stopping at `order by`.
 
     An atom is ``("atom", field, op, values, negated, readable)``: `op` is `=`, `in` or `~`,
     `negated` covers `!=`, `!~` and `not in (...)`, and `readable` says whether the field takes
-    the operator (see `_CQL_READABLE`). Raises `_CQLParseError` for anything else, including a
-    field with no operator, which real refuses with a message of its own and this server answers
-    at 200 through the clause readers."""
+    the operator (see `_CQL_READABLE`). A function value is read as :func:`_cql_function_value`
+    reads it, and `recentlyViewedContent` in place of an `in` list as its one value. Raises
+    `_CQLParseError` for anything else, including a field with no operator, which real refuses with
+    a message of its own and this server answers at 200 through the clause readers."""
     at = 0
 
     def peek(offset=0):
@@ -3578,23 +3836,16 @@ def _cql_parse(tokens: list[tuple[str, str]]):
         if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
             raise _CQLParseError()
         at += 1
-        if peek() == ("PUNCT", "("):  # a function value tail: now("..."), currentUser()
-            depth = 0
-            while True:
-                kind, _ = peek()
-                if kind is None:
-                    raise _CQLParseError()
-                if peek() == ("PUNCT", "("):
-                    depth += 1
-                elif peek() == ("PUNCT", ")"):
-                    depth -= 1
-                    if depth == 0:
-                        at += 1
-                        break
-                at += 1
+        if peek() == ("PUNCT", "("):  # a function value: now("..."), currentUser()
+            try:
+                name, args, after = _cql_function_call(tokens, at - 1)
+            except _CQLFunctionError:
+                raise _CQLParseError()
+            at = after
+            return _cql_function_value(name, args, current_user)
         if field == "space.key":  # read as real reads it, see `_cql_space_value`
             return _cql_space_value(kind, text)
-        return _cql_unquote(kind, text)
+        return _cql_unquote(kind, text, field)
 
     def atom():
         nonlocal at
@@ -3622,6 +3873,16 @@ def _cql_parse(tokens: list[tuple[str, str]]):
             return ("atom", field, op, (value(field),), negated, readable)
         else:
             raise _CQLParseError()
+        if peek()[0] == "WORD" and peek(1) == ("PUNCT", "("):
+            # a function in place of the list: `id in recentlyViewedContent(5)`
+            return (
+                "atom",
+                field,
+                "in",
+                (value(field),),
+                negated,
+                "in" in _CQL_READABLE.get(field, set()),
+            )
         if peek() != ("PUNCT", "("):
             raise _CQLParseError()
         at += 1

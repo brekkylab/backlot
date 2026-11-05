@@ -175,7 +175,9 @@ field list, so the ordering divergence below has no entry to live in and is stat
 - **The order of a Doc's named ranges.** Real serves `namedRanges` in the order a Java `HashMap`
   iterates their names, and Backlot fills one in the order the ranges were made: of 28 reads
   measured, one served two names that share a bucket the other way round, and so did both of two
-  reads of twenty names measured 2026-11-04.
+  reads of twenty names measured 2026-11-04. A name's ranges come in the order a `HashMap` of
+  every range id in the tab iterates them, and Backlot's ids are not real's: a read of eight
+  names of three ranges each, measured 2026-11-05, served one name's ranges in another order.
 - **Collaborators.** A `targetRevisionId` naming any revision of the Doc is taken. Real refuses one
   too far behind, and merges the write into what collaborators did since it, which here is nothing.
 - **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it

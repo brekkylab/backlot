@@ -43,10 +43,12 @@ import hashlib
 import json
 import re
 import uuid
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
+from starlette.routing import Match
 
 from backlot import auth, express_http, published, request_target, store, synth, utf8_escapes
 from backlot import notion_request as req
@@ -431,6 +433,13 @@ def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | N
     return None
 
 
+def _path_id(request: Request, value: str) -> str:
+    """The value of a path parameter: where ``backlot.main.route_a_notion_path_as_sent`` routed
+    the spelling as sent, the capture still carries its escapes, and it is decoded here, once,
+    the way Express decodes a parameter it captured."""
+    return unquote(value) if request.scope.get("notion_path_as_sent") else value
+
+
 def _norm(nid: str) -> str:
     """Notion accepts an id dashed or dashless, and does not fold its case: a dashed id in upper
     case was a 404 on ``pages/{id}`` (measured 2026-09-30) and on ``comments`` (2026-10-02), where
@@ -443,8 +452,8 @@ def _norm(nid: str) -> str:
 
     Malformed input (the wrong length once dashes are stripped) comes back unchanged, which
     matches no stored id. Real refuses a malformed id with a 400 before it looks anything up;
-    ``list_comments`` checks its ``block_id`` that way first, and the path routes answer it the
-    404 an unknown id gets."""
+    ``list_comments`` checks its ``block_id`` that way first and :func:`get_user` its ``user_id``,
+    and the other path routes answer it the 404 an unknown id gets."""
     h = (nid or "").replace("-", "").lower()
     if len(h) != 32:
         return h
@@ -956,6 +965,7 @@ def _block_child(conn, page_row, block: dict) -> dict:
 
 @router.get("/pages/{page_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_page(page_id: str, request: Request):
+    page_id = _path_id(request, page_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -973,6 +983,7 @@ async def get_page(page_id: str, request: Request):
 
 @router.get("/blocks/{block_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_block(block_id: str, request: Request):
+    block_id = _path_id(request, block_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -1011,6 +1022,7 @@ async def get_block(block_id: str, request: Request):
     openapi_extra=_params(*_P_PAGINATE),
 )
 async def get_block_children(block_id: str, request: Request):
+    block_id = _path_id(request, block_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -1043,6 +1055,7 @@ async def get_block_children(block_id: str, request: Request):
 
 @router.get("/databases/{database_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_database(database_id: str, request: Request):
+    database_id = _path_id(request, database_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -1059,6 +1072,7 @@ async def get_database(database_id: str, request: Request):
 
 @router.get("/data_sources/{data_source_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_data_source(data_source_id: str, request: Request):
+    data_source_id = _path_id(request, data_source_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -1214,14 +1228,14 @@ async def _query_rows(request: Request, row_id: str, *, data_sources: bool):
     openapi_extra=_B_QUERY_DATA_SOURCE,
 )
 async def query_data_source(data_source_id: str, request: Request):
-    return await _query_rows(request, data_source_id, data_sources=True)
+    return await _query_rows(request, _path_id(request, data_source_id), data_sources=True)
 
 
 @router.post(
     "/databases/{database_id}/query", response_model=NotionList, openapi_extra=_B_QUERY_DATABASE
 )
 async def query_database(database_id: str, request: Request):
-    return await _query_rows(request, database_id, data_sources=False)
+    return await _query_rows(request, _path_id(request, database_id), data_sources=False)
 
 
 # --------------------------------------------------------------------------- search
@@ -1381,11 +1395,19 @@ async def get_me(request: Request):
 
 @router.get("/users/{user_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_user(user_id: str, request: Request):
+    user_id = _path_id(request, user_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
     if (refusal := _get(request, req.NOTHING)[1]) is not None:
         return refusal
+    # Real reads the id as a uuid before it looks the user up, in the shapes `req.Uuid` reads with
+    # `dashless`: `me` spelled into the segment through an escape was the validator's 400 naming
+    # `"me"` on 2026-10-28, and on 2026-11-04 so were `nope`, a dashless id in upper case and an id
+    # in braces, where a dashed id in upper case was looked up.
+    problems = req.Uuid(dashless=True).check(user_id, ("path", "user_id"))
+    if problems:
+        return _error(request, 400, "validation_error", req.refusal_message("path", problems))
     conn = auth.conn(request)
     key = _norm(user_id)
     for u in store.list_users(conn):
@@ -1596,3 +1618,22 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
         if (refusal := _refusal(request, auth.resolve_bearer(request))) is not None:
             return refusal
     return _error(request, 400, "invalid_request_url", "Invalid request URL.")
+
+
+def reading(scope, path: str):
+    """What answers a `/notion` request whose path is read as ``path``: the route that matches
+    it, or, where the catch-all (:func:`unmatched_path`) is the one, the two readings that
+    handler takes off the spelling — a published operation it names, and one of the OAuth
+    client endpoints."""
+    probe = {**scope, "path": path}
+    for route in (*router.routes, *unmatched_router.routes):
+        if route.matches(probe)[0] is Match.FULL:
+            if route.endpoint is unmatched_path:
+                rest = path.removeprefix("/notion")
+                return (
+                    "unmatched",
+                    published.includes(_PUBLISHED_NOT_SERVED, scope["method"], rest),
+                    (scope["method"], rest) in _CLIENT_AUTH_OPERATIONS,
+                )
+            return ("route", route.path, tuple(sorted(route.methods or ())))
+    return None

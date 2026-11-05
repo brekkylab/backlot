@@ -3843,7 +3843,12 @@ def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
     the operator (see `_CQL_READABLE`). A function value is read as :func:`_cql_function_value`
     reads it, and `recentlyViewedContent` in place of an `in` list as its one value. Raises
     `_CQLParseError` for anything else, including a field with no operator, which real refuses with
-    a message of its own and this server answers at 200 through the clause readers."""
+    a message of its own and this server answers at 200 through the clause readers.
+
+    Read without recursion, with a stack of the levels the groups open, so no depth of groups
+    reaches Python's recursion limit. Real answered `type=page` in 1000 pairs of parentheses, and
+    `type=page` followed by 1000 `or id=1`, sent with `(`, `)` and `=` unescaped, with the pages
+    `type=page` alone answered (Confluence Cloud, 2026-11-05)."""
     at = 0
 
     def peek(offset=0):
@@ -3928,40 +3933,47 @@ def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
             "in" in _CQL_READABLE.get(field, set()),
         )
 
-    def primary():
+    def expression():
+        # Each level, the whole query or a group, holds the `or` read so far, the `and` read so
+        # far after its last `or`, and whether a `not` came before the operand being read; a `(`
+        # pushes the level it opens in onto `outer`, and its `)` pops it, the group read as one
+        # operand of that level.
         nonlocal at
-        if peek() == ("PUNCT", "("):
-            at += 1
-            node = parse_or()
-            if peek() != ("PUNCT", ")"):
-                raise _CQLParseError()
-            at += 1
-            return node
-        return atom()
-
-    def parse_and():
-        nonlocal at
-        node = primary()
-        while keyword("and"):
-            at += 1
-            negated = keyword("not")
-            if negated:
+        outer = []
+        either = both = None
+        negated = False
+        while True:
+            while peek() == ("PUNCT", "("):
                 at += 1
-            right = primary()
-            if negated:
-                right = ("not", right)
-            node = ("and", node, right)
-        return node
+                outer.append((either, both, negated))
+                either = both = None
+                negated = False
+            node = atom()
+            while True:
+                if negated:
+                    node = ("not", node)
+                both = node if both is None else ("and", both, node)
+                if keyword("and"):
+                    at += 1
+                    negated = keyword("not")
+                    if negated:
+                        at += 1
+                    break
+                either = both if either is None else ("or", either, both)
+                both = None
+                negated = False
+                if keyword("or"):
+                    at += 1
+                    break
+                if not outer:
+                    return either
+                if peek() != ("PUNCT", ")"):
+                    raise _CQLParseError()
+                at += 1
+                node = either
+                either, both, negated = outer.pop()
 
-    def parse_or():
-        nonlocal at
-        node = parse_and()
-        while keyword("or"):
-            at += 1
-            node = ("or", node, parse_and())
-        return node
-
-    node = parse_or()
+    node = expression()
     rest = tokens[at:]
     if rest and not (keyword("order") and keyword("by", 1)):
         raise _CQLParseError()

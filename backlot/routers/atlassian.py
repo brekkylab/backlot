@@ -3466,12 +3466,13 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A function
     call real does not have is ``cql_unknown_function`` at its place among those faults, read
     from the left, and `recentlyViewedContent`, the one function real takes in place of an `in`
-    list, is read as the list. Each one's docstring gives the queries that answered it. A query read to its end is ``cql_not_parsed``
-    when a `space.key` value holds a single quote. A field CQL does not have, a field with no
-    operator, and an operator or a value the field does not take (`foo`, `type`, `type<page`,
-    `type=PAGE`) are refused on real with messages of their own, and answered at 200 here. An
-    escaped end quote, `title ~ "a\\"`, is not refused here: its string never closes, so it is
-    read after this walk, beside a function that cannot run (``_cql_cannot_run``)."""
+    list, is read as the list. Each one's docstring gives the queries that answered it. A query read
+    to its end is ``cql_not_parsed`` when a `space.key` value holds a single quote. A field CQL does
+    not have, a field with no operator, and an operator or a value the field does not take (`foo`,
+    `type`, `type<page`, `type=PAGE`) are refused on real with messages of their own, and answered
+    at 200 here. An escaped end quote, `title ~ "a\\"`, is not refused here: its string never
+    closes, so it is read after this walk, beside a function that cannot run
+    (``_cql_cannot_run``)."""
     at = 0
 
     def peek(offset=0):
@@ -3619,8 +3620,7 @@ def _cql_cannot_run(tokens: list[tuple[str, str]]):
     2026-10-31: `space = currentSpace() or created > now("x")` was answered with the first of
     the two, and either beside `title ~ "a\\"` with the first of the two in the CQL, and the
     cursor's 400 came after each function 400. An escaped end quote is the expecting-value
-    refusal of the operator and field before it, as this server already answered `title ~ "a\\"`
-    alone."""
+    refusal of the operator and field before it, which `title ~ "a\\"` alone answers too."""
     faults = []
     for at, (kind, text) in enumerate(tokens):
         if (
@@ -3672,25 +3672,24 @@ def _cql_unquote(kind: str, text: str) -> str:
 
 
 def _cql_function_value(name: str, args: list[tuple[str, str]], current_user: str | None) -> str:
-    """A function call's value where :func:`_cql_parse` reads it: `currentUser()` the caller,
-    or its name where the caller is the admin token, which names no user; `currentContent()`
-    and `recentlyViewedContent()` a value naming no content, since this route has no current
-    content and the server keeps no recently viewed content; and a date function the relative
-    date it was given, or its name with no argument. On a field this route reads,
-    `currentUser()`, `currentContent()` and `recentlyViewedContent()` name no row, as real
-    answered for `label = currentUser()`, `space.key = currentUser()`,
-    `ancestor = currentContent()` and `id in recentlyViewedContent(5)` (Confluence Cloud,
-    2026-10-31), and a date function reads as the relative date it was given, so on a label or
-    text field it names the rows holding that term: real answered `label = now("-1d")` with no
-    rows (Confluence Cloud, 2026-10-31) and `text ~ now("1d")` the same (Confluence Cloud,
-    2026-11-04), and a term a page actually holds is unmeasured. A date value never meets a
-    date field here, since `created` is among the fields this route does not read."""
+    """A function call's value: `currentUser()` the caller, or its name where the caller is the
+    admin token, which names no user; `currentContent()` and `recentlyViewedContent()` a value
+    naming no content, since this route has no current content and the server keeps no recently
+    viewed content; and a date function the relative date it was given, or its name with no
+    argument. On a field this route reads, `currentUser()`, `currentContent()` and
+    `recentlyViewedContent()` name no row, as real answered for `label = currentUser()`,
+    `space.key = currentUser()`, `ancestor = currentContent()` and `id in recentlyViewedContent(5)`
+    (Confluence Cloud, 2026-10-31). A date function's term names the rows holding it on a label or
+    text field: real answered `label = now("-1d")` with no rows (Confluence Cloud, 2026-10-31), and
+    `text ~ now("1d")` with none on a site where `text ~ "1d"` named none either (Confluence Cloud,
+    2026-11-04), so what real answers on a term a page holds is unmeasured. A date value never meets
+    a date field here, since `created` is among the fields this route does not read."""
     if name == "currentUser":
         return current_user or "currentUser"
     if name == "currentContent":
         return "currentContent"
     if name == "currentSpace":
-        raise _CQLParseError()  # refused before `_cql_parse` runs; see `_cql_cannot_run`
+        raise _CQLParseError()  # `_cql_cannot_run` refuses it first
     if name == "recentlyViewedContent":
         return "recentlyViewedContent"
     if args:
@@ -3726,8 +3725,8 @@ def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None = None):
 
     An atom is ``("atom", field, op, values, negated, readable)``: `op` is `=`, `in` or `~`,
     `negated` covers `!=`, `!~` and `not in (...)`, and `readable` says whether the field takes
-    the operator (see `_CQL_READABLE`). A function value is read as :func:`_cql_function_value` reads
-    it, and `recentlyViewedContent` in place of an `in` list as its one value. Raises
+    the operator (see `_CQL_READABLE`). A function value is read as :func:`_cql_function_value`
+    reads it, and `recentlyViewedContent` in place of an `in` list as its one value. Raises
     `_CQLParseError` for anything else, including a field with no operator, which real refuses with
     a message of its own and this server answers at 200 through the clause readers."""
     at = 0

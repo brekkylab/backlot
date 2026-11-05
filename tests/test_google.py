@@ -1978,6 +1978,42 @@ _DOCS_EXPORTS = {
         "\ufeff* one\r\n* two\r\n   * nested a\r\n   * nested b\r\n      * deep\r\n* three\r\nafter\r\n1. n1\r\n2. n2\r\n   1. na\r\n   2. nb\r\n      1. ni\r\n      2. nii\r\n3. n3\r\ngap\r\n1. r1\r\n2. r2\r\n* c1\r\n   * c2\r\n* * bold item\r\n1. x\r\n2. h\r\n3. y",
         "* one  \n* two  \n  * nested a  \n  * nested b  \n    * deep  \n* three\n\nafter\n\n1. n1  \n2. n2  \n   1. na  \n   2. nb  \n      1. ni  \n      2. nii  \n3. n3\n\ngap\n\n1. r1  \n2. r2  \n- [ ] c1  \n  - [ ] c2  \n- [ ]   \n- [ ] **bold** item  \n1. x\n\n2. ## h\n\n3. y",
     ),
+    # an item under a level no item above it holds (`gdocs._list_marker`)
+    "skipped_a": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 0), ("b", 0), ("c", 1), ("d", 1), ("e", 0), ("f", 2), ("g", 0), ("", 0), ("h", 0)]]},
+        "\ufeff1. a\r\n2. b\r\n   1. c\r\n   2. d\r\n3. e\r\n      1. f\r\n4. g\r\n5. 6. h",
+        "1. a  \n2. b  \n   1. c  \n   2. d  \n3. e  \n   1. f  \n4. g  \n5.   \n6. h",
+    ),
+    "skipped_c": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 0), ("b", 3), ("c", 1), ("d", 2), ("e", 3)]]},
+        "\ufeff1. a\r\n         1. b\r\n   1. c\r\n      1. d\r\n         1. e",
+        "1. a  \n   1. b  \n   2. c  \n      1. d  \n         1. e",
+    ),
+    "skipped_d": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 2), ("b", 0), ("c", 1)]]},
+        "\ufeff1. a\r\n1. b\r\n   1. c",
+        "1. a  \n2. b  \n   1. c",
+    ),
+    "skipped_e": (
+        {"paragraphs": [_listed(t, "BULLET_CHECKBOX", n) for t, n in [("a", 0), ("b", 2), ("c", 1), ("d", 2)]]},
+        "\ufeff* a\r\n      * b\r\n   * c\r\n      * d",
+        "- [ ] a  \n  - [ ] b  \n  - [ ] c  \n    - [ ] d",
+    ),
+    "skipped_f": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 0), ("b", 1), ("c", 2), ("d", 3), ("e", 1), ("f", 3)]]},
+        "\ufeff1. a\r\n   1. b\r\n      1. c\r\n         1. d\r\n   2. e\r\n         1. f",
+        "1. a  \n   1. b  \n      1. c  \n         1. d  \n   2. e  \n      1. f",
+    ),
+    "skipped_g": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("n1", 0), ("n2", 0), ("n3", 0), ("n4", 0), ("n5", 0), ("n6", 0), ("n7", 0), ("n8", 0), ("n9", 0), ("n10", 0), ("x", 2), ("y", 1)]]},
+        "\ufeff1. n1\r\n2. n2\r\n3. n3\r\n4. n4\r\n5. n5\r\n6. n6\r\n7. n7\r\n8. n8\r\n9. n9\r\n10. n10\r\n      1. x\r\n   1. y",
+        "1. n1  \n2. n2  \n3. n3  \n4. n4  \n5. n5  \n6. n6  \n7. n7  \n8. n8  \n9. n9  \n10. n10  \n    1. x  \n    2. y",
+    ),
+    "skipped_i": (
+        {"paragraphs": [_listed(t, "BULLET_ARROW_DIAMOND_DISC", n) for t, n in [("a", 0), ("b", 2), ("c", 1), ("d", 3)]]},
+        "\ufeff* a\r\n      * b\r\n   * c\r\n         * d",
+        "- a  \n  * b  \n  * c  \n    * d",
+    ),
     "presets": (
         {"paragraphs": [*(p for preset in gdocs.PRESETS for p in (_listed(preset, preset, 0), {"text": "sep"})), {"text": "end"}]},
         "\ufeff* BULLET_DISC_CIRCLE_SQUARE\r\nsep\r\n* BULLET_DIAMONDX_ARROW3D_SQUARE\r\nsep\r\n* BULLET_CHECKBOX\r\nsep\r\n* BULLET_ARROW_DIAMOND_DISC\r\nsep\r\n* BULLET_STAR_CIRCLE_SQUARE\r\nsep\r\n* BULLET_ARROW3D_CIRCLE_SQUARE\r\nsep\r\n* BULLET_LEFTTRIANGLE_DIAMOND_DISC\r\nsep\r\n* BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE\r\nsep\r\n* BULLET_DIAMOND_CIRCLE_SQUARE\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS\r\nsep\r\n1. NUMBERED_DECIMAL_NESTED\r\nsep\r\n1. NUMBERED_UPPERALPHA_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL\r\nsep\r\n1. NUMBERED_ZERODECIMAL_ALPHA_ROMAN\r\nsep\r\nend",
@@ -18716,6 +18752,21 @@ def _ts(start, end, fields="bold", **style):
     }
 
 
+def _wf(start, end, weight, **bold):
+    """A Lato weight set over [start, end), with bold in the same request when ``bold`` holds it."""
+    fields = "weightedFontFamily" + (",bold" if bold else "")
+    return _ts(
+        start, end, fields, weightedFontFamily={"fontFamily": "Lato", "weight": weight}, **bold
+    )
+
+
+def _lato(weight, bold=False):
+    return {
+        **({"bold": True} if bold else {}),
+        "weightedFontFamily": {"fontFamily": "Lato", "weight": weight},
+    }
+
+
 def _ps(start, end, fields, **style):
     return {
         "updateParagraphStyle": {
@@ -18975,50 +19026,53 @@ _STYLE_RUN_ROWS = [
         [("Hel", {}), ("lo ", {"fontSize": {"magnitude": 30, "unit": "PT"}}), ("world\n", {})],
     ),
     ([_ts(4, 7, "BOLD", bold=True)], [("Hel", {}), ("lo ", {"bold": True}), ("world\n", {})]),
-    # a weight of 700 is bold, any other takes the bold off, and bold over 800 is taken off
+    # bold and a weight together, as `gdocs._weighed` serves them
     *(
-        (
-            [
-                _ts(4, 7, bold=True),
-                _ts(
-                    4,
-                    7,
-                    "weightedFontFamily",
-                    weightedFontFamily={"fontFamily": "Lato", "weight": w},
-                ),
-            ],
-            [
-                ("Hel", {}),
-                (
-                    "lo ",
-                    {
-                        **({"bold": True} if w == 700 else {}),
-                        "weightedFontFamily": {
-                            "fontFamily": "Lato",
-                            "weight": 400 if w == 700 else w,
-                        },
-                    },
-                ),
-                ("world\n", {}),
-            ],
-        )
-        for w in (100, 600, 700, 900)
+        (requests, [("Hel", {}), ("lo ", served), ("world\n", {})])
+        for requests, served in [
+            *(([_ts(4, 7, bold=True), _wf(4, 7, w)], _lato(w)) for w in (100, 600, 900)),
+            ([_ts(4, 7, bold=True), _wf(4, 7, 700)], _lato(400, bold=True)),
+            *(([_wf(4, 7, w, bold=True)], _lato(400, bold=True)) for w in (100, 600, 700)),
+            *(([_wf(4, 7, w, bold=True)], _lato(w)) for w in (800, 900)),
+            ([_wf(4, 7, 600, bold=False)], _lato(600)),
+            *(([_wf(4, 7, w, bold=False)], _lato(400)) for w in (700, 900)),
+            ([_wf(4, 7, 100, bold=True), _ts(4, 7, bold=False)], _lato(100)),
+            ([_wf(4, 7, 800, bold=False), _ts(4, 7, bold=True)], _lato(800)),
+            ([_wf(4, 7, 100, bold=True), _ts(4, 7)], _lato(400)),
+            ([_wf(4, 7, 800, bold=False), _ts(4, 7)], _lato(400)),
+            ([_wf(4, 7, 800), _ts(4, 7)], _lato(800)),
+        ]
+    ),
+    # runs of one served style stay apart where the weights they keep differ or a bold was taken
+    # off, and join where neither is so
+    (
+        [_wf(4, 7, 100, bold=True), _wf(7, 10, 600, bold=True)],
+        [("Hel", {}), ("lo ", _lato(400, True)), ("wor", _lato(400, True)), ("ld\n", {})],
+    ),
+    (
+        [_wf(4, 7, 700, bold=False), _wf(7, 10, 400, bold=False)],
+        [("Hel", {}), ("lo ", _lato(400)), ("wor", _lato(400)), ("ld\n", {})],
+    ),
+    (
+        [_ts(4, 7, bold=True), _wf(4, 7, 300), _wf(7, 10, 300)],
+        [("Hel", {}), ("lo ", _lato(300)), ("wor", _lato(300)), ("ld\n", {})],
+    ),
+    (
+        [_wf(4, 7, 800, bold=False), _ts(4, 7), _wf(7, 10, 400)],
+        [("Hel", {}), ("lo ", _lato(400)), ("wor", _lato(400)), ("ld\n", {})],
+    ),
+    (
+        [_wf(4, 7, 700), _wf(7, 10, 400, bold=True)],
+        [("Hel", {}), ("lo wor", _lato(400, True)), ("ld\n", {})],
     ),
     (
         [
-            _ts(
-                4,
-                7,
-                "weightedFontFamily,bold",
-                weightedFontFamily={"fontFamily": "Lato", "weight": 900},
-                bold=True,
-            )
+            _wf(4, 10, 800),
+            _ts(4, 7, bold=True),
+            _wf(10, 12, 800, bold=False),
+            _ts(10, 12, bold=True),
         ],
-        [
-            ("Hel", {}),
-            ("lo ", {"weightedFontFamily": {"fontFamily": "Lato", "weight": 900}}),
-            ("world\n", {}),
-        ],
+        [("Hel", {}), ("lo world\n", _lato(800))],
     ),
     # a range may split a character outside the BMP, each half served as `?`
     (

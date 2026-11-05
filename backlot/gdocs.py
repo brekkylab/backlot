@@ -146,10 +146,15 @@ def _served_text(text: str) -> str:
 # through a later style; an insert after it joined it and a delete beside it did not join across
 # it; and `bold: false` set on text that was never bold changed nothing.
 CLEARED = "cleared"
+# The weight a run was given where bold serves it as another (`_weighed`), kept and left out of
+# what is served as `CLEARED` is.
+STATED_WEIGHT = "statedWeight"
 
 
 def shown(style: dict) -> dict:
-    return {k: v for k, v in style.items() if k != CLEARED} if CLEARED in style else style
+    if CLEARED in style or STATED_WEIGHT in style:
+        return {k: v for k, v in style.items() if k not in (CLEARED, STATED_WEIGHT)}
+    return style
 
 
 def text_style(marks: dict) -> dict:
@@ -1094,18 +1099,20 @@ def _restyled(style: dict, stated: dict, named: dict, newline: bool) -> dict:
     * setting a link underlines the text and gives it `_LINK_COLOR`, but where the request
       states those members itself, and taking one off takes off the underline and the colour,
       whatever they were; neither reaches a newline;
-    * a weight of 700 is bold at 400, any other takes the bold off, and bold over a weight past
-      700 is taken off: on plain text and on bold text alike, Lato at 700 was served bold at 400
-      and at every other weight from 100 to 900 not bold, and 900 set with bold in one request was
-      900 alone."""
-    family = stated.get("weightedFontFamily")
-    if family is not None and family["weight"] == 700:
-        stated = stated | {"weightedFontFamily": family | {"weight": 400}}
-        stated = stated | {"bold": stated.get("bold", True)}
-    elif family is not None and "bold" not in stated:
-        stated = stated | {"bold": None}
+    * bold and a weight together are `_weighed`'s."""
     out = dict(shown(style))
     cleared = set(style.get(CLEARED, ()))
+    weighed = _weighed(style, stated)
+    if weighed is not None:
+        family, bold, _, mark = weighed
+        stated = {k: v for k, v in stated.items() if k != "bold"} | {"weightedFontFamily": family}
+        if bold:
+            out["bold"] = True
+            cleared.discard("bold")
+        else:
+            out.pop("bold", None)
+            if mark:
+                cleared.add("bold")
     linked = "link" in out
 
     def put(key: str, value) -> None:
@@ -1133,9 +1140,59 @@ def _restyled(style: dict, stated: dict, named: dict, newline: bool) -> dict:
                 put("underline", True)
             if "foregroundColor" not in stated:
                 put("foregroundColor", copy.deepcopy(_LINK_COLOR))
-    if out.get("bold") and out.get("weightedFontFamily", {}).get("weight", 400) > 700:
-        put("bold", None)
-    return _ordered(out, cleared)
+    out = _ordered(out, cleared)
+    if weighed is not None and weighed[2] is not None:
+        out[STATED_WEIGHT] = weighed[2]
+    elif weighed is None and STATED_WEIGHT in style and "weightedFontFamily" in out:
+        out[STATED_WEIGHT] = style[STATED_WEIGHT]
+    return out
+
+
+def _weighed(style: dict, stated: dict) -> tuple[dict, bool, int | None, bool] | None:
+    """A run's family, bold, the weight it holds unserved (`STATED_WEIGHT`) and whether the bold
+    is marked taken off (`CLEARED`) once ``stated`` sets a weight or sets bold over one, or None
+    where neither is so. Measured 2026-11-05 on Lato at each weight from 100 to 900, the weight
+    set alone, with `bold: true` or `false` in one request or the next, and bold named with none
+    after:
+
+    * bold is served at 400 over a weight up to 700 and not at all over one past it, and a weight
+      of 700 set alone is bold at 400; `bold: false` serves a weight of 700 or more as 400;
+    * the weight stated is kept under both: `bold: false` after bold at 100 served 100, and bold
+      after `bold: false` at 800 served 800; runs of one served style and two kept weights (100
+      and 600 bold, 400 and 700 at `false`) stayed apart, and 700 alone and 400 bold were one run;
+    * bold named with none serves the weight served, 400 over bold or `false` at 800;
+    * a weight set alone takes the bold off; bold taken off so, by `false`, by bold named with none
+      (over `false` at 800 too) or by bold over a weight past 700 on bold text stayed apart from
+      the text either side, as any member taken off does, and bold over a weight past 700 on text
+      that was not bold joined its neighbours of that weight."""
+    if "weightedFontFamily" in stated:
+        family = stated["weightedFontFamily"]
+        if family is None:
+            return None
+        weight, bold, lowered = family["weight"], family["weight"] == 700, False
+    else:
+        family = shown(style).get("weightedFontFamily")
+        if family is None or "bold" not in stated:
+            return None
+        bold = bool(style.get("bold"))
+        weight = style.get(STATED_WEIGHT, family["weight"])
+        lowered = STATED_WEIGHT in style and not bold
+    was_bold, mark = bool(style.get("bold")), False
+    if "bold" in stated:
+        value = stated["bold"]
+        if value is None:
+            mark = was_bold or lowered
+            weight = 400 if bold or lowered else weight
+            bold = lowered = False
+        elif value:
+            bold, lowered = weight <= 700, False
+        else:
+            bold, lowered = False, weight >= 700
+    mark = mark or was_bold and not bold
+    if bold and weight == 700:
+        weight = 400
+    served = 400 if bold or lowered else weight
+    return family | {"weight": served}, bold, None if served == weight else weight, mark
 
 
 def _heading(style: dict) -> bool:
@@ -1628,7 +1685,7 @@ class Body:
         text = range(span.start, span.stop - 1)
         given = _resolved(self._named(p))
         styles = [shown(self.chars[pos][1]) for pos in text]
-        keys = {k for pos in text for k in self.chars[pos][1] if k != CLEARED}
+        keys = {k for pos in text for k in shown(self.chars[pos][1])}
         keys |= {k for pos in text for k in self.chars[pos][1].get(CLEARED, ())}
         alike = {
             k
@@ -2286,7 +2343,8 @@ class _Items:
     def __init__(self, lists: dict):
         self.lists = lists
         self.counts: dict[str, list[int]] = {}
-        self.markers: dict[str, dict[int, str]] = {}
+        # per list, the Markdown items a later one may nest under: level, marker, children so far
+        self.markers: dict[str, list[tuple[int, str, list[int]]]] = {}
 
     def item(self, bullet: dict) -> tuple[int, int, dict]:
         list_id = bullet["listId"]
@@ -2783,17 +2841,25 @@ def _list_marker(items: _Items, bullet: dict) -> str:
     first word of each level's marker above it, and a space. Measured 2026-11-03 on every preset: a
     numbered level is its number and `.`, or `)` where its glyph format ends with one, an arrow or a
     left triangle `-`, a checkbox `- [ ]` and any other glyph `*`; a level under `*` or `- [ ]` was
-    indented two spaces, and under `1.` three."""
-    level, number, glyphs = items.item(bullet)
+    indented two spaces, and under `1.` three. Measured 2026-11-05 on items under a level no item
+    above them holds: an item nests under the last item above it of a lower level, numbered among
+    that item's children and indented by its markers alone (levels 0, 3, 1, 2, 3 as `1.`, `   1.`,
+    `   2.`, `      1.`, `         1.`), and an item of no lower level above it is counted among
+    the list's first items."""
+    level, _, glyphs = items.item(bullet)
+    above = items.markers.setdefault(bullet["listId"], [(-1, "", [0])])
+    while above[-1][0] >= level:
+        above.pop()
+    counted = above[-1][2]
+    counted[0] += 1
     if _numbered(glyphs):
-        marker = f"{number}{')' if glyphs['glyphFormat'].endswith(')') else '.'}"
+        marker = f"{counted[0]}{')' if glyphs['glyphFormat'].endswith(')') else '.'}"
     elif "glyphSymbol" not in glyphs:
         marker = "- [ ]"
     else:
         marker = "-" if glyphs["glyphSymbol"] in _DASHED else "*"
-    above = items.markers.setdefault(bullet["listId"], {})
-    above[level] = marker
-    indent = sum(len(above.get(n, "*").split(" ")[0]) + 1 for n in range(level))
+    indent = sum(len(m.split(" ")[0]) + 1 for _, m, _ in above[1:])
+    above.append((level, marker, [0]))
     return " " * indent + marker + " "
 
 

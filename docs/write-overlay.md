@@ -88,7 +88,8 @@ the new text, `modifiedTime` moves to the write's time, and `version` moves by o
 stays what it was, a blank Doc's first write taking it from 1 to 1024 as real's does.
 
 A style is kept as real keeps it: a colour to the nearest 255th, a font size from 1 to 512 points, a
-weight of 700 as bold, a member its paragraph's named style already gives taken off, and a link
+weight of 700 as bold, bold at 400 over a weight up to 700 and not over a heavier one, the weight
+stated kept under it, a member its paragraph's named style already gives taken off, and a link
 underlined in the link colour. The runs a style change leaves are real's, a run whose style was set
 and taken off again staying apart from the text beside it, and a named style set takes off the text
 style a whole paragraph holds alike but for its links, keeping what part of it holds. A list is one

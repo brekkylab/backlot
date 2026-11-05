@@ -619,13 +619,16 @@ def document_tab(tab: dict, lone: bool = False) -> dict:
 
 
 def named_ranges(made: list[dict]) -> dict:
-    """A tab's named ranges as real serves them: one entry per name, holding each range of that
-    name in the order they were made, the names in the order a Java `HashMap` filled in that
-    order iterates them (measured 2026-11-02 and 2026-11-03; the one read that differed is listed in
-    docs/write-overlay.md)."""
-    by_name: dict[str, list[dict]] = {}
-    for named in made:
-        by_name.setdefault(named["name"], []).append(named)
+    """A tab's named ranges as real serves them: one entry per name, holding the ranges of that
+    name in the order a Java `HashMap` keyed by the ids of every range of the tab iterates them
+    (measured 2026-11-05 on eight names of three ranges each, all eight in that order and five
+    in the order of a map of the name's own ids), and the names in the order a Java `HashMap`
+    filled in the order the ranges were made iterates them (measured 2026-11-02 and 2026-11-03;
+    the reads that differed are counted in docs/write-overlay.md)."""
+    by_id = {named["namedRangeId"]: named for named in made}
+    by_name: dict[str, list[dict]] = {named["name"]: [] for named in made}
+    for i in _java_hash_order(by_id):
+        by_name[by_id[i]["name"]].append(by_id[i])
     return {
         name: {"name": name, "namedRanges": by_name[name]} for name in _java_hash_order(by_name)
     }
@@ -1253,7 +1256,9 @@ class Body:
 
     def splits_cluster(self, pos: int) -> bool:
         """Whether an insert before the character at ``pos`` would land inside a grapheme cluster
-        (`_CLUSTER`). Inserting U+0301 after a letter composes a cluster and was taken."""
+        (`_CLUSTER`). Inserting U+0301 after a letter composes a cluster and was taken, and a
+        character a style split in two (`cut`) is still one: measured 2026-11-05, an insert inside
+        a flag or a ZWJ sequence whose first character was made bold was refused."""
         if pos == 0 or pos >= len(self.chars):
             return False
         start = pos
@@ -1262,12 +1267,14 @@ class Body:
         end = pos
         while self.chars[end][0] != "\n":
             end += 1
-        at = start
-        for cluster in _CLUSTER.finditer("".join(c for c, *_ in self.chars[start : end + 1])):
-            if at >= pos:
+        at = utf16_len("".join(c for c, *_ in self.chars[start:pos]))
+        edge = 0
+        text = _paired("".join(c for c, *_ in self.chars[start : end + 1]))
+        for cluster in _CLUSTER.finditer(text):
+            if edge >= at:
                 break
-            at += len(cluster[0])
-        return at != pos
+            edge += utf16_len(cluster[0])
+        return edge != at
 
     def _named(self, p: int) -> str:
         return self.paragraphs[p]["paragraphStyle"].get("namedStyleType", "NORMAL_TEXT")
@@ -1448,7 +1455,8 @@ class Body:
           its named style already gives it (an italic list paragraph's bullet became `italic`
           alone, losing the `underline: false` it was made with).
 
-        The runs the change leaves are `_settle`'s."""
+        The runs the change leaves are `_settle`'s, once text whose link it takes off takes the
+        style of the text after it where `_join_unlinked` says."""
         if end < len(self.chars) and self.chars[end][0] == "\n":
             end += 1
         link = stated.get("link")
@@ -1461,6 +1469,7 @@ class Body:
                 last += 1
         p = self._paragraph_of(first)
         changed = [False] * len(self.chars)
+        lost = []
         for pos in range(first, last):
             c, style, run = self.chars[pos]
             if start <= pos < end:
@@ -1470,9 +1479,34 @@ class Body:
             else:
                 new = style | {"link": link}
             changed[pos] = new != style
+            if "link" in style and "link" not in new:
+                lost.append(pos)
             self.chars[pos] = (c, new, run)
             p += c == "\n"
+        self._join_unlinked(lost)
         self._settle(first, last, changed)
+
+    def _join_unlinked(self, lost: list[int]) -> None:
+        """Each stretch of one style among ``lost``, the characters whose link the change takes off,
+        given the style of the character after it where that one has it but for `link` in its
+        `CLEARED`, when the stretch opens the body or follows linked text. Measured 2026-11-04 on
+        links in `Hello world`, real joined the text to the text after it when its link was taken
+        off from a point inside it, after another link or at the body's start, and kept it a run
+        apart from both sides when the link was taken off after unlinked text or a paragraph's
+        newline, whether the range ended with the link or went past it."""
+        a = 0
+        while a < len(lost):
+            style = self.chars[lost[a]][1]
+            z = a + 1
+            while z < len(lost) and lost[z] == lost[z - 1] + 1 and self.chars[lost[z]][1] == style:
+                z += 1
+            lo, hi = lost[a], lost[z - 1] + 1
+            plain = _ordered(shown(style), set(style.get(CLEARED, ())) - {"link"})
+            opens = not lo or "link" in self.chars[lo - 1][1] or a > 0 and lost[a - 1] == lo - 1
+            if opens and hi < len(self.chars) and self.chars[hi][1] == plain:
+                for i in range(lo, hi):
+                    self.chars[i] = (self.chars[i][0], plain, self.chars[i][2])
+            a = z
 
     def _starts_paragraph_at(self, newline: int, start: int) -> bool:
         """Whether the paragraph that ``newline`` ends starts at or after ``start``."""
@@ -1494,9 +1528,9 @@ class Body:
         """The runs a style change leaves in ``[first, last)``. Measured 2026-11-03: a run the
         change splits stays apart from the text either side once the change is undone (`CLEARED`),
         while text the change gave a member joins a neighbour of its new style, and the pieces of
-        one run the change left alike join again. So the characters that changed take a run of their own, one
-        per run they came from and style they took, and each meets a neighbour of the same style
-        (`CLEARED` included) as one run."""
+        one run the change left alike join again. So the characters that changed take a run of their
+        own, one per run they came from and style they took, and each meets a neighbour of the same
+        style (`CLEARED` included) as one run."""
         made: dict[tuple[int, str], int] = {}
         for pos in range(first, last):
             if not changed[pos]:
@@ -2746,10 +2780,10 @@ _DASHED = frozenset("\u2794\u27a2\u25c4")
 
 def _list_marker(items: _Items, bullet: dict) -> str:
     """A list paragraph's marker in Markdown and the space after it, indented by the width of the
-    first word of each level's marker above it, and a space. Measured 2026-11-03 on every preset: a numbered level is its
-    number and `.`, or `)` where its glyph format ends with one, an arrow or a left triangle `-`,
-    a checkbox `- [ ]` and any other glyph `*`; a level under `*` or `- [ ]` was indented two
-    spaces, and under `1.` three."""
+    first word of each level's marker above it, and a space. Measured 2026-11-03 on every preset: a
+    numbered level is its number and `.`, or `)` where its glyph format ends with one, an arrow or a
+    left triangle `-`, a checkbox `- [ ]` and any other glyph `*`; a level under `*` or `- [ ]` was
+    indented two spaces, and under `1.` three."""
     level, number, glyphs = items.item(bullet)
     if _numbered(glyphs):
         marker = f"{number}{')' if glyphs['glyphFormat'].endswith(')') else '.'}"

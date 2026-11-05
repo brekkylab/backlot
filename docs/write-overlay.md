@@ -72,21 +72,20 @@ message and every message it holds, a map's entries included, and dropped.
 `documents.batchUpdate` applies the requests [the endpoint table](supported-sources.md) lists, to a
 Doc's text and its text and paragraph styles, its lists, its named ranges, its headers, footers,
 footnotes and page breaks, and its tabs, each request applied to the Doc the ones before it left,
-and all of them or none kept. A location or range names its tab and
-its header, footer or footnote as real's do, the first tab when it names none, and `replaceAllText`
-replaces in every tab and every segment of each unless `tabsCriteria` lists the tabs. Inserted text
-takes the style of the text beside it as real gives it, a heading a newline splits gives the new
-part a `headingId` of its own, and every write moves the Doc's `revisionId`, which
-`requiredRevisionId` is checked against, but for a batch holding only tab updates that each leave a
-tab's title, index and parent as they were and name no `iconEmoji`, and `replaceAllText` requests
-whose `tabsCriteria` lists no tab. A Doc whose corpus record states only `content` reads as one
-paragraph per line, and its first write stores that reading. `replaceAllText` compares text as real
-folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as `ss`), and reads a regular
-expression with `java.util.regex`'s syntax, classes and properties, refusing what Java refuses; an
-insert inside a grapheme cluster, by Unicode's text segmentation, is refused. Drive reads what the
-write left: `files.export` and fullText search see the new text, `modifiedTime` moves to the write's
-time, and `version` moves by one while `size` stays what it was, a blank Doc's first write taking it
-from 1 to 1024 as real's does.
+and all of them or none kept. A location or range names its tab and its header, footer or footnote
+as real's do, the first tab when it names none, and `replaceAllText` replaces in every tab and every
+segment of each unless `tabsCriteria` lists the tabs. Inserted text takes the style of the text
+beside it as real gives it, a heading a newline splits gives the new part a `headingId` of its own,
+and every write moves the Doc's `revisionId`, which `requiredRevisionId` is checked against, but for
+a batch holding only tab updates that each leave a tab's title, index and parent as they were and
+name no `iconEmoji`, and `replaceAllText` requests whose `tabsCriteria` lists no tab. A Doc whose
+corpus record states only `content` reads as one paragraph per line, and its first write stores that
+reading. `replaceAllText` compares text as real folds it (a letter with a mark as its base letter,
+`æ` as `ae`, `ß` as `ss`), and reads a regular expression with `java.util.regex`'s syntax, classes
+and properties, refusing what Java refuses; an insert inside a grapheme cluster, by Unicode's text
+segmentation, is refused. Drive reads what the write left: `files.export` and fullText search see
+the new text, `modifiedTime` moves to the write's time, and `version` moves by one while `size`
+stays what it was, a blank Doc's first write taking it from 1 to 1024 as real's does.
 
 A style is kept as real keeps it: a colour to the nearest 255th, a font size from 1 to 512 points, a
 weight of 700 as bold, a member its paragraph's named style already gives taken off, and a link
@@ -175,7 +174,8 @@ field list, so the ordering divergence below has no entry to live in and is stat
   refused naming itself, where real applies it.
 - **The order of a Doc's named ranges.** Real serves `namedRanges` in the order a Java `HashMap`
   iterates their names, and Backlot fills one in the order the ranges were made: of 28 reads
-  measured, one served two names that share a bucket the other way round.
+  measured, one served two names that share a bucket the other way round, and so did both of two
+  reads of twenty names measured 2026-11-04.
 - **Collaborators.** A `targetRevisionId` naming any revision of the Doc is taken. Real refuses one
   too far behind, and merges the write into what collaborators did since it, which here is nothing.
 - **A replacement's newline.** When `replaceText` holds a newline, real ends the paragraph it

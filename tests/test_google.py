@@ -19084,7 +19084,14 @@ _STYLE_RUN_ROWS = [
             ("world\n", {}),
         ],
     ),
-    # `*` takes a link off only when the range starts on it
+    (
+        [_ts(1, 3, "link", link={"tabId": ""})],
+        [
+            ("He", {"underline": True, "foregroundColor": _LINK, "link": {"tabId": "t.0"}}),
+            ("llo world\n", {}),
+        ],
+    ),
+    # links taken off where `_docs_update_text_style` says
     (
         [_ts(3, 7, "link", **_url("z")), _ts(2, 7, "*")],
         [("He", {}), ("llo ", _url("z")), ("world\n", {})],
@@ -19096,6 +19103,20 @@ _STYLE_RUN_ROWS = [
     (
         [_ts(3, 7, "link", **_url("s")), _ts(1, 12, "*", bold=True, **_url("t"))],
         [("Hello world", {"bold": True, **_url("t")}), ("\n", {"bold": True})],
+    ),
+    (
+        [_ts(4, 9, "link", **_url("q")), _ts(1, 7, "link")],
+        [("Hel", {}), ("lo wo", _linked("q")), ("rld\n", {})],
+    ),
+    # text whose link is taken off, joined to the text after it where `Body._join_unlinked` says
+    (
+        [_ts(4, 9, "link", **_url("q")), _ts(5, 9, "link")],
+        [("Hel", {}), ("l", _linked("q")), ("o world\n", {})],
+    ),
+    ([_ts(1, 6, "link", **_url("q")), _ts(1, 6, "link")], _HELLO),
+    (
+        [_ts(1, 4, "link", **_url("p")), _ts(4, 9, "link", **_url("q")), _ts(4, 11, "link")],
+        [("Hel", _linked("p")), ("lo world\n", {})],
     ),
 ]
 
@@ -19426,6 +19447,38 @@ _STYLE_DOC_ROWS = [
         "lists",
         {"$1.0": {"listProperties": {"nestingLevels": gdocs.PRESETS["BULLET_STAR_CIRCLE_SQUARE"]}}},
     ),
+    # a paragraph of another list joins the first one's list, and the other list keeps its glyphs
+    (
+        "wr-text",
+        [
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_bullets(13, 14)],
+            [_bullets(1, 14, "BULLET_CHECKBOX")],
+        ],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            )
+        ]
+        * 2,
+    ),
+    (
+        "wr-text",
+        [
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_bullets(13, 14)],
+            [_bullets(1, 14, "BULLET_CHECKBOX")],
+        ],
+        "lists",
+        {
+            "$1.0": {"listProperties": {"nestingLevels": gdocs.PRESETS["BULLET_CHECKBOX"]}},
+            "$2.0": {
+                "listProperties": {"nestingLevels": gdocs.PRESETS["BULLET_DISC_CIRCLE_SQUARE"]}
+            },
+        },
+    ),
     # a bullet styled as its newline, then as a style over its whole paragraph, and its named
     # style's members taken off with it
     (
@@ -19502,7 +19555,32 @@ _STYLE_DOC_ROWS = [
             ),
         ],
     ),
-    # named ranges: by name, each range of a name in the order made, its start and end as indices
+    # text whose link is taken off after a paragraph's newline stays a run apart, as
+    # `Body._join_unlinked` says
+    (
+        "wr-text",
+        [_ts(13, 18, "link", **_url("q")), _ts(13, 18, "link")],
+        "runs",
+        [[["Hello world\n", {}]], [["Secon", {}], ["d para\n", {}]]],
+    ),
+    (
+        "wr-text",
+        [_ts(13, 24, "link", **_url("q")), _ts(13, 25, "*", bold=True)],
+        "runs",
+        [[["Hello world\n", {}]], [["Second para", {"bold": True}], ["\n", {"bold": True}]]],
+    ),
+    # thirteen ranges: each name's ranges in the order of the doubled map of every id
+    (
+        "wr-text",
+        [_named("nr" if n < 2 else "pad", n + 1, n + 2) for n in range(13)],
+        "rangeIds",
+        {
+            "nr": ["$1.0", "$1.1"],
+            "pad": [f"$1.{n}" for n in (2, 7, 8, 10, 11, 3, 12, 5, 4, 9, 6)],
+        },
+    ),
+    # named ranges: by name, each range of a name in the order `named_ranges` says, its start and
+    # end as indices
     (
         "wr-text",
         [_named("nr", 1, 6), _named("span", 3, 15), _named("nr", 7, 11), _named("zero", 0, 3)],
@@ -19512,14 +19590,14 @@ _STYLE_DOC_ROWS = [
                 "name": "nr",
                 "namedRanges": [
                     {
-                        "namedRangeId": "$1.0",
-                        "name": "nr",
-                        "ranges": [{"startIndex": 1, "endIndex": 6}],
-                    },
-                    {
                         "namedRangeId": "$1.2",
                         "name": "nr",
                         "ranges": [{"startIndex": 7, "endIndex": 11}],
+                    },
+                    {
+                        "namedRangeId": "$1.0",
+                        "name": "nr",
+                        "ranges": [{"startIndex": 1, "endIndex": 6}],
                     },
                 ],
             },
@@ -19776,6 +19854,19 @@ def _docs_served(wc, h, doc: str, part: str):
             [el["paragraph"]["paragraphStyle"], el["paragraph"].get("bullet")]
             for el in read["body"]["content"][1:]
         ]
+    if part == "runs":
+        return [
+            [
+                [pe["textRun"]["content"], pe["textRun"]["textStyle"]]
+                for pe in el["paragraph"]["elements"]
+            ]
+            for el in read["body"]["content"][1:]
+        ]
+    if part == "rangeIds":
+        return {
+            name: [r["namedRangeId"] for r in v["namedRanges"]]
+            for name, v in read["namedRanges"].items()
+        }
     return read.get(part)
 
 
@@ -19788,7 +19879,7 @@ def _docs_ids(value, did: str, batches: int):
     names |= {
         f"${b}.{n}": gdocs.segment_id(did, f"r{b}.{n}")
         for b in range(1, batches + 1)
-        for n in range(10)
+        for n in range(13)
     }
     text = json.dumps(value)
     for name, real in names.items():
@@ -20476,6 +20567,11 @@ _DOCS_BATCH_REFUSALS = [
             ("\U0001f1f0\u0301", 3),
         ]
     ),
+    # and where a style split the first character of one in two
+    *(
+        ([_ins(1, seed), _ts(1, 2), _ins(at, "x")], 400, _GRAPHEME.replace("[1]", "[2]"))
+        for seed, at in [("\U0001f1f0\U0001f1f7", 3), ("\U0001f469\u200d\U0001f4bb", 4)]
+    ),
     (
         [{"deleteContentRange": {}}],
         400,
@@ -20702,6 +20798,13 @@ _BAD_TAB = {"startIndex": 1, "endIndex": 3, "tabId": "t.nope"}
 _NOPE_SEGMENT = {"startIndex": 1, "endIndex": 3, "segmentId": "kix.nope"}
 _NO_UNIT = {"fontSize": {"magnitude": 3}}
 _RED3 = {"foregroundColor": {"color": {"rgbColor": {"red": 3}}}}
+_BASELINE = "The baseline offset type is invalid: null"
+_DASH = "The dash style is invalid: UNRECOGNIZED"
+_BORDER = {
+    "color": {"color": {"rgbColor": {"red": 1}}},
+    "width": {"magnitude": 1, "unit": "PT"},
+    "padding": {"magnitude": 1, "unit": "PT"},
+}
 
 # Refused on `wr-text` as real refuses the style, bullet and named range requests
 # (`routers.google_docs`), each `(kind, request, message)`, a 500 by its status as well, and in the
@@ -20811,6 +20914,8 @@ _DOCS_STYLE_REFUSALS = [
         _ts(1, 6, "backgroundColor", backgroundColor={"color": {"rgbColor": {"green": -0.5}}}),
         _ERR500,
     ),
+    ("updateTextStyle", _ts(1, 5, "baselineOffset", baselineOffset=99), _BASELINE),
+    ("updateTextStyle", _ts(1, 5, "baselineOffset", baselineOffset=-1), _BASELINE),
     # the values in real's order, whatever `fields` lists first
     ("updateTextStyle", _ts(1, 6, "fontSize,foregroundColor", **_NO_UNIT, **_RED3), _ERR500),
     (
@@ -20893,6 +20998,16 @@ _DOCS_STYLE_REFUSALS = [
         ),
         "The dash style is invalid: DASH_STYLE_UNSPECIFIED",
     ),
+    ("updateParagraphStyle", _ps(1, 5, "borderTop", borderTop={**_BORDER, "dashStyle": 99}), _DASH),
+    ("updateParagraphStyle", _ps(1, 5, "borderTop", borderTop={**_BORDER, "dashStyle": -1}), _DASH),
+    ("updateParagraphStyle", _ps(1, 5, "alignment", alignment=-1), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "alignment", alignment=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "namedStyleType", namedStyleType=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "namedStyleType", namedStyleType=-1), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "direction", direction=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "direction", direction=-1), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "spacingMode", spacingMode=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "spacingMode", spacingMode=-1), _ERR500),
     ("updateParagraphStyle", _ps(0, 3, "alignment", alignment="CENTER"), _SECTION),
     ("updateParagraphStyle", _ps(0, 3, "spaceAbove", spaceAbove={"magnitude": 5}), _UNIT),
     ("updateParagraphStyle", {"range": {"startIndex": 0, "endIndex": 3}}, _NO_FIELD),
@@ -21007,7 +21122,7 @@ _DOCS_BATCH_REFUSALS += [
         400,
         f"Invalid requests[0].updateTextStyle: {_SECTION}",
     ),
-    # a range holding the body's last newline is replaced by none
+    # ranges whose content `_docs_replace_named_range` says cannot be replaced
     (
         [
             _named("whole", 13, 25),
@@ -21016,6 +21131,26 @@ _DOCS_BATCH_REFUSALS += [
         400,
         "Invalid requests[1].replaceNamedRangeContent: Named range with ID $MADE contains content that cannot be replaced.",
     ),
+    (
+        [
+            _named("zero", 0, 3),
+            {"replaceNamedRangeContent": {"namedRangeName": "zero", "text": "X"}},
+        ],
+        400,
+        "Invalid requests[1].replaceNamedRangeContent: Named range with ID $MADE contains content that cannot be replaced.",
+    ),
+    *[
+        (
+            [
+                _ins(1, "\U0001f600"),
+                _named("half", start, end),
+                {"replaceNamedRangeContent": {"namedRangeName": "half", "text": "X"}},
+            ],
+            400,
+            "Invalid requests[2].replaceNamedRangeContent: Named range with ID $MADE contains content that cannot be replaced.",
+        )
+        for start, end in ((2, 4), (1, 2))
+    ],
 ]
 
 

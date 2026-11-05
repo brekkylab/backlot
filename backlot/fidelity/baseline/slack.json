@@ -340,7 +340,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Measured against slack.com on 2026-11-05 by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.conversations:write` to a user token whose scopes do not include it, where `slackbot.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone. Deliberate gap, like the other `admin.*` methods."
+      "note": "Slack's reference marks it \"only available to Slack workspaces on an Enterprise plan\" and says it removes \"multiple users from a conversation\", with a user token carrying `admin.conversations:write` (read 2026-11-05). No corpus record states an Enterprise organization, so this is a gap rather than an answer about an organization the corpus does not have. Measured against slack.com on 2026-11-05 by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.conversations:write` to a user token whose scopes do not include it, where `admin.conversations.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those three credentials."
     },
     {
       "operation": "admin.conversations.linkObjects",

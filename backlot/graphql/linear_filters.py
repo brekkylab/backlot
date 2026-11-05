@@ -292,9 +292,10 @@ class _Comparator:
         epoch: bool = False,
         timeless: bool = False,
         relation: bool = False,
+        numeric: bool = False,
     ):
         self.col, self.text, self.epoch, self.timeless = col, text, epoch, timeless
-        self.relation = relation
+        self.relation, self.numeric = relation, numeric
 
     def _not_equal(self, expr: str) -> str:
         """``expr`` is a ``<>`` test; on a relation the absent rows pass it too."""
@@ -351,7 +352,21 @@ class _Comparator:
             # `in` / `nin` carry a list and coerce per element below, and `null` carries a
             # Boolean; running either through a date operand's coercion hands the scalar something
             # that is not a date (the old code did, so `completedAt: {null: true}` was an error).
-            v = raw if op in ("in", "nin", "null") else self._value(raw)
+            if op in ("in", "nin") and any(isinstance(x, dict) for x in raw):
+                raise argument_validation_error()
+            if isinstance(raw, dict):
+                # An object operand is what a `$__proto__` reads here (`engine._PlainObject`).
+                # api.linear.app answered it on 2026-11-04 (UTC) with the
+                # `Argument Validation Error` on `priority` (`eq`, `gt`), `estimate` (`eq`) and
+                # `dueDate` (`eq`, `gt`) and inside `in: [...]` on `title`, as an empty string on
+                # `title` (`eq` none, `neq` and `contains` every issue) and `state.name` (`eq` none,
+                # `neq` every issue), and as an instant before every issue on `createdAt` (`eq`
+                # none, `gt` every issue).
+                if self.numeric or self.timeless:
+                    raise argument_validation_error()
+                v = float("-inf") if self.epoch else ""
+            else:
+                v = raw if op in ("in", "nin", "null") else self._value(raw)
             if op == "eq":
                 parts.append(f"{self.col} = ?")
                 params.append(v)
@@ -849,16 +864,20 @@ def _issue_parts(conn, flt: dict, team_keys: dict | None) -> tuple[str, list, bo
             operands = [
                 v for raw in spec.values() for v in (raw if isinstance(raw, list) else [raw])
             ]
-            if any(v is not None and (v < 1 or not float(v).is_integer()) for v in operands):
+            # An object operand (`_Comparator.render`) was refused alike (2026-11-04).
+            if any(
+                isinstance(v, dict) or (v is not None and (v < 1 or not float(v).is_integer()))
+                for v in operands
+            ):
                 raise argument_validation_error()
             add(*_Comparator(store.LINEAR_NUMBER_EXPR).render(spec))
         elif key == "priority":
             # Against the COALESCE the field is served with, so `priority: {eq: 0}` finds an issue
             # whose column is NULL and `Issue.priority` reads 0 (see store.LINEAR_PRIORITY_EXPR).
-            add(*_Comparator(store.LINEAR_PRIORITY_EXPR).render(spec))
+            add(*_Comparator(store.LINEAR_PRIORITY_EXPR, numeric=True).render(spec))
         elif key == "estimate":
             # `EstimateComparator`: the number comparators plus `and` / `or` over them.
-            add(*_Comparator("estimate").render(spec))
+            add(*_Comparator("estimate", numeric=True).render(spec))
         elif key == "dueDate":
             # `NullableTimelessDateComparator`: operands are TimelessDateOrDuration, the column a
             # bare YYYY-MM-DD, so the comparison is lexical over the ISO date.

@@ -2856,6 +2856,183 @@ def test_linear_orders_the_body_and_the_credential(
         assert (r.status_code, r.content) == (_status(answer), answer)
 
 
+def test_linear_reads_a_proto_variable_as_a_plain_object_does(client, admin_h):
+    """Each use of a variable named `$__proto__` is answered as api.linear.app answered it
+    (`backlot.graphql.engine._PlainObject`), each `$c` or `$constructor` row the control."""
+    one = "query($__proto__: String!) { issue(id: $__proto__) { identifier } }"
+    nested = "query($__proto__: %s) { issues(filter: {%s}) { nodes { identifier } } }"
+    uuid = gql(client, '{ issue(id: "ENG-101") { id } }', admin_h).json()["data"]["issue"]["id"]
+    rows = [
+        ("an argument", admin_h, one, {"__proto__": "ENG-101"}),
+        (
+            "an argument, $constructor",
+            admin_h,
+            one.replace("__proto__", "constructor"),
+            {"constructor": "ENG-101"},
+        ),
+        (
+            "an argument's default",
+            admin_h,
+            'query($__proto__: String = "ENG-101") { issue(id: $__proto__) { identifier } }',
+            {},
+        ),
+        (
+            "an argument beside a field",
+            admin_h,
+            one.replace("{ issue", "{ viewer { id } issue"),
+            {"__proto__": "ENG-101"},
+        ),
+        (
+            "a nullable argument",
+            admin_h,
+            "query($__proto__: Int) { issues(first: $__proto__) { nodes { identifier } } }",
+            {"__proto__": 1},
+        ),
+        (
+            "@include",
+            admin_h,
+            "query($__proto__: Boolean!) { viewer { id @include(if: $__proto__) } }",
+            {"__proto__": True},
+        ),
+        (
+            "@skip",
+            admin_h,
+            "query($__proto__: Boolean!) { viewer { id @skip(if: $__proto__) } }",
+            {"__proto__": False},
+        ),
+        (
+            "__type with no credential",
+            {},
+            "query($__proto__: String!) { __type(name: $__proto__) { name } }",
+            {"__proto__": "Issue"},
+        ),
+        ("an argument not sent", admin_h, one, {}),
+        ("id eq", admin_h, nested % ("ID", "id: {eq: $__proto__}"), {"__proto__": uuid}),
+        (
+            "id eq, $c",
+            admin_h,
+            "query($c: ID) { issues(filter: {id: {eq: $c}}) { nodes { identifier } } }",
+            {"c": uuid},
+        ),
+        ("id eq, null", admin_h, nested % ("ID", "id: {eq: $__proto__}"), {"__proto__": None}),
+        ("id eq, not sent", admin_h, nested % ("ID", "id: {eq: $__proto__}"), {}),
+        ("id in", admin_h, nested % ("[ID!]", "id: {in: $__proto__}"), {"__proto__": [uuid]}),
+        ("id in [item]", admin_h, nested % ("ID!", "id: {in: [$__proto__]}"), {"__proto__": uuid}),
+        (
+            "id",
+            admin_h,
+            nested % ("IssueIDComparator", "id: $__proto__"),
+            {"__proto__": {"eq": uuid}},
+        ),
+        ("title eq", admin_h, nested % ("String", "title: {eq: $__proto__}"), {"__proto__": "x"}),
+        ("title neq", admin_h, nested % ("String", "title: {neq: $__proto__}"), {"__proto__": "x"}),
+        (
+            "title contains",
+            admin_h,
+            nested % ("String", "title: {contains: $__proto__}"),
+            {"__proto__": "x"},
+        ),
+        (
+            "title in [item]",
+            admin_h,
+            nested % ("String!", "title: {in: [$__proto__]}"),
+            {"__proto__": "x"},
+        ),
+        (
+            "priority gt",
+            admin_h,
+            nested % ("Float", "priority: {gt: $__proto__}"),
+            {"__proto__": 1},
+        ),
+        ("number eq", admin_h, nested % ("Float", "number: {eq: $__proto__}"), {"__proto__": 1}),
+        (
+            "dueDate eq",
+            admin_h,
+            nested % ("TimelessDateOrDuration", "dueDate: {eq: $__proto__}"),
+            {"__proto__": "2026-01-01"},
+        ),
+        (
+            "createdAt gt",
+            admin_h,
+            nested % ("DateTimeOrDuration", "createdAt: {gt: $__proto__}"),
+            {"__proto__": "2020-01-01T00:00:00Z"},
+        ),
+        (
+            "createdAt eq",
+            admin_h,
+            nested % ("DateTimeOrDuration", "createdAt: {eq: $__proto__}"),
+            {"__proto__": "2020-01-01T00:00:00Z"},
+        ),
+        (
+            "state.name neq",
+            admin_h,
+            nested % ("String", "state: {name: {neq: $__proto__}}"),
+            {"__proto__": "Todo"},
+        ),
+    ]
+    answered = {}
+    for row_id, headers, document, variables in rows:
+        r = client.post(
+            "/linear/graphql", json={"query": document, "variables": variables}, headers=headers
+        )
+        body = r.json()
+        answered[row_id] = (
+            r.status_code,
+            [
+                (e["message"], e.get("path"), e["extensions"]["code"])
+                for e in body.get("errors", [])
+            ],
+            body.get("data"),
+        )
+
+    def internal(field):
+        return [("Internal server error", [field], "INTERNAL_SERVER_ERROR")]
+
+    def issues(*identifiers):
+        return {"issues": {"nodes": [{"identifier": i} for i in identifiers]}}
+
+    refused = [("Argument Validation Error", ["issues"], "INVALID_INPUT")]
+    every = issues("ENG-102", "BLA-1", "DES-77", "ENG-101", "ENG-103")
+    assert answered == {
+        "an argument": (200, internal("issue"), None),
+        "an argument, $constructor": (200, [], {"issue": {"identifier": "ENG-101"}}),
+        "an argument's default": (200, internal("issue"), None),
+        "an argument beside a field": (200, internal("issue"), None),
+        "a nullable argument": (200, [], every),
+        "@include": (200, internal("viewer"), None),
+        "@skip": (200, internal("viewer"), None),
+        "__type with no credential": (200, internal("__type"), {"__type": None}),
+        "an argument not sent": (
+            400,
+            [
+                (
+                    'Variable "$__proto__" of required type "String!" was not provided.',
+                    None,
+                    "BAD_USER_INPUT",
+                )
+            ],
+            None,
+        ),
+        "id eq": (200, refused, None),
+        "id eq, $c": (200, [], issues("ENG-101")),
+        "id eq, null": (200, [], every),
+        "id eq, not sent": (200, refused, None),
+        "id in": (200, [], issues("ENG-101")),
+        "id in [item]": (200, refused, None),
+        "id": (200, [], issues("ENG-101")),
+        "title eq": (200, [], issues()),
+        "title neq": (200, [], every),
+        "title contains": (200, [], every),
+        "title in [item]": (200, refused, None),
+        "priority gt": (200, refused, None),
+        "number eq": (200, refused, None),
+        "dueDate eq": (200, refused, None),
+        "createdAt gt": (200, [], every),
+        "createdAt eq": (200, [], issues()),
+        "state.name neq": (200, [], every),
+    }
+
+
 def test_linear_parent_resolves_and_is_acl_scoped(client, admin_h, tokens_yaml):
     """`Issue.parent` is declared in the SDL and `@linear/sdk`'s fragment selects `parent { id }`.
     The bench fills `parent_issue` on 46.7% of records, so it must resolve — and it must resolve

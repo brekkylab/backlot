@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-10-30",
+  "measured": "2026-11-05",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -333,6 +333,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "admin.conversations.kick",
+      "id": "admin.conversations.kick",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-11-05 by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, and `missing_scope` with `needed` `admin.conversations:write` to a user token whose scopes do not include it, where `slackbot.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment carries that scope, so a successful response shape rests on the reference alone. Deliberate gap, like the other `admin.*` methods."
     },
     {
       "operation": "admin.conversations.linkObjects",

@@ -1336,11 +1336,19 @@ def test_a_body_in_a_read_of_its_own_reaches_the_route(live_server, form, answer
     assert answered in answer
 
 
+def _without_reset(body: bytes) -> bytes:
+    """A `GET /rate_limit` body with the value of each `reset` in it taken out."""
+    return re.sub(rb'"reset":\d+', b'"reset":', body)
+
+
+#: A request line with one space after the method, the same line with more, and how their bodies
+#: are compared: on GitHub without `reset`, which two reads in different seconds can answer apart
+#: (`RateLimitWindows.status` and `RateLimitWindows.unused` have the measurements).
 _SPACES = [
-    ("GET /github/rate_limit", "GET  /github/rate_limit"),
-    ("GET /github/rate_limit", "GET   /github/rate_limit"),
-    ("GET /slack/api/api.test", "GET  /slack/api/api.test"),
-    ("GET /slack/api/api.test", "GET   /slack/api/api.test"),
+    ("GET /github/rate_limit", "GET  /github/rate_limit", _without_reset),
+    ("GET /github/rate_limit", "GET   /github/rate_limit", _without_reset),
+    ("GET /slack/api/api.test", "GET  /slack/api/api.test", bytes),
+    ("GET /slack/api/api.test", "GET   /slack/api/api.test", bytes),
 ]
 
 
@@ -1360,7 +1368,8 @@ def test_a_request_line_with_multiple_spaces_after_the_method(live_server):
         status_line = head.split(b"\r\n")[0].decode("latin-1")
         return status_line, body
 
-    results = [(request(one_space), request(multi_spaces)) for one_space, multi_spaces in _SPACES]
-    for one, multi in results:
-        assert multi == one
-        assert one[0].startswith("HTTP/1.1 200")
+    results = [(request(one), request(multi), read) for one, multi, read in _SPACES]
+    for (one_status, one_body), (multi_status, multi_body), read in results:
+        assert multi_status == one_status
+        assert read(multi_body) == read(one_body)
+        assert one_status.startswith("HTTP/1.1 200")

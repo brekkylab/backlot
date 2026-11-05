@@ -806,23 +806,34 @@ def test_a_head_answered_at_its_bound_never_reaches_the_app(recording_server):
     assert seen == ["/msgraph/v1.0/me"]
 
 
+#: The prefix, the path and the number of spaces after the method of a request line, and real's
+#: answer to a head past the bound behind it.
 _SPACES_PAST_THE_BOUND = [
-    ("GET  /github/rate_limit", "github 431"),
-    ("GET   /github/rate_limit", "github 431"),
-    ("GET  /slack/api/api.test", "slack"),
-    ("GET   /slack/api/api.test", "slack"),
+    ("/github", "/rate_limit", 2, "github 431"),
+    ("/github", "/rate_limit", 3, "github 431"),
+    ("/slack", "/api/api.test", 2, "slack"),
+    ("/slack", "/api/api.test", 3, "slack"),
 ]
 
 
 def test_a_request_line_with_spaces_after_the_method_answers_the_bound(live_server):
     """api.github.com and slack.com, 2026-11-03 (UTC): real answers 431 to a head past the bound
-    whose request line has multiple spaces after the method."""
+    whose request line has multiple spaces after the method.
+
+    The head goes in two writes, the second its last 32 bytes, which hold the byte that reaches the
+    bound whether or not the extra spaces count and every byte after it: a byte of the head unread
+    when the server closes, or arriving after, makes the server's TCP stack reset the connection,
+    and the client can lose the answer."""
     base_url, _ = live_server
     answers = []
-    for line, _ in _SPACES_PAST_THE_BOUND:
-        head = f"{line} HTTP/1.1\r\nHost: x\r\nX-A: {'a' * 80_000}\r\n\r\n".encode()
+    for mount, path, spaces, _ in _SPACES_PAST_THE_BOUND:
+        start = f"GET{' ' * spaces}{mount}{path} HTTP/1.1\r\nHost: x\r\nX-A: "
+        reached = _BOUND_OF[mount][0] + _unseen(mount, path)
+        head = (start + "a" * (reached + 16 - len(start))).encode()
         with _connect(base_url) as c:
-            c.sendall(head)
+            c.sendall(head[:-32])
+            assert not select.select([c], [], [], 0.2)[0]
+            c.sendall(head[-32:])
             answers.append(_until_closed(c))
-    for answer, (_, real) in zip(answers, _SPACES_PAST_THE_BOUND):
+    for answer, (*_, real) in zip(answers, _SPACES_PAST_THE_BOUND):
         assert _as_real(answer) == _REAL[real]

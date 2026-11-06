@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-11-04",
+  "measured": "2026-11-06",
   "operations": [
     {
       "operation": "DELETE /agents/repos/{}/{}/automations/{}",
@@ -4177,6 +4177,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /repos/{}/{}/dependabot/runner-settings",
+      "id": "dependabot/get-repository-runner-settings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states which runner Dependabot uses for a repository, so nothing is served for these two (`GET` and `PUT`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-06. api.github.com routes neither yet: `_NOT_ROUTED` in `backlot.routers.github` keeps both out of the operations it refuses for a credential, and its comment records the 404 each answered on 2026-11-06, so the shape of an answer is not known."
     },
     {
       "operation": "GET /repos/{}/{}/dependabot/secrets",
@@ -8654,6 +8662,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "PUT /repos/{}/{}/dependabot/runner-settings",
+      "id": "dependabot/set-repository-runner-settings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states which runner Dependabot uses for a repository, so nothing is served for these two (`GET` and `PUT`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-06. api.github.com routes neither yet: `_NOT_ROUTED` in `backlot.routers.github` keeps both out of the operations it refuses for a credential, and its comment records the 404 each answered on 2026-11-06, so the shape of an answer is not known."
     },
     {
       "operation": "PUT /repos/{}/{}/dependabot/secrets/{}",

@@ -2658,9 +2658,9 @@ _COUNTED_TOKEN_SHAPED = [
 #: nine are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the eighth as the `/orgs/{}` path
 #: `/organizations/{id}` is rewritten to and the ninth on a path whose slash-terminated spelling a
 #: route matches; the next five are in it too, but the last two, in `_ROUTED_UNPUBLISHED`; the next
-#: two are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the two after them are
-#: no operation, though a parsed URL ends the first at its decoded `#` and a `missing_param` row of
-#: the baseline spells the second's path; the next is a method GitHub does not publish on a path
+#: four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the two after them
+#: are no operation, though a parsed URL ends the first at its decoded `#` and a `missing_param` row
+#: of the baseline spells the second's path; the next is a method GitHub does not publish on a path
 #: whose `PATCH` it does, which real answered a bad bearer with its 404; the two after it are paths
 #: under `/agents/automations/{}` that real answered 404 for every credential; the six after them
 #: are paths outside the two agent families (`backlot.routers.github.under_an_agent_family`), which
@@ -2687,6 +2687,8 @@ _UNSERVED_ROWS = [
     ("GET", "/github/agents/automations/1/tasks", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/github/repos/{org}/codebase/releases/1/assets", False, 404),
+    ("GET", "/github/repos/{org}/codebase/dependabot/runner-settings", False, 404),
+    ("PUT", "/github/repos/{org}/codebase/dependabot/runner-settings", False, 404),
     ("GET", "/github/zen%23", False, 404),
     ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
     ("PUT", "/github/orgs/{org}", False, 405),

@@ -362,14 +362,27 @@ _REFUSED_BEHIND_A_BLANK = [
     ("\r\n" * 2_100, 61_295, "slack"),
 ]
 
+#: Two and three spaces after the method of a request line before a header that reaches the bound:
+#: the prefix, the path, the spaces and real's answer. The bound counts each space: on
+#: api.github.com and slack.com, 2026-11-05 (UTC), with two or three of them, as with one, a head
+#: one byte short of the bound waited for more and the byte that reached it was answered 431 and the
+#: connection closed.
+_SPACES_AT_THE_BOUND = [
+    ("/github", "/rate_limit", 2, "github 431"),
+    ("/github", "/rate_limit", 3, "github 431"),
+    ("/slack", "/api/api.test", 2, "slack"),
+    ("/slack", "/api/api.test", 3, "slack"),
+]
+
 #: Each case of the test below: the part the bound is reached in, what comes ahead of the request
-#: line and whether the bound counts it, the row's prefix and path, what follows the path in the
-#: request line, the bound and whether it is a line's, and real's answer. A row of
-#: :data:`_NO_QUERY`, :data:`_BLANK_AHEAD` or :data:`_REFUSED_BEHIND_A_BLANK` is a case in a header
-#: only, the first's line ending at the path.
+#: line and whether the bound counts it, the spaces after the method, the row's prefix and path,
+#: what follows the path in the request line, the bound and whether it is a line's, and real's
+#: answer. A row of :data:`_NO_QUERY`, :data:`_BLANK_AHEAD`, :data:`_REFUSED_BEHIND_A_BLANK` or
+#: :data:`_SPACES_AT_THE_BOUND` is a case in a header only, the first's and the last's lines ending
+#: at the path.
 _CASES = (
     [
-        (part, "", None, mount, path, "?x=", bound, per_line, line if part == "line" else header)
+        (part, "", None, 1, mount, path, "?x=", bound, per_line, line if part == "line" else header)
         for mount, path, bound, per_line, line, header in _BOUNDS
         + [
             (m, p, *_BOUND_OF[m], line, header)
@@ -377,30 +390,34 @@ _CASES = (
         ]
         for part in ("line", "header")
     ]
-    + [("header", "", None, m, p, "", *_BOUND_OF[m], header) for m, p, header in _NO_QUERY]
+    + [("header", "", None, 1, m, p, "", *_BOUND_OF[m], header) for m, p, header in _NO_QUERY]
     + [
-        ("header", "\r\n", counts, m, p, "?x=", *_BOUND_OF[m], _IN_HEADERS[m, p])
+        ("header", "\r\n", counts, 1, m, p, "?x=", *_BOUND_OF[m], _IN_HEADERS[m, p])
         for m, p, counts in _BLANK_AHEAD
     ]
     + [
-        ("header", lead, False, "/slack", f"/api/api.test?q=\x01x&pad={'a' * pad}", "?x=")
+        ("header", lead, False, 1, "/slack", f"/api/api.test?q=\x01x&pad={'a' * pad}", "?x=")
         + (*_BOUND_OF["/slack"], real)
         for lead, pad, real in _REFUSED_BEHIND_A_BLANK
+    ]
+    + [
+        ("header", "", None, spaces, m, p, "", *_BOUND_OF[m], real)
+        for m, p, spaces, real in _SPACES_AT_THE_BOUND
     ]
 )
 
 
 @pytest.mark.parametrize(
-    "part, lead, counts, mount, path, query, bound, per_line, real", _CASES, ids=_short_id
+    "part, lead, counts, spaces, mount, path, query, bound, per_line, real", _CASES, ids=_short_id
 )
 def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_it(
-    live_server, part, lead, counts, mount, path, query, bound, per_line, real
+    live_server, part, lead, counts, spaces, mount, path, query, bound, per_line, real
 ):
     """One byte short of the bound the head waits for more; the byte that reaches it is answered and
     the connection closed. The first read ends inside the path, before it names a vendor, and the
     second where the line's first bytes have named it, so the rest of the line comes after."""
     base_url, _ = live_server
-    line = f"GET {mount}{path}{query}"
+    line = f"GET{' ' * spaces}{mount}{path}{query}"
     ahead = len(lead) if counts else 0
     if part == "line":
         head = line + "a" * (bound + _unseen(mount, path) - len(line))
@@ -410,9 +427,9 @@ def test_a_head_that_reaches_its_front_doors_bound_is_answered_as_real_answered_
         head = start + "a" * (bound - counted)
     head = lead + head
     named = len(lead) + head_bounds.NAMED_WITHIN
-    six = len(lead) + 6
+    in_path = len(lead) + len("GET") + spaces + 2
     with _connect(base_url) as c:
-        for start, end, wait in ((0, six, 0.2), (six, named, 0.2), (named, -1, 0.5)):
+        for start, end, wait in ((0, in_path, 0.2), (in_path, named, 0.2), (named, -1, 0.5)):
             c.sendall(head[start:end].encode("latin-1"))
             assert not select.select([c], [], [], wait)[0]
         c.sendall(head[-1:].encode("latin-1"))
@@ -804,25 +821,3 @@ def test_a_head_answered_at_its_bound_never_reaches_the_app(recording_server):
     assert _as_real(answer) == _REAL["graph 400"]
     assert _status(base_url, b"GET /msgraph/v1.0/me HTTP/1.1\r\nHost: x\r\n\r\n") == 200
     assert seen == ["/msgraph/v1.0/me"]
-
-
-_SPACES_PAST_THE_BOUND = [
-    ("GET  /github/rate_limit", "github 431"),
-    ("GET   /github/rate_limit", "github 431"),
-    ("GET  /slack/api/api.test", "slack"),
-    ("GET   /slack/api/api.test", "slack"),
-]
-
-
-def test_a_request_line_with_spaces_after_the_method_answers_the_bound(live_server):
-    """api.github.com and slack.com, 2026-11-03 (UTC): real answers 431 to a head past the bound
-    whose request line has multiple spaces after the method."""
-    base_url, _ = live_server
-    answers = []
-    for line, _ in _SPACES_PAST_THE_BOUND:
-        head = f"{line} HTTP/1.1\r\nHost: x\r\nX-A: {'a' * 80_000}\r\n\r\n".encode()
-        with _connect(base_url) as c:
-            c.sendall(head)
-            answers.append(_until_closed(c))
-    for answer, (_, real) in zip(answers, _SPACES_PAST_THE_BOUND):
-        assert _as_real(answer) == _REAL[real]

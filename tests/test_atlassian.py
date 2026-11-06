@@ -2839,6 +2839,19 @@ _SERVED_PAGE = "{page}"
         ("999999999/label?start=-1", "No content found with id : 999999999", "refused", 287),
         (f"att{_SERVED_PAGE}/label?limit=-1", "null", "attachment", 178),
         (f"att{_SERVED_PAGE}/label?limit=0", "null", "attachment", 178),
+        # a page ending past Java's `int` (`_refuse_a_start_past_java_int`)
+        (
+            "999999999/child/page?start=2147483647",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/comment?start=2147483647&limit=1",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
         # with nothing wrong but the id, each listing looks it up
         (
             "999999999/child/page?limit=0",
@@ -4115,8 +4128,9 @@ _ATTACHMENT_PAGES = [
 def test_confluence_child_attachment_is_the_empty_page_from_any_start(
     client, admin_h, query, start, limit, prev
 ):
-    """Measured: no rows and no `next` at any `start`, a `prev` from any `start` past 0, and no
-    bound on `start` of the kind `content` has."""
+    """Measured: no rows and no `next` at any `start` served, a `prev` from any `start` past 0, and
+    no bound on `start` of the kind `content` has (where a page would end is what
+    :func:`backlot.routers.atlassian._refuse_a_start_past_java_int` bounds)."""
     api = "/atlassian/wiki/rest/api"
     cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
     r = client.get(f"{api}/content/{cid}/child/attachment?{query}", headers=admin_h)
@@ -4686,6 +4700,11 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         # 404, and `label` its conversion and its `prefix`
         ("content/999999999/child/attachment", "limit=abc", 'For input string: "abc"'),
         ("content/999999999/child/attachment", "limit=-1", "limit cannot be less than zero"),
+        (
+            "content/999999999/child/attachment",
+            "start=2147483647",
+            "limit cannot be less than zero",
+        ),
         *[
             (f"content/999999999/{route}", query, want)
             for route in ("child/page", "child/comment")
@@ -4709,6 +4728,7 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         ("content/abc/child/page", "limit=-1", "for value [abc]"),
         ("content/abc/child/comment", "limit=-1", "for value [abc]"),
         ("content/abc/child/attachment", "limit=-1", "for value [abc]"),
+        ("content/abc/child/attachment", "start=2147483647", "for value [abc]"),
         ("content/abc/label", "prefix=bogus", "for value [abc]"),
         ("content/99999999999999999999/label", "limit=abc", "for value [99999999999999999999]"),
         ("content/attabc/label", "limit=abc", "for value [attabc]"),
@@ -6404,6 +6424,22 @@ _UNCLAIMED_SEGMENTS = [
     ("/atlassian/wiki/rest/api/nope%0Ax", "*/*", "xml", "nope%0Ax"),
     # an escaped `?` beside a real query: the query is the one sent, after the path's escape
     ("/atlassian/wiki/rest/api/nope%3Fx?_=1", "application/json", "json", "nope%3Fx?_=1"),
+    # a `%` two hex digits do not follow in the query, as ``errors.atlassian.echoed_query`` spells
+    # it, and two escapes it keeps
+    *(
+        (f"/atlassian/wiki/rest/api/nope?{query}", "application/json", "json", f"nope?{echoed}")
+        for query, echoed in (
+            ("b=%x", "b=%25x"),
+            ("b=%zz", "b=%25zz"),
+            ("b=%4x", "b=%254x"),
+            ("b=%", "b=%25"),
+            ("b=%4", "b=%254"),
+            ("b=%%41", "b=%25%41"),
+            ("%x=1", "%25x=1"),
+            ("b=%2fx", "b=%2fx"),
+            ("b=%e9x", "b=%e9x"),
+        )
+    ),
 ]
 
 
@@ -7214,6 +7250,24 @@ _FRONT_DOOR_ROWS = [
     ],
     ("GET", "/rest/api/3/issue/nope%5C%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/nope%80%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # and on Confluence a `[` or a `]` in the path, at a route's path and at paths no route
+    # serves, and in a query value eight of the eleven characters it refuses there, the other
+    # three being ``tests.test_request_target._PRINTABLE``'s, which the test client escapes; a
+    # broken escape in the query beside one, and a `\` in the path, which reads as a `/`
+    *[
+        ("GET", path, 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for path in (
+            *("/wiki/rest/api/nope[x", "/wiki/rest/api/nope]x", "/wiki/rest/api/space[x"),
+            *("/wiki/api/v2/nope[x", "/wiki/nope[x", "/wiki/spaces[x", "/wiki/home[x"),
+            *(f"/wiki/rest/api/nope?b={c}x" for c in "[\\]^`{|}"),
+            *("/wiki/rest/api/space?b=[x", "/wiki/rest/api/search?cql=type%3Dpage&b=[x"),
+            *("/wiki/rest/api/content?b=[x", "/wiki/api/v2/pages?b=[x", "/wiki/nope?b=[x"),
+            *("/wiki/x/abc?b=[x", "/wiki/display/X?b=[x", "/wiki/people?b=[x"),
+            *("/wiki/spaces?b=[x", "/wiki/rest/api/space?b=[x&c=%x"),
+            *("/wiki/rest/api/space?c=%x&b=[x", "/wiki/rest/api/nope[y\\x"),
+            "/wiki/rest/api/space%2Fx[x",
+        )
+    ],
     # the edge's 400 for a `;`, bare or escaped in either case, wherever it stands, a `..;` the
     # firewall lets through included (the shape `Accept` picks is
     # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
@@ -7249,15 +7303,35 @@ _FRONT_DOOR_ROWS = [
     ("PROPFIND", "/rest/api/3/issue/nope%80x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
     ("TRACE", "/rest/api/3/issue/nope%80x", 405, _CLOUDFRONT_405, _EDGE_PAGE),
     ("PATCH", "/rest/api/3/issue/nope%80x", 400, _NGINX_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope[y%zzx", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope%zzy[x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope[y;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope;y[x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space;x?b=[x&", 400, _EDGE_400, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/nope[x", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/space?b=[x", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PROPFIND", "/wiki/nope[x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
     # a `HEAD` is the page's status and length with no body
     ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("HEAD", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("HEAD", "/wiki/rest/api/space?b=[x", 400, _TOMCAT_400, _TOMCAT_PAGE),
     # what none of them refuses reaches the product: a tag the firewall does not name, a
     # closing tag but `script`'s, a name short of `!doctype`, a tag in the query, a `..\` there
     # that neither a `\` nor a `/` nor the end of the value follows, a `;` there, a step in a
-    # parameter's name, a broken escape in the query, Jira's decoded slash and the web app's
-    # `spaces/` in any case
+    # parameter's name, a broken escape in the query, Jira's decoded slash, the web app's
+    # `spaces/` in any case, Jira's query holding a `[`, and the web app's pages holding one in
+    # the query, and under `spaces/` in the path too
+    ("GET", "/rest/api/3/serverInfo?b=[x", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    *[
+        ("GET", path, 404, None, "text/html;charset=UTF-8")
+        for path in (
+            *("/wiki?b=[x", "/wiki/?b=[x", "/wiki/home?b=[x", "/wiki/HOME?b=[x"),
+            *("/wiki/home/?b=[x", "/wiki/search?b=[x", "/wiki/Search?b=[x"),
+            *("/wiki/spaces/X?b=[x", "/wiki/SPACES/X?b=[x"),
+            *("/wiki/spaces/X[x", "/wiki/SPACES/X[x", "//wiki/spaces/X[x"),
+        )
+    ],
     ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
     ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
     ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),
@@ -9432,6 +9506,15 @@ _CQL_NOT_PARSED = "Could not parse cql : "
 _CQL_CURRENT_SPACE = (
     "Unable to execute function 'currentSpace', the required contexts were not present : space"
 )
+
+
+def _cql_reserved(word):
+    """The message real answers a reserved word where a value goes with."""
+    return (
+        f"'{word}' is a reserved keyword.  You must surround '{word}' in quotation marks to use it."
+    )
+
+
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -9527,6 +9610,8 @@ _CQL_PARSE_ROWS = [
             ),
             ("label != currentUser()", "label != currentUser ( )"),
             ("label=a.b", "label = a.b"),
+            ('label = "select"', 'label = "select"'),
+            ("label = 'select'", "label = 'select'"),
             ("label=x order by created desc", "label = x order by created desc"),
             (
                 "type=page ORDER BY title asc, created desc",
@@ -9694,10 +9779,7 @@ _CQL_PARSE_ROWS = [
             ("space.key in currentUser()", _CQL_NOT_PARSED),
             ("label = foo() and (type = page", "Unable to find query function 'foo()'"),
             ("label = foo() and type =", "Unable to find query function 'foo()'"),
-            (
-                "type = and label = foo()",
-                "Expecting a value for operator '=' after field 'type' but got 'and'",
-            ),
+            ("type = and label = foo()", "Expecting a value for operator '=' after field 'type'"),
             ('type = and created > now("-1d", "x")', _CQL_NOT_PARSED),
             ("type = and id in recentlyViewedContent()", _CQL_NOT_PARSED),
             ('type = and id in now("-1d")', _CQL_NOT_PARSED),
@@ -9723,6 +9805,208 @@ _CQL_PARSE_ROWS = [
             ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
         ]
     ],
+    # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
+    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, a reserved word
+    # before each token that changes how `_cql_refusal` reads it, a reserved word as a field or left
+    # after a whole query, a reserved word as a function's argument, and a reserved word before and
+    # after another fault.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            *[
+                (f"label = {word}", _cql_reserved(word))
+                for word in (
+                    "after",
+                    "and",
+                    "as",
+                    "asc",
+                    "avg",
+                    "before",
+                    "begin",
+                    "by",
+                    "commit",
+                    "contains",
+                    "count",
+                    "desc",
+                    "distinct",
+                    "else",
+                    "empty",
+                    "end",
+                    "explain",
+                    "from",
+                    "having",
+                    "if",
+                    "in",
+                    "inner",
+                    "insert",
+                    "into",
+                    "is",
+                    "isnull",
+                    "left",
+                    "like",
+                    "limit",
+                    "max",
+                    "min",
+                    "not",
+                    "null",
+                    "or",
+                    "order",
+                    "outer",
+                    "right",
+                    "select",
+                    "sum",
+                    "then",
+                    "update",
+                    "was",
+                    "where",
+                )
+            ],
+            ("label = Select", _cql_reserved("Select")),
+            ("label = SELECT", _cql_reserved("SELECT")),
+            ("label = select and type = page", _cql_reserved("select")),
+            ("label in (select)", _cql_reserved("select")),
+            ("label in (x, empty)", _cql_reserved("empty")),
+            ("label != select", _cql_reserved("select")),
+            ("title ~ select", _cql_reserved("select")),
+            ("space.key = select", _cql_reserved("select")),
+            ("(label = select)", _cql_reserved("select")),
+            ("label = x and label = select", _cql_reserved("select")),
+            ("label = select order by created", _cql_reserved("select")),
+            ("label = x order by select", _CQL_NOT_PARSED),
+            ("label = select)", _CQL_NOT_PARSED),
+            ("label = and x", _cql_reserved("and")),
+            ("label = and type", _cql_reserved("and")),
+            ('label = and "x"', _cql_reserved("and")),
+            (
+                "label = and type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and (type = page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type =",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and not type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            ("label = select type in (page)", _CQL_NOT_PARSED),
+            ("label = and and type", _cql_reserved("and")),
+            ("label = select and type", _cql_reserved("select")),
+            ("label = and and", _CQL_NOT_PARSED),
+            ("label = select and", _CQL_NOT_PARSED),
+            ("label = and not not type = page", _CQL_NOT_PARSED),
+            ("label = and " + "not " * 1100 + "type = page", _CQL_NOT_PARSED),
+            ("label = or not type = page", _CQL_NOT_PARSED),
+            ("label = and count = page", _CQL_NOT_PARSED),
+            ("select = page", _CQL_NOT_PARSED),
+            ("type = page and count = page", _CQL_NOT_PARSED),
+            ("type = page count", _CQL_NOT_PARSED),
+            (
+                'label = and title ~ "x"',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                'label = and created > now("-1d")',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type not in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "type= and type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "type= or type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("type= and", _cql_reserved("and")),
+            ("label = not type = page", _CQL_NOT_PARSED),
+            ("label = in type = page", _CQL_NOT_PARSED),
+            ("label = order type = page", _CQL_NOT_PARSED),
+            ("label = by type = page", _CQL_NOT_PARSED),
+            ("label = asc type = page", _CQL_NOT_PARSED),
+            ("label = desc type = page", _CQL_NOT_PARSED),
+            ("label = select type = page", _CQL_NOT_PARSED),
+            (
+                "label = order by created",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            ("created > now(select)", _cql_reserved("select")),
+            ("created > now(before)", _cql_reserved("before")),
+            ("created > now(and)", _cql_reserved("and")),
+            ("id in recentlyViewedContent(select)", _cql_reserved("select")),
+            ("label = currentUser(select)", _CQL_NOT_PARSED),
+            ("label = select()", _CQL_NOT_PARSED),
+            ("label = before()", _CQL_NOT_PARSED),
+            ('label = select("x")', _CQL_NOT_PARSED),
+            ("id in select()", _CQL_NOT_PARSED),
+            ("(label = select()", _CQL_NOT_PARSED),
+            ("space = currentSpace() and label = select()", _CQL_NOT_PARSED),
+            ("label = select and space = currentSpace()", _cql_reserved("select")),
+            ("space = currentSpace() and label = select", _cql_reserved("select")),
+            ("label = select and label = foo()", _cql_reserved("select")),
+            ("label = foo() and label = select", "Unable to find query function 'foo()'"),
+            ('label = select and title ~ "a\\"', _cql_reserved("select")),
+            ('title ~ "a\\" and label = select', _cql_reserved("select")),
+            (
+                "type = and created > now(select)",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("created > now(not)", _cql_reserved("not")),
+            ("created > now(in)", _cql_reserved("in")),
+            ("created > now(order)", _cql_reserved("order")),
+            ("created > now(empty)", _cql_reserved("empty")),
+            ('created > now(select, "-1d")', _CQL_NOT_PARSED),
+            ("created > now(select) and label = foo()", _cql_reserved("select")),
+            ("label = foo() and created > now(select)", "Unable to find query function 'foo()'"),
+            ("created > now(select) and type =", _cql_reserved("select")),
+            ("created > now(select) type", _cql_reserved("select")),
+            ("created > now(select) and", _CQL_NOT_PARSED),
+            ("created > now(select) and type = -1", _CQL_NOT_PARSED),
+            ("(created > now(select)", _CQL_NOT_PARSED),
+            ("label = before and created > now(select)", _cql_reserved("before")),
+            ("label = select and label = foo() and type =", _cql_reserved("select")),
+            ('label = select and created > now("-1d") and type =', _cql_reserved("select")),
+            ('label = select and created > now("-1d") type in (page)', _CQL_NOT_PARSED),
+            ("label = select and type =", _cql_reserved("select")),
+            ("label = select and title ~", _cql_reserved("select")),
+            ("label = select and type in", _cql_reserved("select")),
+            ("label = select and type in (page", _cql_reserved("select")),
+            ("label = select and type = )", _cql_reserved("select")),
+            ("label = select and type = -1", _CQL_NOT_PARSED),
+            ("label = x and label = select and type = and type = page", _cql_reserved("select")),
+            ("(label = select", "Missing closing parenthesis near field (()"),
+            ("(label = select and type = page", "Missing closing parenthesis near field (()"),
+            ("(label = select and (type = page", "Missing closing parenthesis near field (()"),
+            ("label = select and (type = page", _cql_reserved("select")),
+            ("label = select and (type =", _cql_reserved("select")),
+            ("(label = select) and (type = page", _cql_reserved("select")),
+            ("(label = select) and type =", _cql_reserved("select")),
+            ("(label = select) type", _cql_reserved("select")),
+        ]
+    ],
 ]
 
 
@@ -9742,3 +10026,43 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
         answered[cql] = (r.status_code, r.json()["cqlQuery"] if r.status_code == 200 else r.json())
     assert len(answered) == len(_CQL_PARSE_ROWS)
     assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}
+
+
+def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, admin_h):
+    """What real answered each row, a 200 as the `limit` it echoes and a refusal as its body
+    (:func:`backlot.routers.atlassian._refuse_a_start_past_java_int`). `label` and `space` are
+    listings that refusal is not on."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    rows = [
+        ("content/{id}/child/comment?start=2147483622", (200, 25)),
+        ("content/{id}/child/comment?start=2147483623", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483637&limit=10", (200, 10)),
+        ("content/{id}/child/comment?start=2147483638&limit=10", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483547&limit=100", (200, 100)),
+        ("content/{id}/child/comment?start=2147483548&limit=100", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483646&limit=1", (200, 1)),
+        ("content/{id}/child/comment?start=2147483647&limit=1", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483647&limit=0", (200, 0)),
+        ("content/{id}/child/comment?start=2147482647&limit=2147483647", (200, 1000)),
+        ("content/{id}/child/comment?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=2147483622", (200, 25)),
+        ("content/{id}/child/page?start=2147483623", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=2147483647", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=1&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/page?start=2147482647&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/page?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147483597", (200, 50)),
+        ("content/{id}/child/attachment?start=2147483598", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147483647", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147482647&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/attachment?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/label?start=2147483447&limit=201", (200, 200)),
+        ("space?start=2147483647", (200, 25)),
+    ]
+    answered = {}
+    for path, _ in rows:
+        r = client.get(f"{api}/{path.format(id=cid)}", headers=admin_h)
+        answered[path] = (r.status_code, r.json()["limit"] if r.status_code == 200 else r.json())
+    assert len(answered) == len(rows)
+    assert answered == dict(rows)

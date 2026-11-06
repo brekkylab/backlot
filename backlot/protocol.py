@@ -16,6 +16,10 @@ none of the ten ``set_dangerous_leniencies`` options lets one through). :class:`
 the parser the line with those bytes percent-encoded and leaves the target as sent on the scope,
 where ``backlot.main.answer_a_raw_byte_in_the_request_target`` answers it.
 
+:class:`Protocol` also leaves a target holding a `#` on the scope as sent
+(:data:`backlot.request_target.WITH_A_FRAGMENT`), and marks each request whose target holds a `?`
+or a `#` after its path (:data:`backlot.request_target.FOLLOWED`).
+
 What else httptools refuses, uvicorn answers with that 400 as well; where the front door has an
 answer of its own, :class:`Protocol` writes that answer in its place
 (:mod:`backlot.parser_refusals`).
@@ -56,6 +60,7 @@ class Protocol(HttpToolsProtocol):
         self._between_requests = True
         self._held = b""
         self._sent: bytes | None = None
+        self._with_a_fragment: bytes | None = None
         self._no_version = False
         self._head = _Head()
         self._body: _Body | None = None
@@ -98,6 +103,7 @@ class Protocol(HttpToolsProtocol):
             at = len(data) - len(data.lstrip(b"\r\n"))
             end = data.find(b"\n", at)
             if end >= 0:
+                self._with_a_fragment = request_target.with_a_fragment(data[at : end + 1])
                 line, self._sent = request_target.encode_line(data[at : end + 1])
                 self._no_version = _has_no_version(line)
                 data = data[:at] + line + data[end + 1 :]
@@ -128,8 +134,13 @@ class Protocol(HttpToolsProtocol):
         if self._sent is not None:
             self.scope[request_target.SENT] = self._sent  # type: ignore[literal-required]
             self._sent = None
+        if self._with_a_fragment is not None:
+            self.scope[request_target.WITH_A_FRAGMENT] = self._with_a_fragment  # type: ignore[literal-required]
+            self._with_a_fragment = None
 
     def on_headers_complete(self) -> None:
+        if b"?" in self.url or b"#" in self.url:
+            self.scope[request_target.FOLLOWED] = True  # type: ignore[literal-required]
         super().on_headers_complete()
         self._handed_on = True
         self._body = _Body.framed_by(self.headers)

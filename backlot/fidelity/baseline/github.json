@@ -4184,7 +4184,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states which runner Dependabot uses for a repository, so nothing is served for these two (`GET` and `PUT`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-06. api.github.com routes neither yet: `_NOT_ROUTED` in `backlot.routers.github` keeps both out of the operations it refuses for a credential, and its comment records the 404 each answered on 2026-11-06, so the shape of an answer is not known."
+      "note": "No corpus record states which runner Dependabot uses for a repository, so nothing is served for these two (`GET` and `PUT`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-06. api.github.com routes neither: `_NOT_ROUTED` in `backlot.routers.github` keeps both out of the operations it refuses for a credential, and its comment records the 404 each answered on 2026-11-06, so the shape of an answer is not known."
     },
     {
       "operation": "GET /repos/{}/{}/dependabot/secrets",
@@ -8669,7 +8669,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "No corpus record states which runner Dependabot uses for a repository, so nothing is served for these two (`GET` and `PUT`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-06. api.github.com routes neither yet: `_NOT_ROUTED` in `backlot.routers.github` keeps both out of the operations it refuses for a credential, and its comment records the 404 each answered on 2026-11-06, so the shape of an answer is not known."
+      "note": "No corpus record states which runner Dependabot uses for a repository, so nothing is served for these two (`GET` and `PUT`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-06. api.github.com routes neither: `_NOT_ROUTED` in `backlot.routers.github` keeps both out of the operations it refuses for a credential, and its comment records the 404 each answered on 2026-11-06, so the shape of an answer is not known."
     },
     {
       "operation": "PUT /repos/{}/{}/dependabot/secrets/{}",

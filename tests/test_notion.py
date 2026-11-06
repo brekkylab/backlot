@@ -15,6 +15,7 @@ from urllib.parse import quote
 import pytest
 
 from backlot import store, synth
+from backlot.express_http import weak_etag
 from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
 from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
@@ -121,10 +122,43 @@ def test_notion_the_same_request_gets_the_same_id_and_another_a_different_one(cl
     assert first.json()["request_id"] != other.json()["request_id"]
 
 
+# A path sent as written, with `{bot}` for the bot user's id, and the value real's validator named
+# reading it; the measurements are dated in `backlot.main.route_a_notion_path_as_sent`.
+_ESCAPED_VALUE_ROWS = [
+    ("/notion/v1/users/m%65", "me"),
+    ("/notion/v1/users/%6De", "me"),
+    ("/notion/v1/users/m%65/", "me"),
+    ("/notion/v1/users/me%2F", "me/"),
+    ("/notion/v1/users/{bot}%2F", "{bot}/"),
+    ("/notion/v1/users/{bot}%2f", "{bot}/"),
+]
+
+
+def test_notion_an_escape_in_a_path_segment_is_read_as_sent(client, notion_h):
+    """`/v1/users/me` is the bot user, so the `{bot}` rows spell its id. The slash after `/notion`
+    is the mount's, so escaping it still reaches that user."""
+    me = client.get("/notion/v1/users/me", headers=notion_h)
+    assert me.status_code == 200
+    bot = me.json()["id"]
+    mounted = client.get("/notion%2Fv1/users/me", headers=notion_h)
+    assert mounted.status_code == 200
+    assert mounted.json()["id"] == bot
+    for path, value in _ESCAPED_VALUE_ROWS:
+        path, value = path.format(bot=bot), value.format(bot=bot)
+        r = client.get(path, headers=notion_h)
+        assert r.status_code == 400, path
+        body = r.json()
+        assert body["code"] == "validation_error", path
+        assert body["message"] == (
+            f'path failed validation: path.user_id should be a valid uuid, instead was `"{value}"`.'
+        ), path
+
+
 _ID = "5c6a2821-6bb1-4a7e-b6e1-c50111515c3d"
 
-# URLs Notion does not publish: paths it has no operation on, and paths it publishes only under
-# another method
+# URLs Notion does not publish: paths it has no operation on, paths it publishes only under another
+# method, and paths with an escape outside the route's values, which
+# `backlot.main.route_a_notion_path_as_sent` routes as sent
 _UNPUBLISHED_ROWS = [
     ("GET", "/notion/v1/nonexistent_thing/xyz"),
     ("GET", "/notion/v1/pages"),
@@ -135,6 +169,12 @@ _UNPUBLISHED_ROWS = [
     ("GET", "/notion/v1/oauth/token"),
     ("POST", "/notion/v1/oauth/other"),
     ("GET", f"/notion/v1/ai/skills/{_ID}/upload"),
+    ("GET", "/notion/v1/user%73/me"),
+    ("GET", "/notion/v1%2Fusers/me"),
+    ("GET", "/notion/v1/users%2Fme"),
+    ("GET", "/notion/%761/users/me"),
+    ("GET", "/notion/v%31/users/me"),
+    ("GET", "/notion/v1/%75sers/me"),
 ]
 
 
@@ -208,20 +248,25 @@ _WRONG_METHOD_ROWS = [
     ("OPTIONS", "/notion/v1/users/me", 400),
     ("TRACE", "/notion/v1/users/me", 405),
     ("TRACE", "/notion/v1/nope", 405),
+    ("TRACE", "/notion/v1/nope%80x", 405),
+    ("TRACE", "/notion/v1/nope%C3%A9x", 405),
 ]
 
 
-@pytest.mark.parametrize("method, path, status", _WRONG_METHOD_ROWS)
-def test_notion_a_method_a_route_does_not_answer(client, notion_h, method, path, status):
+def test_notion_a_method_a_route_does_not_answer(client, notion_h):
     """Measured: the method is part of the URL Notion checks. `GET` on the two POST routes and
     `DELETE`, `PUT`, `PATCH` and `OPTIONS` on a GET route are each `invalid_request_url` at 400,
     not a 405 — so the catch-all takes those methods rather than the ones the routes declare.
     `TRACE` is refused with Cloudflare's own `405 Not Allowed` page before the API reads the URL,
     so the catch-all leaves it off and it is the framework's 405."""
-    r = client.request(method, path, headers=notion_h)
-    assert r.status_code == status, (method, path)
-    if status == 400:
-        assert r.json()["code"] == "invalid_request_url"
+    got, expected = {}, {}
+    for method, path, status in _WRONG_METHOD_ROWS:
+        r = client.request(method, path, headers=notion_h)
+        code = r.json()["code"] if status == 400 else None
+        got[f"{method} {path}"] = (r.status_code, code)
+        expected[f"{method} {path}"] = (status, "invalid_request_url" if status == 400 else None)
+    assert len(got) == len(_WRONG_METHOD_ROWS)
+    assert got == expected
 
 
 def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client, notion_h):
@@ -233,12 +278,130 @@ def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client,
     searched = client.post("/notion/v1/search/", json={}, headers=notion_h, follow_redirects=False)
     assert searched.status_code == 200
     assert searched.json() == client.post("/notion/v1/search", json={}, headers=notion_h).json()
-    twice = client.get("/notion/v1/users/me//", headers=notion_h, follow_redirects=False)
-    assert twice.status_code == 400 and twice.json()["code"] == "invalid_request_url"
-    root = client.get("/notion/", headers=notion_h, follow_redirects=False)
-    assert root.status_code == 400 and root.json()["code"] == "invalid_request_url"
-    bare = client.get("/notion", headers=notion_h, follow_redirects=False)
-    assert bare.status_code == 307 and bare.headers["location"].endswith("/notion/")
+    for twice in ("/notion/v1/users/me//", "/notion//", "/notion/%2F"):
+        r = client.get(twice, headers=notion_h, follow_redirects=False)
+        assert (r.status_code, r.json()["code"]) == (400, "invalid_request_url"), twice
+
+
+# The `Accept` lines of a request, none for the first row, and the type real's root answered
+# `GET`, `HEAD` and `POST` with them in, None for neither (``notion.root``).
+_ROOT_ACCEPT_ROWS = [
+    ((), "text/plain"),
+    (("",), "text/plain"),
+    ((" ",), "text/plain"),
+    (("\t",), "text/plain"),
+    ((" \t ",), "text/plain"),
+    (("\xa0",), None),
+    (("*/*",), "text/plain"),
+    (("text/plain",), "text/plain"),
+    (("text/html",), "text/html"),
+    (("application/json",), None),
+    (("application/xml",), None),
+    (("image/png",), None),
+    (("text/plain, text/html",), "text/plain"),
+    (("text/html, text/plain",), "text/html"),
+    (("text/html,,text/plain",), "text/html"),
+    (("text/html;q=0.5, text/plain;q=0.4",), "text/html"),
+    (("text/plain;q=.5, text/html;q=0.50",), "text/plain"),
+    (("text/plain;q=0.1, */*",), "text/html"),
+    (("text/html;q=0.5, */*",), "text/plain"),
+    (("application/json, */*;q=0.1",), "text/plain"),
+    (("TEXT/HTML",), "text/html"),
+    (("text/*",), "text/plain"),
+    (("*/html",), "text/html"),
+    (("image/html",), None),
+    (("foo/plain",), None),
+    (("text",), None),
+    (("text/plain;q=0",), None),
+    (("text/plain;q=0, text/html;q=0",), None),
+    (("*/*;q=0",), None),
+    (("text/html;level=1",), None),
+    (("text/plain; charset=utf-8",), None),
+    (("text/plain;, text/html",), "text/plain"),
+    (("text/html;charset=*",), "text/html"),
+    (('text/html;charset="*"',), "text/html"),
+    (("text/html;charset=",), "text/html"),
+    (("text/html;charset=*;q=0.3, text/html;q=0.6, text/plain;q=0.5",), "text/plain"),
+    (("text/*;q=0.5, text/html",), "text/html"),
+    (("text/*;q=0.3, */html;q=0.6",), "text/plain"),
+    (("text/plain;q=0.4, text/html;q=0.5, text/html;q=0.1",), "text/html"),
+    (("text/html;Q=0.6, text/plain;q=0.5",), "text/html"),
+    (("text/html;q= 0.6, text/plain;q=0.5",), "text/html"),
+    (('text/html;q="0.9", text/plain;q=0.5',), "text/html"),
+    (("text/html;q=abc",), None),
+    (("text/html, text/html;q=abc",), None),
+    (("text/html;q=0.5abc, text/plain;q=0.4",), "text/html"),
+    (("text/html;q=1e1x, text/plain;q=2",), "text/html"),
+    (("text/html;q=Infinity, text/plain;q=0.5",), "text/html"),
+    (("text/html;q=infinity, text/plain;q=0.5",), "text/plain"),
+    (('text/html;q="1;x=y"',), "text/html"),
+    (('text/plain;a="x, text/html, y"',), None),
+    (('text/plain;a=", text/html',), None),
+    (('text/html;q="0;5", text/plain;q=0.5',), "text/plain"),
+    (('text/html;q="0,5", text/plain;q=0.5',), "text/plain"),
+    (("text/html;\xa0q=0.6, text/plain;q=0.5",), "text/html"),
+    (("text/html;q=\xa00.6, text/plain;q=0.5",), "text/html"),
+    (("text/html;\x85q=0.6, text/plain;q=0.5",), "text/plain"),
+    (("text/html;q=\x850.6, text/plain;q=0.5",), "text/plain"),
+    (("\xa0text/html",), "text/html"),
+    (("text/html\xa0",), "text/html"),
+    (("text/html\x85",), None),
+    (("application/json", "text/html"), "text/html"),
+    (("text/html", "application/json"), "text/html"),
+    (("application/json", "application/xml"), None),
+]
+
+
+def test_notion_the_root_redirects_to_the_marketing_site_as_real_does(client, notion_h):
+    """``notion.root`` on each method, with a credential and without, on both spellings of the
+    root and with a query, under the client's own `Accept: */*`; then each row of
+    ``_ROOT_ACCEPT_ROWS``, its header bytes as sent."""
+    site = "https://www.notion.so"
+    bodies = {
+        "text/plain": f"Found. Redirecting to {site}".encode(),
+        "text/html": f'<p>Found. Redirecting to <a href="{site}">{site}</a></p>'.encode(),
+        None: b"",
+    }
+
+    def answer(r):
+        return (
+            r.status_code,
+            r.headers.get("location"),
+            r.headers.get("content-type"),
+            r.headers.get("vary"),
+            r.headers.get("content-length"),
+            "x-notion-request-id" in r.headers,
+            r.content,
+        )
+
+    def expected(method, kind):
+        body = bodies[kind]
+        content_type = kind and f"{kind}; charset=utf-8"
+        vary = "Accept, Accept-Encoding" if kind else "Accept"
+        return (
+            302,
+            site,
+            content_type,
+            vary,
+            str(len(body)),
+            True,
+            b"" if method == "HEAD" else body,
+        )
+
+    observed, wanted = [], []
+    for headers in ({}, notion_h):
+        for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            for path in ("/notion", "/notion/", "/notion?x=1", "/notion/?x=1"):
+                r = client.request(method, path, headers=headers, follow_redirects=False)
+                observed.append((method, path, bool(headers), answer(r)))
+                wanted.append((method, path, bool(headers), expected(method, "text/plain")))
+    for accepts, kind in _ROOT_ACCEPT_ROWS:
+        for method in ("GET", "HEAD", "POST"):
+            sent = [("accept", accept) for accept in accepts]
+            r = sent_as(client, method, "/notion/", sent, bare=True)
+            observed.append((method, accepts, answer(r)))
+            wanted.append((method, accepts, expected(method, kind)))
+    assert observed == wanted
 
 
 def test_notion_a_slashed_path_is_acl_scoped_like_the_path_without_it(client, admin_h, tokens):
@@ -308,12 +471,30 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
 
 
 def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, notion_h):
-    """Pins ``backlot.errors.notion.json_media_type`` and
+    """Pins ``backlot.errors.notion.json_media_type``, ``backlot.express_http.weak_etag`` and
     ``backlot.routers.notion.APPLICATION_HEADERS`` on 200s and refusals, a `HEAD` among them: each
-    carries the charset, and each but the framework's 405 for `TRACE` and a refusal of the body
-    reader (``backlot.routers.notion.front_door_body``) the headers, which a body that reader leaves
-    unread gets too. The OpenAPI document and the app's own routes keep `application/json` and carry
-    none of the headers."""
+    carries the charset; each but the framework's 405 for `TRACE` the `ETag` over its body, a `HEAD`
+    its `GET`'s; and each but that 405, a refusal of the body reader
+    (``backlot.routers.notion.front_door_body``) and the 400 for a path that does not decode
+    (``backlot.routers.notion.undecodable_url``) the headers, which a body that reader leaves unread
+    gets too. The OpenAPI document and the app's own routes keep `application/json` and carry none
+    of the headers."""
+    # two answers real sent, kept whole, the second's length counted in bytes, not characters
+    for body, etag in (
+        (
+            b'{"object":"error","status":401,"code":"unauthorized","message":"Authorization header'
+            b' must use the format \\"Bearer <token>\\".","request_id":"675f0ca5-96f1-43d8-bd09-'
+            b'ac2433e235e9"}',
+            'W/"b2-r883nfyX+MtL2hM795u3RMqBGaA"',
+        ),
+        (
+            '{"object":"error","status":400,"code":"validation_error","message":"body failed '
+            "validation: body.query should be a string or `undefined`, instead was "
+            '`[\\"é한\\"]`.","request_id":"d45596aa-6b18-4338-a9c3-32f8256e710c"}'.encode(),
+            'W/"da-AeKifXGEFVtPdfWp2X1QNdbc2FE"',
+        ),
+    ):
+        assert weak_etag(body) == etag
     utf8 = "application/json; charset=utf-8"
     real = {
         "content-security-policy": "default-src 'none'",
@@ -326,52 +507,234 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
         "x-xss-protection": "0",
     }
     none = dict.fromkeys(real)
+    # each with `etag` True for the tag over the body, None for no tag
+    app, refused, bare = {**real, "etag": True}, {**none, "etag": True}, {**none, "etag": None}
     versioned = {"Notion-Version": DATA_SOURCES_VERSION}
     rows = [
-        ("GET", "/notion/v1/users/me", notion_h, None, 200, real),
-        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{}", 200, real),
-        ("GET", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}", notion_h, None, 200, real),
-        ("GET", "/notion/v1/users/me", versioned, None, 401, real),
-        ("POST", "/notion/v1/search", {**versioned, **_JSON}, b"{}", 401, real),
+        ("GET", "/notion/v1/users/me", notion_h, None, 200, app),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{}", 200, app),
+        ("GET", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}", notion_h, None, 200, app),
+        ("GET", "/notion/v1/users/me", versioned, None, 401, app),
+        ("POST", "/notion/v1/search", {**versioned, **_JSON}, b"{}", 401, app),
         (
             "GET",
             "/notion/v1/users/me",
             {"Authorization": notion_h["Authorization"]},
             None,
             400,
-            real,
+            app,
         ),
-        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400, real),
-        ("GET", "/notion/v1/pages/00000000000000000000000000000000", notion_h, None, 404, real),
-        ("POST", "/notion/v1/oauth/token", {**versioned, **_JSON}, b"{}", 401, real),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", notion_h, None, 400, app),
+        ("GET", "/notion/v1/pages/00000000000000000000000000000000", notion_h, None, 404, app),
+        ("POST", "/notion/v1/oauth/token", {**versioned, **_JSON}, b"{}", 401, app),
         # the framework's 405 for a method no route takes, which real's front door answers itself
-        ("TRACE", "/notion/v1/users/me", notion_h, None, 405, none),
+        ("TRACE", "/notion/v1/users/me", notion_h, None, 405, bare),
         # the body reader's refusals, and a body it does not read
-        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{", 400, none),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON}, b"{", 400, refused),
         (
             "POST",
             "/notion/v1/search",
             {**notion_h, "Content-Type": "application/json; charset=latin1"},
             b"{}",
             415,
-            none,
+            refused,
         ),
-        ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, real),
+        (
+            "POST",
+            "/notion/v1/search",
+            {**notion_h, **_JSON},
+            b'{"x":"' + b"a" * 600_000 + b'"}',
+            413,
+            refused,
+        ),
+        ("POST", "/notion/v1/search", {**notion_h, "Content-Type": "text/plain"}, b"{", 200, app),
+        # ``backlot.routers.notion.undecodable_url``'s refusal
+        ("GET", "/notion/v1/nope%80x", notion_h, None, 400, refused),
+        ("GET", "/notion/v1/users/nope%80x", notion_h, None, 400, refused),
+        ("HEAD", "/notion/v1/users/nope%80x", notion_h, None, 400, refused),
     ]
     for method, path, headers, body, status, sent in rows:
         r = client.request(method, path, headers=headers, content=body)
         got = {name: r.headers.get(name) for name in real}
+        # a `HEAD`'s tag is its `GET`'s body's
+        tagged = client.get(path, headers=headers).content if method == "HEAD" else r.content
+        got["etag"] = r.headers.get("etag") and r.headers["etag"] == weak_etag(tagged)
         assert (r.status_code, r.headers["content-type"], got) == (status, utf8, sent), (path, body)
     head = client.head("/notion/v1/users/me", headers=versioned)
     got = {name: head.headers.get(name) for name in real}
-    assert (head.status_code, head.headers["content-type"], got) == (401, utf8, real)
+    get = client.get("/notion/v1/users/me", headers=versioned)
+    got["etag"] = head.headers.get("etag") and head.headers["etag"] == weak_etag(get.content)
+    assert (head.status_code, head.headers["content-type"], got) == (401, utf8, app)
     # the contract keeps the bare type, and so do the app's own routes, with none of the headers
     op = client.get("/openapi.json").json()["paths"]["/notion/v1/users/me"]["get"]
     assert list(op["responses"]["200"]["content"]) == ["application/json"]
     for path in ("/openapi.json", "/health", "/notionx/v1/users/me"):
         r = client.get(path)
-        got = {name: r.headers.get(name) for name in real}
-        assert (r.headers["content-type"], got) == ("application/json", none), path
+        got = {name: r.headers.get(name) for name in bare}
+        assert (r.headers["content-type"], got) == ("application/json", bare), path
+    # The root's non-JSON redirect carries no entity tag.
+    root = client.get("/notion", headers=notion_h, follow_redirects=False)
+    assert (root.status_code, root.headers.get("etag")) == (302, None)
+
+
+def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h):
+    """Each request below is answered as ``backlot.routers.notion.not_modified`` records real
+    answering it: with the 304 ``backlot.main.report_notion_etag`` makes of the answer it stands
+    for, under the `vary` ``backlot.main.report_notion_cors`` gives an answer with no
+    `content-type`, or with the status it gets without `If-None-Match`."""
+    me, page = "/notion/v1/users/me", f"/notion/v1/pages/{synth.notion_id('nt-runbook')}"
+    stands_for = {}
+    for path in (me, page):
+        headers = dict(client.get(path, headers=notion_h).headers)
+        del headers["content-type"], headers["content-length"]
+        stands_for[path] = (304, b"", {**headers, "vary": "Origin"})
+    star = ("If-None-Match", "*")
+    wanted = {
+        ("GET", me, (star,)): stands_for[me],
+        ("HEAD", me, (star,)): stands_for[me],
+        ("GET", page, (star,)): stands_for[page],
+        ("GET", me, (("If-None-Match", " \t* "),)): stands_for[me],
+        ("GET", me, (star, ("If-Modified-Since", ""))): stands_for[me],
+        ("GET", me, (star, ("If-Modified-Since", "  "))): stands_for[me],
+        ("GET", me, (star, ("Cache-Control", "NO-CACHE"))): stands_for[me],
+        ("GET", me, (star, ("Cache-Control", "max-age=0"))): stands_for[me],
+        ("GET", me, (star, ("If-Modified-Since", "Fri, 01 Jan 2100 00:00:00 GMT"))): 200,
+        ("GET", me, (star, ("If-Modified-Since", "\xa0"))): 200,
+        ("GET", me, (star, ("Cache-Control", "max-age=0, no-cache"))): 200,
+        ("GET", me, (star, ("Cache-Control", "max-age=0"), ("Cache-Control", "no-cache"))): 200,
+        ("GET", me, (star, ("Cache-Control", "xno-cache"))): stands_for[me],
+        ("GET", me, (star, ("Cache-Control", "\xa0no-cache"))): 200,
+        ("GET", me, (star, ("Cache-Control", 'no-cache="set-cookie"'))): stands_for[me],
+        ("GET", me, (("If-None-Match", '"*"'),)): 200,
+        ("GET", me, (("If-None-Match", 'W/"0-x", *'),)): 200,
+        ("GET", me, (("If-None-Match", "\xa0*"),)): 200,
+        ("GET", me, (("If-None-Match", "*\xa0"),)): 200,
+        # real's tag is new on each answer, so the one an answer carried matches no later one
+        ("GET", me, (("If-None-Match", stands_for[me][2]["etag"]),)): 200,
+        ("GET", "/notion/v1/pages/00000000000000000000000000000000", (star,)): 404,
+        ("GET", "/notion/v1/nonexistent_thing/xyz", (star,)): 400,
+        ("POST", "/notion/v1/search", (star, *_JSON.items())): 200,
+    }
+    answered = {}
+    for method, path, sent in wanted:
+        body = b"{}" if method == "POST" else None
+        r = sent_as(client, method, path, [*notion_h.items(), *sent], content=body)
+        answer = (304, r.content, dict(r.headers)) if r.status_code == 304 else r.status_code
+        answered[method, path, sent] = answer
+    assert answered == wanted
+
+
+_NOTION_CORS_HEADERS = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": (
+        "Authorization, Content-Type, Accept, Notion-Version, Notion-Beta, Idempotency-Key, "
+        "User-Agent, X-Notion-Mcp-Redirect-Uri, X-Notion-Mcp-Client-Id, "
+        "X-Notion-Mcp-Client-Name, X-Notion-Mcp-Client-Version"
+    ),
+    "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+    "access-control-expose-headers": "X-Notion-Request-Id, Retry-After",
+    "access-control-max-age": "0",
+}
+
+
+def test_notion_cors_headers_preflight_and_vary_are_reals(client, notion_h):
+    """Pins ``backlot.main.report_notion_cors`` and ``backlot.routers.notion.answers_cors``, each
+    row a request real answered that way."""
+    versioned = {"Notion-Version": DATA_SOURCES_VERSION}
+    origin = {"Origin": "https://example.com"}
+    asks = {"Access-Control-Request-Method": "POST"}
+    preflight = {**origin, **asks}
+    five, none = _NOTION_CORS_HEADERS, dict.fromkeys(_NOTION_CORS_HEADERS)
+    both, compression = "Origin, Accept-Encoding", "Accept-Encoding"
+    fresh = {"If-None-Match": "*"}
+    rows = [
+        ("GET", "/notion/v1/users/me", {**notion_h, **origin}, None, 200, five, both),
+        ("HEAD", "/notion/v1/users/me", {**notion_h, **origin}, None, 200, five, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, **origin, **fresh}, None, 304, five, "Origin"),
+        ("HEAD", "/notion/v1/users/me", {**notion_h, **origin, **fresh}, None, 304, five, "Origin"),
+        ("GET", "/notion/v1/users/me", {**notion_h, **fresh}, None, 304, none, "Origin"),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": "null"}, None, 200, five, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": "\xa0"}, None, 200, five, both),
+        ("GET", "/notion/v1/users/me", {**versioned, **origin}, None, 401, five, both),
+        ("POST", "/notion/v1/search", {**notion_h, **_JSON, **origin}, b"{", 400, five, both),
+        ("GET", "/notion/v1/nonexistent_thing/xyz", {**notion_h, **origin}, None, 400, five, both),
+        ("GET", "/notion/v1/users/me", notion_h, None, 200, none, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": ""}, None, 200, none, both),
+        ("GET", "/notion/v1/users/me", {**notion_h, "Origin": " "}, None, 200, none, both),
+        (
+            "GET",
+            "/notion/v1/users/me",
+            (*notion_h.items(), ("Origin", ""), *origin.items()),
+            None,
+            200,
+            five,
+            both,
+        ),
+        (
+            "GET",
+            "/notion/v1/users/me",
+            (*notion_h.items(), ("Origin", ""), ("Origin", "")),
+            None,
+            200,
+            none,
+            both,
+        ),
+        (
+            "OPTIONS",
+            "/notion/v1/users/me",
+            (("Origin", ""), *preflight.items()),
+            None,
+            204,
+            five,
+            "Origin",
+        ),
+        ("TRACE", "/notion/v1/users/me", {**notion_h, **origin}, None, 405, none, None),
+        ("OPTIONS", "/notion/v1/search", preflight, None, 204, five, "Origin"),
+        ("OPTIONS", "/notion/v1/nonexistent_thing/xyz", preflight, None, 204, five, "Origin"),
+        (
+            "OPTIONS",
+            "/notion/v1/search",
+            {**origin, "Access-Control-Request-Method": ""},
+            None,
+            204,
+            five,
+            "Origin",
+        ),
+        ("OPTIONS", "/notion/v1/search", origin, None, 400, five, both),
+        ("OPTIONS", "/notion/v1/search", asks, None, 400, none, both),
+        ("OPTIONS", "/notion/v1/search", {**preflight, "Origin": ""}, None, 400, none, both),
+        *(
+            (method, "/notion/v1/users/me", {**notion_h, **preflight}, None, status, five, both)
+            for method, status in [
+                ("GET", 200),
+                ("HEAD", 200),
+                ("POST", 400),
+                ("PUT", 400),
+                ("PATCH", 400),
+                ("DELETE", 400),
+            ]
+        ),
+        ("POST", "/notion/v1/oauth/token", {**_JSON, **origin}, b"{}", 401, none, compression),
+        ("GET", "/notion/v1/oauth/token", {**notion_h, **origin}, None, 400, none, compression),
+        ("OPTIONS", "/notion/v1/oauth/token", preflight, None, 400, none, compression),
+        ("OPTIONS", "/notion/v1/oauth", preflight, None, 204, five, "Origin"),
+        ("GET", "/notion/v1", {**notion_h, **origin}, None, 400, none, compression),
+        ("OPTIONS", "/notion/v2/users/me", preflight, None, 400, none, compression),
+        ("OPTIONS", "/notion/v1/", preflight, None, 204, five, "Origin"),
+        ("OPTIONS", "/notion/v1/oauth/", preflight, None, 400, none, compression),
+        ("GET", "/notion/v1/%6Fauth/token", {**notion_h, **origin}, None, 400, five, both),
+        ("OPTIONS", "/notion/v1/oauth%2Ftoken", preflight, None, 204, five, "Origin"),
+        ("OPTIONS", "/notion/v1%2Fusers/me", preflight, None, 400, none, compression),
+    ]
+    answered, wanted = {}, {}
+    for method, path, headers, body, status, sent, vary in rows:
+        pairs = tuple(headers.items() if isinstance(headers, dict) else headers)
+        r = sent_as(client, method, path, pairs, body)
+        row = (method, path, pairs)
+        got = {name: r.headers.get(name) for name in _NOTION_CORS_HEADERS}
+        answered[row] = (r.status_code, got, r.headers.get("vary"))
+        wanted[row] = (status, sent, vary)
+    assert answered == wanted
 
 
 def test_notion_page_retrieve_and_blocks(client, notion_h):
@@ -1822,8 +2185,15 @@ _PARENT_RECORDS = [
         "content": "body",
         "author_email": "ava@acme.com",
         "visibility": "public",
-        "created": "2026-03-01T08:15:00Z",
-        "updated": "2026-03-02T09:30:00Z",
+        "created": "2026-03-01T08:15:42Z",
+        "updated": "2026-03-02T09:30:17Z",
+        "comments": [
+            {
+                "content": "Looks good.",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-03-02T10:20:33Z",
+            }
+        ],
     },
     {
         "source_type": "notion",
@@ -1843,8 +2213,8 @@ _PARENT_RECORDS = [
         "author_email": "ava@acme.com",
         "visibility": "public",
         "properties": {"Status": {"type": "select"}},
-        "created": "2026-03-03T10:00:00Z",
-        "updated": "2026-03-04T11:45:00Z",
+        "created": "2026-03-03T10:00:51Z",
+        "updated": "2026-03-04T11:45:09Z",
     },
     {
         "source_type": "notion",
@@ -1938,7 +2308,20 @@ def test_notion_url_is_the_app_host_and_a_data_source_names_its_databases(client
     )
 
 
-def test_notion_a_page_its_blocks_and_a_data_source_answer_millisecond_timestamps(parent_corpus):
+def test_notion_timestamps_follow_the_minute_and_the_database_its_version(parent_corpus):
+    """`_PARENT_RECORDS` dates its page, its comment and its database to the second, so the minute
+    and the second differ."""
+    minute = ("2026-03-03T10:00:00.000Z", "2026-03-04T11:45:00.000Z")
+    offset = ("2026-03-03T10:00:51.000+00:00", "2026-03-04T11:45:09.000+00:00")
+    database = {
+        "2021-05-11": minute,
+        "2021-05-13": minute,
+        "2021-08-16": minute,
+        "2022-02-22": minute,
+        "2022-06-28": minute,
+        "2025-09-03": offset,
+        "2026-03-11": offset,
+    }
     settings = parent_corpus
     with client_for(settings) as client:
         h = {"Authorization": f"Bearer {settings.admin_token}", "Notion-Version": "2025-09-03"}
@@ -1951,11 +2334,22 @@ def test_notion_a_page_its_blocks_and_a_data_source_answer_millisecond_timestamp
         for obj in answers:
             assert obj["created_time"] == "2026-03-01T08:15:00.000Z", obj["object"]
             assert obj["last_edited_time"] == "2026-03-02T09:30:00.000Z", obj["object"]
+        listed = client.get("/notion/v1/comments", params={"block_id": page}, headers=h).json()
+        (comment,) = listed["results"]
+        assert (comment["created_time"], comment["last_edited_time"]) == (
+            "2026-03-02T10:20:00.000Z",
+            "2026-03-02T10:20:00.000Z",
+        )
         source = client.get(
             f"/notion/v1/data_sources/{synth.notion_data_source_id('nf-db')}", headers=h
         ).json()
-        assert source["created_time"] == "2026-03-03T10:00:00.000Z"
-        assert source["last_edited_time"] == "2026-03-04T11:45:00.000Z"
+        assert (source["created_time"], source["last_edited_time"]) == minute
+        db = served_id("notion", "nf-db")
+        for version, times in database.items():
+            got = client.get(
+                f"/notion/v1/databases/{db}", headers={**h, "Notion-Version": version}
+            ).json()
+            assert (got["created_time"], got["last_edited_time"]) == times, version
 
 
 def test_notion_search_and_query_trailers_follow_the_version(client, admin_h):
@@ -2032,6 +2426,9 @@ _TOO_LARGE = {
     "code": 413,
 }
 _INVALID_JSON = "Error parsing JSON body."
+_UNDECODABLE = "Failed to decode url."
+_BAD_URL = "Invalid request URL."
+_NO_TOKEN = {"Authorization": None}
 _JSON = {"Content-Type": "application/json"}
 _LONE_HIGH = chr(0xD83D)
 _EMOJI = "%F0%9F%98%80"
@@ -2990,6 +3387,30 @@ _REQUEST_ROWS = [
         _INVALID_JSON,
     ),
     ("invalid JSON on a GET", "GET", "/users", "", b"{", _JSON, 400, _INVALID_JSON),
+    # the path ``backlot.routers.notion.undecodable_url`` refuses, after the body and ahead of the
+    # credential, where one whose escapes decode is a URL like any other
+    *[
+        (f"undecodable {escape}", "GET", f"/nope{escape}x", "", None, {}, 400, _UNDECODABLE)
+        for escape in ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+    ],
+    ("undecodable on a route", "GET", "/users%80", "", None, {}, 400, _UNDECODABLE),
+    ("undecodable in an id", "GET", "/users/nope%80x", "", None, {}, 400, _UNDECODABLE),
+    ("undecodable in a page id", "GET", "/pages/nope%80x", "", None, {}, 400, _UNDECODABLE),
+    ("undecodable beside %01", "GET", "/users/nope%01%80x", "", None, {}, 400, _UNDECODABLE),
+    *[
+        (f"undecodable {path}, no token", "GET", path, "", None, _NO_TOKEN, 400, _UNDECODABLE)
+        for path in ("/nope%80x", "/users/nope%80x")
+    ],
+    *[
+        (f"invalid JSON at {path}{who}", "POST", path, "", b"{", headers, 400, _INVALID_JSON)
+        for path, who, headers in [
+            ("/search%80", "", _JSON),
+            ("/nope%80x", ", no token", {**_JSON, **_NO_TOKEN}),
+            ("/nope%C3%A9x", "", _JSON),
+        ]
+    ],
+    ("a decoding escape", "GET", "/nope%C3%A9x", "", None, {}, 400, _BAD_URL),
+    ("a decoding escape on a route", "GET", "/users%C3%A9", "", None, {}, 400, _BAD_URL),
     (
         "invalid JSON ahead of an unknown data source",
         "POST",
@@ -3198,6 +3619,26 @@ _REQUEST_ROWS = [
         {"Content-Type": "application/json; charset=utf-16le"},
         400,
         _absent("body", "foo", "1"),
+    ),
+    (
+        "utf-7, a run for 1",
+        "POST",
+        "/search",
+        "",
+        b'{"page_size":+ADE-}',
+        {"Content-Type": "application/json; charset=utf-7"},
+        200,
+        None,
+    ),
+    (
+        "utf-7, a run the body ends in holding two marks",
+        "POST",
+        "/search",
+        "",
+        b"+/v/+/w",
+        {"Content-Type": "application/json; charset=utf-7"},
+        400,
+        _INVALID_JSON,
     ),
     (
         "gzip",
@@ -4149,7 +4590,7 @@ def test_notion_reads_a_request_as_real_does(client, notion_h):
         "page": _RUNBOOK,
         "ds": synth.notion_data_source_id("nt-tasks-db"),
         "db": synth.notion_id("nt-tasks-db"),
-        "user": client.get("/notion/v1/users", headers=notion_h).json()["results"][0]["id"],
+        "user": synth.notion_user_id("ava@acme.com"),
         "rand": _RAND,
     }
     answered, wanted = {}, {}

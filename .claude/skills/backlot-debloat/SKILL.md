@@ -127,7 +127,7 @@ English and ends with its last sentence, with no signature and no session link.
 | Area | Code | Tests |
 |---|---|---|
 | `slack` | `backlot/routers/slack.py` | `tests/test_slack.py` |
-| `google` | `backlot/routers/google.py`, `backlot/errors/google.py`, `backlot/protojson.py`, `backlot/sheets_grid.py` | `tests/test_google.py` |
+| `google` | `backlot/routers/google.py`, `backlot/routers/google_sheets.py`, `backlot/errors/google.py`, `backlot/protojson.py`, `backlot/gsheets.py` | `tests/test_google.py` |
 | `github` | `backlot/routers/github.py`, `backlot/errors/github.py` | `tests/test_github.py` |
 | `atlassian` | `backlot/routers/atlassian.py`, `backlot/errors/atlassian.py` | `tests/test_atlassian.py` |
 | `s3` | `backlot/routers/s3.py`, `backlot/errors/s3.py`, `backlot/sigv2.py`, `backlot/sigv4.py`, `backlot/sigv4a.py` | `tests/test_s3.py` |

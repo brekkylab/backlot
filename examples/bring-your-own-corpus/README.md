@@ -37,9 +37,11 @@ Every record states the facts its served document cannot exist without: `source_
 the container it lives in, `author_email` (fireflies may spell it `host_email`) and `created` — plus
 whatever its own vendor always reports. A spreadsheet may state `sheets` instead of `content`, and
 then `content` is derived from the first sheet rather than written; see
-[docs/corpus.md](../../docs/corpus.md#spreadsheets). `title` is required for every source **except** Slack, whose
-messages have none, and HubSpot, whose notes have no name. A child row states its own author and its
-own second. Run `backlot import <corpus> --dry-run` and it names every record that leaves one out.
+[docs/corpus.md](../../docs/corpus.md#spreadsheets). A document may likewise state `paragraphs`, and
+then `content` is their text; see [docs/corpus.md](../../docs/corpus.md#documents). `title` is
+required for every source **except** Slack, whose messages have none, and HubSpot, whose notes have
+no name. A child row states its own author and its own second. Run
+`backlot import <corpus> --dry-run` and it names every record that leaves one out.
 
 ```json
 {"source_type": "slack", "channel": "incidents", "author_email": "bob@acme.com", "created": "2026-02-10T18:00:00Z", "content": "Anyone seeing 502s from the gateway?", "replies": [{"content": "Looking now.", "author_email": "ava@acme.com", "created": "2026-02-10T18:00:40Z"}]}

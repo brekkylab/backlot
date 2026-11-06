@@ -1241,7 +1241,7 @@ def test_a_converted_spreadsheet_serves_on_the_prose_path_even_when_the_bench_na
     Pinned here because the tempting change is a one-line delimiter split, and nothing else would
     fail if someone made it."""
     from backlot.importer.erb import _byo_drive
-    from backlot.routers.google import _sheets_grid
+    from backlot.routers.google_sheets import _sheets_grid
 
     conn = _conn()
     P = Principals([], "redwoodinference.com")

@@ -27,9 +27,10 @@ A module in ``_ENVELOPES`` provides:
 - ``head_content_length(request, status_code)``, optional — whether a `HEAD` declares the length
   of the body its `GET` would have carried. The whole REQUEST, because Google's answer turns on
   whether the GET was a download, which the path does not say. A vendor without it declares the
-  length, as GitHub and Notion are measured to; Atlassian and Google implement it, and which of
-  their answers declare one is :func:`backlot.errors.atlassian.head_content_length` and
-  :func:`backlot.errors.google.head_content_length`.
+  length, as GitHub is measured to; Atlassian, Google and Notion implement it, and which of their
+  answers declare one is :func:`backlot.errors.atlassian.head_content_length`,
+  :func:`backlot.errors.google.head_content_length` and
+  :func:`backlot.errors.notion.head_content_length`.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub, Atlassian and Notion implement it — Atlassian's names Jira's charset

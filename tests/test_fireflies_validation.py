@@ -445,6 +445,7 @@ def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
         "date: -62167219200001",
         "date: -8.64e15",
         'date: 1e15, fromDate: "2020-01-01"',
+        'channel_id: "x", date: 300000000000000',
     ],
 )
 def test_fireflies_date_outside_the_years_0_to_9999_is_an_internal_error(fireflies_http, arguments):

@@ -176,7 +176,10 @@ def docs_url(path: str) -> str:
     """The anchor real names for the route ``path`` reaches, or the root for anything else.
 
     The root is also the honest answer for a path that matches no route: real has no endpoint
-    documentation to point at for a URL it does not serve either.
+    documentation to point at for a URL it does not serve either. Real named it on 2026-10-30 (UTC)
+    for `/rate_limit` with an escaped tab, CR, LF, `#` or `?` after it and for `/zen` with `%23` or
+    `%0D`, and named `/repos/{owner}/{repo}`'s anchor for a repository with `%0D` after its name, a
+    byte that route's parameter takes.
     """
     from starlette.routing import Match
 
@@ -187,7 +190,7 @@ def docs_url(path: str) -> str:
     return DOCS_ROOT
 
 
-def http_body(path: str, exc, query=None) -> dict | None:
+def http_body(path: str, exc, query=None) -> dict | bytes | None:
     """Render an exception into the envelope.
 
     An error the router shaped by hand carries its own body as ``github_body``, and that wins. Seven
@@ -212,7 +215,7 @@ def http_body(path: str, exc, query=None) -> dict | None:
     Starlette's phrase in real's envelope would read as measured.
     """
     body = getattr(exc, "github_body", None)
-    if isinstance(body, dict):
+    if isinstance(body, (dict, bytes)):
         return body
     if exc.status_code == 405:
         return None
@@ -225,8 +228,11 @@ def http_body(path: str, exc, query=None) -> dict | None:
     }
 
 
-def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
-    """The backend version refusal's newline and Go-style HTML escapes.
+def rendered(
+    request: Request, status_code: int, body: dict | bytes, headers=None
+) -> Response | None:
+    """The backend version refusal's newline and Go-style HTML escapes, and a body of ``bytes``
+    as it is.
 
     Each `<`, `>` and `&` in its `message` came back from api.github.com on 2026-10-19 as
     `\\u003c`, `\\u003e` and `\\u0026`, as Go's `encoding/json` writes them. The newline's
@@ -235,6 +241,8 @@ def rendered(request: Request, status_code: int, body: dict, headers=None) -> Re
     Its empty Selected header distinguishes it from the gateway's version refusal. Other GitHub
     errors keep the shared JSON rendering.
     """
+    if isinstance(body, bytes):
+        return Response(body, status_code=status_code, headers=headers)
     if status_code == 400 and headers and headers.get("X-GitHub-Api-Version-Selected") == "":
         written = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
         for ch in "<>&":

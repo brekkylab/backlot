@@ -122,28 +122,28 @@ async def main(vfs) -> None:
 def main_fuse(vfs) -> None:
     """--fuse: mount the team tree as a *real* filesystem, then read it with ordinary tools —
     any process (grep, an editor, an indexer) can open the files. Needs macFUSE/fuse3."""
-    try:
-        with Workspace({"/linear": vfs}, mode=MountMode.READ) as ws:
+    with Workspace({"/linear": vfs}, mode=MountMode.READ) as ws:
+        try:
             mnt = ws.add_fuse_mount("/linear")  # "/linear" is now a real directory on disk
-            print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
-            team = sorted(os.listdir(f"{mnt}/teams"))[0]
-            team_json = f"{mnt}/teams/{team}/team.json"
-            print(f"\n$ head -c 200 teams/{team}/team.json")
-            print(
-                "  " + open(team_json, encoding="utf-8").read(200).replace("\n", " ")
-            )  # a genuine open() via FUSE
-            count = subprocess.run(
-                ["grep", "-c", "state_name", team_json],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
-            print(
-                f"\n$ grep -c state_name <that file>   # a separate process reads the mount → {count.stdout.strip()}"
-            )
-            print(f"\nexplore it live in another terminal:  ls {mnt}/teams")
-    except (ImportError, RuntimeError, OSError) as e:
-        raise SystemExit(FUSE_HELP.format(err=e))
+        except (RuntimeError, OSError) as e:
+            raise SystemExit(FUSE_HELP.format(err=e))
+        print(f"=== mounted at {mnt} — an ordinary filesystem now ===")
+        team = sorted(os.listdir(f"{mnt}/teams"))[0]
+        team_json = f"{mnt}/teams/{team}/team.json"
+        print(f"\n$ head -c 200 teams/{team}/team.json")
+        print(
+            "  " + open(team_json, encoding="utf-8").read(200).replace("\n", " ")
+        )  # a genuine open() via FUSE
+        count = subprocess.run(
+            ["grep", "-c", "state_name", team_json],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        print(
+            f"\n$ grep -c state_name <that file>   # a separate process reads the mount → {count.stdout.strip()}"
+        )
+        print(f"\nexplore it live in another terminal:  ls {mnt}/teams")
 
 
 def _parse_args() -> argparse.Namespace:

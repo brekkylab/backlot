@@ -7,8 +7,12 @@ or call the response builder directly.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import re
 import sqlite3
+import time
+import tracemalloc
 
 import pytest
 from graphql import build_client_schema, parse, validate
@@ -17,10 +21,15 @@ from backlot import store
 from backlot.graphql import mcp_tools
 from tests._helpers import (
     SWEPT_BYTES,
+    Chunked,
+    WithTheKey,
     client_for,
     corpus_client,
     gql,
+    http_row,
     padded_query,
+    raw_exchange,
+    raw_request,
     sent_as,
     served_id,
     tiny_corpus,
@@ -43,12 +52,12 @@ def ff_gql(client, query, headers, **variables):
 _NO_PREFIX = (
     b'{"errors":[{"friendly":true,"code":"auth_failed","message":"Authorization header is missing'
     b" the 'Bearer' prefix. Please use the format: 'Authorization: Bearer <api_key>'. If this"
-    b' persists, please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}'
+    b' persists, please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}\n'
 )
 _BAD_KEY = (
     b'{"errors":[{"friendly":true,"code":"auth_failed","message":"An error occurred while'
     b" authenticating your request. Please recheck your API key and try again. If this persists,"
-    b' please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}'
+    b' please contact Fireflies support.","extensions":{"code":"auth_failed"}}]}\n'
 )
 # Values of the header, None for none and `{t}` for a key that resolves, with the 500 Fireflies
 # refused each with or None where it served the query.
@@ -116,14 +125,67 @@ def test_fireflies_reads_a_swept_byte_as_fireflies_does(client, tokens_yaml):
     assert {value: _fireflies_answer(client, tokens_yaml, value) for value in expected} == expected
 
 
-# --- a body Fireflies reads ahead of the credential ----------------------------------------------
-# The headers a body was sent with beyond `Content-Type: application/json`, the body, and Fireflies'
-# answer to it with the key: `_EMPTY`, `_NOT_JSON` or `_TOO_LARGE`, its HTTP layer's refusals
-# `backlot.routers.fireflies._body_refusal` sends at the status their `statusCode` names, or None
-# where it served the query. `_REQUEST_ERROR` is a row of JSON that is not an object: past that
-# layer it reaches the credential, one of `_auth_failed`'s 500s without the key, and with the key
-# it is a 400, in Apollo Server's words on real and graphql-js's here.
-_REQUEST_ERROR = object()
+# --- the body and the credential, in the order Fireflies reads them -------------------------------
+def _apollo(
+    message: bytes, code: bytes = b"BAD_REQUEST", locations: bytes = b"", status: int = 400
+) -> WithTheKey:
+    """Apollo Server's refusal as Fireflies writes it around ``message``, already JSON-escaped."""
+    return WithTheKey(
+        b'{"errors":[{"friendly":false,"message":"%s",%s"code":"%s","extensions":{}}]}\n'
+        % (message, locations, code),
+        status,
+    )
+
+
+_NO_KEYS = _apollo(b"POST body missing, invalid Content-Type, or JSON object has no keys.")
+
+
+def _twelve_deep(fields: int, name: str = "l") -> str:
+    """A selection of ``fields`` fields twelve deep, ``l0`` on with ``name`` as ``l``, in fields
+    Fireflies does not have."""
+    selection = " ".join(f"{name}{n}" for n in range(fields))
+    return "{ a{b{c{d{e{f{g{h{i{j{k{ %s }}}}}}}}}}} }" % selection
+
+
+def _query(query: str) -> bytes:
+    return json.dumps({"query": query}, separators=(",", ":")).encode()
+
+
+def _too_deep(query: str, fields: int, name: str = "l", operation: str = "") -> list[bytes]:
+    """graphql-depth-limit's error at each field :func:`_twelve_deep` put in ``query``."""
+    return [
+        b'{"friendly":false,"message":"\'%s\' exceeds maximum operation depth of 10","locations":'
+        b'[{"line":1,"column":%d}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}'
+        % (operation.encode(), query.index(f" {name}{n} ") + 2)
+        for n in range(fields)
+    ]
+
+
+def _validation(*errors: bytes) -> bytes:
+    return b'{"errors":[%s]}\n' % b",".join(errors)
+
+
+_INTERNAL = (
+    b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR",'
+    b'"extensions":{}}]}\n'
+)
+
+
+def _no_field_a(column: int) -> bytes:
+    return (
+        b'{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":'
+        b'[{"line":1,"column":%d}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}' % column
+    )
+
+
+_TOO_MANY_ERRORS = (
+    b'{"friendly":false,"message":"Too many validation errors, error limit reached. Validation'
+    b' aborted.","code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}'
+)
+_TWO_FIFTIES = "query A %s query B %s" % (_twelve_deep(50), _twelve_deep(50, "m"))
+
+
+_BATCHING = _apollo(b"Operation batching disabled.")
 _EMPTY = (
     b'{"statusCode":400,"status":false,"code":"http","message":"Body cannot be empty when'
     b' content-type is set to \'application/json\'","errorMessage":"Body cannot be empty when'
@@ -137,6 +199,10 @@ _NOT_JSON = (
 _TOO_LARGE = (
     b'{"statusCode":413,"status":false,"code":"http","message":"Request body is too large",'
     b'"errorMessage":"Request body is too large"}'
+)
+_SIZE_MISMATCH = (
+    b'{"statusCode":400,"status":false,"code":"http","message":"Request body size did not match'
+    b' Content-Length","errorMessage":"Request body size did not match Content-Length"}'
 )
 _TYPENAME = b'{"query":"{ __typename }"}'
 
@@ -161,6 +227,11 @@ _FIREFLIES_READS = [
         id="utf-16",
     ),
 ]
+# The headers a body was sent with beyond `Content-Type: application/json`, the body, and Fireflies'
+# answer to it with the key: `_EMPTY`, `_NOT_JSON` or `_TOO_LARGE`, its HTTP layer's refusals
+# `backlot.routers.fireflies._body_refusal` sends at the status their `statusCode` names, or None
+# where it served the query. A `WithTheKey` row is a body that layer passes, which draws one of
+# `_auth_failed`'s 500s without the key; its bytes are api.fireflies.ai's.
 _FIREFLIES_BODIES = [
     pytest.param(b'{"query":"{ __typename }"}', None, id="a query"),
     pytest.param(b"{", _NOT_JSON, id="{"),
@@ -302,11 +373,436 @@ _FIREFLIES_BODIES = [
     pytest.param(b"\xef\xbb\xbf", _NOT_JSON, id="BOM only"),
     pytest.param(b'{"x":Infinity,"query":"{ __typename }"}', _NOT_JSON, id="Infinity"),
     pytest.param(b'{"x":-Infinity,"query":"{ __typename }"}', _NOT_JSON, id="-Infinity"),
-    pytest.param(b"[]", _REQUEST_ERROR, id="an array"),
-    pytest.param(b"null", _REQUEST_ERROR, id="null"),
-    pytest.param(b'"x"', _REQUEST_ERROR, id="a string"),
-    pytest.param(b"5", _REQUEST_ERROR, id="a number"),
-    pytest.param(b'[{"query":"{ __typename }"}]', _REQUEST_ERROR, id="a batch of one query"),
+    pytest.param(b"[]", _BATCHING, id="an array"),
+    pytest.param(b"null", _NO_KEYS, id="null"),
+    pytest.param(b'"x"', _NO_KEYS, id="a string"),
+    pytest.param(b"5", _NO_KEYS, id="a number"),
+    pytest.param(b"true", _NO_KEYS, id="true"),
+    pytest.param(b"{}", _NO_KEYS, id="an empty object"),
+    pytest.param(b'[{"query":"{ __typename }"}]', _BATCHING, id="a batch of one query"),
+    pytest.param(b'{"query":5}', _apollo(b"GraphQL queries must be strings."), id="a query of 5"),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"x"}',
+        _apollo(
+            b"`variables` in a POST body should be provided as an object, not a recursively "
+            b"JSON-encoded string."
+        ),
+        id="a string of variables",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":5}',
+        _apollo(b"`extensions` in a POST body must be an object if provided."),
+        id="extensions of 5",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","operationName":5}',
+        _apollo(b"`operationName` in a POST body must be a string if provided."),
+        id="an operationName of 5",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + b"0" * 64
+        + b'"}}}',
+        _apollo(b"provided sha does not match query", b"INTERNAL_SERVER_ERROR"),
+        id="a persisted query's hash that does not match",
+    ),
+    pytest.param(
+        b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
+        _apollo(b"PersistedQueryNotFound", b"PERSISTED_QUERY_NOT_FOUND", status=200),
+        id="a persisted query's hash alone",
+    ),
+    pytest.param(
+        b'{"query":null}',
+        _apollo(
+            b"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension."
+        ),
+        id="a query of null",
+    ),
+    pytest.param(
+        b'{"query":"","extensions":{"persistedQuery":{"version":1,"sha256Hash":"'
+        + hashlib.sha256(b"").hexdigest().encode()
+        + b'"}}}',
+        _apollo(
+            b"Syntax Error: Unexpected <EOF>.",
+            b"GRAPHQL_PARSE_FAILED",
+            b'"locations":[{"line":1,"column":1}],',
+        ),
+        id="a persisted query's hash matching an empty query",
+    ),
+    pytest.param(
+        b'{"query":"{"}',
+        _apollo(
+            b"Syntax Error: Expected Name, found <EOF>.",
+            b"GRAPHQL_PARSE_FAILED",
+            b'"locations":[{"line":1,"column":2}],',
+        ),
+        id="a document that does not parse",
+    ),
+    pytest.param(
+        b'{"query":"{ nosuch }"}',
+        _apollo(
+            b'Cannot query field \\"nosuch\\" on type \\"Query\\".',
+            b"GRAPHQL_VALIDATION_FAILED",
+            b'"locations":[{"line":1,"column":3}],',
+        ),
+        id="a document that does not validate",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename } query B { __typename }"}',
+        _apollo(
+            b"Must provide operation name if query contains multiple operations.",
+            b"OPERATION_RESOLUTION_FAILURE",
+        ),
+        id="two operations and no operationName",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }"}',
+        _apollo(
+            b'Variable \\"$b\\" of required type \\"Boolean!\\" was not provided.',
+            b"BAD_USER_INPUT",
+            b'"locations":[{"line":1,"column":7}],',
+        ),
+        id="a variable not provided",
+    ),
+    pytest.param(
+        b'{"query":"query($v: [String!]) { transcripts(participants: $v) { id } }",'
+        b'"variables":{"v":[%s]}}' % b",".join([b"true"] * 60),
+        WithTheKey(
+            _validation(
+                *(
+                    b'{"friendly":false,"message":"Variable \\"$v\\" got invalid value true at '
+                    b'\\"v[%d]\\"; String cannot represent a non string value: true","locations":'
+                    b'[{"line":1,"column":7}],"code":"BAD_USER_INPUT","extensions":{}}' % n
+                    for n in range(50)
+                ),
+                b'{"friendly":false,"message":"Too many errors processing variables, error limit '
+                b'reached. Execution aborted.","code":"INTERNAL_SERVER_ERROR","extensions":{}}',
+            )
+        ),
+        id="sixty variables refused",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","operationName":"Z"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown operation named \\"Z\\".","code":"OPERATION_RESOLUTION_FAILURE","extensions":{}}]}\n'
+        ),
+        id="an operationName no operation has",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename }","operationName":""}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown operation named \\"\\".","code":"OPERATION_RESOLUTION_FAILURE","extensions":{}}]}\n'
+        ),
+        id="an empty operationName",
+    ),
+    pytest.param(
+        b'{"query":{"kind":"Document"}}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"GraphQL queries must be strings. It looks like you\'re sending the internal graphql-js representation of a parsed query in your request instead of a request in the GraphQL query language. You can convert an AST to a string using the `print` function from `graphql`, or use a client like `apollo-client` which converts the internal representation to a string for you.","code":"BAD_REQUEST","extensions":{}}]}\n'
+        ),
+        id="a parsed document",
+    ),
+    pytest.param(
+        b'{"query":false}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension.","code":"BAD_REQUEST","extensions":{}}]}\n'
+        ),
+        id="a query of false",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename }","variables":"null"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string.","code":"BAD_REQUEST","extensions":{}}]}\n'
+        ),
+        id="variables of 'null'",
+    ),
+    pytest.param(
+        b'{"query":"query($b: Boolean!) { __typename @include(if: $b) }","variables":"{\\"b\\":true}"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string.","code":"BAD_REQUEST","extensions":{}}]}\n'
+        ),
+        id="variables of a string its operation takes",
+    ),
+    pytest.param(
+        b'{"query":"mutation { __typename }"}',
+        WithTheKey(b'{"data":{"__typename":"Mutation"}}\n', 200),
+        id="a mutation of __typename",
+    ),
+    pytest.param(
+        b'{"query":"subscription S { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Schema is not configured to execute subscription operation.","locations":[{"line":1,"column":1}],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":null}\n',
+            200,
+        ),
+        id="a subscription of __typename",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") { transcript(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Argument \\"id\\" of non-null type \\"String!\\" must not be null.","locations":[{"line":1,"column":42}],"path":["transcript"],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":{"transcript":null}}\n',
+            200,
+        ),
+        id="null for a non-null argument",
+    ),
+    pytest.param(
+        b'{"query":"query($v: Boolean = true) { __typename @include(if: $v) }","variables":{"v":null}}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Argument \\"if\\" of non-null type \\"Boolean!\\" must not be null.","locations":[{"line":1,"column":53}],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":null}\n',
+            200,
+        ),
+        id="null for a directive's argument at the root",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String = \\"a\\") # a\xc2\x85b\\n{ transcript(id: $x) { id } }","variables":{"x":null}}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Argument \\"id\\" of non-null type \\"String!\\" must not be null.","locations":[{"line":2,"column":18}],"path":["transcript"],"code":"INTERNAL_SERVER_ERROR","extensions":{}}],"data":{"transcript":null}}\n',
+            200,
+        ),
+        id="null for a non-null argument after U+0085 in a comment",
+    ),
+    pytest.param(
+        b'{"query":"{ ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="a fragment not defined",
+    ),
+    pytest.param(
+        b'{"query":"query __proto__ { __typename }"}',
+        WithTheKey(_INTERNAL, 500),
+        id="an operation named __proto__",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename } query __proto__ { __typename }","operationName":"A"}',
+        WithTheKey(_INTERNAL, 500),
+        id="an operation named __proto__ beside the one chosen",
+    ),
+    pytest.param(
+        b'{"query":"query constructor { __typename }"}', None, id="an operation named constructor"
+    ),
+    pytest.param(
+        b'{"query":"query __defineGetter__ { __typename }"}',
+        None,
+        id="an operation named __defineGetter__",
+    ),
+    pytest.param(
+        b'{"query":"query A { ...__proto__ } fragment __proto__ on Query { __typename }"}',
+        None,
+        id="a spread of a fragment named __proto__",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { ...F } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="a fragment that spreads itself",
+    ),
+    pytest.param(
+        b'{"query":"fragment G on Query { ...X } { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"G\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread in a fragment no operation uses",
+    ),
+    pytest.param(
+        b'{"query":"fragment A on Query { ...B } fragment B on Query { ...A } { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Cannot spread fragment \\"A\\" within itself via \\"B\\".","locations":[{"line":1,"column":23},{"line":1,"column":52}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"A\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"B\\" is never used.","locations":[{"line":1,"column":30}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a cycle among fragments no operation uses",
+    ),
+    pytest.param(
+        b'{"query":"{ ... on Query { ...X } }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="an undefined spread in an inline fragment",
+    ),
+    pytest.param(
+        b'{"query":"query A { __typename } query B { ...X }","operationName":"A"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="an undefined spread in an operation not chosen",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { ...X } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="an undefined spread in a fragment an operation uses",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { ...F } { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":23}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"F\\" is never used.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a fragment spreading itself that no operation uses",
+    ),
+    pytest.param(
+        b'{"query":"{ ...X"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Syntax Error: Expected Name, found <EOF>.","locations":[{"line":1,"column":7}],"code":"GRAPHQL_PARSE_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread beside a document that cannot parse",
+    ),
+    pytest.param(
+        b'{"query":"{ __schema { ...X } }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":17}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread under __schema",
+    ),
+    pytest.param(
+        b'{"query":"{ __type(name: \\"Query\\") { ...X } }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":30}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread under __type",
+    ),
+    pytest.param(
+        b'{"query":"{ __typename { ...X } }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Field \\"__typename\\" must not have a selection since type \\"String!\\" has no subfields.","locations":[{"line":1,"column":14}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":19}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread under __typename",
+    ),
+    pytest.param(
+        b'{"query":"{ ...X } { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"This anonymous operation must be the only defined operation.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":6}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"This anonymous operation must be the only defined operation.","locations":[{"line":1,"column":10}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread in an unnamed operation a later one replaces",
+    ),
+    pytest.param(
+        b'{"query":"query A { ...X } query A { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":14}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"There can be only one operation named \\"A\\".","locations":[{"line":1,"column":7},{"line":1,"column":24}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread in an operation a later one of its name replaces",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { transcripts { ...F } } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":37}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot spread fragment \\"F\\" within itself.","locations":[{"line":1,"column":37}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Fragment \\"F\\" cannot be spread here as objects of type \\"Transcript\\" can never be of type \\"Query\\".","locations":[{"line":1,"column":37}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a fragment that spreads itself under a field",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{ ...X }}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="an undefined spread ten fields deep",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ ...X }}}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":29}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread eleven fields deep",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ l m }}}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":28}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="two fields twelve deep",
+    ),
+    pytest.param(
+        b'{"query":"{ a{b{c{d{e{f{g{h{i{j{k{ l {m} }}}}}}}}}}} }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":3}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a field twelve deep with a selection",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { ...X } fragment F on Query { __typename } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Unknown fragment \\"X\\".","locations":[{"line":1,"column":26}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"There can be only one fragment named \\"F\\".","locations":[{"line":1,"column":10},{"line":1,"column":39}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="an undefined spread in the earlier of two fragments of a name",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { __typename } fragment F on Query { ...X } { ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"Internal server error","code":"INTERNAL_SERVER_ERROR","extensions":{}}]}\n',
+            500,
+        ),
+        id="an undefined spread in the later of two fragments of a name",
+    ),
+    pytest.param(
+        b'{"query":"fragment F on Query { a{b{c{d{e{f{g{h{i{j{k{ l }}}}}}}}}}} } { ...F ...F }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":46}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"\'\' exceeds maximum operation depth of 10","locations":[{"line":1,"column":46}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}},{"friendly":false,"message":"Cannot query field \\"a\\" on type \\"Query\\".","locations":[{"line":1,"column":23}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a fragment too deep spread twice",
+    ),
+    pytest.param(
+        _query(_twelve_deep(99)),
+        WithTheKey(_validation(*_too_deep(_twelve_deep(99), 99), _no_field_a(3))),
+        id="99 fields twelve deep",
+    ),
+    pytest.param(
+        _query(_twelve_deep(100)),
+        WithTheKey(_validation(*_too_deep(_twelve_deep(100), 100), _TOO_MANY_ERRORS)),
+        id="100 fields twelve deep",
+    ),
+    pytest.param(
+        _query(_twelve_deep(101)),
+        WithTheKey(_INTERNAL, 500),
+        id="101 fields twelve deep",
+    ),
+    pytest.param(
+        _query(_TWO_FIFTIES),
+        WithTheKey(
+            _validation(
+                *_too_deep(_TWO_FIFTIES, 50, operation="A"),
+                *_too_deep(_TWO_FIFTIES, 50, "m", "B"),
+                _TOO_MANY_ERRORS,
+            )
+        ),
+        id="50 fields twelve deep in each of two operations",
+    ),
+    pytest.param(
+        _query("query A %s query B %s" % (_twelve_deep(50), _twelve_deep(51, "m"))),
+        WithTheKey(_INTERNAL, 500),
+        id="50 and 51 fields twelve deep in two operations",
+    ),
+    pytest.param(
+        _query("query A %s" % _twelve_deep(1)),
+        WithTheKey(
+            _validation(
+                *_too_deep("query A %s" % _twelve_deep(1), 1, operation="A"),
+                _no_field_a(11),
+            )
+        ),
+        id="a named operation twelve deep",
+    ),
+    pytest.param(
+        b'{"query":"query B { ...X } query A { __typename }"}',
+        WithTheKey(_INTERNAL, 500),
+        id="an undefined spread in an operation of another name",
+    ),
+    pytest.param(
+        b'{"query":"type Foo { a: Int } { __typename }"}',
+        WithTheKey(
+            b'{"errors":[{"friendly":false,"message":"The \\"Foo\\" definition is not executable.","locations":[{"line":1,"column":1}],"code":"GRAPHQL_VALIDATION_FAILED","extensions":{}}]}\n'
+        ),
+        id="a type definition beside an operation",
+    ),
+    pytest.param(
+        b'{"query":"query($x: String) { transcripts(keyword: $x, limit: 2) { id } }",'
+        b'"variables":{"x":"\\ud800"}}',
+        WithTheKey(b'{"data":{"transcripts":[]}}\n', 200),
+        id="a keyword of a lone surrogate",
+    ),
 ]
 
 
@@ -314,7 +810,7 @@ _FIREFLIES_BODIES = [
 _BODY_CREDENTIALS = {"key": None, "none": _BAD_KEY, "Bearer nope": _BAD_KEY, "nope": _NO_PREFIX}
 # The rows every credential but the key is sent with: one for each `_body_refusal` (`_NOT_JSON` for
 # a body that does not parse and for a poisoned one, `_EMPTY`, `_TOO_LARGE`), one it serves, and a
-# `_REQUEST_ERROR` row.
+# `WithTheKey` row.
 _EACH_WAY_READ = ("{", "__proto__ key", "empty", "past the limit", "a query", "an array")
 assert set(_EACH_WAY_READ) <= {row.id for row in (*_FIREFLIES_BODIES, *_FIREFLIES_READS)}
 
@@ -331,7 +827,7 @@ def _fireflies_body_cases() -> list:
 
 
 @pytest.mark.parametrize("credential,headers,body,answer", _fireflies_body_cases())
-def test_fireflies_reads_the_body_before_the_credential(
+def test_fireflies_orders_the_body_and_the_credential(
     client, admin_h, credential, headers, body, answer
 ):
     """Each row is answered as the comment over `_FIREFLIES_BODIES` says with the key, and no
@@ -342,15 +838,38 @@ def test_fireflies_reads_the_body_before_the_credential(
         key = admin_h["Authorization"] if credential == "key" else credential
         headers = (*headers, ("Authorization", key))
     r = client.post("/fireflies/graphql", content=body, headers=list(headers))
-    if answer is not None and answer is not _REQUEST_ERROR:
+    if answer is not None and not isinstance(answer, WithTheKey):
         assert (r.status_code, r.content) == (json.loads(answer)["statusCode"], answer)
     elif credential != "key":
         assert (r.status_code, r.content) == (500, _BODY_CREDENTIALS[credential])
-    elif answer is _REQUEST_ERROR:
-        assert r.json() == {"errors": [{"message": "POST body sent invalid JSON."}]}
-        assert r.status_code == 400
+    elif answer is not None:
+        assert (r.status_code, r.content) == (answer.status, answer)
     else:
         assert (r.status_code, r.json()) == (200, {"data": {"__typename": "Query"}})
+
+
+@pytest.mark.parametrize(
+    "last, answer",
+    [("__typename", []), ("a{b{c{d{e{f{g{h{i{j{k{ l }}}}}}}}}}}", 500)],
+    ids=["served", "an error on each path"],
+)
+def test_fireflies_reads_a_fragment_once_however_many_spreads_reach_it(last, answer):
+    """A document whose first twenty-five fragments each spread the next one twice reaches the
+    twenty-sixth by 2**25 paths, and `_depth_limit` reads each fragment once a depth rather than
+    once a path, and holds no more than the 101 errors the paths report before it throws."""
+    from backlot.routers import fireflies
+
+    document = " ".join(f"fragment F{i} on Query {{ ...F{i + 1} ...F{i + 1} }}" for i in range(25))
+    document = parse(document + f" fragment F25 on Query {{ {last} }} {{ ...F0 }}")
+    started = time.perf_counter()
+    tracemalloc.start()
+    try:
+        reported = fireflies._depth_limit(document)
+        held = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert (reported if isinstance(reported, list) else reported.status) == answer
+    assert (time.perf_counter() - started < 1, held < 2**20) == (True, True)
 
 
 def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_conn):
@@ -361,6 +880,31 @@ def test_fireflies_admin_crawl_sees_every_stored_transcript(client, admin_h, ro_
     assert (
         len(served) == ro_conn.execute("SELECT COUNT(*) FROM fireflies_transcripts").fetchone()[0]
     )
+
+
+def test_fireflies_ids_are_ulids(client, admin_h):
+    """A served user id and transcript id are ULIDs as `synth._ulid` writes them, their first ten
+    characters, the time, zero, and the other 16 the first 80 bits of the seed's digest."""
+    from backlot import synth
+
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    data = ff_gql(
+        client, "{ users { user_id } transcripts(limit: 2) { id user { user_id } } }", admin_h
+    ).json()["data"]
+    served = [u["user_id"] for u in data["users"]]
+    served += [t["id"] for t in data["transcripts"]]
+    served += [t["user"]["user_id"] for t in data["transcripts"]]
+
+    assert len(served) >= 2
+    for one in served:
+        assert len(one) == 26, one
+        assert set(one) <= set(alphabet), one
+        assert one[:10] == "0" * 10, one
+
+    value = 0
+    for char in synth._ulid("seed"):
+        value = value * 32 + alphabet.index(char)
+    assert value == int(hashlib.sha256(b"seed").hexdigest()[:20], 16)
 
 
 def test_fireflies_transcript_content_round_trips_through_the_api(client, admin_h, ro_conn):
@@ -508,9 +1052,12 @@ def test_fireflies_transcript_by_id_matches_the_listing(client, admin_h):
 
 
 def test_fireflies_limit_outside_measured_bounds_is_refused_over_http(client, admin_h):
-    body = ff_gql(client, "query($l:Int){ transcripts(limit:$l) { id } }", admin_h, l=51).json()
-    assert body["data"]["transcripts"] is None
-    assert body["errors"][0]["extensions"]["metadata"]["fields"][0]["name"] == "limit"
+    """Ahead of an unknown `channel_id` too (see `resolve_transcripts`)."""
+    for args in ("", ', channel_id: "nope"'):
+        query = "query($l:Int){ transcripts(limit:$l%s) { id } }" % args
+        body = ff_gql(client, query, admin_h, l=51).json()
+        assert body["data"]["transcripts"] is None
+        assert body["errors"][0]["extensions"]["metadata"]["fields"][0]["name"] == "limit"
 
 
 def test_fireflies_skip_pages_without_gaps_or_repeats(client, admin_h, ro_conn):
@@ -645,6 +1192,109 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
         "data"
     ]["user"]
     assert again["email"] == "ava@acme.com"
+    # an empty id is read as none, as `resolve_user` records
+    for headers, user in ((admin_h, None), (h, {"email": "ava@acme.com"})):
+        empty = ff_gql(client, '{ user(id: "") { email } }', headers).json()
+        assert empty == {"data": {"user": user}}
+
+
+def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h, tokens_yaml):
+    """Each query names nothing its caller can read and draws the bytes real answered it with:
+    `data` null beside the error ``_not_in_team``, ``_object_not_found`` or ``_channel_not_found``
+    builds, its `correlationId` eight letters and digits — but for an empty `channel_id`, which
+    real reads as none. A transcript the caller cannot see, or a channel holding only such
+    transcripts, draws what one that does not exist draws, and `hana@acme.com`, who can see it,
+    reads it. An id the caller can read with a lone surrogate after it, sent as a variable, names
+    nothing too (`backlot.graphql.node_utf8`)."""
+    import re
+
+    def not_in_team(column=3):
+        return (
+            '{"errors":[{"friendly":true,"message":"You do not have permissions for this team",'
+            '"locations":[{"line":1,"column":%d}],"path":["user"],"code":"not_in_team",'
+            '"extensions":{"code":"not_in_team","correlationId":"<8>","status":403,"helpUrls":'
+            '["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"]}}],'
+            '"data":{"user":null}}\n' % column
+        )
+
+    def object_not_found(column=3):
+        return (
+            '{"errors":[{"friendly":true,"message":"Transcript not found",'
+            '"locations":[{"line":1,"column":%d}],"path":["transcript"],"code":"object_not_found",'
+            '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
+            '"metadata":{"objectType":"Transcript"},"helpUrls":'
+            '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
+            '"data":{"transcript":null}}\n' % column
+        )
+
+    channel_not_found = (
+        '{"errors":[{"friendly":true,"message":"Channel not found",'
+        '"locations":[{"line":1,"column":3}],"path":["transcripts"],"code":"object_not_found",'
+        '"extensions":{"code":"object_not_found","correlationId":"<8>","status":404,'
+        '"metadata":{"objectType":"Channel"},"helpUrls":'
+        '["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"]}}],'
+        '"data":{"transcripts":null}}\n'
+    )
+    tokens = {u["email"]: u["token"] for u in tokens_yaml["users"]}
+    listing = "{ transcripts(limit: 50) { id } }"
+    every = ff_gql(client, listing, admin_h).json()["data"]["transcripts"]
+    ava_h = {"Authorization": f"Bearer {tokens['ava@acme.com']}"}
+    seen = ff_gql(client, listing, ava_h).json()["data"]["transcripts"]
+    (hidden,) = {t["id"] for t in every} - {t["id"] for t in seen}
+    held_in = ff_gql(client, '{ transcript(id: "%s") { channels { id } } }' % hidden, admin_h)
+    (channel,) = (c["id"] for c in held_in.json()["data"]["transcript"]["channels"])
+    ava_id = ff_gql(client, "{ user { user_id } }", ava_h).json()["data"]["user"]["user_id"]
+    wanted = {
+        ("ava@acme.com", '{ user(id: "nope") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: " ") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "nobody@example.com") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "ava@acme.com") { user_id } }', None): not_in_team(),
+        ("ava@acme.com", '{ user(id: "%s") { user_id } }' % ava_id.lower(), None): not_in_team(),
+        ("ava@acme.com", '{ transcript(id: "nope") { id } }', None): object_not_found(),
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): object_not_found(),
+        ("ava@acme.com", '{ transcript(id: "%s") { id } }' % seen[0]["id"].lower(), None): (
+            object_not_found()
+        ),
+        ("hana@acme.com", '{ transcript(id: "%s") { id } }' % hidden, None): (
+            '{"data":{"transcript":{"id":"%s"}}}\n' % hidden
+        ),
+        (
+            "ava@acme.com",
+            "query($x: String) { user(id: $x) { user_id } }",
+            ava_id + "\ud800",
+        ): not_in_team(21),
+        (
+            "ava@acme.com",
+            "query($x: String!) { transcript(id: $x) { id } }",
+            seen[0]["id"] + "\ud800",
+        ): object_not_found(22),
+        ("ava@acme.com", '{ transcripts(channel_id: "nope") { id } }', None): channel_not_found,
+        ("ava@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel, None): (
+            channel_not_found
+        ),
+        ("hana@acme.com", '{ transcripts(channel_id: "%s") { id } }' % channel, None): (
+            '{"data":{"transcripts":[{"id":"%s"}]}}\n' % hidden
+        ),
+        ("ava@acme.com", '{ transcripts(channel_id: "") { id } }', None): (
+            ff_gql(client, "{ transcripts { id } }", ava_h).text
+        ),
+    }
+    answered = {}
+    for caller, query, x in wanted:
+        body = {"query": query} if x is None else {"query": query, "variables": {"x": x}}
+        r = client.post(
+            "/fireflies/graphql",
+            content=json.dumps(body).encode(),
+            headers={
+                "Authorization": f"Bearer {tokens[caller]}",
+                "Content-Type": "application/json",
+            },
+        )
+        assert r.status_code == 200, query
+        answered[caller, query, x] = re.sub(
+            r'"correlationId":"[A-Za-z0-9]{8}"', '"correlationId":"<8>"', r.text
+        )
+    assert answered == wanted
 
 
 def test_fireflies_introspection_describes_the_schema(client, admin_h):
@@ -830,13 +1480,17 @@ def test_fireflies_field_names_are_snake_case(fireflies_corpus):
 
 
 def test_fireflies_duration_is_minutes(fireflies_corpus):
-    """The API's unit. Serving seconds would make every meeting read as 60x too long."""
+    """The API's unit, written with no fraction as ``JSON.stringify`` writes a whole number.
+    Serving seconds would make every meeting read as 60x too long."""
     settings = fireflies_corpus
     with client_for(settings) as client:
-        t = _ff(client, settings, "{ transcripts(limit: 1) { duration } }")["data"]["transcripts"][
-            0
-        ]
-        assert t["duration"] == 45.0
+        r = gql(
+            client,
+            "/fireflies/graphql",
+            "{ transcripts(limit: 1) { duration } }",
+            f"Bearer {settings.admin_token}",
+        )
+        assert r.content == b'{"data":{"transcripts":[{"duration":45}]}}\n'
 
 
 def test_fireflies_action_items_are_a_newline_joined_string(fireflies_corpus):
@@ -1072,7 +1726,7 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
         )["data"]["user"]
         assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
 
-    # No probe: `synth.fireflies_user_id` draws from a 96-bit digest, so the raw seed is
+    # No probe: `synth.fireflies_user_id` draws 80 bits from the digest, so the raw seed is
     # stored as-is -- a forced collision between two DIFFERENT users must fail the import loudly
     # through `idx_fireflies_user_served`, not silently let one user's row overwrite the other's.
     # A fresh two-host corpus, not FIREFLIES_CORPUS: that fixture's only ACCOUNT is ava (organizer
@@ -1100,3 +1754,1793 @@ def _roster_emails(settings):
 
     data = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")) or {}
     return [u["email"] for u in data.get("users", [])]
+
+
+# --- Fastify, @fastify/cors and Apollo Server in front of Fireflies' GraphQL ----------------------
+# Each row: a request, its credential (`_FIREFLIES_CREDENTIALS`), and api.fireflies.ai's answer to
+# it, as `graphql` records the layers it was measured through: status, media type and body,
+# `_TYPENAME_DATA` where the query was served, nothing for a `HEAD`.
+_CSRF = _apollo(
+    b"This operation has been blocked as a potential Cross-Site Request Forgery (CSRF). Please"
+    b" either specify a 'content-type' header (with a type that is not one of"
+    b" application/x-www-form-urlencoded, multipart/form-data, text/plain) or provide a non-empty"
+    b" value for one of the following headers: x-apollo-operation-name, apollo-require-preflight"
+    b"\\n"
+)
+_ONLY_GET_POST = _apollo(b"Apollo Server supports only GET/POST requests.")
+_NOT_ACCEPTABLE = _apollo(
+    b"An 'accept' header was provided for this request which does not accept application/json;"
+    b" charset=utf-8 or application/graphql-response+json; charset=utf-8"
+)
+_GET_CONTENT_TYPE = _apollo(
+    b"GET requests may not have a content-type header other than application/json."
+)
+_UNSUPPORTED = (
+    b'{"statusCode":415,"status":false,"code":"http","message":"Unsupported Media Type",'
+    b'"errorMessage":"Unsupported Media Type"}'
+)
+_TYPENAME_DATA = b'{"data":{"__typename":"Query"}}\n'
+_USER_TYPENAME = b'{"query":"{ user { __typename } }"}'
+_USER_TYPENAME_DATA = b'{"data":{"user":{"__typename":"User"}}}\n'
+_JSON_UTF8 = "application/json; charset=utf-8"
+_GRAPHQL_RESPONSE = "application/graphql-response+json; charset=utf-8"
+_CLOUDFLARE_PAGE = (
+    b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
+    b"<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n"
+)
+_FIREFLIES_PREFLIGHT = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,HEAD,POST",
+    "vary": "Access-Control-Request-Headers",
+    # A preflight asking for no header names gets none back.
+    "access-control-allow-headers": None,
+}
+_J = (("Content-Type", "application/json"),)
+_P = (("apollo-require-preflight", "1"),)
+_PREFLIGHT_ASKED = (("Origin", "https://example.com"), ("Access-Control-Request-Method", "POST"))
+_Q = "?query=%7B%20__typename%20%7D"
+
+
+_NGINX_404 = (
+    b"<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1>"
+    b"</center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+)
+_PAST_THE_LIMIT = b"x" * (2**20 + 10)
+_LANDING_PAGE = object()  # Apollo Server's page for a browser, `landing_page`'s
+
+
+def _sent(headers, body) -> str:
+    """What a row of `_FIREFLIES_HTTP` sends besides a JSON type and `{ __typename }`, for its
+    id."""
+    types = [
+        value for name, value in headers if name == "Content-Type" and value != "application/json"
+    ]
+    return "".join(f", {value}" for value in types) + (
+        "" if body in (_TYPENAME, None) else f", {body!r}"
+    )
+
+
+def _not_found(method: str, target: str) -> bytes:
+    """Fastify's 404, quoting ``target`` as the test sends it (:func:`tests._helpers.http_row`)."""
+    path = target if target.startswith("/") else f"/graphql{target}"
+    message = b"Cannot %s %s" % (method.encode(), path.encode())
+    return (
+        b'{"statusCode":404,"status":false,"code":"not_found","message":"%s","errorMessage":"%s"}'
+        % (message, message)
+    )
+
+
+# The headers an answer carries, as `backlot.routers.fireflies._from_fastify`, `_answer` and
+# `Budget` record what api.fireflies.ai sent, None for one it did not send.
+_HSTS = "max-age=31536000; includeSubDomains"
+
+
+def _fastify(cache_control=None, **more):
+    """What each answer of Fastify's carries, with ``cache_control``, no `x-ratelimit-limit-api`
+    and ``more`` beside it, each `_` in a name read as `-`."""
+    return {
+        "access-control-allow-origin": "*",
+        "strict-transport-security": _HSTS,
+        "cache-control": cache_control,
+        "x-ratelimit-limit-api": None,
+    } | {name.replace("_", "-"): value for name, value in more.items()}
+
+
+_FIREFLIES_HTTP = [
+    # Apollo Server's `Cache-Control` on its answer to a persisted query's hash alone.
+    http_row(
+        "POST",
+        "",
+        _J,
+        b'{"extensions":{"persistedQuery":{"version":1,"sha256Hash":"' + b"1" * 64 + b'"}}}',
+        "key",
+        200,
+        _JSON_UTF8,
+        _apollo(b"PersistedQueryNotFound", b"PERSISTED_QUERY_NOT_FOUND", status=200),
+        id="a persisted query's hash alone",
+        answered=_fastify("private, no-cache, must-revalidate"),
+    ),
+    # Cloudflare, ahead of everything. Its `CONNECT` at `/` carries no `nosniff`; Linear's carries
+    # one.
+    http_row(
+        "CONNECT",
+        "/",
+        (),
+        None,
+        "key",
+        400,
+        "text/plain; charset=UTF-8",
+        b"error code: 1045\n",
+        id="CONNECT /",
+        answered={"x-content-type-options": None},
+    ),
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "key",
+        405,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2),
+        id="TRACE",
+        answered={
+            "connection": "close",
+            "access-control-allow-origin": None,
+            "strict-transport-security": None,
+        },
+    ),
+    http_row(
+        "CONNECT",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/plain; charset=UTF-8",
+        b"error code: 1045\n",
+        id="CONNECT",
+        answered={"connection": None},
+    ),
+    http_row(
+        "PURGE",
+        "",
+        (),
+        None,
+        "key",
+        400,
+        "text/html; charset=UTF-8",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="PURGE",
+        answered={"connection": None},
+    ),
+    http_row(
+        "TRACE",
+        "",
+        (),
+        None,
+        "twice",
+        400,
+        "text/html",
+        _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2),
+        id="TRACE, Authorization twice",
+        answered={"connection": "close"},
+    ),
+    # `@fastify/cors`, whatever the credential and the body.
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            _PREFLIGHT_ASKED,
+            None,
+            c,
+            204,
+            None,
+            b"",
+            id=f"preflight, {c}",
+            answered=_FIREFLIES_PREFLIGHT | e,
+        )
+        for c, e in (("key", {}), ("none", _fastify()), ("Bearer nope", {}))
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", "null"), ("Access-Control-Request-Method", "POST")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="Origin null",
+        answered=_FIREFLIES_PREFLIGHT,
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (("Origin", "https://example.com"), ("Access-Control-Request-Method", "PUT")),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked PUT",
+        answered=_FIREFLIES_PREFLIGHT,
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_FIREFLIES_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("Content-Type, X-Foo", "Content-Type, X-Foo"),
+            (" a , b ", "a , b"),
+            ("a,,b", "a,,b"),
+        )
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            h,
+            b,
+            c,
+            400,
+            "text/plain",
+            b"Invalid Preflight Request",
+            id=f"OPTIONS {i}, {c}",
+        )
+        for h, b, c, i in (
+            ((), None, "key", ""),
+            ((), None, "none", ""),
+            ((), None, "Bearer nope", ""),
+            ((("Origin", "https://example.com"),), None, "key", "Origin alone"),
+            ((("Access-Control-Request-Method", "POST"),), None, "key", "no Origin"),
+            ((("Origin", ""), ("Access-Control-Request-Method", "POST")), None, "key", "Origin ''"),
+            (
+                (("Origin", "  "), ("Access-Control-Request-Method", "POST")),
+                None,
+                "key",
+                "Origin '  '",
+            ),
+            (
+                (("Origin", "https://example.com"), ("Access-Control-Request-Method", "")),
+                None,
+                "key",
+                "Access-Control-Request-Method ''",
+            ),
+            ((*_J, *_P), b"{", "key", "{"),
+        )
+    ),
+    # `_not_found`, after `_fastify_read`.
+    http_row(
+        "ACL",
+        "?_=271823726",
+        (*_J, *_P),
+        None,
+        "key",
+        404,
+        _JSON_UTF8,
+        b'{"statusCode":404,"status":false,"code":"not_found","message":"Cannot ACL /graphql?_=27182'
+        b'3726","errorMessage":"Cannot ACL /graphql?_=271823726"}',
+        id="ACL",
+    ),
+    *(
+        http_row(m, "?_=1", (*_J, *_P), None, "key", 404, _JSON_UTF8, _not_found(m, "?_=1"), id=m)
+        for m in (
+            "BIND",
+            "CHECKOUT",
+            "COPY",
+            "LINK",
+            "LOCK",
+            "M-SEARCH",
+            "MERGE",
+            "MKACTIVITY",
+            "MKCALENDAR",
+            "MKCOL",
+            "MOVE",
+            "NOTIFY",
+            "PROPFIND",
+            "PROPPATCH",
+            "QUERY",
+            "REBIND",
+            "REPORT",
+            "SEARCH",
+            "SOURCE",
+            "SUBSCRIBE",
+            "UNBIND",
+            "UNLINK",
+            "UNLOCK",
+            "UNSUBSCRIBE",
+        )  # fmt: skip
+    ),
+    http_row(
+        "PROPFIND",
+        "?x=%7B%20y&z&a=b+c&_=1",
+        _J,
+        None,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PROPFIND", "?x=%7B%20y&z&a=b+c&_=1"),
+        id="PROPFIND, a query string",
+    ),
+    *(
+        http_row(m, "", h, b, c, s, _JSON_UTF8, a, id=f"{m} {i}")
+        for m, h, b, c, s, a, i in (
+            ("PUT", (*_J, *_P), _TYPENAME, "key", 404, _not_found("PUT", ""), "a query"),
+            ("DELETE", _J, _TYPENAME, "none", 404, _not_found("DELETE", ""), "a query"),
+            ("PUT", (), _TYPENAME, "key", 404, _not_found("PUT", ""), "no type"),
+            (
+                "PATCH",
+                (("Content-Type", "application/x-www-form-urlencoded"),),
+                b"query=%7B%7D",
+                "key",
+                404,
+                _not_found("PATCH", ""),
+                "a form",
+            ),
+            (
+                "DELETE",
+                (("Content-Type", "text/plain"),),
+                b"",
+                "key",
+                404,
+                _not_found("DELETE", ""),
+                "text/plain",
+            ),
+            ("PUT", (*_J, *_P), b"{", "key", 400, _NOT_JSON, "{"),
+            ("PATCH", (*_J, *_P), None, "key", 400, _EMPTY, "empty"),
+            ("PUT", (("Content-Type", "a/b/c"),), _TYPENAME, "key", 415, _UNSUPPORTED, "a/b/c"),
+            ("PUT", (("Content-Type", ""),), _TYPENAME, "key", 415, _UNSUPPORTED, "an empty type"),
+            ("PUT", (("Content-Type", "text/plain"),), b"\xe9", "key", 400, _SIZE_MISMATCH, "0xE9"),
+            (
+                "PUT",
+                (("Content-Type", "text/plain"),),
+                _PAST_THE_LIMIT,
+                "key",
+                413,
+                _TOO_LARGE,
+                "past the limit",
+            ),
+        )
+    ),
+    # A POST's content type: a 415 for one Fastify does not read; CSRF for one a browser sends
+    # unpreflighted; the CSRF check ahead of the credential.
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"),),
+        _TYPENAME,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="'text/plain'",
+        answered=_fastify(),
+    ),
+    *(
+        http_row("POST", "", (("Content-Type", t), *h), b, c, s, _JSON_UTF8, a, id=f"{t!r}{i}")
+        for t, h, b, c, s, a, i in (
+            ("text/plain", (), _TYPENAME, "none", 400, _CSRF, ", none"),
+            ("text/plain", _P, _TYPENAME, "key", 400, _NO_KEYS, ", preflight"),
+            ("text/plain", _P, b"\xe9", "key", 400, _SIZE_MISMATCH, ", preflight, 0xE9"),
+            ("text/plain", (), b"\xe9", "key", 400, _SIZE_MISMATCH, ", 0xE9"),
+            ("text/plain; charset=latin1", _P, b"\xe9", "key", 400, _SIZE_MISMATCH, ", 0xE9"),
+            ("text/plain", _P, "\u00e9".encode(), "key", 400, _NO_KEYS, ", preflight, U+00E9"),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B__typename%7D&x=\xe9",
+                "key",
+                200,
+                b'{"data":{"__typename":"Query"}}\n',
+                ", preflight, 0xE9",
+            ),
+            ("TEXT/PLAIN;X=Y", (), _TYPENAME, "key", 400, _CSRF, ""),
+            ("application/x-www-form-urlencoded", (), _TYPENAME, "key", 400, _CSRF, ""),
+            ("", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("foo", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("text /plain", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("multipart/form-data; boundary=x", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("application/graphql", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            (
+                "application/graphql",
+                (),
+                _PAST_THE_LIMIT,
+                "key",
+                415,
+                _UNSUPPORTED,
+                ", past the limit",
+            ),
+            ("application/json ,", (), _TYPENAME, "key", 415, _UNSUPPORTED, ""),
+            ("text/plain", (), _PAST_THE_LIMIT, "key", 413, _TOO_LARGE, ", past the limit"),
+            (
+                "text/plain",
+                _P,
+                b"\xe9" * 2**20 + b"\xe9",
+                "key",
+                413,
+                _TOO_LARGE,
+                ", past the limit, 0xE9",
+            ),
+            (
+                "application/x-www-form-urlencoded",
+                (),
+                _PAST_THE_LIMIT,
+                "key",
+                413,
+                _TOO_LARGE,
+                ", past the limit",
+            ),
+            ("application/json;", (), _TYPENAME, "key", 200, _TYPENAME_DATA, ""),
+            ("application/json\t;", (), _TYPENAME, "key", 200, _TYPENAME_DATA, ""),
+            ("Application/JSON", (), _TYPENAME, "key", 200, _TYPENAME_DATA, ""),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B%20__typename%20%7D",
+                "key",
+                200,
+                _TYPENAME_DATA,
+                ", a form",
+            ),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B%20__typename%20%7D&query=x",
+                "key",
+                400,
+                _apollo(b"GraphQL queries must be strings."),
+                ", query twice",
+            ),
+            (
+                "application/x-www-form-urlencoded",
+                _P,
+                b"query=%7B%20__typename%20%7D&variables=%7B%7D",
+                "key",
+                400,
+                _apollo(
+                    b"`variables` in a POST body should be provided as an object, not a recursively JSON-encoded string."
+                ),
+                ", variables",
+            ),
+            ("application/x-www-form-urlencoded", _P, b"", "key", 400, _NO_KEYS, ", empty"),
+            ("text/plain", _P, b"", "key", 400, _NO_KEYS, ", empty"),
+        )
+    ),
+    http_row("POST", "", (), _TYPENAME, "key", 415, _JSON_UTF8, _UNSUPPORTED, id="no type"),
+    http_row(
+        "POST", "", _P, _TYPENAME, "key", 415, _JSON_UTF8, _UNSUPPORTED, id="no type, preflight"
+    ),
+    http_row("POST", "", (), b"", "key", 400, _JSON_UTF8, _CSRF, id="no type, empty"),
+    http_row("POST", "", _P, b"", "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, empty, preflight"),
+    # Apollo Server's page for a browser, ahead of the CSRF check and the credential.
+    http_row(
+        "GET",
+        "",
+        (("Accept", "text/html"),),
+        None,
+        "none",
+        200,
+        "text/html",
+        _LANDING_PAGE,
+        id="GET, Accept 'text/html', none",
+        answered=_fastify(),
+    ),
+    *(
+        http_row("GET", t, (*h, ("Accept", a)), None, c, s, ty, e, id=f"GET, Accept {a!r}{i}")
+        for t, h, a, c, s, ty, e, i in (
+            (_Q, _P, "text/html,application/json", "key", 200, "text/html", _LANDING_PAGE, ""),
+            (_Q, _P, "text/*", "key", 200, "text/html", _LANDING_PAGE, ""),
+            (_Q, _P, "text/html;q=0.5;charset=utf-8", "key", 200, "text/html", _LANDING_PAGE, ""),
+            (
+                _Q,
+                _P,
+                "application/json;q=0.5, text/html;q=0.6",
+                "key",
+                200,
+                "text/html",
+                _LANDING_PAGE,
+                "",
+            ),
+            (_Q, _P, "text/html;level=1", "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            (_Q, _P, "text/html;q", "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            (
+                _Q,
+                _P,
+                "text/html;q=0.9, application/json",
+                "key",
+                200,
+                _JSON_UTF8,
+                _TYPENAME_DATA,
+                "",
+            ),
+        )
+    ),
+    # A GET, its content type and its query string read after the credential.
+    http_row("GET", _Q, _P, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET"),
+    http_row("GET", _Q, (), None, "key", 400, _JSON_UTF8, _CSRF, id="GET, unpreflighted"),
+    http_row("GET", _Q, _J, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id="GET, JSON"),
+    *(
+        http_row(
+            "GET", _Q, (("Content-Type", t), *h), None, c, s, _JSON_UTF8, a, id=f"GET, {t!r}{i}"
+        )
+        for t, h, c, s, a, i in (
+            ("text/plain", _P, "key", 415, _GET_CONTENT_TYPE, ""),
+            ("foo", (), "key", 415, _GET_CONTENT_TYPE, ""),
+            ("foo", _P, "none", 500, _BAD_KEY, ", none"),
+            ("application/graphql-response+json", _P, "key", 415, _GET_CONTENT_TYPE, ""),
+            ("", _P, "key", 200, _TYPENAME_DATA, ""),
+            ("application/json; charset=latin1", _P, "key", 200, _TYPENAME_DATA, ""),
+        )
+    ),
+    http_row(
+        "GET",
+        "?query=%7B&query=%7B",
+        (("Content-Type", "text/plain"), *_P),
+        None,
+        "key",
+        415,
+        _JSON_UTF8,
+        _GET_CONTENT_TYPE,
+        id="GET, text/plain, query twice",
+    ),
+    *(
+        http_row("GET", t, _P, None, "key", 400, _JSON_UTF8, _apollo(m), id=i)
+        for t, m, i in (
+            (
+                _Q + "&query=",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice",
+            ),
+            (
+                _Q + "&variables=nope",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope",
+            ),
+            (
+                _Q + "&variables=null",
+                b"The variables search parameter should contain a JSON-encoded object.",
+                "variables null",
+            ),
+            (
+                "?query=%7B&query=%7B&variables=nope",
+                b"The 'query' search parameter may only be specified once.",
+                "query twice, variables nope",
+            ),
+            (
+                "?operationName=A&operationName=B&variables=nope",
+                b"The 'operationName' search parameter may only be specified once.",
+                "operationName twice, variables nope",
+            ),
+            (
+                "?variables=nope&extensions=5",
+                b"The variables search parameter contains invalid JSON.",
+                "variables nope, extensions 5",
+            ),
+        )
+    ),
+    *(
+        http_row(
+            "GET",
+            f"?query={op}%20%7B%20__typename%20%7D",
+            _P,
+            None,
+            c,
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"GET {op}, {c}",
+            **h,
+        )
+        for op, c, s, a, h in (
+            (
+                "mutation",
+                "key",
+                405,
+                _apollo(
+                    b"GET requests only support query operations, not mutation operations",
+                    status=405,
+                ),
+                {"answered": _fastify("no-store", allow="POST")},
+            ),
+            (
+                "subscription",
+                "key",
+                405,
+                _apollo(
+                    b"GET requests only support query operations, not subscription operations",
+                    status=405,
+                ),
+                {"answered": {"allow": "POST"}},
+            ),
+            ("mutation", "none", 500, _BAD_KEY, {}),
+        )
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        _P,
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        b"",
+        id="HEAD",
+        answered=_fastify(allow="GET, POST"),
+    ),
+    http_row(
+        "HEAD",
+        _Q,
+        (*_P, ("Accept", "text/html")),
+        None,
+        "key",
+        405,
+        _JSON_UTF8,
+        b"",
+        id="HEAD, Accept text/html",
+    ),
+    http_row("HEAD", _Q, _P, None, "none", 500, _JSON_UTF8, b"", id="HEAD, none"),
+    http_row(
+        "HEAD",
+        _Q,
+        (("Content-Type", "text/plain"),),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        b"",
+        id="HEAD, text/plain",
+    ),
+    # `apollo_http.response_type` and its 406, the credential's 500 among the thrown refusals.
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Accept", "text/html")),
+        _TYPENAME,
+        "key",
+        406,
+        _JSON_UTF8,
+        _NOT_ACCEPTABLE,
+        id="Accept 'text/html'",
+        answered=_fastify(),
+    ),
+    *(
+        http_row("POST", "", (*_J, ("Accept", a)), b, c, s, t, e, id=f"Accept {a!r}{i}")
+        for a, b, c, s, t, e, i in (
+            ("application/json;q=0", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            ("application/json;q", _TYPENAME, "key", 406, _JSON_UTF8, _NOT_ACCEPTABLE, ""),
+            (
+                "application/graphql-response+json",
+                _TYPENAME,
+                "key",
+                200,
+                _GRAPHQL_RESPONSE,
+                _TYPENAME_DATA,
+                "",
+            ),
+            (
+                "application/json; callbackSpec=1.0",
+                _TYPENAME,
+                "key",
+                200,
+                "application/json; callbackSpec=1.0; charset=utf-8",
+                _TYPENAME_DATA,
+                "",
+            ),
+            ("text/html", b"{}", "key", 400, _JSON_UTF8, _NO_KEYS, ", {}"),
+            (
+                "application/graphql-response+json",
+                b"{}",
+                "key",
+                400,
+                _GRAPHQL_RESPONSE,
+                _NO_KEYS,
+                ", {}",
+            ),
+            (
+                "text/html",
+                b'{"query":"{"}',
+                "key",
+                406,
+                _JSON_UTF8,
+                _NOT_ACCEPTABLE,
+                ", a parse error",
+            ),
+            ("text/html", _TYPENAME, "none", 500, _JSON_UTF8, _BAD_KEY, ", none"),
+            (
+                "application/graphql-response+json",
+                _TYPENAME,
+                "none",
+                500,
+                _GRAPHQL_RESPONSE,
+                _BAD_KEY,
+                ", none",
+            ),
+            ("text/html", b"{", "key", 400, _JSON_UTF8, _NOT_JSON, ", {"),
+        )
+    ),
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "text/plain"), ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        400,
+        _GRAPHQL_RESPONSE,
+        _CSRF,
+        id="text/plain, Accept graphql-response",
+    ),
+    http_row(
+        "PUT",
+        "",
+        (*_J, ("Accept", "application/graphql-response+json")),
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PUT", ""),
+        id="PUT, Accept graphql-response",
+    ),
+    # Fastify reads the body of a DELETE before its 404, and leaves a type it has no parser for
+    # unread there.
+    http_row("DELETE", "", (*_J, *_P), b"{", "key", 400, _JSON_UTF8, _NOT_JSON, id="DELETE {"),
+    http_row(
+        "PUT",
+        "",
+        (("Content-Type", "application/graphql"), *_P),
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PUT", ""),
+        id="PUT application/graphql",
+    ),
+    http_row(
+        "OPTIONS",
+        "",
+        (
+            *_PREFLIGHT_ASKED,
+            ("Access-Control-Request-Headers", "a"),
+            ("Access-Control-Request-Headers", "b"),
+        ),
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="asked twice",
+        answered={**_FIREFLIES_PREFLIGHT, "access-control-allow-headers": "a, b"},
+    ),
+    *(
+        http_row(
+            "OPTIONS",
+            "",
+            (*_PREFLIGHT_ASKED, ("Access-Control-Request-Headers", asked)),
+            None,
+            "key",
+            204,
+            None,
+            b"",
+            id=f"asked {asked!r}",
+            answered={**_FIREFLIES_PREFLIGHT, "access-control-allow-headers": allowed},
+        )
+        for asked, allowed in (
+            ("a\xa0b", "a\xa0b"),
+            ("a b", "a b"),
+            ("a\x85b", "a\x85b"),
+            ("a\tb", "a\tb"),
+            ("a\xa0", "a\xa0"),
+            ("\xa0a", "\xa0a"),
+            ("a\x85", "a\x85"),
+            ("a\t", "a"),
+            ("a,  ,b", "a,  ,b"),
+            ("A-B, c_d", "A-B, c_d"),
+        )
+    ),
+    # Copies of a header, read as `apollo_http.headers_seen` reads them.
+    *(
+        http_row("POST", "", h, _TYPENAME, "key", s, _JSON_UTF8, a, id=i)
+        for h, s, a, i in (
+            (
+                (*_J, ("Accept", "application/json"), ("Accept", "text/html")),
+                200,
+                _TYPENAME_DATA,
+                "Accept json, html",
+            ),
+            (
+                (*_J, ("Accept", "text/html"), ("Accept", "application/json")),
+                200,
+                _TYPENAME_DATA,
+                "Accept html, json",
+            ),
+            (
+                (*_J, ("Content-Type", "text/plain")),
+                200,
+                _TYPENAME_DATA,
+                "Content-Type json, text/plain",
+            ),
+            ((("Content-Type", "text/plain"), *_J), 400, _CSRF, "Content-Type text/plain, json"),
+            ((*_J, ("Content-Type", "")), 200, _TYPENAME_DATA, "Content-Type json, empty"),
+            ((("Content-Type", ""), *_J), 415, _UNSUPPORTED, "Content-Type empty, json"),
+            ((*_J, *_J), 200, _TYPENAME_DATA, "Content-Type json twice"),
+            (
+                (("Content-Type", "text/plain"), ("x-apollo-operation-name", " ")),
+                400,
+                _CSRF,
+                "operation name a space",
+            ),
+        )
+    ),
+    *(
+        http_row("GET", _Q, h, None, "key", 200, _JSON_UTF8, _TYPENAME_DATA, id=i)
+        for h, i in (
+            ((("apollo-require-preflight", ""), *_P), "preflight empty, 1"),
+            ((*_P, ("apollo-require-preflight", "")), "preflight 1, empty"),
+        )
+    ),
+    # Each method under a JSON type, with no body and no length.
+    *(
+        http_row(
+            m,
+            t,
+            (("Content-Type", "application/json; charset=latin1"),),
+            None,
+            "key",
+            s,
+            ty,
+            a,
+            id=f"{m}, latin1, no body",
+        )
+        for m, t, s, ty, a in (
+            ("POST", "", 400, _JSON_UTF8, _EMPTY),
+            ("PUT", "", 400, _JSON_UTF8, _EMPTY),
+            ("PATCH", "", 400, _JSON_UTF8, _EMPTY),
+            ("DELETE", "", 400, _JSON_UTF8, _EMPTY),
+            ("OPTIONS", "", 400, "text/plain", b"Invalid Preflight Request"),
+            ("PROPFIND", "", 404, _JSON_UTF8, _not_found("PROPFIND", "")),
+            (
+                "GET",
+                "",
+                400,
+                _JSON_UTF8,
+                _apollo(
+                    b"GraphQL operations must contain a non-empty `query` or a `persistedQuery` extension."
+                ),
+            ),
+            ("HEAD", "", 405, _JSON_UTF8, b""),
+        )
+    ),
+    http_row("POST", "", (), None, "key", 400, _JSON_UTF8, _CSRF, id="no type, no body"),
+    http_row(
+        "POST", "", _P, None, "key", 400, _JSON_UTF8, _NO_KEYS, id="no type, no body, preflight"
+    ),
+    http_row(
+        "POST",
+        "",
+        _P,
+        Chunked(_TYPENAME),
+        "key",
+        415,
+        _JSON_UTF8,
+        _UNSUPPORTED,
+        id="no type, chunked, preflight",
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        Chunked(_TYPENAME),
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="JSON, chunked",
+    ),
+    http_row(
+        "GET",
+        "?query=%7B&query=%7B",
+        (),
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _CSRF,
+        id="GET, unpreflighted, query twice",
+    ),
+    http_row(
+        "GET",
+        _Q + "&variables=%7B%7D&operationName=",
+        _P,
+        None,
+        "key",
+        400,
+        _JSON_UTF8,
+        _apollo(b'Unknown operation named \\"\\".', b"OPERATION_RESOLUTION_FAILURE"),
+        id="GET, variables {}, operationName empty",
+    ),
+    http_row(
+        "POST",
+        "",
+        (*_J, ("Origin", "https://example.com")),
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="POST, Origin",
+        answered=_fastify("no-store"),
+    ),
+    *(
+        http_row(
+            m,
+            t,
+            (*h, ("Origin", "https://example.com")),
+            b,
+            "key",
+            s,
+            _JSON_UTF8,
+            a,
+            id=f"{m}, Origin",
+        )
+        for m, t, h, b, s, a in (
+            ("GET", _Q, _P, None, 200, _TYPENAME_DATA),
+            ("HEAD", _Q, _P, None, 405, b""),
+            ("PUT", "", _J, _TYPENAME, 404, _not_found("PUT", "")),
+        )
+    ),
+    # A path nginx keeps (`nginx_passes`), one it passes on to Fastify, which routes `/graphql`
+    # alone once it has decoded an escape, and Fastify's answers there (`unrouted`).
+    *(
+        http_row(m, p, h, b, c, 404, "text/html", _NGINX_404, id=f"{m} {p}, {c}")
+        for m, p, h, b, c in (
+            ("POST", "/graphqlx", _J, _TYPENAME, "key"),
+            ("POST", "/graphql.json", _J, _TYPENAME, "key"),
+            ("POST", "/graphql;x", _J, _TYPENAME, "key"),
+            ("POST", "/graphql%20", _J, _TYPENAME, "key"),
+            ("POST", "/x/graphql", _J, _TYPENAME, "key"),
+            ("POST", "/", _J, _TYPENAME, "key"),
+            ("POST", "/a%3Cb%3E", _J, _TYPENAME, "key"),
+            ("POST", "/%C3%A9", _J, _TYPENAME, "key"),
+            ("POST", "/graphql%3B", _J, _TYPENAME, "none"),
+            ("POST", "/graphql%7E", _J, _TYPENAME, "none"),
+            ("POST", "/graph%FFl", _J, _TYPENAME, "none"),
+            ("POST", "/graphql\\", _J, _TYPENAME, "none"),
+            ("POST", "/nosuch", _J, b"{", "none"),
+            ("GET", "/nosuch" + _Q, _P, None, "key"),
+            ("OPTIONS", "/nosuch", _PREFLIGHT_ASKED, None, "none"),
+        )
+    ),
+    http_row(
+        "POST",
+        "/nosuch",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        "text/html",
+        _NGINX_404,
+        id="POST /nosuch, key",
+        answered={"access-control-allow-origin": None, "strict-transport-security": _HSTS},
+    ),
+    http_row("HEAD", "/nosuch" + _Q, _P, None, "key", 404, "text/html", b"", id="HEAD /nosuch"),
+    http_row(
+        "POST",
+        "/graphql/",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("POST", "/graphql/"),
+        id="POST /graphql/, key",
+        answered=_fastify(),
+    ),
+    *(
+        http_row(m, p, h, b, c, 404, _JSON_UTF8, _not_found(m, p), id=f"{m} {p}, {c}{_sent(h, b)}")
+        for m, p, h, b, c in (
+            ("POST", "/graphql/", _J, _TYPENAME, "Bearer nope"),
+            ("POST", "/GRAPHQL", _J, _TYPENAME, "key"),
+            ("POST", "/GraphQL", _J, _TYPENAME, "key"),
+            ("POST", "/GRAPHQL/", _J, _TYPENAME, "key"),
+            ("POST", "/graphql//", _J, _TYPENAME, "key"),
+            ("POST", "//graphql", _J, _TYPENAME, "key"),
+            ("POST", "/graphql/x", _J, _TYPENAME, "key"),
+            ("POST", "/graphql%2F", _J, _TYPENAME, "key"),
+            ("POST", "/graphql%2f", _J, _TYPENAME, "none"),
+            ("POST", "/%2Fgraphql", _J, _TYPENAME, "none"),
+            ("POST", "/graphql%0A", _J, _TYPENAME, "none"),
+            ("POST", "/graphql/%C3%A9", _J, _TYPENAME, "none"),
+            ("POST", "/graphql/%25", _J, _TYPENAME, "none"),
+            ("POST", "/graphql/", (("Content-Type", "application/graphql"),), b"{ x }", "none"),
+            ("POST", "/graphql/", (), b"x", "none"),
+            ("POST", "/graphql/", (("Content-Type", "text/plain"),), b"x", "none"),
+            ("PUT", "/graphql/", (("Content-Type", "application/graphql"),), b"{ x }", "none"),
+            ("PROPFIND", "/graphql/", (("Content-Type", "a/b/c"),), b"x", "none"),
+            ("PROPFIND", "/graphql/", _J, b"{", "none"),
+            ("GET", "/graphql/" + _Q, _P, None, "key"),
+            ("GET", "/graphql/", (("Accept", "text/html"),), None, "none"),
+            ("PUT", "/graph%71l", _J, _TYPENAME, "key"),
+            ("PROPFIND", "/graph%71l", (), None, "key"),
+            ("BIND", "/graphql/", (), None, "key"),
+        )
+    ),
+    *(
+        http_row(
+            m, "/graphql/", _J, b, "none", s, _JSON_UTF8, a, id=f"{m} /graphql/, {b!r}", answered=e
+        )
+        for m, b, s, a, e in (
+            ("POST", b"{", 400, _NOT_JSON, {}),
+            ("POST", b"", 400, _EMPTY, _fastify()),
+            ("PUT", b"{", 400, _NOT_JSON, {}),
+        )
+    ),
+    http_row(
+        "POST",
+        "/graphql/",
+        (("Content-Type", "a/b/c"),),
+        b"x",
+        "none",
+        415,
+        _JSON_UTF8,
+        _UNSUPPORTED,
+        id="POST /graphql/, a/b/c",
+    ),
+    http_row("HEAD", "/graphql/" + _Q, _P, None, "key", 404, _JSON_UTF8, b"", id="HEAD /graphql/"),
+    http_row(
+        "OPTIONS",
+        "/graphql/",
+        _PREFLIGHT_ASKED,
+        None,
+        "key",
+        204,
+        None,
+        b"",
+        id="preflight at /graphql/",
+        answered=_FIREFLIES_PREFLIGHT,
+    ),
+    http_row(
+        "OPTIONS",
+        "/graphql/",
+        (),
+        None,
+        "key",
+        400,
+        "text/plain",
+        b"Invalid Preflight Request",
+        id="OPTIONS /graphql/",
+    ),
+    http_row(
+        "POST",
+        "/graph%71l",
+        _J,
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="POST /graph%71l",
+    ),
+    http_row(
+        "GET",
+        "/%67raphql" + _Q,
+        _P,
+        None,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="GET /%67raphql",
+    ),
+    http_row(
+        "POST", "/graphq%6c", _J, _TYPENAME, "none", 500, _JSON_UTF8, _BAD_KEY, id="POST /graphq%6c"
+    ),
+    # The headers on each kind of answer Apollo Server and Fastify write.
+    http_row(
+        "POST",
+        "",
+        _J,
+        _TYPENAME,
+        "key",
+        200,
+        _JSON_UTF8,
+        _TYPENAME_DATA,
+        id="served",
+        answered=_fastify("no-store"),
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        _USER_TYPENAME,
+        "person",
+        200,
+        _JSON_UTF8,
+        _USER_TYPENAME_DATA,
+        id="a resolver ran",
+        answered=_fastify("no-store")
+        | {
+            "x-ratelimit-limit-api_burst": "30",
+            "x-ratelimit-limit-api": "500",
+            "x-ratelimit-limit": "500",
+            "retry-after": None,
+        },
+    ),
+    *(
+        http_row(
+            "POST", "", _J, b, "key", 400, _JSON_UTF8, answer, id=i, answered=_fastify("no-store")
+        )
+        for b, answer, i in (
+            (
+                b'{"query":"{ nosuch }"}',
+                _apollo(
+                    b'Cannot query field \\"nosuch\\" on type \\"Query\\".',
+                    b"GRAPHQL_VALIDATION_FAILED",
+                    b'"locations":[{"line":1,"column":3}],',
+                ),
+                "not valid",
+            ),
+            (
+                b'{"query":"{"}',
+                _apollo(
+                    b"Syntax Error: Expected Name, found <EOF>.",
+                    b"GRAPHQL_PARSE_FAILED",
+                    b'"locations":[{"line":1,"column":2}],',
+                ),
+                "does not parse",
+            ),
+            (
+                b'{"query":""}',
+                _apollo(
+                    b"GraphQL operations must contain a non-empty `query` or a `persistedQuery`"
+                    b" extension."
+                ),
+                "no query",
+            ),
+            (
+                b'{"query":"query($x: Int!) { __typename }"}',
+                _apollo(
+                    b'Variable \\"$x\\" is never used.',
+                    b"GRAPHQL_VALIDATION_FAILED",
+                    b'"locations":[{"line":1,"column":7}],',
+                ),
+                "a variable not provided",
+            ),
+        )
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        b'{"query":"{ ...F }"}',
+        "key",
+        500,
+        _JSON_UTF8,
+        _INTERNAL,
+        id="depth-limit's 500",
+        answered=_fastify(None),
+    ),
+    # Which documents spend the budget: a root field a resolver runs for, through a fragment and
+    # as `@include` leaves it, and not `__schema`, a root the SDL leaves out or a refused variable.
+    *(
+        http_row(
+            "POST",
+            "",
+            _J,
+            b,
+            "person",
+            400 if b"String!" in b else 200,
+            _JSON_UTF8,
+            answer,
+            id=i,
+            answered=_fastify("no-store", x_ratelimit_limit_api=spends),
+        )
+        for b, answer, spends, i in (
+            (
+                b'{"query":"query { ...F } fragment F on Query { user { __typename } }"}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "a fragment",
+            ),
+            (
+                b'{"query":"query($v: Boolean!) { user @include(if: $v) { __typename } }","variables":{"v":true}}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "@include true",
+            ),
+            (
+                b'{"query":"query($v: Boolean!) { user @include(if: $v) { __typename } }","variables":{"v":false}}',
+                b'{"data":{}}\n',
+                None,
+                "@include false",
+            ),
+            (
+                b'{"query":"{ __schema { queryType { name } } }"}',
+                b'{"data":{"__schema":{"queryType":{"name":"Query"}}}}\n',
+                None,
+                "__schema",
+            ),
+            (
+                b'{"query":"mutation { __typename }"}',
+                b'{"data":{"__typename":"Mutation"}}\n',
+                None,
+                "a mutation of __typename",
+            ),
+            (
+                b'{"query":"query($x: String!) { user(id: $x) { __typename } }"}',
+                _apollo(
+                    b'Variable \\"$x\\" of required type \\"String!\\" was not provided.',
+                    b"BAD_USER_INPUT",
+                    b'"locations":[{"line":1,"column":7}],',
+                ),
+                None,
+                "a variable not provided to a field",
+            ),
+            (
+                b'{"query":"query($v: Boolean = true) { user @include(if: $v) { __typename } }"}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "@include of a default",
+            ),
+            (
+                b'{"query":"{ __proto__: user { __typename } }"}',
+                b'{"data":{"__proto__":{"__typename":"User"}}}\n',
+                "500",
+                "an alias __proto__",
+            ),
+            (
+                b'{"query":"query { ...__proto__ } fragment __proto__ on Query { user { __typename } }"}',
+                _USER_TYPENAME_DATA,
+                "500",
+                "a fragment __proto__",
+            ),
+        )
+    ),
+    http_row(
+        "POST", "", _J, b"[]", "key", 400, _JSON_UTF8, _BATCHING, id="a batch", answered=_fastify()
+    ),
+    http_row(
+        "POST",
+        "",
+        _J,
+        _USER_TYPENAME,
+        "none",
+        500,
+        _JSON_UTF8,
+        _BAD_KEY,
+        id="no credential",
+        answered=_fastify(),
+    ),
+    http_row(
+        "POST", "", _J, b"x", "key", 400, _JSON_UTF8, _NOT_JSON, id="not JSON", answered=_fastify()
+    ),
+    http_row(
+        "POST",
+        "",
+        (("Content-Type", "a/b/c"),),
+        b"x",
+        "key",
+        415,
+        _JSON_UTF8,
+        _UNSUPPORTED,
+        id="415",
+        answered=_fastify(),
+    ),
+    http_row(
+        "PUT",
+        "",
+        _J,
+        _TYPENAME,
+        "key",
+        404,
+        _JSON_UTF8,
+        _not_found("PUT", ""),
+        id="Fastify's 404",
+        answered=_fastify(),
+    ),
+]
+_FIREFLIES_CREDENTIALS = {
+    "none": None,
+    "Bearer nope": "Bearer nope",
+    "key": "Bearer {t}",
+    "twice": "Bearer {t}",
+    "person": "Bearer {p}",
+}
+
+
+def _fireflies_body(r, answer):
+    """``r``'s body, or `_LANDING_PAGE` where ``answer`` is and ``r`` is Apollo Server's page: one
+    nonce of 64 hex digits, 3,522 bytes and its title."""
+    if answer is not _LANDING_PAGE:
+        return r.content
+    page = r.text
+    nonces = set(re.findall(r"nonce-([0-9a-f]+)", page))
+    whole = len(page.encode()) == 3522 and "<title>Apollo Server</title>" in page
+    return _LANDING_PAGE if len(nonces) == 1 and len(nonces.pop()) == 64 and whole else r.content
+
+
+def test_fireflies_answers_each_method_path_type_and_accept_as_fireflies_does(client, tokens_yaml):
+    """Each row of `_FIREFLIES_HTTP` is answered as api.fireflies.ai answered it."""
+    answered, expected = {}, {}
+    for row in _FIREFLIES_HTTP:
+        method, target, headers, body, credential, status, media_type, answer, named = row.values
+        sent = list(headers)
+        if _FIREFLIES_CREDENTIALS[credential] is not None:
+            value = _FIREFLIES_CREDENTIALS[credential].format(
+                t=tokens_yaml["admin_token"], p=tokens_yaml["users"][0]["token"]
+            )
+            sent += [("Authorization", value)] * (2 if credential == "twice" else 1)
+        content = body.chunks() if isinstance(body, Chunked) else body
+        path = target if target.startswith("/") else f"/graphql{target}"
+        r = sent_as(client, method, f"/fireflies{path}", sent, content=content, bare=True)
+        answered[row.id] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            _fireflies_body(r, answer),
+            {name: r.headers.get(name) for name in named},
+        )
+        expected[row.id] = (status, media_type, answer, named)
+    assert len(expected) == len(_FIREFLIES_HTTP)
+    assert answered == expected
+
+
+_RESOLVER = b'{"query":"{ user { user_id } }"}'
+
+
+def _budget(client, monkeypatch, start=1_793_020_105.0):
+    """A budget on a clock the test moves, with the refusal on, and the clock."""
+    from backlot.routers import fireflies
+
+    now = [start]
+    client.app.state.fireflies_budget = fireflies.Budget(clock=lambda: now[0])
+    monkeypatch.setattr(fireflies.get_settings(), "fireflies_enforce_rate_limits", True)
+    return now
+
+
+def _ratelimit(r) -> dict:
+    return {k: v for k, v in r.headers.items() if k.startswith(("x-ratelimit", "retry-after"))}
+
+
+def _key(tokens_yaml) -> dict:
+    """A person's key, whose `user` is that person, as a Fireflies key's is."""
+    return {
+        "Authorization": f"Bearer {tokens_yaml['users'][0]['token']}",
+        "Content-Type": "application/json",
+    }
+
+
+def test_fireflies_refuses_a_field_past_the_minutes_30(client, tokens_yaml, monkeypatch):
+    """The run `Budget`'s docstring records, the counts starting from a key that has spent
+    nothing, and a refused field's own error left out."""
+    now = _budget(client, monkeypatch)
+    for i in range(30):
+        now[0] = 1_793_020_105.0 + i * 10.6 / 29
+        r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.json()["data"]["user"]["user_id"] and r.json().get("errors") is None
+    assert _ratelimit(r) == {
+        "x-ratelimit-limit-api_burst": "30",
+        "x-ratelimit-remaining-api_burst": "0",
+        "x-ratelimit-reset-api_burst": "50",
+        "x-ratelimit-limit-api": "500",
+        "x-ratelimit-remaining-api": "470",
+        "x-ratelimit-reset-api": "39085",
+        "x-ratelimit-limit": "500",
+        "x-ratelimit-remaining": "470",
+        "x-ratelimit-reset": "39085",
+    }
+    now[0] = 1_793_020_105.653
+    r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.content == (
+        b'{"errors":[{"friendly":true,"message":"Too many requests. Please retry after Mon, 26 Oct'
+        b' 2026 13:09:25 GMT (UTC)","locations":[{"line":1,"column":3}],"path":["user"],"code":"to'
+        b'o_many_requests","extensions":{"code":"too_many_requests","status":429,"metadata":{"retr'
+        b'yAfter":1793020165653},"helpUrls":["https://docs.fireflies.ai/miscellaneous/error-codes#'
+        b'too_many_requests"]}}],"data":{"user":null}}\n'
+    )
+    assert _ratelimit(r) == {
+        "retry-after-api_burst": "60",
+        "retry-after": "60",
+        "x-ratelimit-limit": "30",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "60",
+    }
+    r = client.post("/fireflies/graphql", content=_TYPENAME, headers=_key(tokens_yaml))
+    assert (r.json(), _ratelimit(r)) == ({"data": {"__typename": "Query"}}, {})
+    # A refused field is located in UTF-16 units, as api.fireflies.ai located one after U+1F600.
+    document = '{ a: user(id: "\U0001f600") { user_id } b: user { user_id } }'
+    r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
+    assert [e["locations"] for e in r.json()["errors"]] == [
+        [{"line": 1, "column": 3}],
+        [{"line": 1, "column": 33}],
+    ]
+    now[0] = 1_793_020_171.0
+    aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(1, 32))
+    document = "{ a0: user { user_id } " + aliases + " a32: transcripts(limit: 0) { id } }"
+    r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
+    body = r.json()
+    assert [(e["path"], e["code"]) for e in body["errors"]] == [
+        (["a30"], "too_many_requests"),
+        (["a31"], "too_many_requests"),
+        (["a32"], "too_many_requests"),
+    ]
+    assert list(body["data"]) == [f"a{i}" for i in range(33)]
+    assert all(body["data"][f"a{i}"]["user_id"] for i in range(1, 30))
+    assert [body["data"][f"a{i}"] for i in (30, 31, 32)] == [None, None, None]
+    assert list(body) == ["errors", "data"]
+    assert list(_ratelimit(r).items()) == [
+        ("x-ratelimit-limit-api_burst", "30"),
+        ("x-ratelimit-remaining-api_burst", "0"),
+        ("x-ratelimit-reset-api_burst", "60"),
+        ("retry-after-api_burst", "60"),
+        ("x-ratelimit-limit-api", "500"),
+        ("x-ratelimit-remaining-api", "440"),
+        ("x-ratelimit-reset-api", "39029"),
+        ("x-ratelimit-limit", "500"),
+        ("x-ratelimit-remaining", "440"),
+        ("x-ratelimit-reset", "39029"),
+        ("retry-after", "60"),
+    ]
+    now[0] = 1_793_020_231.0
+    r = client.post("/fireflies/graphql", content=_RESOLVER, headers=_key(tokens_yaml))
+    assert r.headers["x-ratelimit-remaining-api_burst"] == "29"
+
+
+# The run `Budget`'s docstring records: the moment of each request, the root fields it sent, and
+# the refusal's `retry-after`, or None where every field was served.
+_HELD = [
+    (1_793_039_210.300, 1, None),
+    (1_793_039_211.243, 29, None),
+    (1_793_039_220.192, 1, "60"),
+    (1_793_039_271.562, 1, "9"),
+    (1_793_039_282.148, 1, None),
+]
+
+
+def test_fireflies_holds_a_refused_key_for_a_minute_from_its_first_refusal(
+    client, tokens_yaml, monkeypatch
+):
+    now = _budget(client, monkeypatch)
+    for moment, fields, wait in _HELD:
+        now[0] = moment
+        document = "{ " + " ".join(f"a{i}: user {{ user_id }}" for i in range(fields)) + " }"
+        r = client.post("/fireflies/graphql", json={"query": document}, headers=_key(tokens_yaml))
+        assert r.headers.get("retry-after") == wait
+        if wait is not None:
+            assert r.headers["x-ratelimit-reset"] == wait
+            assert r.json()["errors"][0]["extensions"]["metadata"] == {"retryAfter": 1793039280192}
+    assert _ratelimit(r) == {
+        "x-ratelimit-limit-api_burst": "30",
+        "x-ratelimit-remaining-api_burst": "28",
+        "x-ratelimit-reset-api_burst": "50",
+        "x-ratelimit-limit-api": "500",
+        "x-ratelimit-remaining-api": "469",
+        "x-ratelimit-reset-api": "19918",
+        "x-ratelimit-limit": "500",
+        "x-ratelimit-remaining": "469",
+        "x-ratelimit-reset": "19918",
+    }
+
+
+# The minute's fields spent before a document, the document, and each error's path in the order
+# `Spent.refuse` puts them, with whether it is the budget's.
+_REFUSAL_ORDERS = [
+    pytest.param(
+        29,
+        'query($x: String = "a") { a0: transcripts(limit: 0) { id } a1: transcript(id: $x) { id }'
+        " a2: user { user_id } }",
+        [(["a1"], False), (["a2"], True), (["a0"], False)],
+        id="graphql-js's refusal, then the budget's, then the resolver's",
+    ),
+    pytest.param(
+        30,
+        'query($x: String = "a") { a0: transcript(id: $x) { id } a1: user { user_id } }',
+        [(["a0"], False), (["a1"], True)],
+        id="a refused argument ahead of the refusal, not counted",
+    ),
+    pytest.param(
+        30,
+        'query($x: String = "a") { a1: user { user_id } a0: transcript(id: $x) { id } }',
+        [(["a0"], False), (["a1"], True)],
+        id="a refused argument ahead of the refusal, after a refused field",
+    ),
+]
+
+
+def test_fireflies_orders_the_budgets_refusals_among_a_runs_errors(
+    client, tokens_yaml, monkeypatch
+):
+    """Each row of `_REFUSAL_ORDERS`, on a budget of its own."""
+    answered, expected = {}, {}
+    for row in _REFUSAL_ORDERS:
+        spent, document, order = row.values
+        now = _budget(client, monkeypatch)
+        now[0] = 1_793_020_105.0
+        aliases = " ".join(f"a{i}: user {{ user_id }}" for i in range(spent))
+        client.post(
+            "/fireflies/graphql", json={"query": "{ " + aliases + " }"}, headers=_key(tokens_yaml)
+        )
+        r = client.post(
+            "/fireflies/graphql",
+            json={"query": document, "variables": {"x": None}},
+            headers=_key(tokens_yaml),
+        )
+        answered[row.id] = [
+            (e["path"], e["code"] == "too_many_requests") for e in r.json()["errors"]
+        ]
+        expected[row.id] = order
+    assert answered == expected
+
+
+def _limits(**parts):
+    """The budget's headers in the order of ``parts``: ``minute``, ``day`` and ``bare`` the limit,
+    remaining and reset of the `-api_burst`, `-api` and bare windows, and ``burst``, ``retry`` and
+    ``wait`` the `retry-after-api_burst`, `retry-after-api` and `retry-after`."""
+    windows = {"minute": "-api_burst", "day": "-api", "bare": ""}
+    waits = {"burst": "-api_burst", "retry": "-api", "wait": ""}
+    headers = []
+    for part, value in parts.items():
+        if part in windows:
+            names = ("limit", "remaining", "reset")
+            headers += [(f"x-ratelimit-{n}{windows[part]}", v) for n, v in zip(names, value)]
+        else:
+            headers.append((f"retry-after{waits[part]}", value))
+    return headers
+
+
+_T = 1_793_256_105.275
+_DAY = "Too many requests. Please retry after Fri, 30 Oct 2026 00:00:00 GMT (UTC)"
+
+# The run past the day `Budget`'s docstring records, and a field half a second into the next day:
+# the moment of each document and its fields; with the refusal on, the fields served, the first
+# refusal's message and `retryAfter`, and the budget's headers in the order api.fireflies.ai sent
+# them; the headers with it off; and those of a key on a Pro plan's 60 and 5,000, which is served
+# each field.
+_PAST_THE_DAY = [
+    pytest.param(
+        _T,
+        17,
+        15,
+        (_DAY, 1793318400275),
+        _limits(
+            minute=("30", "13", "60"),
+            day=("500", "0", "62295"),
+            retry="62295",
+            bare=("500", "0", "62295"),
+            wait="62295",
+        ),
+        _limits(minute=("30", "13", "60"), day=("500", "0", "62295"), bare=("500", "0", "62295")),
+        _limits(
+            minute=("60", "43", "60"),
+            day=("5000", "4498", "62295"),
+            bare=("5000", "4498", "62295"),
+        ),
+        id="the day's last and two past it",
+    ),
+    pytest.param(
+        _T + 0.43,
+        1,
+        0,
+        (_DAY, 1793318400705),
+        _limits(minute=("30", "12", "60"), retry="62295", wait="62295", bare=("500", "0", "62295")),
+        _limits(minute=("30", "12", "60"), day=("500", "0", "62295"), bare=("500", "0", "62295")),
+        _limits(
+            minute=("60", "42", "60"),
+            day=("5000", "4497", "62295"),
+            bare=("5000", "4497", "62295"),
+        ),
+        id="past the day",
+    ),
+    pytest.param(
+        _T + 0.786,
+        15,
+        0,
+        (_DAY, 1793318400061),
+        _limits(
+            minute=("30", "0", "60"),
+            burst="60",
+            retry="62294",
+            wait="62294",
+            bare=("500", "0", "62294"),
+        ),
+        _limits(minute=("30", "0", "60"), day=("500", "0", "62294"), bare=("500", "0", "62294")),
+        _limits(
+            minute=("60", "27", "60"),
+            day=("5000", "4482", "62294"),
+            bare=("5000", "4482", "62294"),
+        ),
+        id="past the day and the minute",
+    ),
+    pytest.param(
+        _T + 1.173,
+        3,
+        0,
+        (_DAY, 1793318400448),
+        _limits(burst="60", wait="62294", bare=("500", "0", "62294")),
+        _limits(minute=("30", "0", "59"), day=("500", "0", "62294"), bare=("500", "0", "62294")),
+        _limits(
+            minute=("60", "24", "59"),
+            day=("5000", "4479", "62294"),
+            bare=("5000", "4479", "62294"),
+        ),
+        id="past the day, in the minute's hold",
+    ),
+    pytest.param(
+        _T + 21.513,
+        1,
+        0,
+        (_DAY, 1793318400788),
+        _limits(burst="40", wait="62274", bare=("500", "0", "62274")),
+        _limits(minute=("30", "0", "39"), day=("500", "0", "62274"), bare=("500", "0", "62274")),
+        _limits(
+            minute=("60", "23", "39"),
+            day=("5000", "4478", "62274"),
+            bare=("5000", "4478", "62274"),
+        ),
+        id="past the day, 20 seconds into the hold",
+    ),
+    pytest.param(
+        _T + 75.083,
+        1,
+        0,
+        (_DAY, 1793318400358),
+        _limits(minute=("30", "29", "60"), retry="62220", wait="62220", bare=("500", "0", "62220")),
+        _limits(minute=("30", "29", "60"), day=("500", "0", "62220"), bare=("500", "0", "62220")),
+        _limits(
+            minute=("60", "59", "60"),
+            day=("5000", "4477", "62220"),
+            bare=("5000", "4477", "62220"),
+        ),
+        id="past the day, after the hold",
+    ),
+    pytest.param(
+        1_793_318_400.5,
+        1,
+        1,
+        None,
+        _limits(
+            minute=("30", "29", "60"), day=("500", "499", "86400"), bare=("500", "499", "86400")
+        ),
+        _limits(
+            minute=("30", "29", "60"), day=("500", "499", "86400"), bare=("500", "499", "86400")
+        ),
+        _limits(
+            minute=("60", "59", "60"), day=("5000", "4999", "86400"), bare=("5000", "4999", "86400")
+        ),
+        id="the next day",
+    ),
+]
+
+
+def test_fireflies_answers_past_the_day_with_the_refusal_on_and_off(
+    client, tokens_yaml, monkeypatch
+):
+    """Each row of `_PAST_THE_DAY` after 485 fields spent in the minutes before it, with the
+    default settings, with the refusal off, and on a Pro plan's budget."""
+    from backlot.config import Settings
+    from backlot.routers import fireflies
+
+    def aliases(n):
+        return {"query": "{ " + " ".join(f"a{i}: user {{ user_id }}" for i in range(n)) + " }"}
+
+    for name in ("ENFORCE_RATE_LIMITS", "PER_MINUTE", "PER_DAY"):
+        monkeypatch.delenv(f"BACKLOT_FIREFLIES_{name}", raising=False)
+    default = Settings(_env_file=None)
+    answered, expected = {}, {}
+    for plan, enforce, per_minute, per_day in (
+        (
+            "on",
+            default.fireflies_enforce_rate_limits,
+            default.fireflies_per_minute,
+            default.fireflies_per_day,
+        ),
+        ("off", False, 30, 500),
+        ("Pro", True, 60, 5000),
+    ):
+        now = _budget(client, monkeypatch)
+        settings = fireflies.get_settings()
+        monkeypatch.setattr(settings, "fireflies_enforce_rate_limits", enforce)
+        monkeypatch.setattr(settings, "fireflies_per_minute", per_minute)
+        monkeypatch.setattr(settings, "fireflies_per_day", per_day)
+        for i, n in enumerate([30] * 16 + [5]):
+            now[0] = _T - (17 - i) * 61
+            client.post("/fireflies/graphql", json=aliases(n), headers=_key(tokens_yaml))
+        for row in _PAST_THE_DAY:
+            moment, fields, served, refusal, on, off, pro = row.values
+            now[0] = moment
+            r = client.post("/fireflies/graphql", json=aliases(fields), headers=_key(tokens_yaml))
+            body = r.json()
+            answered[plan, row.id] = (
+                sum(value is not None for value in body["data"].values()),
+                [error["code"] for error in body.get("errors", [])],
+                next(
+                    (
+                        (error["message"], error["extensions"]["metadata"]["retryAfter"])
+                        for error in body.get("errors", [])
+                    ),
+                    None,
+                ),
+                list(_ratelimit(r).items()),
+            )
+            if plan == "on":
+                refused = ["too_many_requests"] * (fields - served)
+                expected[plan, row.id] = (served, refused, refusal, on)
+            else:
+                expected[plan, row.id] = (fields, [], None, off if plan == "off" else pro)
+    assert answered == expected
+
+
+# A path httpx would resolve before sending it, written as it is to `backlot serve` with the key and
+# `{ __typename }`, and the status, body and named headers api.fireflies.ai answers it with:
+# Fastify's 404 where nginx resolves the dot segments to `/graphql` and passes the path on as sent,
+# nginx's 404 where they resolve to any other path and its 400 where a `..` climbs past the root
+# (`nginx_path`), and Cloudflare's page where one does with a segment after it
+# (`request_target.refused_path`).
+_NGINX_400 = _NGINX_404.replace(b"404 Not Found", b"400 Bad Request")
+_FASTIFYS = {"access-control-allow-origin": "*", "strict-transport-security": _HSTS}
+_NGINXS = {"access-control-allow-origin": None, "strict-transport-security": _HSTS}
+_NEITHER = {"access-control-allow-origin": None, "strict-transport-security": None}
+_FIREFLIES_SENT_RAW = [
+    *(
+        pytest.param(m, p, 404, _not_found(m, p), _FASTIFYS, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/x/../graphql"),
+            ("POST", "/x//../graphql"),
+            ("POST", "/a/b/../../graphql"),
+            ("POST", "/x/..%2Fgraphql"),
+            ("POST", "/graphql/x/.."),
+            ("POST", "/./graphql"),
+            ("POST", "/graphql/."),
+            ("POST", "/%2e/graphql"),
+            ("POST", "/graphql/../graphql"),
+        )
+    ),
+    *(
+        pytest.param("POST", p, 404, _NGINX_404, _NGINXS, id=f"POST {p}")
+        for p in (
+            "/graphql/..",
+            "/graphql//..",
+            "/x/.//graphql",
+            "/graphql/x/../..",
+            "/x/..",
+            "/..\\graphql",
+        )
+    ),
+    *(
+        pytest.param(m, p, 400, _NGINX_400, _NEITHER, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/.."),
+            ("POST", "/x/../.."),
+            ("POST", "/x/..%2F.."),
+            ("POST", "/%2e%2e"),
+            ("POST", "/./.."),
+            ("POST", "/graphql/../.."),
+            ("GET", "/.."),
+            ("OPTIONS", "/.."),
+        )
+    ),
+    *(
+        pytest.param(
+            "POST", p, 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2), _NEITHER, id=f"POST {p}"
+        )
+        for p in ("/../graphql", "/./../graphql")
+    ),
+]
+
+
+@pytest.mark.parametrize("method, path, status, body, named", _FIREFLIES_SENT_RAW)
+def test_fireflies_answers_a_path_sent_as_written_as_fireflies_does(
+    live_server, method, path, status, body, named
+):
+    base_url, settings = live_server
+    sent = _TYPENAME if method == "POST" else b""
+    request = raw_request(method, f"/fireflies{path}", f"Bearer {settings.admin_token}", body=sent)
+    answer, headers, content = raw_exchange(base_url, request)
+    assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)

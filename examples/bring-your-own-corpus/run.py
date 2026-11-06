@@ -36,7 +36,7 @@ records = [
 ]
 with serve(records) as s:
     health = httpx.get(f"{s.base_url}/health").json()
-    print(f"\nserving {health['documents']} docs at {s.base_url}")
+    print(f"\nserving {health['documents']} doc(s) at {s.base_url}")
     print(f"  by source: {health['by_source']}")
     print("\nPress Ctrl+C to stop.")
     try:

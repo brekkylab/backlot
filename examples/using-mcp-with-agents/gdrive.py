@@ -6,7 +6,8 @@ so none can be pointed at a self-hosted server. Instead `backlot mcp --source gd
 Backlot's typed `/openapi.json` into MCP tools: it slices to `/drive/v3`, `/docs/v1`, `/sheets/v4`
 and `/slides/v1` — the editors a Drive file opens in are the same source — dedupes operation
 aliases, and serves them over stdio with a `Bearer <token>` header — retrieval is ACL-scoped by
-`--user` (default: the admin; any email from GET /_meta/users).
+`--user` (default: the admin; any email from GET /_meta/users). A write tool takes its request
+body's fields as arguments, so the agent ends by making a spreadsheet of what it found.
 
 Prereqs: `pip install -e ".[mcp]"` (installs fastmcp); an LLM key for --agent
 (`ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` with `--agent openai`). Run from the repo root:
@@ -69,8 +70,9 @@ CORPUS = [
 ]
 QUESTION = (
     "Search Drive for the checkout latency postmortem and summarize it. Then open the latency-"
-    "by-region spreadsheet and read its cells: which region's p95 rose the most? Finally find "
-    "the on-call runbook doc. Cite the titles."
+    "by-region spreadsheet and read its cells: which region's p95 rose the most? Find the on-call "
+    "runbook doc. Finally record that region and its before and after p95 in a new spreadsheet "
+    "titled 'Checkout latency follow-up', under a header row. Cite the titles."
 )
 
 

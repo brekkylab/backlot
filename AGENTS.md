@@ -57,6 +57,10 @@ docs, `pyproject.toml` keywords.
 - Vendor tests are written against measured responses, not vendor docs. A spec quote belongs in a
   docstring as the source of a claim; it is not a substitute for asking the service. Bring a test
   that fails without your fix.
+- Before writing a new `def test_`, search the test file for the route and for the value you will
+  assert. If a test already sends that request, the case is a row of its table rather than a new
+  function, unless it proves which principal may read something (item 3 of Pull requests in
+  CONTRIBUTING.md).
 - Examples are self-contained: each script spins up its own throwaway server via
   `backlot.serve_or_connect` on a tiny in-code corpus. Keep new examples to that shape.
 
@@ -87,7 +91,7 @@ batch read, token exchange. A POST is not evidence of a write either way; the en
   already closes is closed (item 7).
 
   ```bash
-  gh issue list -R brekkylab/backlot --search "is:open no:assignee -linked:pr label:hacktoberfest"
+  gh issue list -R brekkylab/backlot --search 'is:open no:assignee -linked:pr label:"good first issue"'
   gh issue view N -R brekkylab/backlot --json closedByPullRequestsReferences,assignees
   ```
 

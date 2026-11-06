@@ -91,7 +91,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         return client.conversations_history(channel=channel, limit=50)["messages"]
 
     before = history()
-    print(f"{len(channels)} channels; #{name} has {len(before)} message(s):")
+    print(f"{len(channels)} channel(s); #{name} has {len(before)} message(s):")
     for m in before:
         print(f"  - {m['text'].splitlines()[0]}")
 

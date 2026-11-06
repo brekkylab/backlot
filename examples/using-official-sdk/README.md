@@ -11,11 +11,10 @@ python examples/using-official-sdk/slack.py     # or msteams.py, gmail.py, gdriv
 
 `slack.py` also **writes**, and one run covers the whole surface: it posts, replies in a thread,
 takes a permalink, searches for what it posted, reacts and un-reacts, edits, sends an ephemeral,
-reads `/_meta/overlay`, deletes, and resets. Slack is the only source with a write surface so
-far; the rest read. Writes never reach the corpus file — they land in an in-memory overlay that
-dies with the server, and the reset at the end puts the corpus back, which is what lets one
-evaluation run start where the last one did. [docs/write-overlay.md](../../docs/write-overlay.md) covers
-how the overlay is read back and reset.
+reads `/_meta/overlay`, deletes, and resets. Writes never reach the corpus file — they land in an
+in-memory overlay that dies with the server, and the reset at the end puts the corpus back, which is
+what lets one evaluation run start where the last one did.
+[docs/write-overlay.md](../../docs/write-overlay.md) covers how the overlay is read back and reset.
 
 ## Fireflies has no SDK — and raw HTTP is the official path
 
@@ -134,6 +133,7 @@ library's own token exchange runs against Backlot's `POST /oauth2/token` in both
 | Confluence | `atlassian-python-api` | `Confluence(url="http://localhost:8000/atlassian/wiki", username=EMAIL, password=T)` |
 | Gmail | `google-api-python-client` | `build("gmail","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000"))` |
 | Google Drive | `google-api-python-client` | `build("drive","v3", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))` |
+| Google Docs | `google-api-python-client` | `build("docs","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/docs"))` |
 | Notion | `notion-client` | `Client(auth=T, base_url="http://localhost:8000/notion")` (SDK appends `/v1/`) |
 | S3 | `boto3` | `client("s3", endpoint_url="http://localhost:8000/s3", config=Config(s3={"addressing_style":"path"}))` |
 

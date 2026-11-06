@@ -32,6 +32,7 @@ from tests._helpers import (
     sent_as,
     served_id,
     tiny_corpus,
+    tok,
 )
 
 
@@ -445,6 +446,12 @@ def two_projects(tmp_path_factory):
         ({"maxResults": " 1"}, 0, 1),
         ({"maxResults": "101"}, 0, 100),
         ({"maxResults": "5000"}, 0, 100),
+        ({"startAt": "0x1"}, 1, 50),
+        ({"startAt": "#1", "maxResults": "0X1"}, 1, 1),
+        ({"maxResults": "-0x2"}, 0, 1),
+        ({"maxResults": "0x7fffffff"}, 0, 100),
+        ({"startAt": "0x80000000"}, 2147483648, 50),
+        ({"startAt": "0x7fffffffffffffff"}, 9223372036854775807, 50),
     ],
 )
 def test_jira_project_search_pages(two_projects, query, start, limit):
@@ -523,6 +530,12 @@ _CONVERSION_ROWS = [
     ([("orderBy", "bogus"), ("categoryId", "abc")], "categoryId", "abc"),
     ([("categoryId", "abc"), ("startAt", "x")], "startAt", "x"),
     ([("categoryId", "abc"), ("maxResults", "x")], "maxResults", "x"),
+    ([("startAt", "+0x2")], "startAt", "+0x2"),
+    ([("startAt", "0x8000000000000000")], "startAt", "0x8000000000000000"),
+    ([("maxResults", "0x80000000")], "maxResults", "0x80000000"),
+    ([("maxResults", "0xZ")], "maxResults", "0xZ"),
+    ([("categoryId", "0x8000000000000000")], "categoryId", "0x8000000000000000"),
+    ([("categoryId", "#")], "categoryId", "#"),
 ]
 
 
@@ -1042,39 +1055,49 @@ def test_confluence_content_answers_a_space_key_and_a_type_as_real_does(client, 
 
 
 @pytest.mark.parametrize(
-    "caller, space, want",
+    "caller, space, want, written",
     [
-        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-ops", ["Compensation Bands 2026"]),
-        ("admin", "{people-ops}", ["Compensation Bands 2026"]),
-        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"]),
-        ("admin", "people-opſ", 404),
-        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"]),
-        ("ava@acme.com", "people-ops", 404),
-        ("ava@acme.com", "{people-ops}", 404),
-        ("ava@acme.com", "{people-ops lower}", 404),
-        ("ava@acme.com", "PEOPLE-OPS", 404),
+        ("admin", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "{handbook}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "people-ops", ["Compensation Bands 2026"], "people-ops"),
+        ("admin", "{people-ops}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("admin", "{handbook lower}", ["Engineering Handbook", "On-call Runbook"], "{handbook}"),
+        ("admin", "HANDBOOK", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("admin", "people-opſ", 404, "people-opſ"),
+        ("admin", "", ["Compensation Bands 2026", "Engineering Handbook", "On-call Runbook"], ""),
+        ("ava@acme.com", "handbook", ["Engineering Handbook", "On-call Runbook"], "handbook"),
+        ("ava@acme.com", "people-ops", 404, "people-ops"),
+        ("ava@acme.com", "{people-ops}", 404, "{people-ops}"),
+        ("ava@acme.com", "{people-ops lower}", 404, "{people-ops lower}"),
+        ("ava@acme.com", "PEOPLE-OPS", 404, "PEOPLE-OPS"),
+        ("hana@acme.com", "{people-ops lower}", ["Compensation Bands 2026"], "{people-ops}"),
+        ("hana@acme.com", "PEOPLE-OPS", ["Compensation Bands 2026"], "people-ops"),
     ],
 )
-def test_confluence_content_filtered_by_space_key(client, admin_h, tokens, caller, space, want):
+def test_confluence_content_filtered_by_space_key(
+    client, admin_h, tokens, caller, space, want, written
+):
     """A space key narrows the listing to that space under both spellings `_space_container_for_key`
     resolves, the name and `{the synthesized key}`, each in upper or lower case (`people-opſ` is no
     spelling of `people-ops`), and an empty one narrows nothing. ava reaches no page in
     `people-ops`, so to her its key is the 404 a key naming nothing gets (`_content_space`), in
-    upper or lower case."""
+    upper or lower case, where hana, who does, gets its page. ``written`` is the value the CQL
+    search writes back in ``cqlQuery`` for `space.key` with the same value and caller
+    (`_cql_space_key_spelling`)."""
     from backlot import synth
 
     keys = {n: synth.confluence_space_key(n) for n in ("handbook", "people-ops")}
-    key = space.format(**keys, **{f"{n} lower": k.lower() for n, k in keys.items()})
+    spell = {**keys, **{f"{n} lower": k.lower() for n, k in keys.items()}}
+    key = space.format(**spell)
     h = admin_h if caller == "admin" else {"Authorization": f"Bearer {tokens[caller]}"}
     r = client.get("/atlassian/wiki/rest/api/content", headers=h, params={"spaceKey": key})
     if want == 404:
         assert (r.status_code, r.json()) == _no_space(key)
     else:
         assert sorted(x["title"] for x in r.json()["results"]) == want
+    cql = {"cql": f'space.key = "{key}"'}
+    found = client.get("/atlassian/wiki/rest/api/search", headers=h, params=cql)
+    assert found.json()["cqlQuery"] == f"space.key = '{written.format(**spell)}'"
 
 
 def test_confluence_space_names_that_differ_only_in_case_stay_two_spaces(tmp_path):
@@ -1259,8 +1282,9 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
 
 def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers an `id`, `ancestor`
-    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other, and each of
-    those five and `label` negated.
+    or `parent` clause, alone and beside `type`, `space`, a `~` term and each other, each of those
+    five and `label` negated, `space.key`, clauses joined by `or`, grouped and negated as a group,
+    `created`, `lastmodified` and `title` clauses, and `siteSearch ~`.
 
     Not SAMPLE: its one child sits directly under its parent, so an `ancestor` clause would select
     the same rows as `parent`, and a `~` term that misses a chain's middle could not be sent."""
@@ -1276,8 +1300,22 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     settings = tiny_corpus(
         tmp_path,
         [
-            {**page, "doc_id": "q-gp", "title": "Guide"},
-            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp", "labels": ["pager"]},
+            {
+                **page,
+                "doc_id": "q-gp",
+                "title": "Guide",
+                "created": "2024-05-12T02:56:26Z",
+                "updated": "2024-05-12T02:56:26Z",
+            },
+            {
+                **page,
+                "doc_id": "q-c",
+                "title": "Child",
+                "parent": "q-gp",
+                "labels": ["pager"],
+                "created": "2024-03-06T01:34:10Z",
+                "updated": "2024-03-06T01:34:10Z",
+            },
             {
                 **page,
                 "doc_id": "q-gc",
@@ -1285,9 +1323,26 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
                 "parent": "q-c",
                 "content": "Deep.",
                 "labels": ["oncall"],
+                "created": "2024-06-15T23:23:54Z",
+                "updated": "2024-06-15T23:23:54Z",
             },
-            {**page, "doc_id": "q-o", "title": "Other", "space": "ops"},
-            {**page, "doc_id": "q-b", "title": "Post", "space": "ops", "subtype": "blogpost"},
+            {
+                **page,
+                "doc_id": "q-o",
+                "title": "Other",
+                "space": "ops",
+                "created": "2024-07-24T22:28:22Z",
+                "updated": "2024-07-24T22:28:22Z",
+            },
+            {
+                **page,
+                "doc_id": "q-b",
+                "title": "Post",
+                "space": "ops",
+                "subtype": "blogpost",
+                "created": "2024-05-12T04:26:12Z",
+                "updated": "2024-05-12T04:26:12Z",
+            },
         ],
     )
     eng = synth.confluence_space_key("eng")
@@ -1370,18 +1425,303 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         ("parent != {Guide}", {"Guide", "Grand", "Other", "Post"}),
         ("ancestor != {Guide}", {"Guide", "Other", "Post"}),
         ('label != "oncall"', {"Guide", "Child", "Other", "Post"}),
+        # a negated `~` clause, `or`, `and` before `or`, and a `not` on a group or on a negated
+        # clause, Grand alone carrying `Deep` in its body
+        (three + ' and text !~ "Deep"', {"Guide", "Child"}),
+        (three + ' and not text ~ "Deep"', {"Guide", "Child"}),
+        ('text !~ "Deep"', {"Guide", "Child", "Other", "Post"}),
+        (three + ' and text ~ "Deep"', {"Grand"}),
+        (three + ' and title !~ "Grand"', {"Guide", "Child"}),
+        (three + ' and not title ~ "Grand"', {"Guide", "Child"}),
+        ("id={Guide} or id={Child}", {"Guide", "Child"}),
+        (three + " and (id={Guide} or id={Child})", {"Guide", "Child"}),
+        (three + ' and (ancestor={Guide} or label="oncall")', {"Child", "Grand"}),
+        ("id={Guide} or id={Child} and type=blogpost", {"Guide"}),
+        ("(id={Guide} or id={Child}) and type=blogpost", set()),
+        (three + " and not (id={Child} or id={Grand})", {"Guide"}),
+        (three + " and not (id={Child} and type=page)", {"Guide", "Grand"}),
+        (three + " and not id != {Child}", {"Child"}),
+        (three + " and not ancestor != {Guide}", {"Child", "Grand"}),
+        # `space.key`, and `not in (...)`
+        (three + f' and space.key = "{eng}"', {"Guide", "Child", "Grand"}),
+        (three + f' and space.key in ("{eng}", NOSUCHKEY)', {"Guide", "Child", "Grand"}),
+        (three + " and space.key = NOSUCHKEY", set()),
+        (three + " and space.key in (NOSUCHKEY, NOPEKEY)", set()),
+        (three + f' and space.key = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space.key = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space.key = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + f' and space.key = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\"{eng[1:]}"', {"Guide", "Child", "Grand"}),
+        (three + f" and space = '{eng[0]}\"{eng[1:]}'", {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng}\\""', {"Guide", "Child", "Grand"}),
+        (three + f' and space = "{eng[0]}\\"\\"{eng[1:]}"', set()),
+        (three + f' and space = "{eng[0]}\\{eng[1:]}"', set()),
+        (three + ' and type = "pa\\"ge"', {"Guide", "Child", "Grand"}),
+        (three + ' and text ~ "De\\"ep"', {"Grand"}),
+        (three + ' and text ~ "De\\ep"', {"Grand"}),
+        (three + ' and text ~ "De\\\\ep"', set()),
+        (three + ' and title ~ "Gu\\"ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\ide"', {"Guide"}),
+        (three + ' and title ~ "Gu\\\\ide"', set()),
+        # not real's answers: real refused `type = "pa\ge"` with a 400 naming `pa\ge`, and `label`
+        # was not measured, as no content there carried one; these pin how `_cql_unquote` reads them
+        (three + ' and type = "pa\\ge"', set()),
+        (three + ' and label = "pag\\"er"', {"Child"}),
+        (three + ' and label = "pag\\er"', set()),
+        (three + " and id not in ({Guide})", {"Child", "Grand"}),
+        (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
+        # beside a field this route now reads, the admin's `currentUser()` matching nothing
+        (three + " and lastmodified > 2020-01-01", {"Guide", "Child", "Grand"}),
+        (three + ' and created >= "2020-01-01"', {"Guide", "Child", "Grand"}),
+        (three + " and creator = currentUser()", set()),
+        # a function value on a field this route reads names no row here: real answered
+        # none for each of the single-value calls, and `recentlyViewedContent` expands to
+        # no ids, since the server keeps no recently viewed content
+        ("label = currentUser()", set()),
+        ('label = now("-1d")', set()),
+        ("space.key = currentUser()", set()),
+        ("space.key = now()", set()),
+        ("ancestor = currentContent()", set()),
+        ("parent = currentContent()", set()),
+        ("id in recentlyViewedContent(5)", set()),
+        ("type=page and id in recentlyViewedContent(5)", set()),
+        (three + " and id in recentlyViewedContent(5)", set()),
+        ("id in ({Guide}, recentlyViewedContent(5))", {"Guide"}),
+        (three + " and not lastmodified > 2999-01-01", {"Guide", "Child", "Grand"}),
+        ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide"}),
+        (three + ' and (created >= now("-4w") or id={Guide})', {"Guide"}),
+        (three + ' and not (id={Guide} or created >= now("-4w"))', {"Child", "Grand"}),
+        # `created` and `lastmodified` on their seconds, a bare date its whole UTC day
+        (three + ' and created = "2024-05-12"', {"Guide"}),
+        (three + ' and created = "2024/05/12"', {"Guide"}),
+        (three + ' and created >= "2024/05/12"', {"Guide", "Grand"}),
+        (three + ' and created > "2024-06-01"', {"Grand"}),
+        (three + ' and created < "2024-06-01"', {"Guide", "Child"}),
+        (three + ' and created <= "2024-03-06"', {"Child"}),
+        (three + ' and created >= "2024-06-15"', {"Grand"}),
+        (three + ' and created > "2024-06-15 12:00"', {"Grand"}),
+        (three + ' and created > "2024-06-15 23:59"', set()),
+        (three + ' and created = "2024-06-15 23:23:54"', {"Grand"}),
+        (three + ' and created != "2024-05-12"', {"Child", "Grand"}),
+        (three + " and lastmodified > 2999-01-01", set()),
+        (three + " and not lastmodified > 2020-01-01", set()),
+        # relative dates, each boundary after the chain's 2024 dates or ten years back
+        (three + ' and created > now("-1d")', set()),
+        (three + ' and created > now("-1y")', set()),
+        (three + ' and created > now("-10y")', {"Guide", "Child", "Grand"}),
+        (three + " and created > startOfYear()", set()),
+        (three + ' and created > startOfYear("-10y")', {"Guide", "Child", "Grand"}),
+        (three + ' and created > startOfMonth("-60d")', set()),
+        (three + ' and created > startOfMonth("-2M")', set()),
+        (three + ' and created > startOfDay("-50d")', set()),
+        (three + " and created > startOfDay()", set()),
+        (three + ' and created > startOfWeek("-7w")', set()),
+        (three + ' and created > endOfMonth("-1M")', set()),
+        (three + ' and created > endOfMonth("-120M")', {"Guide", "Child", "Grand"}),
+        # `title` under `=` and `in (...)`: the whole title, case aside
+        (three + ' and title = "Guide"', {"Guide"}),
+        (three + ' and title != "Guide"', {"Child", "Grand"}),
+        (three + ' and title in ("Guide", "Grand")', {"Guide", "Grand"}),
+        (three + ' and title not in ("Guide")', {"Child", "Grand"}),
+        (three + ' and title = "guide"', {"Guide"}),
+        (three + ' and title = "My first space"', set()),
     ]
     with client_for(settings, reload=True) as c:
         written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
         h = {"Authorization": f"Bearer {written['admin_token']}"}
         content = c.get("/atlassian/wiki/rest/api/content", headers=h).json()["results"]
         ids = {r["title"]: r["id"] for r in content}
+        guide = str(ids["Guide"])
+        half = len(guide) // 2
+        first, second = guide[:half], guide[half:]
+        rows += [
+            (f'id = "{first}\\"{second}"', {"Guide"}),
+            (f"id = '{first}\"{second}'", {"Guide"}),
+            (f'id = "{guide}\\""', {"Guide"}),
+            (f'id in ("{first}\\"{second}")', {"Guide"}),
+            (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
+            (f'parent = "{first}\\"{second}"', {"Child"}),
+            # not real's answers: real refused each of these with 400 `Can't parse as a ContentId`;
+            # they pin the value read with its backslash kept
+            (f'id = "{first}\\"\\"{second}"', set()),
+            (f'id = "{first}\\{second}"', set()),
+            (f'ancestor = "{first}\\{second}"', set()),
+            (f'parent = "{first}\\{second}"', set()),
+        ]
         answered = {}
         for template, _ in rows:
             cql = template.format(**ids)
             r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
             answered[template] = ({x["title"] for x in r["results"]}, r["totalSize"])
+        cql = {"cql": 'siteSearch ~ "Deep"'}
+        site = c.get("/atlassian/wiki/rest/api/search", headers=h, params=cql).json()
     assert answered == {template: (want, len(want)) for template, want in rows}
+    # read as `text ~` is, which over this chain is not real's answer: see `_CQL_READABLE`
+    assert {x["title"] for x in site["results"]} == {"Grand"}
+
+
+def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
+    """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers a `creator` or
+    `contributor` clause: the author's account id as the content reads serve it, and
+    `currentUser()` the caller's own, where the admin's matches nothing because the admin token
+    carries no email. A new function because no existing test sends the search as a user: the
+    structured-clause test above sends it as the admin alone."""
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "content": "Body.",
+        "visibility": "public",
+    }
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                **page,
+                "doc_id": "q-gp",
+                "title": "Guide",
+                "author_email": "ava@acme.com",
+                "created": "2024-05-12T02:56:26Z",
+                "updated": "2024-05-12T02:56:26Z",
+            },
+            {
+                **page,
+                "doc_id": "q-c",
+                "title": "Child",
+                "parent": "q-gp",
+                "author_email": "mia@acme.com",
+                "created": "2024-03-06T01:34:10Z",
+                "updated": "2024-03-06T01:34:10Z",
+            },
+            {
+                **page,
+                "doc_id": "q-gc",
+                "title": "Grand",
+                "parent": "q-c",
+                "author_email": "ava@acme.com",
+                "created": "2024-06-15T23:23:54Z",
+                "updated": "2024-06-15T23:23:54Z",
+            },
+            {
+                **page,
+                "doc_id": "q-o",
+                "title": "Other",
+                "space": "ops",
+                "author_email": "priya@acme.com",
+                "created": "2024-07-24T22:28:22Z",
+                "updated": "2024-07-24T22:28:22Z",
+            },
+            {
+                **page,
+                "doc_id": "q-b",
+                "title": "Post",
+                "space": "ops",
+                "subtype": "blogpost",
+                "author_email": "ava@acme.com",
+                "created": "2024-05-12T04:26:12Z",
+                "updated": "2024-05-12T04:26:12Z",
+            },
+        ],
+    )
+    rows = [
+        ("ava@acme.com", "creator = currentUser()", {"Guide", "Grand", "Post"}),
+        ("ava@acme.com", "contributor = currentUser()", {"Guide", "Grand", "Post"}),
+        ("ava@acme.com", 'creator = "{mia}"', {"Child"}),
+        ("ava@acme.com", 'creator = "{ava}"', {"Guide", "Grand", "Post"}),
+        ("ava@acme.com", 'creator = "nobody"', set()),
+        ("ava@acme.com", 'creator in ("{ava}", "{mia}")', {"Guide", "Child", "Grand", "Post"}),
+        ("ava@acme.com", 'creator != "{ava}"', {"Child", "Other"}),
+        ("ava@acme.com", 'creator not in ("{ava}")', {"Child", "Other"}),
+        ("ava@acme.com", "type=page and creator = currentUser()", {"Guide", "Grand"}),
+        ("ava@acme.com", 'contributor = "{mia}"', {"Child"}),
+        ("ava@acme.com", 'contributor != "{ava}"', {"Child", "Other"}),
+        ("ava@acme.com", "type=page and not creator = currentUser()", {"Child", "Other"}),
+        ("ava@acme.com", 'creator = "{ava}" and title = "Guide"', {"Guide"}),
+        ("ava@acme.com", 'creator = currentUser() and title = "Guide"', {"Guide"}),
+        ("mia@acme.com", "creator = currentUser()", {"Child"}),
+        ("priya@acme.com", "creator = currentUser()", {"Other"}),
+        ("admin", "creator = currentUser()", set()),
+        ("admin", 'creator = "{ava}"', {"Guide", "Grand", "Post"}),
+    ]
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        headers = {
+            "admin": {"Authorization": f"Bearer {written['admin_token']}"},
+            "ava@acme.com": {"Authorization": f"Bearer {tok(written, 'ava@acme.com')}"},
+            "mia@acme.com": {"Authorization": f"Bearer {tok(written, 'mia@acme.com')}"},
+            "priya@acme.com": {"Authorization": f"Bearer {tok(written, 'priya@acme.com')}"},
+        }
+        listed = c.get("/atlassian/wiki/rest/api/content", headers=headers["admin"]).json()
+        ids = {r["title"]: r["id"] for r in listed["results"]}
+        accounts = {}
+        for name, title in (("ava", "Guide"), ("mia", "Child")):
+            read = c.get(
+                f"/atlassian/wiki/rest/api/content/{ids[title]}",
+                headers=headers["admin"],
+                params={"expand": "history"},
+            ).json()
+            accounts[name] = read["history"]["createdBy"]["accountId"]
+        answered = {}
+        for caller, template, _ in rows:
+            cql = template.format(**accounts)
+            r = c.get(
+                "/atlassian/wiki/rest/api/search", headers=headers[caller], params={"cql": cql}
+            ).json()
+            answered[(caller, template)] = ({x["title"] for x in r["results"]}, r["totalSize"])
+    assert answered == {(caller, cql): (want, len(want)) for caller, cql, want in rows}
+
+
+def test_confluence_cql_search_reads_its_rows_once_in_a_needed_terms_order(tmp_path, monkeypatch):
+    """The rows :func:`backlot.routers.atlassian.confluence_cql_search` reads for each query, as
+    the comment above its evaluator gives them, and their order. Each page says `alpha` and `beta`
+    a different number of times, so the two terms rank the four pages in opposite orders, and
+    neither is the order they are listed in."""
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+    }
+    words = {n: " ".join(["alpha"] * n + ["beta"] * (5 - n)) for n in (2, 4, 1, 3)}
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {**page, "doc_id": f"rank-{n}", "title": f"P{n}", "content": text}
+            for n, text in words.items()
+        ],
+    )
+    rows = [
+        # cql, the titles in the order served, and how many times the corpus is listed and a
+        # term searched
+        ('text ~ "alpha"', ["P4", "P3", "P2", "P1"], 0, 1),
+        ('text ~ "beta"', ["P1", "P2", "P3", "P4"], 0, 1),
+        ('text ~ "alpha" and text ~ "beta"', ["P4", "P3", "P2", "P1"], 0, 2),
+        ('type = page and text ~ "beta"', ["P1", "P2", "P3", "P4"], 0, 1),
+        ('text ~ "alpha" or type = page', ["P4", "P1", "P2", "P3"], 1, 1),
+        ("type = page", ["P4", "P1", "P2", "P3"], 1, 0),
+    ]
+    reads = []
+
+    def spying(name):
+        read = getattr(store, name)
+
+        def spy(*args, **kwargs):
+            reads.append(name)
+            return read(*args, **kwargs)
+
+        return spy
+
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        for name in ("list_documents", "search_documents"):
+            monkeypatch.setattr(store, name, spying(name))
+        answered = {}
+        for cql, *_ in rows:
+            reads.clear()
+            r = c.get("/atlassian/wiki/rest/api/search", headers=h, params={"cql": cql}).json()
+            titles = [x["title"] for x in r["results"]]
+            answered[cql] = (titles, reads.count("list_documents"), reads.count("search_documents"))
+    assert answered == {cql: tuple(answer) for cql, *answer in rows}
 
 
 _CQL_REQUIRED = {
@@ -1522,7 +1862,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("space=OPS", {"Shut"}, set()),
         ("label=runbook", {"Guide"}, {"Guide"}),
         ("space=NOPE", set(), set()),
-        ('title="Guide"', set(), set()),
+        ('title="Guide"', {"Guide"}, {"Guide"}),  # `title` under `=` is read: the whole title
         ("type != blogpost", {"Guide", "Shut"}, {"Guide"}),
         (f'space != "{eng}"', {"Shut"}, set()),
         (["type=page", f"space={eng}"], {"Guide", "Shut"}, {"Guide"}),
@@ -1800,62 +2140,86 @@ def test_confluence_single_space_get(client, admin_h):
         }, sent
 
 
-def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(client, admin_h):
-    """Pins the bytes ``errors.atlassian._confluence_json`` writes, on the raw body, since
-    ``.json()`` decodes both writings to one string."""
-    emoji = "%F0%9F%98%80"  # U+1F600
-    for path, status, written in (
-        (
-            f"/atlassian/wiki/rest/api/space/{emoji}",
-            404,
-            rb'No space found with key : \uD83D\uDE00\""',
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?spaceKey={emoji}",
-            404,
-            rb"No space with key : \uD83D\uDE00",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?limit={emoji}",
-            400,
-            rb"For input string: \"\uD83D\uDE00\"",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content/229469/label?prefix={emoji}",
-            400,
-            rb"label prefixes :[\uD83D\uDE00]",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/content?type={emoji}",
-            501,
-            rb"Cannot find custom content type : \uD83D\uDE00",
-        ),
-        (
-            "/atlassian/wiki/rest/api/content/%F0%9D%9F%93/child/page",
-            400,
-            rb"for value [\uD835\uDFD3]",
-        ),
-        (
-            f"/atlassian/wiki/rest/api/search?cql=title~%22{emoji}x%22&limit=1",
-            200,
-            rb'\"\uD83D\uDE00x\""',
-        ),
-        (
-            f"/atlassian/wiki/rest/api/search?cql=label%3D%22{emoji}x%22",
-            200,
-            rb'\"\uD83D\uDE00x\""',
-        ),
-    ):
-        answer = client.get(path, headers=admin_h)
-        assert answer.status_code == status, path
-        assert written in answer.content, path
-        # and never the character's own UTF-8 bytes
-        assert "\U0001f600".encode() not in answer.content, path
-        assert "\U0001d7d3".encode() not in answer.content, path
-    # A character inside the plane is written as its UTF-8 bytes, unescaped.
-    inside = client.get("/atlassian/wiki/rest/api/space/%C3%A9", headers=admin_h)
-    assert inside.status_code == 404
-    assert "é".encode() in inside.content
+def test_confluence_writes_a_character_past_the_bmp_as_surrogate_escapes(tmp_path):
+    """Pins the bytes of Confluence's answers on the raw body, since ``.json()`` decodes both
+    writings to one string."""
+    e1, e2 = "\U0001f600", "\U0001d7d3"
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": f"eng{e1}",
+        "title": f"probe {e1}{e2} é",
+        "content": f"body {e1}{e2}",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "labels": [f"probe{e1}"],
+        "comments": [
+            {
+                "content": f"comment {e1}{e2}",
+                "author_email": "ava@acme.com",
+                "created_ts": "2026-10-02T09:00:00Z",
+            }
+        ],
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": f"child {e1}{e2}", "comments": []}
+    settings = tiny_corpus(tmp_path, [page, child])
+    with client_for(settings) as client:
+        admin_h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        rows = client.get(f"{api}/content?expand=space", headers=admin_h).json()["results"]
+        ids = {r["title"]: r["id"] for r in rows}
+        pid, cid, key = ids[page["title"]], ids[child["title"]], rows[0]["space"]["key"]
+        emoji = "%F0%9F%98%80"  # U+1F600
+        title = rb"probe \uD83D\uDE00\uD835\uDFD3 " + "é".encode()
+        child_title = rb"child \uD83D\uDE00\uD835\uDFD3"
+        space_name = rb'"name":"eng\uD83D\uDE00"'
+        for path, status, written in (
+            (f"{api}/space/{emoji}", 404, rb'No space found with key : \uD83D\uDE00\""'),
+            (f"{api}/content?spaceKey={emoji}", 404, rb"No space with key : \uD83D\uDE00"),
+            (f"{api}/content?limit={emoji}", 400, rb"For input string: \"\uD83D\uDE00\""),
+            (f"{api}/content/{pid}/label?prefix={emoji}", 400, rb"label prefixes :[\uD83D\uDE00]"),
+            (
+                f"{api}/content?type={emoji}",
+                501,
+                rb"Cannot find custom content type : \uD83D\uDE00",
+            ),
+            (f"{api}/content/%F0%9D%9F%93/child/page", 400, rb"for value [\uD835\uDFD3]"),
+            (f"{api}/search?cql=title~%22{emoji}x%22&limit=1", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=label%3D%22{emoji}x%22", 200, rb'\"\uD83D\uDE00x\""'),
+            (f"{api}/search?cql=title~%22probe%22", 200, title),
+            (f"{api}/content/{pid}", 200, title),
+            (f"{api}/content/{pid}?expand=body.storage", 200, rb"body \uD83D\uDE00\uD835\uDFD3"),
+            (f"{api}/content/{cid}", 200, child_title),
+            (f"{api}/content?spaceKey={key}", 200, title),
+            (f"{api}/content?title={quote(page['title'])}&spaceKey={key}", 200, title),
+            (f"{api}/content/{pid}/child/page", 200, child_title),
+            (
+                f"{api}/content/{pid}/child/comment?expand=body.storage",
+                200,
+                rb"comment \uD83D\uDE00\uD835\uDFD3",
+            ),
+            (f"{api}/content/{pid}/label", 200, rb'"name":"probe\uD83D\uDE00"'),
+            (f"{api}/space/{key}", 200, space_name),
+            (f"{api}/space", 200, space_name),
+            (f"{api}/content/{pid}?expand=space", 200, space_name),
+            (f"/atlassian//wiki/rest/api/content/{pid}", 200, title),
+        ):
+            answer = client.get(path, headers=admin_h)
+            assert answer.status_code == status, path
+            assert written in answer.content, path
+            # and never the character's own UTF-8 bytes
+            assert e1.encode() not in answer.content, path
+            assert e2.encode() not in answer.content, path
+            assert answer.headers["content-length"] == str(len(answer.content)), path
+            head = client.head(path, headers=admin_h)
+            if "content-length" in head.headers:
+                assert head.headers["content-length"] == str(len(answer.content)), path
+        assert client.get(f"{api}/content/{pid}", headers=admin_h).json()["title"] == page["title"]
+        # A character inside the plane is written as its UTF-8 bytes, unescaped.
+        inside = client.get(f"{api}/space/%C3%A9", headers=admin_h)
+        assert inside.status_code == 404
+        assert "é".encode() in inside.content
 
 
 # --- OpenAPI enrichment: atlassian (jira + confluence) ------------------------------------
@@ -1898,6 +2262,139 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
         headers=admin_h,
     ).json()
     assert "body" in page and "storage" in page["body"]  # expand survives
+
+
+def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
+    """`content/{id}` expands what `confluence_content_get` and `_confluence_page` say real
+    expands for each `expand`, and the rows of `content`, `content/{id}/child/page` and the CQL
+    search carry none of the four."""
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    child = {**page, "doc_id": "c", "parent": "p", "title": "probe child"}
+    settings = tiny_corpus(tmp_path, [page, child])
+    four = ("space", "history", "version", "body")
+    # Real's ten `body` representations, in real's order (see `_confluence_page`).
+    ten = [
+        "editor",
+        "atlas_doc_format",
+        "view",
+        "export_view",
+        "styled_view",
+        "markdown",
+        "dynamic",
+        "storage",
+        "editor2",
+        "anonymous_export_view",
+    ]
+    nine_storage = [name for name in ten if name != "storage"]
+    nine_export_view = [name for name in ten if name != "export_view"]
+    nine_view = [name for name in ten if name != "view"]
+    nine_adf = [name for name in ten if name != "atlas_doc_format"]
+    # Each row: (expand, served properties, body members, the four names still listed under
+    # `_expandable`, `body._expandable` or None when no body is served).
+    rows = (
+        (None, ["space", "history", "version"], [], ["body"], None),
+        ("", ["space", "history", "version"], [], ["body"], None),
+        (
+            "body.storage",
+            ["body"],
+            ["_expandable", "storage"],
+            ["history", "space", "version"],
+            nine_storage,
+        ),
+        ("space", ["space"], [], ["body", "history", "version"], None),
+        ("version", ["version"], [], ["body", "history", "space"], None),
+        ("bogus", [], [], ["body", "history", "space", "version"], None),
+        ("body", ["body"], ["_expandable"], ["history", "space", "version"], ten),
+        (
+            "body.storage,space",
+            ["space", "body"],
+            ["_expandable", "storage"],
+            ["history", "version"],
+            nine_storage,
+        ),
+        (
+            "body.export_view.value",
+            ["body"],
+            ["_expandable", "export_view"],
+            ["history", "space", "version"],
+            nine_export_view,
+        ),
+        (
+            "body.view",
+            ["body"],
+            ["_expandable", "view"],
+            ["history", "space", "version"],
+            nine_view,
+        ),
+        (
+            "body.atlas_doc_format",
+            ["body"],
+            ["_expandable", "atlas_doc_format"],
+            ["history", "space", "version"],
+            nine_adf,
+        ),
+        ("history.lastUpdated", ["history"], [], ["body", "space", "version"], None),
+        ("version.by", ["version"], [], ["body", "history", "space"], None),
+        ("body.bogus", ["body"], ["_expandable"], ["history", "space", "version"], ten),
+        (" space", [], [], ["body", "history", "space", "version"], None),
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+        got = []
+        for expand, _served, _members, _expandable, _body_expandable in rows:
+            query = {} if expand is None else {"expand": expand}
+            j = c.get(f"{api}/content/{pid}", headers=h, params=query).json()
+            # No row names `metadata` or `ancestors`, so neither is served and both stay listed.
+            assert [k for k in ("metadata", "ancestors") if k in j] == [], expand
+            assert {"metadata", "ancestors"} <= set(j["_expandable"]), expand
+            got.append(
+                (
+                    [k for k in four if k in j],
+                    sorted(j.get("body", {})),
+                    sorted(k for k in four if k in j["_expandable"]),
+                    list(j["body"]["_expandable"]) if "_expandable" in j.get("body", {}) else None,
+                )
+            )
+        assert got == [
+            (served, members, expandable, body_expandable)
+            for _x, served, members, expandable, body_expandable in rows
+        ]
+        for path in ("/content", f"/content/{pid}/child/page", "/search?cql=title~probe"):
+            row = c.get(api + path, headers=h).json()["results"][0]
+            row = row.get("content", row)
+            assert [k for k in four if k in row] == [], path
+        # The request the llama-index reader sends, on the listing route.
+        listed = c.get(
+            api + "/content", headers=h, params={"expand": "body.export_view.value"}
+        ).json()["results"]
+        listing = next(r for r in listed if str(r.get("id")) == str(pid))
+        listing = listing.get("content", listing)
+        assert "export_view" in listing["body"]
+        assert list(listing["body"]["_expandable"]) == nine_export_view
+        # Unexpanded, `space` is listed under `_expandable` with the link `container` carries.
+        versioned = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "version"}).json()
+        assert versioned["_expandable"]["space"] == versioned["_expandable"]["container"]
+        # The `atlas_doc_format` value is the ADF document as a JSON string.
+        adf = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body.atlas_doc_format"}
+        ).json()["body"]["atlas_doc_format"]
+        assert json.loads(adf["value"])["type"] == "doc"
+        # A served `ancestors` leaves `_expandable`, as the four do.
+        cid = served_id("confluence", "c")
+        child_j = c.get(f"{api}/content/{cid}", headers=h, params={"expand": "ancestors"}).json()
+        assert [a["title"] for a in child_j["ancestors"]] == ["probe"]
+        assert "ancestors" not in child_j["_expandable"]
 
 
 # --- Jira ------------------------------------------------------------------------
@@ -2346,6 +2843,19 @@ _SERVED_PAGE = "{page}"
         ("999999999/label?start=-1", "No content found with id : 999999999", "refused", 287),
         (f"att{_SERVED_PAGE}/label?limit=-1", "null", "attachment", 178),
         (f"att{_SERVED_PAGE}/label?limit=0", "null", "attachment", 178),
+        # a page ending past Java's `int` (`_refuse_a_start_past_java_int`)
+        (
+            "999999999/child/page?start=2147483647",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/comment?start=2147483647&limit=1",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
         # with nothing wrong but the id, each listing looks it up
         (
             "999999999/child/page?limit=0",
@@ -2873,6 +3383,39 @@ _INTEGER_REFUSALS = [
         ("maxResults", "1.5", "PAY-7"),
         # where Python's own int() reads 10
         ("maxResults", "1_0", "PAY-7"),
+        # a hex spelling just past each parameter's own width
+        ("maxResults", "0x80000000", "PAY-7"),
+        ("maxResults", "-0x80000001", "PAY-7"),
+        ("startAt", "0x8000000000000000", "PAY-7"),
+        # what `parseNumber` refuses: a `+` ahead of a prefix, a prefix with nothing or a sign or a
+        # non-hex digit after it, a prefix past a leading zero, U+0085 (Python's whitespace and not
+        # Java's), a non-breaking space after the prefix, and a digit past U+FFFF
+        *[
+            ("maxResults", value, "PAY-7")
+            for value in (
+                "+0x2",
+                "+#2",
+                "0x",
+                "#",
+                "-0x",
+                "-#",
+                "0x-2",
+                "0x+2",
+                "#-2",
+                "-0x-2",
+                "0xZ",
+                "-0xZ",
+                "#Z",
+                "0x2Z",
+                "0x1_0",
+                "00x2",
+                "x2",
+                "\x852",
+                "2\x85",
+                "0x\xa02",
+                "\U0001d7d0",
+            )
+        ],
         # the width is per PARAMETER: `maxResults` is a Java int, `startAt` a Java long, and each
         # is refused just past its own boundary and answered 200 just inside it (below)
         ("maxResults", "2147483648", "PAY-7"),
@@ -2894,7 +3437,10 @@ assert sum(slash == "/" for *_, slash in _INTEGER_REFUSALS) == 4
 @pytest.mark.parametrize("param,value,key,slash", _INTEGER_REFUSALS)
 def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value, key, slash):
     client, h = paged
-    r = client.get(f"/atlassian/rest/api/3/issue/{key}/comment{slash}?{param}={value}", headers=h)
+    r = client.get(
+        f"/atlassian/rest/api/3/issue/{key}/comment{slash}?{param}={quote(value, safe='')}",
+        headers=h,
+    )
     assert r.status_code == 400, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
     assert r.json() == {
@@ -2911,8 +3457,7 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
     [
         # an EMPTY value is not a conversion failure on either product -- it reads as absent
         ("maxResults=", (0, 100)),
-        # a leading `+` and surrounding whitespace are both accepted, which is narrower than
-        # "any decimal integer" and is what Python's own `int()` accepts
+        # a leading `+` and surrounding whitespace are both accepted
         ("maxResults=%2B3", (0, 3)),
         ("maxResults=%203%20", (0, 3)),
         # internal whitespace is REMOVED, not just trimmed -- `3 4` is thirty-four
@@ -2927,6 +3472,28 @@ def test_jira_refuses_an_integer_parameter_it_cannot_convert(paged, param, value
         ("maxResults=2147483647", (0, 100)),
         ("startAt=9223372036854775807", (9223372036854775807, 100)),
         ("startAt=-9223372036854775808", (0, 100)),
+        # Spring's `parseNumber`: `0x`, `0X` or `#` after an optional `-` is hex, and a leading
+        # zero is still decimal
+        ("maxResults=0x2", (0, 2)),
+        ("maxResults=0X2", (0, 2)),
+        ("maxResults=%232", (0, 2)),
+        ("maxResults=-0x2", (0, 1)),
+        ("startAt=-0x2", (0, 100)),
+        ("startAt=0xA", (10, 100)),
+        ("maxResults=010", (0, 10)),
+        ("startAt=" + "0" * 5000 + "2", (2, 100)),
+        # a hex digit is `Character.digit`'s: U+0662 and the full-width U+FF41
+        ("maxResults=0x%D9%A2", (0, 2)),
+        ("maxResults=0x%EF%BD%81", (0, 10)),
+        # whitespace is removed before the prefix is read, wherever it sits
+        ("maxResults=%200x2%20", (0, 2)),
+        ("maxResults=0x%202", (0, 2)),
+        ("maxResults=0x%E2%80%832", (0, 2)),
+        # the hex boundaries of each parameter's own width
+        ("maxResults=0x7fffffff", (0, 100)),
+        ("maxResults=-0x80000000", (0, 1)),
+        ("startAt=0x80000000", (2147483648, 100)),
+        ("startAt=0x7fffffffffffffff", (9223372036854775807, 100)),
     ],
 )
 def test_jira_takes_the_integer_spellings_the_real_api_takes(paged, query, want):
@@ -2946,6 +3513,8 @@ def test_jira_takes_the_integer_spellings_the_real_api_takes(paged, query, want)
         ("startAt=5&startAt=abc", (5, 100)),
         ("maxResults=1&maxResults=2", (0, 1)),
         ("startAt=&startAt=5", (0, 100)),
+        ("maxResults=0x2&maxResults=3", (0, 2)),
+        ("maxResults=3&maxResults=0x2", (0, 3)),
     ],
 )
 def test_jira_reads_the_first_of_a_repeated_integer_parameter(paged, query, want):
@@ -3064,6 +3633,16 @@ _SEARCH_GET_ROWS = [
     (f"{_BOUNDED}&reconcileIssues=%D9%A1", None),
     (f"{_BOUNDED}&reconcileIssues=9223372036854775807", None),
     (f"{_BOUNDED}&reconcileIssues=-9223372036854775808", None),
+    (f"{_BOUNDED}&reconcileIssues=0x10", None),
+    (f"{_BOUNDED}&reconcileIssues=0X1F", None),
+    (f"{_BOUNDED}&reconcileIssues=%2310", None),
+    (f"{_BOUNDED}&reconcileIssues=-0x10", None),
+    (f"{_BOUNDED}&reconcileIssues=-%2310", None),
+    (f"{_BOUNDED}&reconcileIssues=010", None),
+    (f"{_BOUNDED}&reconcileIssues=0x%202", None),
+    (f"{_BOUNDED}&reconcileIssues=0x7fffffffffffffff", None),
+    (f"{_BOUNDED}&reconcileIssues=-0x8000000000000000", None),
+    (f"{_BOUNDED}&reconcileIssues=" + "0" * 5000 + "1", None),
     (f"{_BOUNDED}&reconcileIssues=", None),
     (f"{_BOUNDED}&reconcileIssues=%20", None),
     (f"{_BOUNDED}&reconcileIssues=1&reconcileIssues=2", None),
@@ -3075,6 +3654,29 @@ _SEARCH_GET_ROWS = [
     (f"{_BOUNDED}&reconcileIssues=1_0", ("reconcileIssues", "1_0")),
     (f"{_BOUNDED}&reconcileIssues=%C2%A01", ("reconcileIssues", "\xa01")),
     (f"{_BOUNDED}&reconcileIssues=%011", ("reconcileIssues", "\x011")),
+    (f"{_BOUNDED}&reconcileIssues=%2B0x2", ("reconcileIssues", "+0x2")),
+    (f"{_BOUNDED}&reconcileIssues=0x", ("reconcileIssues", "0x")),
+    (f"{_BOUNDED}&reconcileIssues=-0x", ("reconcileIssues", "-0x")),
+    (f"{_BOUNDED}&reconcileIssues=0x-2", ("reconcileIssues", "0x-2")),
+    (f"{_BOUNDED}&reconcileIssues=0xZ", ("reconcileIssues", "0xZ")),
+    (f"{_BOUNDED}&reconcileIssues=%C2%852", ("reconcileIssues", "\x852")),
+    (f"{_BOUNDED}&reconcileIssues=0x%C2%A02", ("reconcileIssues", "0x\xa02")),
+    (f"{_BOUNDED}&reconcileIssues=%F0%9D%9F%90", ("reconcileIssues", "\U0001d7d0")),
+    (
+        f"{_BOUNDED}&reconcileIssues=0x8000000000000000",
+        ("reconcileIssues", "0x8000000000000000"),
+    ),
+    (f"{_BOUNDED}&reconcileIssues=0xZ&reconcileIssues=3", ("reconcileIssues", None)),
+    # maxResults: an int, read by the same rule, and then held to its range
+    (f"{_ANY_PROJECT}&maxResults=0x2", None),
+    (f"{_ANY_PROJECT}&maxResults=%232", None),
+    (f"{_ANY_PROJECT}&maxResults=0x%EF%BD%81", None),
+    (f"{_ANY_PROJECT}&maxResults=-0x2", errors_atlassian.max_results_out_of_range().body),
+    (f"{_ANY_PROJECT}&maxResults=0x7fffffff", errors_atlassian.max_results_out_of_range().body),
+    (f"{_ANY_PROJECT}&maxResults=0x80000000", ("maxResults", "0x80000000")),
+    (f"{_ANY_PROJECT}&maxResults=-0x80000001", ("maxResults", "-0x80000001")),
+    (f"{_ANY_PROJECT}&maxResults=%2B0x2", ("maxResults", "+0x2")),
+    (f"{_ANY_PROJECT}&maxResults=0x%C2%A02", ("maxResults", "0x\xa02")),
     (
         f"{_BOUNDED}&reconcileIssues=9223372036854775808",
         ("reconcileIssues", "9223372036854775808"),
@@ -3530,8 +4132,9 @@ _ATTACHMENT_PAGES = [
 def test_confluence_child_attachment_is_the_empty_page_from_any_start(
     client, admin_h, query, start, limit, prev
 ):
-    """Measured: no rows and no `next` at any `start`, a `prev` from any `start` past 0, and no
-    bound on `start` of the kind `content` has."""
+    """Measured: no rows and no `next` at any `start` served, a `prev` from any `start` past 0, and
+    no bound on `start` of the kind `content` has (where a page would end is what
+    :func:`backlot.routers.atlassian._refuse_a_start_past_java_int` bounds)."""
     api = "/atlassian/wiki/rest/api"
     cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
     r = client.get(f"{api}/content/{cid}/child/attachment?{query}", headers=admin_h)
@@ -3619,6 +4222,9 @@ _REFUSED, _FAILED = (
 )
 
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
+_ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
+_NOT_PARSED_BODY = errors_atlassian.cql_not_parsed().body
+_OPERATOR_BODY = errors_atlassian.cql_operator_not_supported(">", "created").body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -3648,6 +4254,9 @@ _CQL_PAGE_ROWS = [
     ("&limit=2&cursor={c1}&cursor=", [2, 3], None),
     ("&limit=1&cursor={c1}&cursor={c2}", [2], 2),
     ("&limit=2&cursor=abc", (400, _REFUSED), None),
+    ("%20and%20title%20~%20%22a%5C%5C%22&limit=2&cursor=abc", (400, _ESCAPED_END_QUOTE), None),
+    ("%20and%20created%20%3E%20%22x%22&limit=2&cursor=abc", (400, _NOT_PARSED_BODY), None),
+    ("%20and%20created%20%3E%2020260910&limit=2&cursor=abc", (400, _OPERATOR_BODY), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=WyJcdDEiXQ%3D%3D_h_W10%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D_h_abc", (400, _REFUSED), None),
@@ -3827,6 +4436,12 @@ def test_confluence_reads_the_first_of_a_repeated_integer_parameter(client, admi
         ("limit=%D9%A3", 3),
         # Java's `int` ceiling converts, and `content` then answers its own cap for it.
         ("limit=2147483647", 1000),
+        ("limit=0x2", 2),
+        ("limit=%232", 2),
+        ("limit=010", 10),
+        ("limit=0x%EF%BD%81", 10),
+        ("limit=0x7fffffff", 1000),
+        ("limit=0x2&limit=3", 2),
     ],
 )
 def test_confluence_takes_the_integer_spellings_the_real_api_takes(
@@ -3840,12 +4455,42 @@ def test_confluence_takes_the_integer_spellings_the_real_api_takes(
 
 
 @pytest.mark.parametrize(
-    "value", ["1.5", "1_0", "2147483648", "-2147483649", "9223372036854775807"]
+    "value,reason",
+    [
+        ("1.5", 'For input string: "1.5"'),
+        ("1_0", 'For input string: "1_0"'),
+        ("2147483648", 'For input string: "2147483648"'),
+        ("-2147483649", 'For input string: "-2147483649"'),
+        ("9223372036854775807", 'For input string: "9223372036854775807"'),
+        # past a hex prefix the exception is `Integer.decode`'s, naming what follows the prefix
+        ("0x", 'For input string: "" under radix 16'),
+        ("#", 'For input string: "" under radix 16'),
+        ("-0x", 'For input string: "-" under radix 16'),
+        ("0xZ", 'For input string: "Z" under radix 16'),
+        ("-0xZ", 'For input string: "-Z" under radix 16'),
+        ("0x1_0", 'For input string: "1_0" under radix 16'),
+        ("0x\xa02", 'For input string: "\xa02" under radix 16'),
+        ("0x80000000", 'For input string: "80000000" under radix 16'),
+        ("-0x80000001", 'For input string: "-80000001" under radix 16'),
+        ("0x-2", "Sign character in wrong position"),
+        ("#-2", "Sign character in wrong position"),
+        ("-0x-2", "Sign character in wrong position"),
+        # and without a prefix `parseNumber` reads, the value as sent
+        ("+0x2", 'For input string: "+0x2"'),
+        ("00x2", 'For input string: "00x2"'),
+        ("\x852", 'For input string: "\x852"'),
+        ("\U0001d7d0", 'For input string: "\U0001d7d0"'),
+    ],
 )
-def test_confluence_refuses_the_integer_values_the_real_api_refuses(client, admin_h, value):
+def test_confluence_refuses_the_integer_values_the_real_api_refuses(client, admin_h, value, reason):
     """`limit` is a Java int on this route, where Jira's `startAt` is a long."""
-    r = client.get(f"/atlassian/wiki/rest/api/content?limit={value}", headers=admin_h)
+    r = client.get(
+        f"/atlassian/wiki/rest/api/content?limit={quote(value, safe='')}", headers=admin_h
+    )
     assert r.status_code == 400, r.text
+    assert r.json()["message"].endswith(
+        f"nested exception is java.lang.NumberFormatException: {reason}"
+    )
 
 
 @pytest.mark.parametrize("path", ["/rest/api/3/issue/PAY-7/comment", "/wiki/rest/api/content"])
@@ -4063,6 +4708,11 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         # 404, and `label` its conversion and its `prefix`
         ("content/999999999/child/attachment", "limit=abc", 'For input string: "abc"'),
         ("content/999999999/child/attachment", "limit=-1", "limit cannot be less than zero"),
+        (
+            "content/999999999/child/attachment",
+            "start=2147483647",
+            "limit cannot be less than zero",
+        ),
         *[
             (f"content/999999999/{route}", query, want)
             for route in ("child/page", "child/comment")
@@ -4086,6 +4736,7 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         ("content/abc/child/page", "limit=-1", "for value [abc]"),
         ("content/abc/child/comment", "limit=-1", "for value [abc]"),
         ("content/abc/child/attachment", "limit=-1", "for value [abc]"),
+        ("content/abc/child/attachment", "start=2147483647", "for value [abc]"),
         ("content/abc/label", "prefix=bogus", "for value [abc]"),
         ("content/99999999999999999999/label", "limit=abc", "for value [99999999999999999999]"),
         ("content/attabc/label", "limit=abc", "for value [attabc]"),
@@ -5781,6 +6432,22 @@ _UNCLAIMED_SEGMENTS = [
     ("/atlassian/wiki/rest/api/nope%0Ax", "*/*", "xml", "nope%0Ax"),
     # an escaped `?` beside a real query: the query is the one sent, after the path's escape
     ("/atlassian/wiki/rest/api/nope%3Fx?_=1", "application/json", "json", "nope%3Fx?_=1"),
+    # a `%` two hex digits do not follow in the query, as ``errors.atlassian.echoed_query`` spells
+    # it, and two escapes it keeps
+    *(
+        (f"/atlassian/wiki/rest/api/nope?{query}", "application/json", "json", f"nope?{echoed}")
+        for query, echoed in (
+            ("b=%x", "b=%25x"),
+            ("b=%zz", "b=%25zz"),
+            ("b=%4x", "b=%254x"),
+            ("b=%", "b=%25"),
+            ("b=%4", "b=%254"),
+            ("b=%%41", "b=%25%41"),
+            ("%x=1", "%25x=1"),
+            ("b=%2fx", "b=%2fx"),
+            ("b=%e9x", "b=%e9x"),
+        )
+    ),
 ]
 
 
@@ -6576,6 +7243,39 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/nope%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB/comment?maxResults=abc", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # and on Jira, on its API and off it, an escape that does not decode to UTF-8, on each method
+    # Tomcat answers and beside a backslash
+    *[
+        ("GET", f"/rest/api/3/issue/nope{escape}x", 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for escape in ("%80", "%e9", "%C3", "%C0%80", "%E2%82", "%ED%A0%80", "%F4%90%80%80")
+    ],
+    ("GET", "/rest/api/3/serverInfo%80", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/agile/1.0/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    *[
+        (method, "/rest/api/3/issue/nope%80x", 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for method in ("HEAD", "OPTIONS", "POST", "PUT", "DELETE")
+    ],
+    ("GET", "/rest/api/3/issue/nope%5C%80x", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    ("GET", "/rest/api/3/issue/nope%80%5Cx", 400, _TOMCAT_400, _TOMCAT_PAGE),
+    # and on Confluence a `[` or a `]` in the path, at a route's path and at paths no route
+    # serves, and in a query value eight of the eleven characters it refuses there, the other
+    # three being ``tests.test_request_target._PRINTABLE``'s, which the test client escapes; a
+    # broken escape in the query beside one, and a `\` in the path, which reads as a `/`
+    *[
+        ("GET", path, 400, _TOMCAT_400, _TOMCAT_PAGE)
+        for path in (
+            *("/wiki/rest/api/nope[x", "/wiki/rest/api/nope]x", "/wiki/rest/api/space[x"),
+            *("/wiki/api/v2/nope[x", "/wiki/nope[x", "/wiki/spaces[x", "/wiki/home[x"),
+            *(f"/wiki/rest/api/nope?b={c}x" for c in "[\\]^`{|}"),
+            *("/wiki/rest/api/space?b=[x", "/wiki/rest/api/search?cql=type%3Dpage&b=[x"),
+            *("/wiki/rest/api/content?b=[x", "/wiki/api/v2/pages?b=[x", "/wiki/nope?b=[x"),
+            *("/wiki/x/abc?b=[x", "/wiki/display/X?b=[x", "/wiki/people?b=[x"),
+            *("/wiki/spaces?b=[x", "/wiki/rest/api/space?b=[x&c=%x"),
+            *("/wiki/rest/api/space?c=%x&b=[x", "/wiki/rest/api/nope[y\\x"),
+            "/wiki/rest/api/space%2Fx[x",
+        )
+    ],
     # the edge's 400 for a `;`, bare or escaped in either case, wherever it stands, a `..;` the
     # firewall lets through included (the shape `Accept` picks is
     # `test_atlassian_edge_refuses_a_semicolon_in_the_shape_accept_picks`)
@@ -6606,15 +7306,40 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/..;/nope;x", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("GET", "/wiki/rest/api/space/A%2FB;x", 400, _EDGE_400, _EDGE_PAGE),
     ("GET", "/rest/api/3/issue/A%5CB;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/nope%80x;y", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/rest/api/3/issue/nope%00%80x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("PROPFIND", "/rest/api/3/issue/nope%80x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
+    ("TRACE", "/rest/api/3/issue/nope%80x", 405, _CLOUDFRONT_405, _EDGE_PAGE),
+    ("PATCH", "/rest/api/3/issue/nope%80x", 400, _NGINX_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope[y%zzx", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope%zzy[x", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope[y;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/nope;y[x", 400, _EDGE_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/api/space;x?b=[x&", 400, _EDGE_400, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/nope[x", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/api/space?b=[x", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("PROPFIND", "/wiki/nope[x", 403, _CLOUDFRONT_METHOD_403, _EDGE_PAGE),
     # a `HEAD` is the page's status and length with no body
     ("HEAD", "/rest/api/3/nope<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
     ("HEAD", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("HEAD", "/rest/api/3/nope;x", 400, _EDGE_400, _EDGE_PAGE),
+    ("HEAD", "/wiki/rest/api/space?b=[x", 400, _TOMCAT_400, _TOMCAT_PAGE),
     # what none of them refuses reaches the product: a tag the firewall does not name, a
     # closing tag but `script`'s, a name short of `!doctype`, a tag in the query, a `..\` there
     # that neither a `\` nor a `/` nor the end of the value follows, a `;` there, a step in a
-    # parameter's name, a broken escape in the query, Jira's decoded slash and the web app's
-    # `spaces/` in any case
+    # parameter's name, a broken escape in the query, Jira's decoded slash, the web app's
+    # `spaces/` in any case, Jira's query holding a `[`, and the web app's pages holding one in
+    # the query, and under `spaces/` in the path too
+    ("GET", "/rest/api/3/serverInfo?b=[x", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    *[
+        ("GET", path, 404, None, "text/html;charset=UTF-8")
+        for path in (
+            *("/wiki?b=[x", "/wiki/?b=[x", "/wiki/home?b=[x", "/wiki/HOME?b=[x"),
+            *("/wiki/home/?b=[x", "/wiki/search?b=[x", "/wiki/Search?b=[x"),
+            *("/wiki/spaces/X?b=[x", "/wiki/SPACES/X?b=[x"),
+            *("/wiki/spaces/X[x", "/wiki/SPACES/X[x", "//wiki/spaces/X[x"),
+        )
+    ],
     ("GET", "/rest/api/3/nope<img>", 404, None, errors_atlassian.PROBLEM_JSON),
     ("GET", "/rest/api/3/nope</style>", 404, None, errors_atlassian.PROBLEM_JSON),
     ("GET", "/rest/api/3/nope<!doctyp>", 404, None, errors_atlassian.PROBLEM_JSON),
@@ -6644,6 +7369,10 @@ _FRONT_DOOR_ROWS = [
     ("GET", "/rest/api/3/serverInfo?..%2F=1", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
     ("GET", "/rest/api/3/serverInfo?x=%zz", 200, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
     ("GET", "/rest/api/3/issue/A%2FB", 404, None, errors_atlassian.PROBLEM_JSON),
+    # an escape that decodes to UTF-8, and on Confluence one that does not
+    ("GET", "/rest/api/3/issue/nope%C3%A9x", 404, None, errors_atlassian.JIRA_JSON_MEDIA_TYPE),
+    ("GET", "/rest/api/3/serverInfo%C3%A9", 404, None, errors_atlassian.PROBLEM_JSON),
+    ("GET", "/wiki/rest/api/space/nope%80x", 404, None, "application/json"),
     # the web app answers `spaces/` itself (real's single-page app at 200, which is not copied)
     ("GET", "/wiki/spaces/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
     ("GET", "/wiki/SPACES/NO%2FSUCH", 404, None, "text/html;charset=UTF-8"),
@@ -6906,7 +7635,7 @@ _OPERATION_REFUSALS = [
             ),
         )
     ),
-    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_media_type``)
+    # the charset Tomcat reads first (``errors.atlassian.refuse_a_confluence_charset``)
     *(
         ("POST", "/wiki/rest/api/space/abc123/permission", None, ctype, status, body)
         for ctype, status, body in (
@@ -7316,6 +8045,72 @@ def _operation_refusal(client, method, vendor_path, authorization, ctype, status
 
 def test_confluence_answers_an_operation_before_it_runs(client):
     assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
+
+
+_EMPTY_CHARSET = "text/plain;charset="
+
+#: The status each kind of path answers a `Content-Type` whose charset Java cannot name
+#: (``errors.atlassian.refuse_a_confluence_charset``) with: the empty 500 wherever Confluence's
+#: Spring application answers (``atlassian.refuse_a_spring_confluence_charset``), whichever the
+#: method and with a credential or without one, and real's own answer where it does not fail the
+#: request. A ``ctype`` of two values sends the header twice, and ``"admin"`` is the admin's token.
+_SPRING_CHARSET = [
+    # a path a route serves, under its method, `HEAD`, `OPTIONS` and one it does not take
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "admin", 500),
+    ("HEAD", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("PUT", "/wiki/rest/api/space/ENG", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content", _EMPTY_CHARSET, "admin", 500),
+    ("POST", "/wiki/rest/api/content/1/label", _EMPTY_CHARSET, None, 500),
+    # a path an operation is published at and no route serves
+    ("GET", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, None, 500),
+    # the product's page
+    ("GET", "/wiki/rest/api/space/ENG/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/", _EMPTY_CHARSET, None, 500),
+    # the header twice: a blank value left out, the others read joined
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
+    ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
+    ("GET", "/wiki/rest/api/space", ('text/plain;charset="utf-8', '"'), None, 500),
+    ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, "text/plain"), None, 403),
+    ("GET", "/wiki/rest/api/space", ("\xa0", _EMPTY_CHARSET), None, 403),
+    # where real does not fail the request
+    ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
+    ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
+    ("POST", "/wiki/rest/api/content/archive", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/longtask", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/nope", _EMPTY_CHARSET, None, 302),
+    ("GET", "/wiki/rest/api/search?cql=type%3Dpage", "application/json;charset=_x", None, 403),
+    ("PATCH", "/wiki/rest/api/space", _EMPTY_CHARSET, None, 405),
+    ("GET", "/rest/api/3/serverInfo", _EMPTY_CHARSET, None, 200),
+]
+
+
+def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, status):
+    ctypes = (ctype,) if isinstance(ctype, str) else ctype
+    headers = [("Content-Type", value) for value in ctypes]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    body = b"x" if method in ("POST", "PUT") else None
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    if status == 500:
+        assert (r.content, r.headers.get("content-type")) == (b"", None)
+
+
+def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
+    assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
 
 
 @pytest.mark.parametrize(
@@ -8716,6 +9511,18 @@ def test_jira_operations_that_answer_an_accept_with_no_406(client):
 
 _CQL_PREFIX = "com.atlassian.confluence.api.service.exceptions.api.BadRequestException: "
 _CQL_NOT_PARSED = "Could not parse cql : "
+_CQL_CURRENT_SPACE = (
+    "Unable to execute function 'currentSpace', the required contexts were not present : space"
+)
+
+
+def _cql_reserved(word):
+    """The message real answers a reserved word where a value goes with."""
+    return (
+        f"'{word}' is a reserved keyword.  You must surround '{word}' in quotation marks to use it."
+    )
+
+
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -8744,12 +9551,71 @@ _CQL_PARSE_ROWS = [
             ("SPACE.KEY=handbook", "SPACE.KEY = 'handbook'"),
             ('space.key != "handbook"', "space.key != 'handbook'"),
             ('space.key in ("handbook", handbook)', "space.key in ( 'handbook' , 'handbook' )"),
+            ('space.key="HANDBOOK"', "space.key = 'handbook'"),
+            ('space.key="han\\"dbook"', "space.key = 'handbook'"),
+            ('space.key="a\\"b"', "space.key = 'ab'"),
+            ("space.key='han\"dbook'", "space.key = 'handbook'"),
+            ('space.key="a\\"b\\"c"', "space.key = 'a\"b\"c'"),
+            ('space.key="a\\"b\\"c\\"d"', "space.key = 'a\"b\"cd'"),
+            ('space.key="han\\"\\"dbook"', "space.key = 'han\"\"dbook'"),
+            ('space.key="han\\dbook"', "space.key = 'han\\dbook'"),
+            ('space.key="poe6f613"', "space.key = 'POE6F613'"),
+            ('space.key != "HANDBOOK"', "space.key != 'handbook'"),
+            (
+                'space.key in ("HANDBOOK", "a\\"b")',
+                "space.key in ( 'handbook' , 'ab' )",
+            ),
+            ('space = "han\\"dbook"', 'space = "han\\"dbook"'),
+            ("space = 'han\"dbook'", "space = 'han\"dbook'"),
+            ('space = "handbook\\""', 'space = "handbook\\""'),
+            ('space = "han\\"\\"dbook"', 'space = "han\\"\\"dbook"'),
+            ('space = "han\\dbook"', 'space = "han\\dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
+            ('type = "pa\\"ge"', 'type = "pa\\"ge"'),
+            ('type = "pa\\ge"', 'type = "pa\\ge"'),
+            ('title~"a\\b"', 'title ~ "a\\b"'),
+            ("title~'a\"b'", "title ~ 'a\"b'"),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
             ("created>startOfDay()", "created > startOfDay ( )"),
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
+            ('created>"2026-09-10 12:00"', 'created > "2026-09-10 12:00"'),
+            ("creator=currentUser()", "creator = currentUser ( )"),
+            ('creator="ava@acme.com"', 'creator = "ava@acme.com"'),
             ("id in (1,2)", "id in ( 1 , 2 )"),
+            ("label = currentUser()", "label = currentUser ( )"),
+            ("creator = currentUser()", "creator = currentUser ( )"),
+            ("ancestor = currentContent()", "ancestor = currentContent ( )"),
+            ("parent = currentContent()", "parent = currentContent ( )"),
+            ("created > now()", "created > now ( )"),
+            ('label = now("-1d")', 'label = now ( "-1d" )'),
+            ("label = currentSpace", "label = currentSpace"),
+            ("label = currentUser", "label = currentUser"),
+            ("space.key = currentUser()", "space.key = currentUser()"),
+            ("space.key = now()", "space.key = now()"),
+            ('space.key = now("-1d")', 'space.key = now("-1d")'),
+            (
+                "space.key = currentUser() and type=page",
+                "space.key = currentUser() and type = page",
+            ),
+            ("space.key in (currentUser())", "space.key in ( currentUser() )"),
+            ("space.key in (x, currentUser())", "space.key in ( 'x' , currentUser() )"),
+            ("id in recentlyViewedContent(5)", "id in recentlyViewedContent ( 5 )"),
+            ("id in recentlyViewedContent(50)", "id in recentlyViewedContent ( 50 )"),
+            (
+                "id in (1, recentlyViewedContent(5))",
+                "id in ( 1 , recentlyViewedContent ( 5 ) )",
+            ),
+            ("id not in recentlyViewedContent(5)", "id not in recentlyViewedContent ( 5 )"),
+            ("space.key in recentlyViewedContent(5)", "space.key in recentlyViewedContent(5)"),
+            ('space.key in recentlyViewedContent("5")', 'space.key in recentlyViewedContent("5")'),
+            (
+                "space.key not in recentlyViewedContent(5)",
+                "space.key not in recentlyViewedContent(5)",
+            ),
+            ("label != currentUser()", "label != currentUser ( )"),
             ("label=a.b", "label = a.b"),
+            ('label = "select"', 'label = "select"'),
+            ("label = 'select'", "label = 'select'"),
             ("label=x order by created desc", "label = x order by created desc"),
             (
                 "type=page ORDER BY title asc, created desc",
@@ -8767,6 +9633,42 @@ _CQL_PARSE_ROWS = [
         for cql, message in [
             ('"', _CQL_NOT_PARSED),
             ("   ", _CQL_NOT_PARSED),
+            ('space.key = "E\'NG"', _CQL_NOT_PARSED),
+            ("space.key = 'K\\'EY'", _CQL_NOT_PARSED),
+            ('space.key in ("a\'b", handbook)', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" order by created', _CQL_NOT_PARSED),
+            ('space.key = "a\'b" b', "Unrecognised clause at : b"),
+            ('(space.key = "a\'b"', "Missing closing parenthesis near field (()"),
+            (
+                'space.key in ("a\'b"',
+                "Expecting a value for operator 'in' after field 'space.key' but got '('",
+            ),
+            (
+                'space.key = "a\'b" and title~',
+                "Expecting a value for operator '~' after field 'title'",
+            ),
+            ('title ~ "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('label = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ('space = "a\\\\"', 'Escaped end quote in phrase query near : "a\\\\"'),
+            ("space.key = 'a\\\\'", "Escaped end quote in phrase query near : 'a\\\\'"),
+            (
+                'space.key in ("a\\\\", handbook)',
+                'Escaped end quote in phrase query near : "a\\\\"',
+            ),
+            ('space.key = "\\\\"', 'Escaped end quote in phrase query near : "\\\\"'),
+            ('space.key = "a\\\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\\\"'),
+            ('title ~ "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ("title ~ 'a\\'", "Escaped end quote in phrase query near : 'a\\'"),
+            ('title ~ "a\\\\\\"', 'Escaped end quote in phrase query near : "a\\\\\\"'),
+            ('space.key = "a\\"', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", b)', 'Escaped end quote in phrase query near : "a\\"'),
+            ('label in ("a\\", "b")', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and title ~ "c"', _CQL_NOT_PARSED),
+            ('title ~ "a\\" and type = page', 'Escaped end quote in phrase query near : "a\\"'),
+            ('title ~ "a\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type =', "Expecting a value for operator '=' after field 'type'"),
+            ('title ~ "a\\\\" and type in ()', _CQL_NOT_PARSED),
+            ('title ~ "a\\\\" and (type = page', "Missing closing parenthesis near field (()"),
             ("\U0001f600", _CQL_NOT_PARSED),
             ("type=page and", _CQL_NOT_PARSED),
             ("type=page or", _CQL_NOT_PARSED),
@@ -8784,6 +9686,51 @@ _CQL_PARSE_ROWS = [
             ("type=page 5", _CQL_NOT_PARSED),
             ("id = -1", _CQL_NOT_PARSED),
             ("created > -1d", _CQL_NOT_PARSED),
+            ('created > "x"', _CQL_NOT_PARSED),
+            ('created > "20260910"', _CQL_NOT_PARSED),
+            ('created > "2026-13-45"', _CQL_NOT_PARSED),
+            ('created > "10/09/2026"', _CQL_NOT_PARSED),
+            ('created > "2026-09-10T12:00"', _CQL_NOT_PARSED),
+            ('created > "2026-02-30"', _CQL_NOT_PARSED),
+            (
+                "created > 20260910",
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created in ("2026-09-15")',
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created not in ("2026-09-15")',
+                "Operator 'notin' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and lastmodified in ("2026-09-15")',
+                "Operator 'in' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created in ("x")',
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            ('type=page and created in ("2026-09-15") and created > "x"', _CQL_NOT_PARSED),
+            ('type=page and created > 20260910 and created > "x"', _CQL_NOT_PARSED),
+            (
+                'type=page and created > 20260910 and created in ("2026-09-15")',
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'created > startOfMonth("-1")',
+                "Invalid relative date : -1",
+            ),
+            ("created > startOfMonth(-1M)", _CQL_NOT_PARSED),
+            ("created > startOfMonth(-1)", _CQL_NOT_PARSED),
+            ('created > startOfMonth("1w", "2d")', _CQL_NOT_PARSED),
+            (
+                'created > startOfMonth("now()")',
+                "Invalid relative date : now()",
+            ),
+            ('lastmodified > "x"', _CQL_NOT_PARSED),
+            ('created > "2026-09-10 25:00"', _CQL_NOT_PARSED),
             ("title~a..b", _CQL_NOT_PARSED),
             ("title~a.", _CQL_NOT_PARSED),
             ("created>\u0662\u0660\u0662\u0666-01-01", _CQL_NOT_PARSED),
@@ -8819,6 +9766,271 @@ _CQL_PARSE_ROWS = [
                 "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
             ),
             ("(type=page", "Missing closing parenthesis near field (()"),
+            ("created>foo()", "Unable to find query function 'foo()'"),
+            ("label = foo()", "Unable to find query function 'foo()'"),
+            ("label = Foo()", "Unable to find query function 'Foo()'"),
+            ("space.key = foo()", "Unable to find query function 'foo()'"),
+            ("creator = foo()", "Unable to find query function 'foo()'"),
+            ("space = currentSpace()", _CQL_CURRENT_SPACE),
+            ("label = currentSpace()", _CQL_CURRENT_SPACE),
+            ("space.key = currentSpace()", _CQL_CURRENT_SPACE),
+            ("space.key in (currentSpace())", _CQL_CURRENT_SPACE),
+            ("space.key in (x, currentSpace())", _CQL_CURRENT_SPACE),
+            ('created > now("x")', "Invalid relative date : x"),
+            ('label = now("x")', "Invalid relative date : x"),
+            ('created > startOfDay("x")', "Invalid relative date : x"),
+            ('created > now("a\'b")', "Invalid relative date : a'b"),
+            ('space.key = now("a\'b")', "Invalid relative date : a'b"),
+            ('created > now("1")', "Invalid relative date : 1"),
+            ('created > now("+1")', "Invalid relative date : +1"),
+            ('created > startOfDay("1")', "Invalid relative date : 1"),
+            ('label = now("1")', "Invalid relative date : 1"),
+            ('created > now("-1d", "x")', _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(5, 6)", _CQL_NOT_PARSED),
+            ('label = currentUser("x")', _CQL_NOT_PARSED),
+            ('id in recentlyViewedContent("x")', _CQL_NOT_PARSED),
+            ("(label = foo()", _CQL_NOT_PARSED),
+            ("(space = currentSpace()", _CQL_NOT_PARSED),
+            ('(created > now("x")', _CQL_NOT_PARSED),
+            ("(id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ('id in now("-1d")', _CQL_NOT_PARSED),
+            ("label in currentUser()", _CQL_NOT_PARSED),
+            ("id in currentContent()", _CQL_NOT_PARSED),
+            ("id in currentSpace()", _CQL_NOT_PARSED),
+            ("id in foo()", _CQL_NOT_PARSED),
+            ("id in recentlyviewedcontent(5)", _CQL_NOT_PARSED),
+            ("id in RECENTLYVIEWEDCONTENT(5)", _CQL_NOT_PARSED),
+            ('space.key in now("-1d")', _CQL_NOT_PARSED),
+            ("space.key in currentUser()", _CQL_NOT_PARSED),
+            ("label = foo() and (type = page", "Unable to find query function 'foo()'"),
+            ("label = foo() and type =", "Unable to find query function 'foo()'"),
+            ("type = and label = foo()", "Expecting a value for operator '=' after field 'type'"),
+            ('type = and created > now("-1d", "x")', _CQL_NOT_PARSED),
+            ("type = and id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ('type = and id in now("-1d")', _CQL_NOT_PARSED),
+            ('foo = x and id in now("-1d")', _CQL_NOT_PARSED),
+            ('id in now("-1d") and type =', _CQL_NOT_PARSED),
+            (
+                "space = currentSpace() or type =",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ('space = currentSpace() or created > now("x")', _CQL_CURRENT_SPACE),
+            ('created > now("x") or space = currentSpace()', "Invalid relative date : x"),
+            (
+                "space = currentSpace() and (type = page",
+                "Missing closing parenthesis near field (()",
+            ),
+            ('label = foo() and title ~ "a\\"', "Unable to find query function 'foo()'"),
+            ('title ~ "a\\" and label = foo()', "Unable to find query function 'foo()'"),
+            ('space = currentSpace() and title ~ "a\\"', _CQL_CURRENT_SPACE),
+            (
+                'title ~ "a\\" and space = currentSpace()',
+                'Escaped end quote in phrase query near : "a\\"',
+            ),
+            ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
+        ]
+    ],
+    # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
+    # it: every one of the 43 as `label = <word>`, the word in the case it was sent, a reserved word
+    # before each token that changes how `_cql_refusal` reads it, a reserved word as a field or left
+    # after a whole query, a reserved word as a function's argument, and a reserved word before and
+    # after another fault.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            *[
+                (f"label = {word}", _cql_reserved(word))
+                for word in (
+                    "after",
+                    "and",
+                    "as",
+                    "asc",
+                    "avg",
+                    "before",
+                    "begin",
+                    "by",
+                    "commit",
+                    "contains",
+                    "count",
+                    "desc",
+                    "distinct",
+                    "else",
+                    "empty",
+                    "end",
+                    "explain",
+                    "from",
+                    "having",
+                    "if",
+                    "in",
+                    "inner",
+                    "insert",
+                    "into",
+                    "is",
+                    "isnull",
+                    "left",
+                    "like",
+                    "limit",
+                    "max",
+                    "min",
+                    "not",
+                    "null",
+                    "or",
+                    "order",
+                    "outer",
+                    "right",
+                    "select",
+                    "sum",
+                    "then",
+                    "update",
+                    "was",
+                    "where",
+                )
+            ],
+            ("label = Select", _cql_reserved("Select")),
+            ("label = SELECT", _cql_reserved("SELECT")),
+            ("label = select and type = page", _cql_reserved("select")),
+            ("label in (select)", _cql_reserved("select")),
+            ("label in (x, empty)", _cql_reserved("empty")),
+            ("label != select", _cql_reserved("select")),
+            ("title ~ select", _cql_reserved("select")),
+            ("space.key = select", _cql_reserved("select")),
+            ("(label = select)", _cql_reserved("select")),
+            ("label = x and label = select", _cql_reserved("select")),
+            ("label = select order by created", _cql_reserved("select")),
+            ("label = x order by select", _CQL_NOT_PARSED),
+            ("label = select)", _CQL_NOT_PARSED),
+            ("label = and x", _cql_reserved("and")),
+            ("label = and type", _cql_reserved("and")),
+            ('label = and "x"', _cql_reserved("and")),
+            (
+                "label = and type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and (type = page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type =",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and not type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            ("label = select type in (page)", _CQL_NOT_PARSED),
+            ("label = and and type", _cql_reserved("and")),
+            ("label = select and type", _cql_reserved("select")),
+            ("label = and and", _CQL_NOT_PARSED),
+            ("label = select and", _CQL_NOT_PARSED),
+            ("label = and not not type = page", _CQL_NOT_PARSED),
+            ("label = and " + "not " * 1100 + "type = page", _CQL_NOT_PARSED),
+            ("label = or not type = page", _CQL_NOT_PARSED),
+            ("label = and count = page", _CQL_NOT_PARSED),
+            ("select = page", _CQL_NOT_PARSED),
+            ("type = page and count = page", _CQL_NOT_PARSED),
+            ("type = page count", _CQL_NOT_PARSED),
+            (
+                'label = and title ~ "x"',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                'label = and created > now("-1d")',
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type = page",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = or type in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type not in (page)",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "label = and type in",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            (
+                "type= and type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "type= or type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("type= and", _cql_reserved("and")),
+            ("label = not type = page", _CQL_NOT_PARSED),
+            ("label = in type = page", _CQL_NOT_PARSED),
+            ("label = order type = page", _CQL_NOT_PARSED),
+            ("label = by type = page", _CQL_NOT_PARSED),
+            ("label = asc type = page", _CQL_NOT_PARSED),
+            ("label = desc type = page", _CQL_NOT_PARSED),
+            ("label = select type = page", _CQL_NOT_PARSED),
+            (
+                "label = order by created",
+                "Expecting a value for operator '=' after field 'label'",
+            ),
+            ("created > now(select)", _cql_reserved("select")),
+            ("created > now(before)", _cql_reserved("before")),
+            ("created > now(and)", _cql_reserved("and")),
+            ("id in recentlyViewedContent(select)", _cql_reserved("select")),
+            ("label = currentUser(select)", _CQL_NOT_PARSED),
+            ("label = select()", _CQL_NOT_PARSED),
+            ("label = before()", _CQL_NOT_PARSED),
+            ('label = select("x")', _CQL_NOT_PARSED),
+            ("id in select()", _CQL_NOT_PARSED),
+            ("(label = select()", _CQL_NOT_PARSED),
+            ("space = currentSpace() and label = select()", _CQL_NOT_PARSED),
+            ("label = select and space = currentSpace()", _cql_reserved("select")),
+            ("space = currentSpace() and label = select", _cql_reserved("select")),
+            ("label = select and label = foo()", _cql_reserved("select")),
+            ("label = foo() and label = select", "Unable to find query function 'foo()'"),
+            ('label = select and title ~ "a\\"', _cql_reserved("select")),
+            ('title ~ "a\\" and label = select', _cql_reserved("select")),
+            (
+                "type = and created > now(select)",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("created > now(not)", _cql_reserved("not")),
+            ("created > now(in)", _cql_reserved("in")),
+            ("created > now(order)", _cql_reserved("order")),
+            ("created > now(empty)", _cql_reserved("empty")),
+            ('created > now(select, "-1d")', _CQL_NOT_PARSED),
+            ("created > now(select) and label = foo()", _cql_reserved("select")),
+            ("label = foo() and created > now(select)", "Unable to find query function 'foo()'"),
+            ("created > now(select) and type =", _cql_reserved("select")),
+            ("created > now(select) type", _cql_reserved("select")),
+            ("created > now(select) and", _CQL_NOT_PARSED),
+            ("created > now(select) and type = -1", _CQL_NOT_PARSED),
+            ("(created > now(select)", _CQL_NOT_PARSED),
+            ("label = before and created > now(select)", _cql_reserved("before")),
+            ("label = select and label = foo() and type =", _cql_reserved("select")),
+            ('label = select and created > now("-1d") and type =', _cql_reserved("select")),
+            ('label = select and created > now("-1d") type in (page)', _CQL_NOT_PARSED),
+            ("label = select and type =", _cql_reserved("select")),
+            ("label = select and title ~", _cql_reserved("select")),
+            ("label = select and type in", _cql_reserved("select")),
+            ("label = select and type in (page", _cql_reserved("select")),
+            ("label = select and type = )", _cql_reserved("select")),
+            ("label = select and type = -1", _CQL_NOT_PARSED),
+            ("label = x and label = select and type = and type = page", _cql_reserved("select")),
+            ("(label = select", "Missing closing parenthesis near field (()"),
+            ("(label = select and type = page", "Missing closing parenthesis near field (()"),
+            ("(label = select and (type = page", "Missing closing parenthesis near field (()"),
+            ("label = select and (type = page", _cql_reserved("select")),
+            ("label = select and (type =", _cql_reserved("select")),
+            ("(label = select) and (type = page", _cql_reserved("select")),
+            ("(label = select) and type =", _cql_reserved("select")),
+            ("(label = select) type", _cql_reserved("select")),
         ]
     ],
 ]
@@ -8840,3 +10052,43 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
         answered[cql] = (r.status_code, r.json()["cqlQuery"] if r.status_code == 200 else r.json())
     assert len(answered) == len(_CQL_PARSE_ROWS)
     assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}
+
+
+def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, admin_h):
+    """What real answered each row, a 200 as the `limit` it echoes and a refusal as its body
+    (:func:`backlot.routers.atlassian._refuse_a_start_past_java_int`). `label` and `space` are
+    listings that refusal is not on."""
+    api = "/atlassian/wiki/rest/api"
+    cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
+    rows = [
+        ("content/{id}/child/comment?start=2147483622", (200, 25)),
+        ("content/{id}/child/comment?start=2147483623", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483637&limit=10", (200, 10)),
+        ("content/{id}/child/comment?start=2147483638&limit=10", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483547&limit=100", (200, 100)),
+        ("content/{id}/child/comment?start=2147483548&limit=100", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483646&limit=1", (200, 1)),
+        ("content/{id}/child/comment?start=2147483647&limit=1", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483647&limit=0", (200, 0)),
+        ("content/{id}/child/comment?start=2147482647&limit=2147483647", (200, 1000)),
+        ("content/{id}/child/comment?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=2147483622", (200, 25)),
+        ("content/{id}/child/page?start=2147483623", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=2147483647", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=1&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/page?start=2147482647&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/page?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147483597", (200, 50)),
+        ("content/{id}/child/attachment?start=2147483598", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147483647", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147482647&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/attachment?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/label?start=2147483447&limit=201", (200, 200)),
+        ("space?start=2147483647", (200, 25)),
+    ]
+    answered = {}
+    for path, _ in rows:
+        r = client.get(f"{api}/{path.format(id=cid)}", headers=admin_h)
+        answered[path] = (r.status_code, r.json()["limit"] if r.status_code == 200 else r.json())
+    assert len(answered) == len(rows)
+    assert answered == dict(rows)

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-10-27",
+  "measured": "2026-11-06",
   "root": {
     "query": "Query"
   },
@@ -135,6 +135,13 @@
           "type": "Issue",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "lastAgentReplyAt": {
+          "status": "missing",
+          "type": "DateTime",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot's `AgentSession` is the stub `{ id }` because a corpus holds no agent sessions, and the same gap is recorded for its other fields. Measured against api.linear.app on 2026-11-04: `agentSessions(first: 1) { nodes { id lastAgentReplyAt } }` answers an empty `nodes` list, so there is no value to compare."
         },
         "modelSelection": {
           "status": "missing",
@@ -894,6 +901,13 @@
         "archivedAt": {
           "status": "implemented"
         },
+        "collaborators": {
+          "status": "missing",
+          "type": "[DocumentCollaborator!]!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
         "color": {
           "status": "implemented"
         },
@@ -941,6 +955,13 @@
         "documentContentId": {
           "status": "implemented"
         },
+        "generalAccess": {
+          "status": "missing",
+          "type": "DocumentShareRole",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
         "hiddenAt": {
           "status": "implemented"
         },
@@ -964,6 +985,13 @@
         },
         "parentDocument": {
           "status": "implemented"
+        },
+        "personalUser": {
+          "status": "missing",
+          "type": "User",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
         },
         "project": {
           "status": "implemented"
@@ -1029,6 +1057,27 @@
         },
         "url": {
           "status": "implemented"
+        },
+        "viewerCanComment": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
+        "viewerCanEdit": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
+        },
+        "viewerCanManageAccess": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Backlot declares `Document` but never returns one: `documents` resolves an empty page because a corpus carries no Linear documents, and `documentContent` resolves null, so this field has no object to resolve on. Measured against api.linear.app on 2026-11-03: `documents(first: 2)` answers an empty list."
         }
       }
     },
@@ -2131,6 +2180,12 @@
         },
         "asksWeb": {
           "status": "implemented"
+        },
+        "claudeSecurity": {
+          "status": "missing",
+          "kind": "missing_enum_value",
+          "severity": "gap",
+          "note": "The vendor's `IntegrationService` enum carries `claudeSecurity` and Backlot's does not. Measured against api.linear.app on 2026-11-04 by introspection of `IntegrationService`."
         },
         "datadog": {
           "status": "implemented"
@@ -5693,20 +5748,13 @@
           "type": "AgentSession!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "No corpus states an agent session. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says an agent was delegated a piece of work, what it did while it held it, or what machine it ran on, so the whole family is a gap \u2014 `agentSession`, `agentSessions`, `agentSessionSandbox`, `agentSessionSshAddress`, `agentActivity`, `agentActivities`, `agentSkill` and `agentSkills`. Backlot states that absence rather than leaving it open: `User.supportsAgentSessions` resolves to `false` and `Comment.agentSession` to null, and `AgentSession` itself is the id-only stub that field and the `@linear/sdk` fragments need in order to validate. Measured against api.linear.app on 2026-09-29, the vendor's `AgentSession` carries 32 fields, five of them deprecated, and the 31 it declares beyond `id` are the `AgentSession.*` entries this file opens with; most are live session state (`status`, `startedAt`, `endedAt`, `summary`, `plan`, `context`, `sourceMetadata`, `activities`, `pullRequest`, `pullRequests`, `codingHarnessModelLabel`, `codingHarness`), over `AgentSessionStatus`, `AgentActivityConnection`, `PullRequest`, `AgentSessionToPullRequestConnection` and `AgentSessionCodingHarness`, none of which this schema declares."
+          "note": "No corpus states an agent session. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says an agent was delegated a piece of work, what it did while it held it, or what machine it ran on, so the whole family is a gap \u2014 `agentSession`, `agentSessions`, `agentSessionSandbox`, `agentActivity`, `agentActivities`, `agentSkill` and `agentSkills`. Backlot states that absence rather than leaving it open: `User.supportsAgentSessions` resolves to `false` and `Comment.agentSession` to null, and `AgentSession` itself is the id-only stub that field and the `@linear/sdk` fragments need in order to validate. Measured against api.linear.app on 2026-09-29, the vendor's `AgentSession` carries 32 fields, five of them deprecated, and the 31 it declares beyond `id` are the `AgentSession.*` entries this file opens with; most are live session state (`status`, `startedAt`, `endedAt`, `summary`, `plan`, `context`, `sourceMetadata`, `activities`, `pullRequest`, `pullRequests`, `codingHarnessModelLabel`, `codingHarness`), over `AgentSessionStatus`, `AgentActivityConnection`, `PullRequest`, `AgentSessionToPullRequestConnection` and `AgentSessionCodingHarness`, none of which this schema declares."
         },
         "agentSessionSandbox": {
           "status": "missing",
           "type": "CodingAgentSandboxPayload",
           "kind": "missing_field",
           "severity": "gap"
-        },
-        "agentSessionSshAddress": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "Linear's own description marks it internal: \"[Internal] SSH address of the current user's running coding sandbox for this agent session.\" It joins the family whose gap is recorded on `Query.agentSession`, and it carries a note of its own because the 2026-09-09 scheduled run read it as new surface and because its answer is the family's odd one out: measured against api.linear.app on 2026-09-11 with a personal API key, `agentSession`, `agentActivity` and `agentSkill` answer an unknown id with an `errors` member (`Entity not found`, `INPUT_ERROR`) and `agentSessionSandbox` with `Access denied` (`FORBIDDEN`). Measured against api.linear.app on 2026-09-10: it takes one argument, `agentSessionId: String!`, it is not deprecated, and it answers `null` with no `errors` member for an unknown UUID, for a string that is not a UUID, and for the empty string alike \u2014 a client reading it cannot tell a session it may not see from one with no sandbox running. Backlot states no session, so every id it could be asked about is one of those; a constant `null` would match that measurement and state nothing."
         },
         "agentSessions": {
           "status": "missing",
@@ -6328,6 +6376,20 @@
             }
           }
         },
+        "jiraProject": {
+          "status": "missing",
+          "type": "JiraProject!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description: \"One Jira project that the Jira projects table lists. Poll it until its import completes and its sync starts: `importStatus` is `imported`, `failed`, or `expired`, and `syncStatus` is no longer `afterImport`.\" A Jira project belongs to one of the workspace's Jira integrations, and Backlot serves no integration: `Query.integration` and `Query.integrations` are gaps in this file, as is every other `Query` root with `Jira` or `jira` in its name, `integrationJiraProjectStatuses`, `integrationJiraSyncHealthCheck` and `jiraProjects`. Measured against api.linear.app on 2026-11-05: it takes one argument, `id: String!`, and answers `JiraProject!`. Asked with a personal API key whose owner is a workspace admin, for `id` `x`, it answered a 200 whose body is `data: null` and an `errors` member, `Feature 'Jira projects unified UI' is not enabled` with `INPUT_ERROR`, so what it answers for a Jira project that exists was not observed. This schema declares no `JiraProject`."
+        },
+        "jiraProjects": {
+          "status": "missing",
+          "type": "JiraProjectConnection!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description: \"Jira projects that the workspace syncs with a Linear team or imported issues from, with the sync and import status of the Jira projects table in the settings.\" A Jira project belongs to one of the workspace's Jira integrations, and Backlot serves no integration: `Query.integration` and `Query.integrations` are gaps in this file, as is every other `Query` root with `Jira` or `jira` in its name, `integrationJiraProjectStatuses`, `integrationJiraSyncHealthCheck` and `jiraProject`. Measured against api.linear.app on 2026-11-05: it takes `filter: JiraProjectFilter`, `before`, `after`, `first`, `last`, `includeArchived` and `orderBy`, and answers `JiraProjectConnection!`. Asked with a personal API key whose owner is a workspace admin, for `first: 1`, it answered a 200 whose body is `data: null` and an `errors` member, `Feature 'Jira projects unified UI' is not enabled` with `INPUT_ERROR`, so no page of Jira projects was observed. This schema declares no `JiraProjectConnection`."
+        },
         "latestReleaseByAccessKey": {
           "status": "missing",
           "type": "AccessKeyRelease",
@@ -6395,6 +6457,13 @@
           "type": "Organization!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "organizationCodingInferenceAnthropicAvailable": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear's own description marks it internal: \"[Internal] Whether this workspace can connect an Anthropic organization to bill Claude Code sessions.\" It answers for the workspace, whose root `Query.organization` is a gap in this file, as is `Query.organizationCodingInferenceKeys`, the one other `Query` root with `CodingInference` in its name. Measured against api.linear.app on 2026-11-05: it takes no argument and answers `Boolean!`. Asked with a personal API key whose owner is a workspace admin, it answered a 200 whose body is `data: null` and an `errors` member, `Using an unexpected authentication method (apiKey) for an operation` with `FORBIDDEN`. Its answer to any other credential was not measured: the measurement held a personal API key and no other."
         },
         "organizationCodingInferenceKeys": {
           "status": "missing",
@@ -7912,6 +7981,13 @@
         },
         "ledInitiativeCount": {
           "status": "implemented"
+        },
+        "loopWebhooksEnabled": {
+          "status": "missing",
+          "type": "Boolean!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Measured against api.linear.app on 2026-10-29, `teams(first:5){nodes{key loopWebhooksEnabled}}` answers `true` for the one team in the workspace measured; the corpus carries no team setting that backs a value, so none is invented."
         },
         "loops": {
           "status": "missing",

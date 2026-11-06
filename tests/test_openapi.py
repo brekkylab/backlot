@@ -11,7 +11,7 @@ import warnings
 
 import pytest
 
-from backlot import openapi
+from backlot import openapi, protojson
 from tests._helpers import python_child_env
 
 
@@ -115,6 +115,106 @@ def test_every_query_param_in_the_served_spec_declares_required():
         if q.get("in") == "query" and "required" not in q
     ]
     assert missing == []
+
+
+_INNER = protojson.Message(
+    "type.googleapis.com/t.Inner",
+    (
+        protojson.Field("count", "count", "int32", wrapper=True),
+        protojson.Field("values", "values", "rows"),
+    ),
+)
+_OUTER = protojson.Message(
+    "type.googleapis.com/t.Outer",
+    (
+        protojson.Field("name", "name", "string"),
+        protojson.Field("kind", "kind", "enum", enum=protojson.Enum("t.Kind", ("A", "B"))),
+        protojson.Field("inner", "inner", "message", message=_INNER, repeated=True),
+        protojson.Field("tags", "tags", "string", repeated=True),
+        protojson.Field("days", "days", "int32", repeated=True),
+        protojson.Field(
+            "notes",
+            "notes",
+            "message",
+            message=protojson.map_entry(
+                "type.googleapis.com/t.Outer",
+                "notes",
+                protojson.Field("v", "v", "message", message=_INNER),
+            ),
+            repeated=True,
+            map=True,
+        ),
+    ),
+)
+
+
+def _body_schema(*args, **kwargs) -> dict:
+    return openapi.proto_body(*args, **kwargs)["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+
+
+def test_proto_body_declares_the_fields_a_route_keeps_as_its_message_types_them():
+    """The body a route declares is the message it reads, so an MCP tool's arguments are what the
+    reader takes; `keep` cuts it to what the route keeps, and a name the message lacks, or a
+    message that holds itself with no cut, refuses to build. A map is an object of its values."""
+    inner = {
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer", "format": "int32"},
+            "values": {"type": "array", "items": {"type": "array", "items": {}}},
+        },
+    }
+    assert _body_schema(_OUTER) == {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "kind": {"type": "string", "enum": ["A", "B"]},
+            "inner": {"type": "array", "items": inner},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "days": {"type": "array", "items": {"type": "integer", "format": "int32"}},
+            "notes": {"type": "object", "additionalProperties": inner},
+        },
+    }
+    counted = {"type": "object", "properties": {"count": inner["properties"]["count"]}}
+    assert _body_schema(_OUTER, keep={"inner": {"count": None}, "notes": {"count": None}}) == {
+        "type": "object",
+        "properties": {
+            "inner": {"type": "array", "items": counted},
+            "notes": {"type": "object", "additionalProperties": counted},
+        },
+    }
+    wrapped = protojson.Message(
+        "type.googleapis.com/t.Request",
+        (protojson.Field("data", "data", "message", message=_INNER),),
+    )
+    assert _body_schema(wrapped, "data") == inner
+    with pytest.raises(ValueError, match="no field"):
+        openapi.proto_body(_OUTER, keep={"nmae": None})
+    fields: list[protojson.Field] = []
+    nested = protojson.Message("type.googleapis.com/t.Nested", fields)
+    fields.append(protojson.Field("child", "child", "message", message=nested))
+    with pytest.raises(ValueError, match="holds itself"):
+        openapi.proto_body(nested)
+    assert _body_schema(nested, keep={"child": {}}) == {
+        "type": "object",
+        "properties": {"child": {"type": "object", "properties": {}}},
+    }
+
+
+def test_every_editor_write_with_a_body_declares_it():
+    """`values.clear` alone takes a message with no field to state."""
+    warnings.filterwarnings("ignore")
+    from backlot.main import app
+
+    bodiless = [
+        f"{method.upper()} {path}"
+        for path, item in app.openapi()["paths"].items()
+        if path.startswith(("/docs/", "/sheets/", "/slides/"))
+        for method, op in item.items()
+        if method in ("post", "put", "patch") and "requestBody" not in op
+    ]
+    assert bodiless == ["POST /sheets/v4/spreadsheets/{spreadsheet_id}/values/{a1_range}:clear"]
 
 
 def _doc():

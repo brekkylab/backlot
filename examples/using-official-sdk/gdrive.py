@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Read Google Drive through the official google-api-python-client — authenticating with a
-Google **service-account** credential, the way a real connector does, rather than a raw token.
-Self-contained.
+"""Read Google Drive and Sheets, write Sheets, and create and write a Doc, through the official
+google-api-python-client — authenticating with a Google **service-account** credential, the way a
+real connector does, rather than a raw token. Self-contained.
 
     pip install -e ".[official-sdk]"
     python examples/using-official-sdk/gdrive.py                          # bare SA → admin, sees all
@@ -16,6 +16,7 @@ from pathlib import Path
 from google.api_core.client_options import ClientOptions
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from backlot import serve_or_connect
 
@@ -79,6 +80,30 @@ _p.add_argument(
 )
 args = _p.parse_args()
 
+
+def sheets_as(credentials, base_url):
+    return build(
+        "sheets",
+        "v4",
+        credentials=credentials,
+        static_discovery=True,
+        # No `/v4` here, unlike Drive below: the Sheets discovery document carries the version in
+        # its own servicePath, so the client appends it to whatever endpoint it is given.
+        client_options=ClientOptions(api_endpoint=f"{base_url}/sheets"),
+    )
+
+
+def docs_as(credentials, base_url):
+    # Like Sheets, the Docs discovery document carries `v1` in its method paths.
+    return build(
+        "docs",
+        "v1",
+        credentials=credentials,
+        static_discovery=True,
+        client_options=ClientOptions(api_endpoint=f"{base_url}/docs"),
+    )
+
+
 with serve_or_connect(CORPUS, url=args.url) as s:
     # Auth is an ordinary Google service-account credential; only the api_endpoint changes.
     # Backlot issues the key and honors the JWT exchange it triggers.
@@ -102,28 +127,20 @@ with serve_or_connect(CORPUS, url=args.url) as s:
     else:
         body = gdrive.files().export(fileId=files[0]["id"], mimeType="text/plain").execute()
         text = body.decode() if isinstance(body, bytes) else body
-        print(f"{len(files)} files:")
+        print(f"{len(files)} file(s):")
         for f in files:
             print(f"  - {f['name']}")
-        print(f"\nExported '{files[0]['name']}' as text/plain ({len(text)} bytes):")
+        print(f"\nExported '{files[0]['name']}' as text/plain ({len(text)} byte(s)):")
         print(f"  {text.splitlines()[0]}")
 
     # The same credential drives Sheets v4. A spreadsheet whose corpus record states a grid serves
     # named sheets over typed cells, so UNFORMATTED_VALUE gives back 120000 and True rather than
     # "120000" and "TRUE".
-    sheets = build(
-        "sheets",
-        "v4",
-        credentials=creds,
-        static_discovery=True,
-        # No `/v4` here, unlike Drive above: the Sheets discovery document carries the version in
-        # its own servicePath, so the client appends it to whatever endpoint it is given.
-        client_options=ClientOptions(api_endpoint=f"{s.base_url}/sheets"),
-    )
+    sheets = sheets_as(creds, s.base_url)
     book = next((f for f in files if f["name"] == "Q1 Revenue Model"), None)
     if book:
         meta = sheets.spreadsheets().get(spreadsheetId=book["id"]).execute()
-        print(f"\n'{meta['properties']['title']}' has {len(meta['sheets'])} sheets:")
+        print(f"\n'{meta['properties']['title']}' has {len(meta['sheets'])} sheet(s):")
         for sh in meta["sheets"]:
             p = sh["properties"]
             print(f"  - [{p['index']}] {p['title']} (sheetId {p['sheetId']})")
@@ -141,3 +158,98 @@ with serve_or_connect(CORPUS, url=args.url) as s:
         print("\nMonthly, unformatted:")
         for row in rows:
             print(f"  {row}")
+
+        # Writes go through the same client, as the spreadsheet's owner: anyone it is shared with
+        # may read it, and only its owner may write it. USER_ENTERED reads a string the way the
+        # Sheets UI reads typing, so "12.5%" is stored as the number 0.125 and shown as a percent.
+        owner = sheets_as(creds.with_subject("cfo@acme.com"), s.base_url)
+        update = (
+            owner.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=book["id"],
+                range="Monthly!A4:D4",
+                valueInputOption="USER_ENTERED",
+                body={"values": [["Mar", "150000", "12.5%", "TRUE"]]},
+            )
+            .execute()
+        )
+        print(f"\nWrote {update['updatedCells']} cell(s) to {update['updatedRange']}:")
+        for render in ("FORMATTED_VALUE", "UNFORMATTED_VALUE"):
+            row = (
+                owner.spreadsheets()
+                .values()
+                .get(spreadsheetId=book["id"], range="Monthly!A4:D4", valueRenderOption=render)
+                .execute()["values"][0]
+            )
+            print(f"  {render}: {row}")
+
+    # Docs v1 creates a Doc through the same service account, impersonating its author with a scope
+    # that may write. `documents.create` keeps the title alone and makes a blank Doc at the author's
+    # My Drive root, shared with nobody: the author reads it back, Drive lists it under the root,
+    # and anyone else is refused it.
+    author = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=[
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
+        subject="mia@acme.com",
+    )
+    docs = docs_as(author, s.base_url)
+    made = docs.documents().create(body={"title": "Launch checklist"}).execute()
+    doc_id = made["documentId"]
+    print(f"\nCreated '{made['title']}' ({doc_id}) with {len(made['tabs'])} tab(s)")
+    read = docs.documents().get(documentId=doc_id).execute()
+    text = "".join(
+        el["textRun"]["content"]
+        for se in read["body"]["content"]
+        if "paragraph" in se
+        for el in se["paragraph"]["elements"]
+    )
+    print(f"  read back: body {text!r}, same revision: {read['revisionId'] == made['revisionId']}")
+
+    # `documents.batchUpdate` writes its text: each request's index counts what the ones before
+    # it inserted, `replaceAllText` answers how many it changed, and the write's revision is the
+    # one the next read serves.
+    wrote = (
+        docs.documents()
+        .batchUpdate(
+            documentId=doc_id,
+            body={
+                "requests": [
+                    {"insertText": {"location": {"index": 1}, "text": "Ship the beta\n"}},
+                    {"insertText": {"location": {"index": 15}, "text": "Tell the team"}},
+                    {"replaceAllText": {"containsText": {"text": "beta"}, "replaceText": "v2"}},
+                ],
+                "writeControl": {"requiredRevisionId": read["revisionId"]},
+            },
+        )
+        .execute()
+    )
+    print(f"  batchUpdate replies: {wrote['replies']}")
+    read = docs.documents().get(documentId=doc_id).execute()
+    lines = [
+        (se["startIndex"], "".join(el["textRun"]["content"] for el in se["paragraph"]["elements"]))
+        for se in read["body"]["content"]
+        if "paragraph" in se
+    ]
+    print(f"  paragraphs by start index: {lines}")
+    print(
+        f"  revision moved to the write's: {read['revisionId'] == wrote['writeControl']['requiredRevisionId']}"
+    )
+    drive_as_author = build(
+        "drive",
+        "v3",
+        credentials=author,
+        static_discovery=True,
+        client_options=ClientOptions(api_endpoint=f"{s.base_url}/drive/v3"),
+    )
+    roots = drive_as_author.files().list(q="'root' in parents", fields="files(id,name)").execute()
+    print(f"  in mia's My Drive root: {[f['name'] for f in roots['files'] if f['id'] == doc_id]}")
+    try:
+        docs_as(creds.with_subject("cfo@acme.com"), s.base_url).documents().get(
+            documentId=doc_id
+        ).execute()
+    except HttpError as err:
+        print(f"  cfo@acme.com reading it: {err.status_code} {err.reason}")

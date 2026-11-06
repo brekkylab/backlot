@@ -86,7 +86,7 @@ def main(reader):
     print(f"loaded {len(docs)} Document(s):")
     for d in docs:
         kind = d.metadata.get("type")  # `extra_info` is the deprecated alias for this
-        print(f"  - {kind}: {len(d.text)} chars")
+        print(f"  - {kind}: {len(d.text)} char(s)")
         for needle in ("Acme Health", "Ava", "renewal"):
             if needle in d.text:
                 print(f"      contains {needle!r}")

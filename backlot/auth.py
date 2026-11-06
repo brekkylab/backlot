@@ -199,6 +199,28 @@ def repeated_authorization(request: Request) -> bool:
     return len(request.headers.getlist("authorization")) > 1
 
 
+#: The conditional headers Cloudflare, in front of Notion, HubSpot, Linear and Fireflies,
+#: refuses with its 400 page when one of them comes more than once, as it does `Authorization`.
+_CLOUDFLARE_REFUSED_HEADERS = (
+    "if-none-match",
+    "if-match",
+    "if-modified-since",
+    "if-unmodified-since",
+    "if-range",
+)
+
+
+def repeated_cloudflare_refused_header(request: Request) -> bool:
+    """Whether the request carries more than once `Authorization` or one of the conditional
+    headers Cloudflare refuses (:data:`_CLOUDFLARE_REFUSED_HEADERS`): api.notion.com,
+    api.linear.app, api.fireflies.ai and api.hubapi.com answered `Authorization` and each of the
+    five, sent twice with the same value, with the 155-byte `400 Bad Request` page on 2026-10-27
+    (UTC), where one copy, and `Cache-Control` or `Range` twice, were served."""
+    return repeated_authorization(request) or any(
+        len(request.headers.getlist(name)) > 1 for name in _CLOUDFLARE_REFUSED_HEADERS
+    )
+
+
 def api_key_token(request: Request) -> str | None:
     """``Authorization`` as Linear reads a personal API key: the whole value, with the spaces and
     tabs around it left off, so a scheme in front is part of the key and fails to resolve.

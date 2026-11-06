@@ -34,7 +34,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import HTTPException, Request, Response
 
-from backlot import java_timsort
+from backlot import java_timsort, utf8_escapes
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -106,25 +106,42 @@ CONFLUENCE_NOT_PERMITTED_BODY = json.dumps(
 #: and Confluence's `%2F` and Jira's `%5B` and `%5D`, get another answer than an echo.
 _JIRA_ECHO_DECODES = "!$&'()*+,-./:=@_~"
 _CONFLUENCE_ECHO_DECODES = "-._~"
-_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+#: An escape, or one of the characters both products echo as their escape, the hex in upper case,
+#: where they arrive unescaped: read off `GET …/nope<byte>x` for every byte from 0x21 to 0x7E sent
+#: as itself, on Jira's 404 and Confluence's `null for uri:` 404 (2026-10-31). Each other one
+#: comes back as it was sent, but for `%`, `#`, `;`, `?` and `\`, which another layer reads, and
+#: `[` and `]`, which Confluence's Tomcat refuses (:func:`front_door`) and Jira answers with an HTML
+#: 404.
+_ESCAPE = re.compile(r'%([0-9A-Fa-f]{2})|(["<>^`{|}])')
 
 
 def echoed_spelling(raw_path: str, *, confluence: bool) -> str:
     """The path as Jira or Confluence echoes it in a refusal, from the path as it arrived.
 
-    Each escape is decoded or kept as the product's set above says, in one pass, so an escape a
-    decoded `%25` would form is not read again. Then a run of slashes is one, a decoded `%2F` among
-    them (Jira's `nope%2F%2Fx` comes back `nope/x`, 2026-10-17), and a trailing slash is kept.
+    Each escape is decoded or kept as the product's set above says, and each character
+    :data:`_ESCAPE` names is escaped, in one pass, so an escape a decoded `%25` would form is not
+    read again. Then a run of slashes is one, a decoded `%2F` among them (Jira's `nope%2F%2Fx` comes
+    back `nope/x`, 2026-10-17), and a trailing slash is kept.
     """
     decodes = _CONFLUENCE_ECHO_DECODES if confluence else _JIRA_ECHO_DECODES
 
     def one(match: re.Match[str]) -> str:
+        if match.group(2) is not None:
+            return f"%{ord(match.group(2)):02X}"
         char = chr(int(match.group(1), 16))
         if char.isascii() and (char.isalnum() or char in decodes):
             return char
         return match.group(0) if confluence else match.group(0).upper()
 
     return re.sub("/{2,}", "/", _ESCAPE.sub(one, raw_path))
+
+
+def echoed_query(query: str) -> str:
+    """The query as Confluence's `null for uri:` echoes it, from the query as it arrived: as sent,
+    but a `%` no two hex digits follow, which comes back as its escape `%25`. Measured on 2026-10-31
+    (UTC) at a path no route serves under `/wiki/rest/api/`, with `b=%x`, `b=%zz`, `b=%4x`, `b=%`,
+    `b=%4`, `b=%%41` and `%x=1`; `b=%2fx` and `b=%e9x` came back as sent."""
+    return re.sub("%(?![0-9A-Fa-f]{2})", "%25", query)
 
 
 def owns(path: str) -> bool:
@@ -186,8 +203,9 @@ def json_media_type(path: str, status_code: int) -> str | None:
 # include the other Unicode space separators. Measured on both products, 2026-09-15: a value
 # holding U+00A0, U+2007 or U+202F between its digits is a 400 naming that value, while the same
 # value holding U+2003, U+0020, a tab or a newline is thirty-four. Python's own `str.isspace()`
-# calls all seven whitespace, so the three are put back by hand.
-_JAVA_NON_WHITESPACE = "\u00a0\u2007\u202f"
+# calls all seven whitespace, so the three are put back by hand, and so is U+0085, the one other
+# character Python calls whitespace and Java does not (`%C2%852` is a 400 naming it, 2026-11-04).
+_JAVA_NON_WHITESPACE = "\u00a0\u2007\u202f\u0085"
 
 
 def strip_java_whitespace(raw: str) -> str:
@@ -265,6 +283,26 @@ def _jira_tomcat_refusal(status: int, headers: dict[str, str]) -> AtlassianError
     )
 
 
+def _spring_number_failure(text: str) -> str:
+    """The `NumberFormatException` message Spring's `NumberUtils.parseNumber` throws for ``text``,
+    the value already cleaned of whitespace. Past an optional `-`, `0x`, `0X` or `#` sends it to
+    Java's `Integer.decode`, which throws on a sign behind the prefix and otherwise retries the
+    digits with the `-` put back in front, so the radix-16 message names those; any other value
+    goes to `Integer.valueOf`, whose message names it whole and carries no radix. Measured on
+    Confluence's space and content listings, 2026-11-04: `0x` and `#` name `""`, `-0xZ` names
+    `"-Z"`, `0x80000000` names `"80000000"` and `0x-2` is the sign message."""
+    index = 1 if text.startswith("-") else 0
+    if text.startswith(("0x", "0X"), index):
+        digits = text[index + 2 :]
+    elif text.startswith("#", index):
+        digits = text[index + 1 :]
+    else:
+        return f'For input string: "{text}"'
+    if digits.startswith(("-", "+")):
+        return "Sign character in wrong position"
+    return f'For input string: "{text[:index]}{digits}" under radix 16'
+
+
 def integer_conversion_failure(path: str, name: str, values: list[str]) -> AtlassianError:
     """The 400 either product answers for a query parameter it cannot read as an ``int``, which
     Jira also answers for one it cannot read as a boolean and for a path variable it cannot read as
@@ -299,7 +337,7 @@ def integer_conversion_failure(path: str, name: str, values: list[str]) -> Atlas
                     "org.springframework.web.method.annotation."
                     "MethodArgumentTypeMismatchException: Failed to convert value of type "
                     f"'{java_type}' to required type 'int'; nested exception is "
-                    f'java.lang.NumberFormatException: For input string: "{shown}"'
+                    f"java.lang.NumberFormatException: {_spring_number_failure(shown)}"
                 ),
             },
         )
@@ -379,6 +417,20 @@ def _service_refusal(status: int, exception: str, message: str) -> AtlassianErro
     )
 
 
+def cql_operator_not_supported(operator: str, field: str) -> AtlassianError:
+    """The CQL search's 400 naming the operator of a date clause: real answered `created > 20260910`
+    with it for `>` (Confluence Cloud, 2026-10-31), and `created` before a list of dates with it for
+    `in` and `notin` and `lastmodified` for `in` (Confluence Cloud, 2026-11-06). The operator in the
+    message is the one sent, `not in` written `notin`; the list is the six comparison operators
+    whatever it is."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Operator '{operator}' is not supported for field '{field}'. "
+        "Supported operators are : <, <=, >, >=, =, !=",
+    )
+
+
 def cql_not_parsed() -> AtlassianError:
     """The CQL search's refusal of a `cql` it cannot parse (``routers.atlassian._cql_refusal``).
     Measured on Confluence Cloud on 2026-10-22 and 2026-10-25: `"`, `type=page and`, `type=page)`
@@ -401,6 +453,19 @@ def cql_expecting_value(operator: str, field: str, got: str | None = None) -> At
     return _service_refusal(400, "api.BadRequestException", message)
 
 
+def cql_reserved_keyword(word: str) -> AtlassianError:
+    """The CQL search's refusal of a reserved word where a value goes, quoting the word as sent.
+
+    Each word :data:`routers.atlassian._CQL_KEYWORDS` names answers it, as measured there, with two
+    spaces after the first period; quoted, the word is a value and answers 200 (Confluence Cloud,
+    2026-10-31).
+    """
+    message = (
+        f"'{word}' is a reserved keyword.  You must surround '{word}' in quotation marks to use it."
+    )
+    return _service_refusal(400, "api.BadRequestException", message)
+
+
 def cql_unrecognised_clause(text: str) -> AtlassianError:
     """The CQL search's refusal of words or quoted values after a whole query, named run together:
     `type=page b` answered `Unrecognised clause at : b`, `title~a b c` `… at : bc` and
@@ -414,6 +479,52 @@ def cql_missing_closing_parenthesis() -> AtlassianError:
     query was measured, so its text is answered for every unclosed `(`."""
     return _service_refusal(
         400, "api.BadRequestException", "Missing closing parenthesis near field (()"
+    )
+
+
+def cql_unknown_function(name: str) -> AtlassianError:
+    """The CQL search's refusal of a function call real does not have, the name as sent, with
+    `()`: `label = foo()` answered `Unable to find query function 'foo()'`, and `label = Foo()`
+    the same with `Foo()` (Confluence Cloud, 2026-10-31). Where it falls among the search's
+    other refusals is ``routers.atlassian._cql_refusal``'s."""
+    return _service_refusal(
+        400, "api.BadRequestException", f"Unable to find query function '{name}()'"
+    )
+
+
+def cql_function_needs_context(name: str, context: str) -> AtlassianError:
+    """The CQL search's refusal of a function that cannot run where it is called, for want of a
+    context: `space = currentSpace()` answered
+    `Unable to execute function 'currentSpace', the required contexts were not present : space`,
+    and so did `label = currentSpace()` (Confluence Cloud, 2026-10-31). Where it falls among the
+    search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unable to execute function '{name}', the required contexts were not present : {context}",
+    )
+
+
+def cql_invalid_relative_date(value: str) -> AtlassianError:
+    """The CQL search's refusal of a date function's argument real cannot read as a relative
+    date, the argument as sent: `created > now("x")` answered `Invalid relative date : x`, and
+    so did `label = now("x")` and `created > startOfDay("x")`, and `created > now("a'b")` the
+    same with `a'b`, and `created > startOfMonth("-1")` the same with `-1` (Confluence Cloud,
+    2026-10-31). Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(400, "api.BadRequestException", f"Invalid relative date : {value}")
+
+
+def cql_escaped_end_quote(text: str) -> AtlassianError:
+    """The CQL search's refusal of a quoted value whose closing quote follows a backslash, named
+    as sent with its quotes. On Confluence Cloud on 2026-10-30 `title ~ "a\\\\"` answered
+    `Escaped end quote in phrase query near : "a\\\\"`, and so did the same value in `label`,
+    `space` and `space.key`, in single quotes and inside an `in` list, and four backslashes before
+    the closing quote, and on 2026-11-04 one backslash and three (`title ~ "a\\"` naming `"a\\"`).
+    Two backslashes in the middle of a value were not refused (2026-10-26). Where it falls among the
+    search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(
+        400, "api.BadRequestException", f"Escaped end quote in phrase query near : {text}"
     )
 
 
@@ -666,7 +777,8 @@ def negative_not_allowed(name: str) -> AtlassianError:
     """Confluence's refusal of a negative ``limit`` or ``start``, measured 2026-09-14 on `content`
     and `space` and 2026-09-23 on the three listings under `content/{id}`. Jira does NOT share
     it — a negative there clamps to the floor and answers 200 — so this is Confluence's alone,
-    and its body is the bare exception string again."""
+    and its body is the bare exception string again. The ``limit`` one is also what
+    ``backlot.routers.atlassian._refuse_a_start_past_java_int`` raises."""
     return AtlassianError(
         400,
         {
@@ -973,7 +1085,7 @@ def _invalid_mime_type(value: str) -> str | None:
     `text/plain;charset=nope`, and `text/plain;a b=c;charset=nope` named the space in `a b` first.
     On 2026-10-19 a no-break space (U+00A0) at either end of the header stayed part of it:
     `text/plain` and `text/plain;charset=nope` followed by one were named for it. Not read here: a
-    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_media_type`
+    charset Tomcat reads that Java takes no name for, the 500 :func:`refuse_a_confluence_charset`
     gives first.
     """
     index = value.find(";")
@@ -1079,6 +1191,30 @@ def _tomcat_charset(value: str) -> str | None:
     return None if found is False else charset
 
 
+def refuse_a_confluence_charset(headers) -> AtlassianError | None:
+    """The empty 500 Confluence's Spring application answers a `Content-Type` whose charset Tomcat
+    reads (:func:`_tomcat_charset`) that is no name Java takes (:data:`_JAVA_CHARSET_NAME`), an
+    empty one among them, or None where Tomcat reads none or Java takes the name. Measured on
+    Confluence Cloud at `POST space/{key}/permission` with no credential, `text/plain;charset=` on
+    2026-10-18 and 2026-10-19, and on 2026-10-19 `application/json;charset=`, `text/plain;Charset=`,
+    `text/plain;charset`, `text/plain;charset=""`, `text/plain;charset=_x` and
+    `text/plain;charset=utf-8;charset=` with it, where `text/plain;charset=;x=y` and `foo;charset=`
+    were each the 415.
+
+    The header sent more than once is read as its values that are not blank, joined by commas. On
+    2026-10-31 at `GET space`, `text/plain;charset=` after an empty, a space or a tab value, or
+    before an empty or a space one, was the 500, and beside `text/plain`, `text/plain;charset=nope`
+    or itself the caller's 403; `text/plain;charset="utf-8` followed by `"` was the 500, the joined
+    value's quoted charset holding the comma.
+    """
+    values = [value for value in headers.getlist("content-type") if value.strip(" \t")]
+    value = ", ".join(values).strip(" \t")
+    charset = _tomcat_charset(value)
+    if charset is not None and _JAVA_CHARSET_NAME.fullmatch(charset) is None:
+        return AtlassianError(500, b"")
+    return None
+
+
 def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> AtlassianError | None:
     """Confluence's 415 for a request whose `Content-Type` an operation that ``consumes`` those
     types does not take, or None where it takes it.
@@ -1095,19 +1231,11 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     2026-10-18). The status and the code are the same. Only a parameter named `charset` in that
     case is a charset to it (`multipart/form-data; boundary=x; Charset=bogus` is read, 2026-10-13).
 
-    Ahead of all of it, a charset Tomcat reads (:func:`_tomcat_charset`) that is no name Java takes
-    (:data:`_JAVA_CHARSET_NAME`), an empty one among them, is a 500 with no body and no
-    `content-type`, whether the operation takes the type or not. Measured on Confluence Cloud at
-    `POST space/{key}/permission` with no credential, `text/plain;charset=` on 2026-10-18 and
-    2026-10-19, and on 2026-10-19 `application/json;charset=`, `text/plain;Charset=`,
-    `text/plain;charset`, `text/plain;charset=""`, `text/plain;charset=_x` and
-    `text/plain;charset=utf-8;charset=` with it, where `text/plain;charset=;x=y` and `foo;charset=`
-    were each the 415.
+    A charset Tomcat reads that Java cannot name never reaches this: real fails the request first,
+    which ``backlot.routers.atlassian.refuse_a_spring_confluence_charset`` answers ahead of
+    routing.
     """
     value = (headers.get("content-type") or "").strip(" \t")
-    charset = _tomcat_charset(value)
-    if charset is not None and _JAVA_CHARSET_NAME.fullmatch(charset) is None:
-        return AtlassianError(500, b"")
     media_type = _parse_media_type(value, charset_in_any_case=False) if value else None
     if media_type is not None and _takes(consumes, media_type):
         return None
@@ -1707,16 +1835,14 @@ def confluence_refusal(
 
 
 #: A character past the Basic Multilingual Plane, which Confluence's JSON writer reaches only
-#: as a pair of UTF-16 surrogates (:func:`_confluence_json`).
+#: as a pair of UTF-16 surrogates (:func:`escape_past_bmp`).
 _PAST_BMP = re.compile(r"[\U00010000-\U0010FFFF]")
 
 
 def _confluence_json(body: dict) -> bytes:
     """The JSON bytes of a Confluence refusal or of the CQL search's answer, written the way real
     writes them: compact and unescaped, as ``JSONResponse`` writes them, but for a character past
-    U+FFFF, which goes out as two ``\\u`` escapes, its UTF-16 surrogates in upper-case hex, where
-    ``JSONResponse`` writes its UTF-8 bytes. Decoded, the two writings are one string, so the
-    escapes are made in the dumped text, where such a character can only stand inside a string.
+    U+FFFF, which goes out as :func:`escape_past_bmp` writes it.
 
     Measured on Confluence Cloud 2026-10-21: `é` (U+00E9) named in a refused space key went out as
     its UTF-8 bytes on `space/{key}`, `content` and the label and conversion refusals, and U+1F600
@@ -1726,12 +1852,30 @@ def _confluence_json(body: dict) -> bytes:
     `cqlQuery` as `\\uD83D\\uDE00` for a `title~` and a `label=` query alike.
     """
 
+    written = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return escape_past_bmp(written).encode()
+
+
+def escape_past_bmp(written: str) -> str:
+    """JSON text with each character past U+FFFF as Confluence writes it: two ``\\u`` escapes, its
+    UTF-16 surrogates in upper-case hex. Such a character can stand only inside a JSON string, so
+    the text decodes to the same value either way.
+
+    Real writes every 200 so, not only the CQL search's: measured on Confluence Cloud 2026-10-23,
+    U+1F600 and U+1D7D3 in a page's and a child page's title and storage body, and in a comment's
+    body, went out as `\\uD83D\\uDE00` and `\\uD835\\uDFD3` on `content/{id}` with and without
+    `expand=body.storage`, `content?spaceKey=`, `content?title=`, `content/{id}/child/page`,
+    `content/{id}/child/comment` and the search, where `é` stayed its UTF-8 bytes. On 2026-10-31 a
+    label holding U+1F600 went out escaped on `content/{id}/label` and `expand=metadata.labels`, a
+    space's name on `space/{key}`, `space?spaceKey=` and `content?expand=space`, and U+10000 and
+    U+10FFFD in a body as `\\uD800\\uDC00` and `\\uDBFF\\uDFFD`, where U+FFFD, U+E000 and U+2028
+    stayed their UTF-8 bytes."""
+
     def escapes(match: re.Match[str]) -> str:
         past = ord(match.group()) - 0x10000
         return f"\\u{0xD800 + (past >> 10):04X}\\u{0xDC00 + (past & 0x3FF):04X}"
 
-    written = json.dumps(body, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    return _PAST_BMP.sub(escapes, written).encode()
+    return _PAST_BMP.sub(escapes, written)
 
 
 def rendered(request, status_code: int, body, headers=None) -> Response | None:
@@ -2518,6 +2662,18 @@ def cdn_bad_request(method: str, raw_path: str) -> str:
     return _cloudfront(400, CDN_BAD_REQUEST, method, raw_path)
 
 
+def cdn_refused_host(method: str, raw_path: str) -> str:
+    """The CDN's 403 page, which it answers a `Host` it does not serve with
+    (``backlot.bracketed_host``)."""
+    return _cloudfront(403, CDN_BAD_REQUEST, method, raw_path)
+
+
+def cdn_page(status: int, method: str, raw_path: str) -> str:
+    """The CDN's page with ``status`` in it and its 400's text (:data:`CDN_BAD_REQUEST`), at the
+    status ``backlot.head_bounds`` or ``backlot.parser_refusals`` sends."""
+    return _cloudfront(status, CDN_BAD_REQUEST, method, raw_path)
+
+
 #: What the edge answers a `;` in a path with, JSON or a page as `Accept` picks
 #: (:func:`front_door`). The JSON is this body, 28 bytes with its newline, on `application/json`;
 #: real's page is 18,943 bytes on `text/html` with no charset,
@@ -2562,6 +2718,15 @@ def cdn_refusal(method: str, raw_path: str, raw_query: str) -> FrontDoor | None:
     return None
 
 
+#: The characters Confluence's Tomcat refuses in a query where they arrive unescaped
+#: (:func:`front_door`).
+_TOMCAT_REFUSED_IN_A_QUERY = re.compile(r'["<>\[\\\]^`{|}]')
+
+#: The web app's pages under `/wiki/` that leave those characters to the page, in lower case and
+#: with no slash at the end (:func:`front_door`).
+_WEB_APP_PAGES = (WIKI, f"{WIKI}/home", f"{WIKI}/search")
+
+
 def front_door(
     method: str, raw_path: str, raw_query: str, accept: str | None = None
 ) -> FrontDoor | None:
@@ -2590,7 +2755,19 @@ def front_door(
     answered both with 200 (2026-10-13). Each layer's answer is the same whatever the credential,
     and the gateway's Connect-token 403 comes after all of them. Which product a path is the
     gateway's to decide, and it reads the path with each run of slashes as one:
-    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13).
+    `PATCH //wiki/rest/api/space` is openresty's 405 (2026-10-13). Jira answers Tomcat's 400
+    (:func:`tomcat_page`) for a path whose escapes do not decode to UTF-8
+    (``backlot.utf8_escapes.decodes``) anywhere outside `/wiki`, on its API and off it
+    (`/nope%80x`), where Confluence reads such a path on: measured on 2026-10-30 (UTC) for `GET`,
+    `HEAD`, which gets no body, `OPTIONS`, `POST`, `PUT` and `DELETE` with an API token, behind the
+    edge's `;` and the gateway's `PATCH` and beside an encoded backslash, and for a `GET` with no
+    token or under an `Accept` of `text/html`. Confluence's Tomcat answers the same 400 for a `[` or
+    a `]` sent unescaped in the path and for one of :data:`_TOMCAT_REFUSED_IN_A_QUERY` in the query,
+    under `/wiki/` but on the web app's pages (:data:`_WEB_APP_PAGES` and paths under
+    `/wiki/spaces/`), which answered a `[` with 200, where Jira reads each of the eleven in a query
+    value on: measured on 2026-10-31 (UTC), at the paths and behind the refusals
+    ``tests/test_atlassian.py::_FRONT_DOOR_ROWS`` holds. This server does not serve the web app's
+    pages, and answers a `[` on one as it answers that path with no `[`.
 
     An `Accept` naming `text/html` first draws the edge's own "Page Unavailable" page in place of
     Tomcat's, which is not copied. ``raw_path`` is the path as sent, prefix included, which is
@@ -2615,11 +2792,20 @@ def front_door(
         )
         page = _GATEWAY_PATCH_PAGE.format(status=status, phrase=phrase, server=server)
         return FrontDoor(status, "gateway", "text/html", page, {})
+    tomcat = collapsed.startswith(f"{WIKI}/") and not encoded.startswith(f"{WIKI}/spaces/")
     if (
-        collapsed.startswith(f"{WIKI}/")
-        and not encoded.startswith(f"{WIKI}/spaces/")
-        and ("%2f" in encoded or "%5c" in encoded)
-    ) or (serves_the_jira_api(collapsed) and "%5c" in encoded):
+        (tomcat and ("%2f" in encoded or "%5c" in encoded))
+        or (serves_the_jira_api(collapsed) and "%5c" in encoded)
+        or (not confluence and not utf8_escapes.decodes(raw_path))
+        or (
+            tomcat
+            and encoded.removesuffix("/") not in _WEB_APP_PAGES
+            and (
+                re.search(r"[\[\]]", raw_path) is not None
+                or _TOMCAT_REFUSED_IN_A_QUERY.search(raw_query) is not None
+            )
+        )
+    ):
         return FrontDoor(
             400, "gateway", TOMCAT_MEDIA_TYPE, tomcat_page(400), {"Content-Language": "en"}
         )

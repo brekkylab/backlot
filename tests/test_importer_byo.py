@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -2823,7 +2824,7 @@ def test_verify_manifest_catches_a_tampered_shard(tmp_path):
     good = shard.read_bytes()
     shard.write_bytes(good + b"\x00")
     problems = byo.verify_manifest(out)
-    assert len(problems) == 1 and "bytes" in problems[0]
+    assert len(problems) == 1 and "byte(s)" in problems[0]
 
     # A swap that keeps the byte count is what the digest is FOR. The size check above answers the
     # other cases and returns early, so without this the sha256 comparison never runs in the suite.
@@ -5579,7 +5580,7 @@ def test_a_changed_path_matching_no_file_is_reported_and_loaded(tmp_path, capsys
 
     assert byo.run(corpus, dry_run=True) == 0  # a report, not a verdict on the corpus
     dry = capsys.readouterr()
-    assert "OK: 3 records valid." in dry.out
+    assert "OK: 3 record(s) valid." in dry.out
     assert "path reference" in dry.err and "line 3: src/typo.py" in dry.err
     assert "src/a.py" not in dry.err  # only the unresolved one is named
 
@@ -6000,14 +6001,16 @@ def test_reimporting_a_workbook_replaces_its_sheets_rather_than_adding_to_them(t
     assert json.loads(rows[0]["grid"]) == [["only"]]
 
 
-def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
+@pytest.mark.parametrize("structure", ["sheets", "paragraphs"])
+def test_reimporting_a_structured_file_as_prose_drops_its_structure(tmp_path, structure):
     """The other direction of the same rule, and the worse one: a record that stops stating a grid
-    must stop serving one. Left behind, the stale sheets make `spreadsheets.get` answer with cells
-    that `files.export` no longer has -- one document described two ways, which is the whole thing
-    a derived `content` exists to prevent."""
+    or paragraphs must stop serving them. Left behind, the stale sheets make `spreadsheets.get`
+    answer with cells that `files.export` no longer has -- one document described two ways, which
+    is the whole thing a derived `content` exists to prevent."""
+    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC}[structure]
     settings = Settings(data_dir=tmp_path)
-    load(_write(tmp_path, [GRID_REC], name="a.jsonl"), settings)
-    prose = {k: v for k, v in GRID_REC.items() if k != "sheets"}
+    load(_write(tmp_path, [record], name="a.jsonl"), settings)
+    prose = {k: v for k, v in record.items() if k != structure}
     prose["content"] = "now prose"
     load(_write(tmp_path, [prose], name="b.jsonl"), settings, reset=False)
 
@@ -6015,14 +6018,34 @@ def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
     row = conn.execute("SELECT id, content FROM gdrive_files").fetchone()
     assert row["content"] == "now prose"
     assert store.gdrive_sheets_for(conn, row["id"]) == []
+    assert store.gdrive_doc_for(conn, row["id"]) is None
+
+
+def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
+    """The control for the `insertText refuses` rows of
+    `test_a_structure_a_record_cannot_mean_is_refused`: the same characters in a `.txt`, which Drive
+    keeps as uploaded (`gdocs.UNWRITABLE`), import and are stored as stated."""
+    content = "a\ufdd0\ufdefb"
+    record = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "subtype": "txt",
+        "content": content,
+    }
+    corpus = _write(tmp_path, [record])
+    assert byo.run(corpus, dry_run=True) == 0
+    settings = Settings(data_dir=tmp_path)
+    load(corpus, settings)
+    conn = store.connect_ro(settings.db_path)
+    assert conn.execute("SELECT content FROM gdrive_files").fetchone()["content"] == content
 
 
 @pytest.mark.parametrize(
-    "overrides,fragment",
+    "structure,overrides,fragment",
     [
-        ({"content": "prose"}, "drop 'content'"),
-        ({"subtype": "document"}, "subtype 'spreadsheet'"),
+        ("sheets", {"content": "prose"}, "drop 'content'"),
+        ("sheets", {"subtype": "document"}, "subtype 'spreadsheet'"),
         (
+            "sheets",
             {"sheets": [{"title": "Data", "grid": []}, {"title": "data", "grid": []}]},
             "duplicate sheet title",
         ),
@@ -6030,19 +6053,198 @@ def test_reimporting_a_workbook_as_prose_drops_its_sheets(tmp_path):
         # that spells `Sheet1` out collides with it. Comparing only STATED titles misses this and
         # leaves the second sheet unreachable by name -- lookup answers with the first match.
         (
+            "sheets",
             {"sheets": [{"grid": [["x"]]}, {"title": "Sheet1", "grid": [["y"]]}]},
             "duplicate sheet title",
         ),
+        ("paragraphs", {"content": "prose"}, "drop 'content'"),
+        ("paragraphs", {"subtype": "spreadsheet"}, "subtype 'document'"),
+        ("paragraphs", {"paragraphs": [{"text": "a", "runs": [{"text": "b"}]}]}, "one of"),
+        ("paragraphs", {"paragraphs": [{"style": "TITLE"}]}, "one of"),
+        ("paragraphs", {"paragraphs": [{"text": "a\nb"}]}, "holds none"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a"}, {"text": "b\n"}]}]}, "holds none"),
+        ("paragraphs", {"paragraphs": [{"text": "a\rb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x00b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x08b"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x0cb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"text": "a\x1fb"}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ue000"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\uf8ff"}]}]}, "real strips"),
+        ("paragraphs", {"paragraphs": [1]}, "is not of type 'object'"),
+        ("paragraphs", {"paragraphs": [{"runs": [1]}]}, "is not of type 'object'"),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "example.com"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "#heading=h.x"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "wiki.acme.example:8443/page"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a/b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a?b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": "a#b:c"}]}]},
+            "does not match",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "link": ":foo"}]}]},
+            "does not match",
+        ),
+        ("paragraphs", {"paragraphs": [{"text": "a\ufdd0"}]}, "insertText refuses"),
+        ("paragraphs", {"paragraphs": [{"runs": [{"text": "a\ufdef"}]}]}, "insertText refuses"),
+        ("prose", {"content": "a\ufdd0"}, "insertText refuses"),
+        ("prose", {"content": "a\ud800b"}, "lone surrogate"),
+        # a body's runs, header and footer, and tabs: real takes a title of 50 UTF-16 code units
+        # and only once, a footnote and a page break in a body alone (`routers.google_docs`)
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"text": "a", "pageBreak": True}]}]},
+            "exactly one",
+        ),
+        ("paragraphs", {"paragraphs": [{"runs": [{"bold": True}]}]}, "exactly one"),
+        ("paragraphs", {"header": [{"runs": [{"pageBreak": True}]}]}, "in a body alone"),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"footnote": [{"runs": [{"footnote": [{"text": "x"}]}]}]}]}]},
+            "in a body alone",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"footnote": [{"text": "a\rb"}]}]}]},
+            "real strips",
+        ),
+        ("paragraphs", {"tabs": [{"paragraphs": [{"text": "a"}]}]}, "not both"),
+        # a table is stated alone, rectangular and not empty, which nothing else could mean; a
+        # footnote holds none and a cell no page break, as real's `insertTable` and
+        # `insertPageBreak` refuse them
+        (
+            "paragraphs",
+            {"paragraphs": [{"text": "a", "table": [[[{"text": "x"}]]]}]},
+            "stated alone",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"table": [[[{"text": "x"}], [{"text": "y"}]], [[{"text": "z"}]]]}]},
+            "same number of cells",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"table": [[[{"runs": [{"pageBreak": True}]}]]]}]},
+            "outside a table",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"footnote": [{"table": [[[{"text": "x"}]]]}]}]}]},
+            "holds no table",
+        ),
+        ("paragraphs", {"paragraphs": [{"table": [[]]}]}, "should be non-empty"),
+        # a list is one of `createParagraphBullets`' presets, nine levels deep at most
+        (
+            "paragraphs",
+            {"paragraphs": [{"text": "a", "list": {"preset": "BULLETS"}}]},
+            "is not one of",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"text": "a", "list": {"preset": "BULLET_CHECKBOX", "level": 9}}]},
+            "greater than the maximum",
+        ),
+        ("prose", {"header": [{"text": "a"}]}, "needs 'paragraphs'"),
+        (
+            "prose",
+            {"content": None, "tabs": [{"paragraphs": [{"text": "a"}]}], "footer": [{"text": "b"}]},
+            "belongs to a tab",
+        ),
+        ("prose", {"tabs": [{"paragraphs": [{"text": "a"}]}]}, "drop 'content'"),
+        (
+            "prose",
+            {
+                "content": None,
+                "tabs": [{"title": "x" * 26 + "\U0001f600" * 13, "paragraphs": [{"text": "a"}]}],
+            },
+            "50 UTF-16 code units",
+        ),
+        (
+            "prose",
+            {
+                "content": None,
+                "tabs": [
+                    {"title": "Plan", "paragraphs": [{"text": "a"}]},
+                    {
+                        "paragraphs": [{"text": "b"}],
+                        "tabs": [{"title": "Plan", "paragraphs": [{"text": "c"}]}],
+                    },
+                ],
+            },
+            "tabs[0] has it too",
+        ),
+        (
+            "prose",
+            {"content": None, "tabs": [{"icon": "\u2122", "paragraphs": [{"text": "a"}]}]},
+            "icon",
+        ),
+        ("prose", {"content": None, "tabs": [{"paragraphs": [{"text": "a\nb"}]}]}, "holds none"),
+        (
+            "prose",
+            {
+                "content": None,
+                "tabs": [
+                    {
+                        "paragraphs": [{"text": "a"}],
+                        "tabs": [
+                            {
+                                "paragraphs": [{"text": "b"}],
+                                "tabs": [
+                                    {
+                                        "paragraphs": [{"text": "c"}],
+                                        "tabs": [{"paragraphs": [{"text": "d"}]}],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "three levels deep",
+        ),
+        # a shape the schema refuses is reported, not stumbled over
+        ("prose", {"content": None, "tabs": ["x"]}, "is not of type 'object'"),
+        ("prose", {"content": None, "tabs": "x"}, "is not of type 'array'"),
+        ("prose", {"content": None, "tabs": [{"paragraphs": "x"}]}, "is not of type 'array'"),
+        ("paragraphs", {"paragraphs": ["x"]}, "is not of type 'object'"),
+        ("paragraphs", {"paragraphs": [{"runs": ["x"]}]}, "is not of type 'object'"),
     ],
 )
-def test_a_grid_a_record_cannot_mean_is_refused(tmp_path, capsys, overrides, fragment):
+def test_a_structure_a_record_cannot_mean_is_refused(
+    tmp_path, capsys, structure, overrides, fragment
+):
     """Cross-field rules, refused in Python rather than by the schema: expressed as an `if`/`then`
     each reports as a missing property at the record root, naming neither the field that put the
     rule in force nor what is wrong with the pairing.
 
     Asserted against BOTH passes. `--dry-run` walks the corpus itself rather than sharing the
     loader's, so a rule reaches it only by being wired into that pass as well."""
-    corpus = _write(tmp_path, [{**GRID_REC, **overrides}])
+    prose = {**{k: v for k, v in PARAS_REC.items() if k != "paragraphs"}, "content": "x"}
+    record = {"sheets": GRID_REC, "paragraphs": PARAS_REC, "prose": prose}[structure]
+    record = {k: v for k, v in {**record, **overrides}.items() if v is not None}
+    corpus = _write(tmp_path, [record])
     with pytest.raises(SystemExit) as e:
         load(corpus, Settings(data_dir=tmp_path))
     assert fragment in str(e.value)
@@ -6147,3 +6349,86 @@ def test_a_cell_json_cannot_carry_is_refused_at_import(tmp_path, cell):
     with pytest.raises(SystemExit) as e:
         _load_grid(tmp_path, [{**GRID_REC, "sheets": [{"grid": [[cell]]}]}])
     assert "RFC 8259" in str(e.value)
+
+
+# --- google_drive: a document that states its paragraphs ------------------------
+
+PARAS_REC = {
+    "source_type": "google_drive",
+    "title": "Plan",
+    "folder": "sales",
+    "doc_id": "gd-paras",
+    "author_email": "dana@example.com",
+    "paragraphs": [
+        {"style": "HEADING_1", "text": "Goals"},
+        {"runs": [{"text": "Ship "}, {"text": "it", "bold": True}]},
+        {"text": ""},
+    ],
+}
+
+
+def test_stated_paragraphs_are_the_body_and_their_text_with_the_segments_is_the_content(tmp_path):
+    """The body is stored in real's shape with its indices left out, and `content` is the
+    paragraphs' text, one line each, which Drive's search reads. Two documents with one text and
+    different styles are two documents, so the paragraphs reach the id; one that states none
+    stores nothing. A document stating tabs stores each, its header, footer and footnotes beside
+    its body, and its `content` is every tab's title and text, its header, footer and footnotes
+    with it, depth first."""
+    restyled = {
+        **PARAS_REC,
+        "doc_id": "gd-restyled",
+        "paragraphs": [{"text": "Goals"}, {"text": "Ship it"}, {"text": ""}],
+    }
+    unnamed = [{k: v for k, v in r.items() if k != "doc_id"} for r in (PARAS_REC, restyled)]
+    prose = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "doc_id": "gd-prose",
+        "content": "Goals\nShip it\n",
+    }
+    tabbed = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "doc_id": "gd-tabs",
+        "tabs": [
+            {
+                "title": "Plan",
+                "paragraphs": [{"runs": [{"text": "Goals"}, {"footnote": [{"text": "Q3"}]}]}],
+                "header": [{"text": "Draft"}],
+                "tabs": [{"title": "plan", "paragraphs": [{"text": "Ship it"}]}],
+            },
+            {"paragraphs": [{"runs": [{"text": "Notes"}, {"pageBreak": True}]}]},
+        ],
+    }
+    conn = _load_grid(tmp_path, [*unnamed, prose, tabbed])
+    rows = conn.execute("SELECT id, content FROM gdrive_files ORDER BY rowid").fetchall()
+    assert [r["content"] for r in rows] == ["Goals\nShip it\n"] * 3 + [
+        "Plan\nGoals\n\nDraft\n Q3\nplan\nShip it\nTab 3\nNotes\n"
+    ]
+    body = store.gdrive_doc_for(conn, rows[0]["id"])["tabs"][0]["body"]
+    assert [el.keys() for el in body] == [{"sectionBreak"}] + [{"paragraph"}] * 3
+    assert store.gdrive_doc_for(conn, rows[1]["id"]) != store.gdrive_doc_for(conn, rows[0]["id"])
+    assert store.gdrive_doc_for(conn, rows[2]["id"]) is None
+    plan, notes = store.gdrive_doc_for(conn, rows[3]["id"])["tabs"]
+    assert [plan["tabProperties"]["tabId"], plan["tabProperties"]["title"]] == ["t.0", "Plan"]
+    assert [t["tabProperties"]["title"] for t in (plan["childTabs"][0], notes)] == [
+        "plan",
+        "Tab 3",
+    ]
+    assert [len(plan[k]) for k in ("headers", "footers", "footnotes")] == [1, 0, 1]
+    (footnote,) = plan["footnotes"].values()
+    assert footnote[0]["paragraph"]["elements"][0]["textRun"]["content"] == " Q3\n"
+    # a stated title is stored as `addDocumentTab` stores one, another's once rewritten the default
+    titled = {
+        **{k: v for k, v in PARAS_REC.items() if k != "paragraphs"},
+        "doc_id": "gd-titled",
+        "tabs": [{"title": t, "paragraphs": [{"text": "a"}]} for t in ("a b", "a\nb", "c\r\nd")],
+    }
+    load(_write(tmp_path, [titled], name="titled.jsonl"), Settings(data_dir=tmp_path), reset=False)
+    with closing(store.connect_ro(Settings(data_dir=tmp_path).db_path)) as read:
+        (last,) = read.execute("SELECT id FROM gdrive_files ORDER BY rowid DESC LIMIT 1").fetchall()
+        stored = store.gdrive_doc_for(read, last["id"])
+    assert [t["tabProperties"]["title"] for t in stored["tabs"]] == ["a b", "Tab 2", "c d"]
+    # a re-import that states only `content` stops serving the tabs
+    restated = {**{k: v for k, v in tabbed.items() if k != "tabs"}, "content": "Goals"}
+    load(_write(tmp_path, [restated], name="again.jsonl"), Settings(data_dir=tmp_path), reset=False)
+    again = store.connect_ro(Settings(data_dir=tmp_path).db_path)
+    assert store.gdrive_doc_for(again, rows[3]["id"]) is None

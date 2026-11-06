@@ -20,6 +20,7 @@ import unicodedata
 from graphql import GraphQLError
 
 from backlot import pagination, store, synth
+from backlot.graphql import node_utf8
 from backlot.graphql.linear_filters import (
     SCALARS,
     UUID_SHAPE,
@@ -76,8 +77,8 @@ def _reject_sort_with_order_by(sort, order_by) -> None:
     measured on api.linear.app 2026-10-04. Sending the argument is what counts, so ``sort: []``
     is refused and an explicit ``null`` is absent. The arguments are validated before the pair:
     ``first`` with ``last`` and a malformed filter id each answered ``Argument Validation Error``
-    beside it, so ``_issue_page`` and ``resolve_users`` call this after ``_slice``, and
-    ``_issue_page`` after compiling the filter too."""
+    beside it, so :func:`_issue_arguments` and :func:`_user_arguments` call this after
+    ``_slice``, and ``_issue_arguments`` after compiling the filter too."""
     if sort is not None and order_by is not None:
         raise GraphQLError(
             "Cannot use both sort and orderBy options",
@@ -103,7 +104,7 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
     when combined with ``last`` (Relay applies ``after`` first, then takes the last n of the rest).
     Asking for both ``first`` and ``last`` is a client bug the spec says to reject."""
     if first is not None and last is not None:
-        raise GraphQLError("passing both `first` and `last` is not supported")
+        raise argument_validation_error()
     start = pagination.decode_cursor(after) if after else 0
     if _backward(first, last, before):
         limit = pagination.clamp_limit(last, PAGE_DEFAULT, PAGE_MAX)
@@ -112,6 +113,11 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
         end = max(0, pagination.decode_cursor(before) - 1)
         return max(start, end - limit), min(limit, max(0, end - start)), start
     return start, pagination.clamp_limit(first, PAGE_DEFAULT, PAGE_MAX), start
+
+
+def _page_arguments(_info, *, first=None, after=None, last=None, before=None, **_ignored):
+    """The page :func:`_slice` reads from a connection's arguments."""
+    return _slice(first, after, last, before)
 
 
 def _backward(first, last, before) -> bool:
@@ -1052,6 +1058,28 @@ def _resolve_issue_ids(info, flt):
     return out
 
 
+def _issue_arguments(
+    info,
+    *,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    sort=None,
+    **_ignored,
+):
+    """``(page, prefilter)`` of an issue connection: :func:`_slice`'s page and the compiled
+    filter."""
+    page = _slice(first, after, last, before)
+    prefilter = compile_issue_filter(
+        _ctx(info)["conn"], _resolve_issue_ids(info, filter), _team_keys(info)
+    )
+    _reject_sort_with_order_by(sort, orderBy)
+    return page, prefilter
+
+
 def _issue_page(
     info,
     *,
@@ -1068,9 +1096,16 @@ def _issue_page(
 ) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    offset, limit, floor = _slice(first, after, last, before)
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
-    _reject_sort_with_order_by(sort, orderBy)
+    (offset, limit, floor), prefilter = _issue_arguments(
+        info,
+        first=first,
+        after=after,
+        last=last,
+        before=before,
+        filter=filter,
+        orderBy=orderBy,
+        sort=sort,
+    )
     if offset is None:
         # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
         # here and not on every page.
@@ -1103,6 +1138,35 @@ def resolve_issues(_root, info, **kwargs) -> dict:
     return _issue_page(info, **kwargs)
 
 
+def _search_arguments(
+    info,
+    *,
+    term,
+    teamId=None,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    **_ignored,
+):
+    """The compiled filter of ``searchIssues``, or the refusal of its arguments."""
+    if not term:
+        raise argument_validation_error()
+    if teamId is not None:
+        # Measured 2026-10-22: a UUID of version 1-8 and variant 8-b, the nil UUID and the all-`f`
+        # one were looked up, in either case; version 0 or 9, variant c, no dashes and a trailing
+        # space were refused.
+        versioned = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+        nil_or_max = r"0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12}"
+        if not re.fullmatch(f"{versioned}|{nil_or_max}", teamId, re.IGNORECASE):
+            raise argument_validation_error()
+    _slice(first, after, last, before)
+    return compile_issue_filter(
+        _ctx(info)["conn"], _resolve_issue_ids(info, filter), _team_keys(info)
+    )
+
+
 def resolve_search_issues(
     _root,
     info,
@@ -1122,23 +1186,25 @@ def resolve_search_issues(
     and for a ``teamId`` that is not a UUID (a team key included), an empty page for an unknown
     UUID, and with ``includeComments`` absent matched a word found only in a comment, as with
     ``true``, where ``false`` did not (measured 2026-10-22). ``orderBy`` replaces the relevance
-    order with the newest first."""
+    order with the newest first. A term holding a lone surrogate is
+    :func:`_search_backend_failed`, checked after :func:`_search_arguments`."""
     ctx = _ctx(info)
     conn = ctx["conn"]
-    if not term:
-        raise argument_validation_error()
+    prefilter = _search_arguments(
+        info,
+        term=term,
+        teamId=teamId,
+        first=first,
+        after=after,
+        last=last,
+        before=before,
+        filter=filter,
+    )
     team = None
     if teamId is not None:
-        # Measured 2026-10-22: a UUID of version 1-8 and variant 8-b, the nil UUID and the all-`f`
-        # one were looked up, in either case; version 0 or 9, variant c, no dashes and a trailing
-        # space were refused.
-        versioned = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
-        nil_or_max = r"0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12}"
-        if not re.fullmatch(f"{versioned}|{nil_or_max}", teamId, re.IGNORECASE):
-            raise argument_validation_error()
         team = store.linear_team_by_served_id(conn, teamId.lower()) or "\x00none"
-    _slice(first, after, last, before)
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
+    if node_utf8.holds_a_lone_surrogate(term):
+        raise _search_backend_failed()
     hits, total = store.search_linear_issues(
         conn,
         term,
@@ -1175,6 +1241,44 @@ def resolve_documents(_root, info, first=None, after=None, last=None, before=Non
     return _list_page([], first, after, last, before)
 
 
+def _search_backend_failed() -> GraphQLError:
+    """Linear's error for a ``searchIssues`` term holding a lone surrogate. On 2026-10-27 (UTC)
+    api.linear.app answered ``a\\ud800b`` and ``a\\udc00b`` so, and ``a\\ufffdb`` with a page of
+    issues; beside such a term, a ``teamId`` or filter ``id`` that is not a UUID, a ``first`` of 0,
+    ``first`` with ``last`` and an ``after`` that is no cursor were each
+    `Argument Validation Error`."""
+    return GraphQLError(
+        "Failed to query search backend",
+        extensions={
+            "type": "internal error",
+            "code": "EXTERNAL_SERVICE_ERROR",
+            "statusCode": 500,
+            "userError": False,
+        },
+    )
+
+
+def _not_found(entity: str) -> GraphQLError:
+    """Linear's error for a by-id root given an id it holds no ``entity`` for, as api.linear.app
+    answered each of ``issue``, ``team``, ``user``, ``workflowState``, ``project``, ``issueLabel``,
+    ``cycle``, ``release``, ``issueRelation`` and ``teamMembership`` with an unknown UUID and with
+    ``nope`` on 2026-10-25 (UTC). ``attachment`` answered in words of its own (``_ATTACHMENT``)."""
+    return _input_error(f"Entity not found: {entity}", f"Could not find referenced {entity}.")
+
+
+def _input_error(message: str, presentable: str) -> GraphQLError:
+    return GraphQLError(
+        message,
+        extensions={
+            "type": "invalid input",
+            "code": "INPUT_ERROR",
+            "statusCode": 400,
+            "userError": True,
+            "userPresentableMessage": presentable,
+        },
+    )
+
+
 def resolve_issue(_root, info, id):
     """``issue(id:)`` takes a UUID or a human identifier, as the real API does. Linear declares
     this non-null, so a miss is an error rather than a null — the same thing the real API does
@@ -1185,7 +1289,7 @@ def resolve_issue(_root, info, id):
     if row is None:
         row = store.linear_issue_by_identifier(conn, str(id), visible_ids=visible)
     if row is None:
-        raise GraphQLError(f"Entity not found: Issue - Could not find referenced Issue. id={id}")
+        raise _not_found("Issue")
     return _issue(row, info)
 
 
@@ -1224,7 +1328,7 @@ def resolve_team(_root, info, id):
     ):
         container = None
     if container is None:
-        raise GraphQLError(f"Entity not found: Team - Could not find referenced Team. id={id}")
+        raise _not_found("Team")
     return _team(container, info)
 
 
@@ -1328,11 +1432,20 @@ def resolve_users(
     return _user_page(rows, info, first, after, last, before, filter, orderBy, sort)
 
 
+def _user_arguments(
+    _info, *, first=None, after=None, last=None, before=None, orderBy=None, sort=None, **_ignored
+) -> None:
+    """Raise the refusal of a user connection's page and order arguments, if any."""
+    _slice(first, after, last, before)
+    _reject_sort_with_order_by(sort, orderBy)
+
+
 def _user_page(rows, info, first, after, last, before, filter, order_by, sort) -> dict:
     """A ``UserConnection`` page over principal rows: ``users`` and ``Team.members`` take the same
     arguments and read them the same way."""
-    _slice(first, after, last, before)
-    _reject_sort_with_order_by(sort, order_by)
+    _user_arguments(
+        info, first=first, after=after, last=last, before=before, orderBy=order_by, sort=sort
+    )
     users = [_user(r["email"], r["display_name"], info) for r in rows if _match_user(r, filter)]
     users = _sorted_users(users, sort) if sort else _ordered_users(users, order_by)
     return _list_page(users, first, after, last, before)
@@ -1384,9 +1497,7 @@ def _by_id(info, kind: str, id_value, entity: str, *, unstored=None):
     ):
         found = None  # exists in the corpus, but not for this caller — answer as if absent
     if found is None:
-        raise GraphQLError(
-            f"Entity not found: {entity} - Could not find referenced {entity}. id={id_value}"
-        )
+        raise _not_found(entity)
     return found
 
 
@@ -1429,15 +1540,21 @@ def resolve_release(_root, info, id) -> dict:
     return _release(_by_id(info, "release", id, "Release"), info)
 
 
+# What api.linear.app answered `attachment(id:)` with for an unknown UUID and for `nope` on
+# 2026-10-25 (UTC): its message and presentable text speak of a url either way.
+_ATTACHMENT = (
+    "Entity not found: Attachment: could not find by url.",
+    "Could not find referenced attachment with this url.",
+)
+
+
 def resolve_attachment(_root, info, id) -> dict:
     """Attachments live in their own table, so this resolves by row id and scopes on the parent
     issue rather than through the name-keyed entities the other roots use."""
     ctx = _ctx(info)
     row = store.linear_attachment_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:
-        raise GraphQLError(
-            f"Entity not found: Attachment - Could not find referenced Attachment. id={id}"
-        )
+        raise _input_error(*_ATTACHMENT)
     return _attachment(row, info)
 
 
@@ -1445,9 +1562,7 @@ def resolve_issue_relation(_root, info, id) -> dict:
     ctx = _ctx(info)
     row = store.linear_relation_by_id(ctx["conn"], str(id), visible_ids=ctx["visible_ids"])
     if row is None:
-        raise GraphQLError(
-            f"Entity not found: IssueRelation - Could not find referenced IssueRelation. id={id}"
-        )
+        raise _not_found("IssueRelation")
     return _relation(row, info)
 
 
@@ -1582,7 +1697,7 @@ def resolve_team_membership(_root, info, id) -> dict:
             if synth.linear_team_membership_id(container, user_id) == str(id).lower():
                 user = _user(row["email"], row["display_name"], info)
                 return _membership(container, user, info)
-    raise GraphQLError("Entity not found: TeamMembership")
+    raise _not_found("TeamMembership")
 
 
 def resolve_team_membership_of(team, info, userId) -> dict | None:
@@ -1890,7 +2005,7 @@ def _issue_by_id(info, issue_id):
     ctx = _ctx(info)
     row = store.get_document(ctx["conn"], "linear", issue_id, visible_ids=ctx["visible_ids"])
     if row is None:
-        raise GraphQLError("Entity not found: Issue - Could not find referenced Issue.")
+        raise _not_found("Issue")
     return _issue(row, info)
 
 
@@ -2015,13 +2130,34 @@ RESOLVERS = {
 RESOLVERS["IssueSearchResult"] = RESOLVERS["Issue"]
 
 
+# Linear's other root types: its introspection named a mutation and a subscription type on
+# 2026-10-25 (UTC), and Backlot serves no field of either.
+ROOTS = ("Mutation", "Subscription")
+
+# The root fields whose arguments Linear refuses before it looks anything up, which the engine
+# checks ahead of the run. api.linear.app answered `first` with `last` at a later `issues`,
+# `teams`, `comments`, `users`, `documents` and `teamMemberships`, `sort` beside `orderBy` at a
+# later `issues` and `users`, a filter id that is not a UUID at a later `issues` and
+# `searchIssues`, and an empty `term` and a `teamId` that is not a UUID at a later `searchIssues`,
+# ahead of an earlier `issue` or `team` it does not hold, on 2026-11-06 (UTC).
+CHECKS = {
+    "issues": _issue_arguments,
+    "searchIssues": _search_arguments,
+    "users": _user_arguments,
+    "comments": _page_arguments,
+    "teams": _page_arguments,
+    "documents": _page_arguments,
+    "teamMemberships": _page_arguments,
+}
+
+
 def build_engine():
     """The Linear engine, over the SDL beside this module. ``SCALARS`` binds Linear's date-operand
     grammar onto ``DateTimeOrDuration`` / ``TimelessDateOrDuration``, so a malformed filter value is
     a validation error (a 400) exactly where the real API makes it one."""
     from backlot.graphql import engine
 
-    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS)
+    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS, ROOTS, CHECKS)
 
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX"]

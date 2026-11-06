@@ -165,6 +165,9 @@ class Namer:
         self._load()
         if path in self._graphql_paths:
             return self._graphql_paths[path], ""
+        for name in GRAPHQL:
+            if _under(path, f"/{name}"):
+                return name, ""
         if _under(path, "/batch"):
             # `/batch/{api}/{version}` names its API; the bare `/batch` is Gmail's batch path.
             if path.count("/") < 2:
@@ -192,6 +195,10 @@ class Namer:
             return Named("other", "unmatched", UNKNOWN)
         source, strip = placed
         if source in self._graphql:
+            # Any other path under a GraphQL source's mount was answered off its endpoint, as
+            # `backlot.main` routes each path the endpoint is served at to the endpoint's own.
+            if path not in self._graphql_paths:
+                return Named(source, "unmatched", UNKNOWN)
             return self._graphql_call(source, graphql_payload)
         if source == "s3":
             return self._s3_call(method, path[len(strip) :], query, headers)

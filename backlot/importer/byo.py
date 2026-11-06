@@ -77,7 +77,7 @@ from pathlib import Path
 
 import yaml
 
-from backlot import sheets_grid, store, synth
+from backlot import gdocs, gsheets, store, synth
 from backlot.config import Settings, get_settings, infer_org
 from backlot.validation import record_errors
 
@@ -164,6 +164,11 @@ def _doc_id(rec: dict) -> str:
     # ordinary -- resolve to one id, and the row-level upsert leaves only the later one.
     if rec.get("sheets") is not None:
         seed += _j(rec["sheets"])
+    # Likewise a structured document's `content` is its lines alone, without their styles, icons
+    # and page breaks or the tab and segment each stands in.
+    for key in ("paragraphs", "header", "footer", "tabs"):
+        if rec.get(key) is not None:
+            seed += _j(rec[key])
     return "dsid_" + hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
@@ -733,7 +738,7 @@ def verify_manifest(source) -> list[str]:
                 continue
             if p.stat().st_size != shard["bytes"]:
                 problems.append(
-                    f"{shard['path']}: {p.stat().st_size} bytes, manifest says {shard['bytes']}"
+                    f"{shard['path']}: {p.stat().st_size} byte(s), manifest says {shard['bytes']}"
                 )
                 continue
             h = hashlib.sha256()
@@ -751,7 +756,7 @@ def verify_manifest(source) -> list[str]:
         if not rp.exists():
             problems.append(f"{r['path']}: missing")
         elif rp.stat().st_size != r["bytes"]:
-            problems.append(f"{r['path']}: {rp.stat().st_size} bytes, manifest says {r['bytes']}")
+            problems.append(f"{r['path']}: {rp.stat().st_size} byte(s), manifest says {r['bytes']}")
         elif hashlib.sha256(rp.read_bytes()).hexdigest() != r["sha256"]:
             problems.append(f"{r['path']}: sha256 mismatch")
     return problems
@@ -1056,18 +1061,171 @@ def _sheets_pairing_errors(rec: dict) -> list[str]:
                         f"sheets[{i}].grid[{r}][{c}]: {cell} is not a number JSON can carry "
                         "(RFC 8259 has no Infinity or NaN literal)"
                     )
-    first: dict[str, int] = {}
+    seen: list[tuple[int, str]] = []
     for i, sheet in enumerate(sheets):
         if not isinstance(sheet, dict):
             continue
         title = _sheet_title(sheet, i)
-        prior = first.setdefault(title.casefold(), i)
-        if prior != i:
+        prior = next((j for j, t in seen if gsheets.same_title(t, title)), None)
+        seen.append((i, title))
+        if prior is not None:
             msgs.append(
                 f"sheets[{i}]: duplicate sheet title {title!r} (sheets[{prior}] has it too, and "
                 "the real API compares them case-insensitively)"
             )
     return msgs
+
+
+def _paragraphs_pairing_errors(rec: dict) -> list[str]:
+    """What a `google_drive` record's `paragraphs`, `header`, `footer` and `tabs` may not sit
+    beside, and what a paragraph, run or tab may not say, returned for the reason
+    :func:`_sheets_pairing_errors` gives."""
+    stated = [k for k in ("paragraphs", "tabs") if rec.get(k) is not None]
+    msgs = []
+    if not stated:
+        return [
+            f"'{k}' needs 'paragraphs' to be the document's body"
+            for k in ("header", "footer")
+            if rec.get(k) is not None
+        ]
+    if len(stated) == 2:
+        msgs.append("state the document as 'paragraphs' or as 'tabs', not both")
+    if rec.get("tabs") is not None:
+        msgs += [
+            f"'{k}' belongs to a tab once the document states 'tabs'"
+            for k in ("header", "footer")
+            if rec.get(k) is not None
+        ]
+    if rec.get("content") is not None:
+        msgs.append(
+            f"'{stated[0]}' and 'content' state the same document two ways; drop 'content' — it "
+            "is derived at import from the document's text, one line per paragraph"
+        )
+    subtype = rec.get("subtype") or "document"
+    if subtype != "document":
+        msgs.append(f"'{stated[0]}' needs subtype 'document' (this is {subtype!r})")
+    tabs = rec.get("tabs")
+    if not isinstance(tabs, list):
+        tabs = [{k: rec[k] for k in ("paragraphs", "header", "footer") if k in rec}]
+        where = ""
+    else:
+        where = "tabs"
+    titles: dict[str, str] = {}
+    for path, tab in _stated_tabs(tabs, where):
+        if not isinstance(tab, dict):
+            continue
+        prefix = f"{path}." if path else ""
+        if path.count(".tabs") > 2:
+            msgs.append(f"{path}: real nests tabs three levels deep at most")
+        title = tab.get("title")
+        if isinstance(title, str):
+            if gdocs.utf16_len(title) > 50:
+                msgs.append(f"{prefix}title: longer than the 50 UTF-16 code units real takes")
+            if title in titles:
+                msgs.append(
+                    f"{prefix}title: {titles[title]} has it too, and real takes a title once"
+                )
+            titles.setdefault(title, path)
+        icon = tab.get("icon")
+        if isinstance(icon, str) and not gdocs.is_icon(icon):
+            msgs.append(f"{prefix}icon: not one emoji real takes as a tab's icon")
+        for kind in ("paragraphs", "header", "footer"):
+            msgs += _paragraph_errors(tab.get(kind), f"{prefix}{kind}", kind == "paragraphs")
+    return msgs
+
+
+def _stated_tabs(tabs: list, path: str):
+    """Each stated tab with where it is in the record, depth first."""
+    for i, tab in enumerate(tabs):
+        here = f"{path}[{i}]" if path else ""
+        yield here, tab
+        if isinstance(tab, dict) and isinstance(tab.get("tabs"), list):
+            yield from _stated_tabs(tab["tabs"], f"{here}.tabs")
+
+
+def _paragraph_errors(
+    paragraphs, path: str, body: bool, note: bool = False, cell: bool = False
+) -> list[str]:
+    """What a stated body, header, footer, footnote or cell's paragraphs may not say. Only a body
+    holds a footnote or a page break, a cell of one a footnote alone, and a footnote no table: real
+    refuses `createFootnote` and `insertPageBreak` anywhere else, `insertPageBreak` in a table and
+    `insertTable` in a footnote."""
+    if not isinstance(paragraphs, list):
+        return []
+    msgs = []
+    for i, para in enumerate(paragraphs):
+        if not isinstance(para, dict):
+            continue
+        at = f"{path}[{i}]"
+        if "table" in para:
+            msgs += _table_errors(para, at, body, note)
+            continue
+        if ("text" in para) == ("runs" in para):
+            msgs.append(f"{at}: state its text as one of 'text' or 'runs'")
+        runs = [r for r in para.get("runs") or [] if isinstance(r, dict)]
+        for j, run in enumerate(runs):
+            kinds = [k for k in ("text", "footnote", "pageBreak") if k in run]
+            if len(kinds) != 1:
+                msgs.append(
+                    f"{at}.runs[{j}]: state exactly one of 'text', 'footnote' and 'pageBreak'"
+                )
+            if ("footnote" in run or "pageBreak" in run) and not body:
+                msgs.append(
+                    f"{at}.runs[{j}]: a footnote or a page break stands in a body alone, as real's "
+                    "`createFootnote` and `insertPageBreak` refuse one in a header, footer or footnote"
+                )
+            if "pageBreak" in run and body and cell:
+                msgs.append(
+                    f"{at}.runs[{j}]: a page break stands outside a table, as real's "
+                    "`insertPageBreak` refuses one in a table"
+                )
+            if "footnote" in run and body:
+                msgs += _paragraph_errors(
+                    run["footnote"], f"{at}.runs[{j}].footnote", False, note=True
+                )
+        texts = [para.get("text")] + [r.get("text") for r in runs]
+        if any(isinstance(t, str) and "\n" in t for t in texts):
+            msgs.append(
+                f"{at}: a newline ends a paragraph, so a paragraph's text holds none; "
+                "state the next line as the next paragraph"
+            )
+        if any(isinstance(t, str) and gdocs.STRIPPED.search(t) for t in texts):
+            msgs.append(
+                f"{at}: holds a character real strips from a document's text "
+                "(U+0000-U+0008, U+000C-U+001F or U+E000-U+F8FF)"
+            )
+        if any(isinstance(t, str) and gdocs.UNWRITABLE.search(t) for t in texts):
+            msgs.append(f"{at}: {_UNWRITABLE}")
+    return msgs
+
+
+def _table_errors(para: dict, at: str, body: bool, note: bool) -> list[str]:
+    """What a stated table may not say: anything beside it, a row of another width than the first,
+    a place in a footnote, and what its cells' paragraphs may not."""
+    msgs = []
+    if len(para) > 1:
+        msgs.append(f"{at}: a table is stated alone, with no 'text', 'runs', 'style' or 'list'")
+    if note:
+        msgs.append(f"{at}: a footnote holds no table, as real's `insertTable` refuses one there")
+    rows = para["table"] if isinstance(para["table"], list) else []
+    widths = {len(row) for row in rows if isinstance(row, list)}
+    if len(widths) > 1:
+        msgs.append(f"{at}.table: state every row with the same number of cells")
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row if isinstance(row, list) else []):
+            msgs += _paragraph_errors(cell, f"{at}.table[{r}][{c}]", body, cell=True)
+    return msgs
+
+
+_UNWRITABLE = "holds a character insertText refuses (U+FDD0-U+FDEF), which no document holds"
+
+
+def _document_content_errors(rec: dict) -> list[str]:
+    """What a `document`'s `content` may not hold: the characters no write puts in a Doc."""
+    content = rec.get("content")
+    if (rec.get("subtype") or "document") != "document" or not isinstance(content, str):
+        return []
+    return [f"content: {_UNWRITABLE}"] if gdocs.UNWRITABLE.search(content) else []
 
 
 def _sheet_title(sheet: dict, i: int) -> str:
@@ -1100,7 +1258,7 @@ def _sheet_rows(file_id: str, sheets: list[dict]) -> list[tuple]:
             while (sid := synth.sheet_id(file_id, title, salt)) in taken:
                 salt += "!"
         taken.add(sid)
-        out.append((i, sid, title, _j(sheets_grid.normalise_grid(sheet["grid"]))))
+        out.append((i, sid, title, _j(gsheets.normalise_grid(sheet["grid"]))))
     return out
 
 
@@ -1913,7 +2071,11 @@ class _Loader:
         # get a pull-only field onto an issue correctly than a hand-written one.
         if src == "github" and (bad := _github_pairing_errors(rec)):
             raise SystemExit(f"{where}: " + "; ".join(bad))
-        if src == "google_drive" and (bad := _sheets_pairing_errors(rec)):
+        if src == "google_drive" and (
+            bad := _sheets_pairing_errors(rec)
+            + _paragraphs_pairing_errors(rec)
+            + _document_content_errors(rec)
+        ):
             raise SystemExit(f"{where}: " + "; ".join(bad))
         gcol = store.grouping_col(src)
         container = str(rec[gcol])  # channel / mailbox / folder / repo / project / space
@@ -1993,8 +2155,14 @@ class _Loader:
             drive_sheets = rec["sheets"]
             rec = {
                 **rec,
-                "content": sheets_grid.to_csv(sheets_grid.normalise_grid(drive_sheets[0]["grid"])),
+                "content": gsheets.to_csv(gsheets.normalise_grid(drive_sheets[0]["grid"])),
             }
+        # And stated paragraphs or tabs are the document, its `content` their text, for the same
+        # reason.
+        drive_document = None
+        if src == "google_drive" and (rec.get("paragraphs") or rec.get("tabs")) is not None:
+            drive_document = rec
+            rec = {**rec, "content": gdocs.record_text(rec)}
 
         doc_id = _doc_id(rec)
         # Recorded, not deduplicated: `seen` answers "is this document in the corpus" for the
@@ -2561,6 +2729,10 @@ class _Loader:
             file_id = self.keys[(src, doc_id)][0]
             rows = _sheet_rows(file_id, drive_sheets) if drive_sheets is not None else []
             store.gdrive_replace_sheets(conn, file_id, rows)
+            document = None
+            if drive_document is not None:
+                document = gdocs.from_record(file_id, drive_document)
+            store.gdrive_replace_doc(conn, file_id, document)
 
         if src in THREADED_REPLIES:
             # The root has landed, so its id is settled — every reply below points at it. Both
@@ -3837,7 +4009,11 @@ def run(
                 continue
             errs = record_errors(rec)
             if isinstance(rec, dict) and rec.get("source_type") == "google_drive":
-                errs += _sheets_pairing_errors(rec)
+                errs += (
+                    _sheets_pairing_errors(rec)
+                    + _paragraphs_pairing_errors(rec)
+                    + _document_content_errors(rec)
+                )
             if isinstance(rec, dict) and rec.get("source_type") == "github":
                 errs += _github_pairing_errors(rec)
                 # Only from a record that is otherwise sound: its own `path` may be the thing that
@@ -3878,7 +4054,7 @@ def run(
             for where, path in unresolved:
                 print(f"  {where}: {path}", file=sys.stderr)
         if not problems:
-            print(f"OK: {n} records valid.")
+            print(f"OK: {n} record(s) valid.")
             return 0
         print(f"INVALID: {len(problems)} problem(s) in {corpus}", file=sys.stderr)
         for lineno, msg in problems:
@@ -3898,12 +4074,12 @@ def run(
         roster = corpus / "roster.yaml"
         print(f"using the artifact's own roster: {roster}", file=sys.stderr)
     res = load(corpus, settings, reset=not append, roster=roster, id_map=id_map)
-    print(f"Loaded {res['total']} documents into {settings.db_path}")
+    print(f"Loaded {res['total']} document(s) into {settings.db_path}")
     if id_map is not None:
         print(f"Id map written to {id_map}")
     for src, n in sorted(res["counts"].items()):
         print(f"  {src:14s} {n}")
-    print(f"Principals: {res['users']} users, {res['groups']} groups")
+    print(f"Principals: {res['users']} user(s), {res['groups']} group(s)")
     print(f"Tokens written to {settings.tokens_path}")
     return 0
 

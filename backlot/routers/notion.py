@@ -43,15 +43,19 @@ import hashlib
 import json
 import re
 import uuid
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
+from starlette.routing import Match
 
-from backlot import auth, published, store, synth
+from backlot import auth, express_http, published, request_target, store, synth, utf8_escapes
 from backlot import notion_request as req
+from backlot.graphql import apollo_http
 from backlot.graphql import body as request_body
 from backlot.openapi import qp
+from backlot.routers import sent_path
 
 router = APIRouter(prefix="/notion/v1", tags=["notion"])
 # Everything under `/notion` that no route above answers. Mounted after `router` in
@@ -79,11 +83,11 @@ PUBLISHED_VERSIONS = (
 #: The headers real puts on an answer past its body reader (:func:`front_door_body`), one value
 #: each wherever they were measured against api.notion.com on 2026-10-27: the answers of each route
 #: here (200s, 400s, 401s, 404s and a 503, `HEAD`s among them), the OAuth client endpoints' 401 and
-#: the root's 302. The refusals that body reader answers carried none of them, and neither did the
-#: front door's `405 Not Allowed` page for `TRACE`: a method outside :data:`ROUTED_METHODS` is the
-#: framework's 405 here (:func:`unmatched_path`), and carries none of them either.
-#: `strict-transport-security` came beside them and is left off, a promise of HTTPS that a server
-#: answering over plain HTTP cannot keep.
+#: the root's 302. The refusals that body reader answers carried none of them, nor did
+#: :func:`undecodable_url`'s 400, nor the front door's `405 Not Allowed` page for `TRACE`: a method
+#: outside :data:`ROUTED_METHODS` is the framework's 405 here (:func:`unmatched_path`), and carries
+#: none of them either. `strict-transport-security` came beside them and is left off, a promise of
+#: HTTPS that a server answering over plain HTTP cannot keep.
 APPLICATION_HEADERS = {
     "content-security-policy": "default-src 'none'",
     "referrer-policy": "strict-origin-when-cross-origin",
@@ -94,6 +98,50 @@ APPLICATION_HEADERS = {
     "x-permitted-cross-domain-policies": "none",
     "x-xss-protection": "0",
 }
+
+#: The headers real's CORS layer (:func:`answers_cors`) puts on an answer to a request whose
+#: `Origin` has a value, and on the 204 it answers a preflight with: one value each wherever they
+#: were measured against api.notion.com on 2026-10-27.
+CORS_HEADERS = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-headers": (
+        "Authorization, Content-Type, Accept, Notion-Version, Notion-Beta, Idempotency-Key, "
+        "User-Agent, X-Notion-Mcp-Redirect-Uri, X-Notion-Mcp-Client-Id, "
+        "X-Notion-Mcp-Client-Name, X-Notion-Mcp-Client-Version"
+    ),
+    "access-control-allow-methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+    "access-control-expose-headers": "X-Notion-Request-Id, Retry-After",
+    "access-control-max-age": "0",
+}
+
+
+def not_modified(request: Request, status_code: int) -> bool:
+    """Whether real answers ``request`` with a 304 in place of its answer of ``status_code``: the
+    freshness check Express runs on a `GET`'s 2xx (``fresh`` 0.5.2), which finds `If-None-Match: *`
+    fresh unless a non-empty `If-Modified-Since`, or `no-cache` in `Cache-Control`
+    (:data:`backlot.express_http.NO_CACHE`), goes with it. A `HEAD` reaches this as the `GET` it is
+    rewritten to.
+
+    Measured against api.notion.com on 2026-10-27: `If-None-Match: *`, with or without spaces or a
+    tab around it, drew a 304 on a `GET` and a `HEAD` of `users/me`, and on a `GET` of `users`,
+    `pages/{id}` and `blocks/{id}/children`, carrying the `ETag` and every header the 200 carries
+    but `content-type`. Beside `If-Modified-Since` of a past or a future date, or
+    `Cache-Control: max-age=0, no-cache` sent as one header or as two, it drew the 200, and beside
+    an `If-Modified-Since` of U+00A0 alone or a `Cache-Control` of `no-cache` after a U+00A0 too;
+    beside an empty `If-Modified-Since` or one of spaces, or a `Cache-Control` of `NO-CACHE`,
+    `max-age=0`, `xno-cache` or `no-cache="set-cookie"`, the 304. A 400, a 404 and a `POST` were
+    answered as without it, and so were `"*"`, `W/"0-x", *` and a U+00A0 beside the `*`. No other
+    `If-None-Match` can match there, because each body carries a `request_id` minted for it; this
+    server's comes from the request (:func:`_request_id`), so its tag repeats, and matching one
+    would answer a 304 where real answers the 200. Only `*` is read.
+    """
+    if request.method != "GET" or not 200 <= status_code < 300:
+        return False
+    if request.headers.get("if-modified-since", "").strip(" \t"):
+        return False
+    if express_http.NO_CACHE.search(", ".join(request.headers.getlist("cache-control"))):
+        return False
+    return request.headers.get("if-none-match", "").strip(" \t") == "*"
 
 
 # --- OpenAPI enrichment --------------------------------------------------
@@ -385,6 +433,13 @@ def _unmounted_here(request: Request, *, data_sources: bool) -> JSONResponse | N
     return None
 
 
+def _path_id(request: Request, value: str) -> str:
+    """The value of a path parameter: where ``backlot.main.route_a_notion_path_as_sent`` routed
+    the spelling as sent, the capture still carries its escapes, and it is decoded here, once,
+    the way Express decodes a parameter it captured."""
+    return unquote(value) if request.scope.get("notion_path_as_sent") else value
+
+
 def _norm(nid: str) -> str:
     """Notion accepts an id dashed or dashless, and does not fold its case: a dashed id in upper
     case was a 404 on ``pages/{id}`` (measured 2026-09-30) and on ``comments`` (2026-10-02), where
@@ -397,8 +452,8 @@ def _norm(nid: str) -> str:
 
     Malformed input (the wrong length once dashes are stripped) comes back unchanged, which
     matches no stored id. Real refuses a malformed id with a 400 before it looks anything up;
-    ``list_comments`` checks its ``block_id`` that way first, and the path routes answer it the
-    404 an unknown id gets."""
+    ``list_comments`` checks its ``block_id`` that way first and :func:`get_user` its ``user_id``,
+    and the other path routes answer it the 404 an unknown id gets."""
     h = (nid or "").replace("-", "").lower()
     if len(h) != 32:
         return h
@@ -450,6 +505,25 @@ def _error_id(request: Request) -> str:
         f"notion-error:{request.method} {request.url.path}?{request.url.query}".encode()
     )
     return str(uuid.UUID(bytes=raw.digest(16), version=4))
+
+
+def undecodable_url(request: Request) -> JSONResponse | None:
+    """Notion's 400 for a path whose escapes do not decode to UTF-8
+    (``backlot.utf8_escapes.decodes``), or that the end of the target cuts short in an escape
+    (``backlot.request_target.cut_escape``), the one broken escape Cloudflare in front of it hands
+    on; or None.
+
+    Measured on 2026-10-30 (UTC) on a path no route serves (`/v1/nope%80x`, `/nope%80x`), at a
+    route's own (`/v1/users%80`, `/v1/users/nope%80x`, `/v1/pages/nope%80x`) and beside `%01`, on a
+    `GET` with a token and without one: `Failed to decode url.`, where a `%C3%A9` in the same place
+    was the URL's 400 (:func:`unmatched_path`) or the route's own refusal. A body Express refuses
+    (:func:`front_door_body`) was refused ahead of it, on a `POST` with a token and without one. On
+    2026-10-31 `/v1/nope<cache-buster>%` and `…%4`, by `GET` with a token, drew the same 400."""
+    own = sent_path(request.scope).encode("latin-1")
+    cut = request_target.cut_escape(own, request_target.path_ends_the_target(request.scope))
+    if utf8_escapes.decodes(request.scope["raw_path"]) and not cut:
+        return None
+    return _error(request, 400, "invalid_request_url", "Failed to decode url.")
 
 
 async def front_door_body(request: Request) -> JSONResponse | None:
@@ -702,12 +776,12 @@ def _page_obj(conn, row, version: str | None = None) -> dict:
     props = {"title": _title_prop(row["title"])}
     for k, v in (json.loads(row["properties"]) if row["properties"] else {}).items():
         props[k] = _prop_value(k, v)
-    # Both timestamps in the millisecond form real sends for the page and for its block.
+    # Both timestamps in the minute form real sends for the page and for its block.
     return {
         "object": "page",
         "id": pid,
-        "created_time": synth.rfc3339_millis(created),
-        "last_edited_time": synth.rfc3339_millis(updated),
+        "created_time": synth.rfc3339_minute(created),
+        "last_edited_time": synth.rfc3339_minute(updated),
         "created_by": _partial_user(row["author_email"]),
         "last_edited_by": _partial_user(row["author_email"]),
         "cover": _cover(row["cover"]),
@@ -790,6 +864,8 @@ def _database_obj(conn, row, version: str) -> dict:
     did = row["id"]
     created = row["created_ts"]
     updated = row["updated_ts"] or created
+    # A database's timestamps follow the version: the minute form under earlier versions, as a
+    # page's are, and seconds with a `+00:00` offset under the data sources model.
     if _data_sources_model(version):
         return {
             "object": "database",
@@ -801,8 +877,8 @@ def _database_obj(conn, row, version: str) -> dict:
             "database_type": None,
             "in_trash": False,
             "is_locked": False,
-            "created_time": synth.rfc3339(created),
-            "last_edited_time": synth.rfc3339(updated),
+            "created_time": synth.rfc3339_offset_millis(created),
+            "last_edited_time": synth.rfc3339_offset_millis(updated),
             "data_sources": [{"id": row["data_source_id"], "name": row["title"]}],
             "icon": _emoji_icon(row["icon"]),
             "cover": _cover(row["cover"]),
@@ -815,10 +891,10 @@ def _database_obj(conn, row, version: str) -> dict:
         "id": did,
         "cover": _cover(row["cover"]),
         "icon": _emoji_icon(row["icon"]),
-        "created_time": synth.rfc3339(created),
+        "created_time": synth.rfc3339_minute(created),
         "created_by": _partial_user(row["author_email"]),
         "last_edited_by": _partial_user(row["author_email"]),
-        "last_edited_time": synth.rfc3339(updated),
+        "last_edited_time": synth.rfc3339_minute(updated),
         "title": synth.notion_rich_text(row["title"]),
         "description": synth.notion_rich_text(row["content"]),
         "is_inline": False,
@@ -843,10 +919,10 @@ def _data_source_obj(conn, row) -> dict:
         "id": row["data_source_id"],
         "cover": _cover(row["cover"]),
         "icon": _emoji_icon(row["icon"]),
-        "created_time": synth.rfc3339_millis(created),
+        "created_time": synth.rfc3339_minute(created),
         "created_by": _partial_user(row["author_email"]),
         "last_edited_by": _partial_user(row["author_email"]),
-        "last_edited_time": synth.rfc3339_millis(updated),
+        "last_edited_time": synth.rfc3339_minute(updated),
         "title": synth.notion_rich_text(row["title"]),
         "description": synth.notion_rich_text(row["content"]),
         "is_inline": False,
@@ -866,7 +942,7 @@ def _data_source_obj(conn, row) -> dict:
 
 def _block_child(conn, page_row, block: dict) -> dict:
     """A block of `blocks.children` in the twelve members real serves (measured 2026-09-30): the
-    seven `synth.notion_blocks` emits plus the page parent, both timestamps in the millisecond form
+    seven `synth.notion_blocks` emits plus the page parent, both timestamps in the minute form
     and the two partial authors."""
     created = page_row["created_ts"]
     updated = page_row["updated_ts"] or created
@@ -875,8 +951,8 @@ def _block_child(conn, page_row, block: dict) -> dict:
         "object": "block",
         "id": block["id"],
         "parent": {"type": "page_id", "page_id": page_row["id"]},
-        "created_time": synth.rfc3339_millis(created),
-        "last_edited_time": synth.rfc3339_millis(updated),
+        "created_time": synth.rfc3339_minute(created),
+        "last_edited_time": synth.rfc3339_minute(updated),
         "created_by": _partial_user(page_row["author_email"]),
         "last_edited_by": _partial_user(page_row["author_email"]),
         "has_children": block["has_children"],
@@ -889,6 +965,7 @@ def _block_child(conn, page_row, block: dict) -> dict:
 
 @router.get("/pages/{page_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_page(page_id: str, request: Request):
+    page_id = _path_id(request, page_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -906,6 +983,7 @@ async def get_page(page_id: str, request: Request):
 
 @router.get("/blocks/{block_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_block(block_id: str, request: Request):
+    block_id = _path_id(request, block_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -925,8 +1003,8 @@ async def get_block(block_id: str, request: Request):
             "object": "block",
             "id": bid,
             "parent": _parent_field(conn, row, _version(request)),
-            "created_time": synth.rfc3339_millis(row["created_ts"]),
-            "last_edited_time": synth.rfc3339_millis(row["updated_ts"] or row["created_ts"]),
+            "created_time": synth.rfc3339_minute(row["created_ts"]),
+            "last_edited_time": synth.rfc3339_minute(row["updated_ts"] or row["created_ts"]),
             "created_by": _partial_user(row["author_email"]),
             "last_edited_by": _partial_user(row["author_email"]),
             "has_children": row["subtype"] != "database",
@@ -944,6 +1022,7 @@ async def get_block(block_id: str, request: Request):
     openapi_extra=_params(*_P_PAGINATE),
 )
 async def get_block_children(block_id: str, request: Request):
+    block_id = _path_id(request, block_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -976,6 +1055,7 @@ async def get_block_children(block_id: str, request: Request):
 
 @router.get("/databases/{database_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_database(database_id: str, request: Request):
+    database_id = _path_id(request, database_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -992,6 +1072,7 @@ async def get_database(database_id: str, request: Request):
 
 @router.get("/data_sources/{data_source_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_data_source(data_source_id: str, request: Request):
+    data_source_id = _path_id(request, data_source_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
@@ -1147,14 +1228,14 @@ async def _query_rows(request: Request, row_id: str, *, data_sources: bool):
     openapi_extra=_B_QUERY_DATA_SOURCE,
 )
 async def query_data_source(data_source_id: str, request: Request):
-    return await _query_rows(request, data_source_id, data_sources=True)
+    return await _query_rows(request, _path_id(request, data_source_id), data_sources=True)
 
 
 @router.post(
     "/databases/{database_id}/query", response_model=NotionList, openapi_extra=_B_QUERY_DATABASE
 )
 async def query_database(database_id: str, request: Request):
-    return await _query_rows(request, database_id, data_sources=False)
+    return await _query_rows(request, _path_id(request, database_id), data_sources=False)
 
 
 # --------------------------------------------------------------------------- search
@@ -1314,11 +1395,19 @@ async def get_me(request: Request):
 
 @router.get("/users/{user_id}", response_model=NotionObject, openapi_extra=_params())
 async def get_user(user_id: str, request: Request):
+    user_id = _path_id(request, user_id)
     caller = auth.resolve_bearer(request)
     if (refusal := _refusal(request, caller)) is not None:
         return refusal
     if (refusal := _get(request, req.NOTHING)[1]) is not None:
         return refusal
+    # Real reads the id as a uuid before it looks the user up, in the shapes `req.Uuid` reads with
+    # `dashless`: `me` spelled into the segment through an escape was the validator's 400 naming
+    # `"me"` on 2026-10-28, and on 2026-11-04 so were `nope`, a dashless id in upper case and an id
+    # in braces, where a dashed id in upper case was looked up.
+    problems = req.Uuid(dashless=True).check(user_id, ("path", "user_id"))
+    if problems:
+        return _error(request, 400, "validation_error", req.refusal_message("path", problems))
     conn = auth.conn(request)
     key = _norm(user_id)
     for u in store.list_users(conn):
@@ -1382,8 +1471,8 @@ async def list_comments(request: Request):
             "id": synth.notion_id(c["id"]),
             "parent": {"type": "page_id", "page_id": parent_id},
             "discussion_id": synth.notion_id(f"disc:{row['id']}"),
-            "created_time": synth.rfc3339(c["created_ts"]),
-            "last_edited_time": synth.rfc3339(c["created_ts"]),
+            "created_time": synth.rfc3339_minute(c["created_ts"]),
+            "last_edited_time": synth.rfc3339_minute(c["created_ts"]),
             "created_by": _user_obj(conn, c["author_email"]),
             "rich_text": synth.notion_rich_text(c["body"]),
         }
@@ -1405,6 +1494,21 @@ _CLIENT_AUTH_OPERATIONS = frozenset(
 )
 
 
+def answers_cors(path: str) -> bool:
+    """Whether real's CORS layer sits in front of ``path``, a `/notion` path as sent: one under
+    `/v1/` and not under `/v1/oauth/`, the OAuth client endpoints' prefix.
+
+    Measured against api.notion.com on 2026-10-27, each path with `Origin` and as a preflight:
+    `/v1/users/me`, `/v1/search`, `/v1/nonexistent_thing/xyz`, `/v1/`, `/v1/oauth` and `/v1/oauthx`
+    carried :data:`CORS_HEADERS` and answered the preflight 204; `/v1`, `/v2/users/me`, `/foo`,
+    `/v1/oauth/`, `/v1/oauth/foo` and `/v1/oauth/token` carried none of them, answered the
+    preflight the URL's 400, and sent `vary: Accept-Encoding`, with `Origin` or without. On
+    2026-10-28 an escape counted as sent: `/v1/%6Fauth/token` and `/v1/oauth%2Ftoken` carried them,
+    and `/v1%2Fusers/me` and `/%761/users/me` did not."""
+    path = path.removeprefix("/notion")
+    return path.startswith("/v1/") and not path.startswith("/v1/oauth/")
+
+
 def _invalid_client(request: Request) -> JSONResponse:
     """An OAuth client endpoint's refusal, in its own shape rather than Notion's envelope.
 
@@ -1423,6 +1527,47 @@ def _invalid_client(request: Request) -> JSONResponse:
 
 #: The methods the catch-all below takes; :func:`unmatched_path` has why these six.
 ROUTED_METHODS = ("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
+
+
+_MARKETING_SITE = "https://www.notion.so"
+#: The types `res.redirect` writes its body in, in the order it asks `req.accepts` for them.
+_REDIRECTS = ("text/plain", "text/html")
+
+
+@unmatched_router.api_route("", methods=list(ROUTED_METHODS))
+@unmatched_router.api_route("/", methods=list(ROUTED_METHODS))
+async def root(request: Request) -> Response:
+    """Real's root: Express's `res.redirect` to its marketing site, a 302 with `vary: Accept` and
+    the request's id. Its body is in the type `Accept` takes first of `text/plain` and `text/html`,
+    `text/plain` where there is no `Accept`, and empty with no `content-type` where `Accept` takes
+    neither.
+
+    Measured against api.notion.com on 2026-10-31: `/` and `/?x=1` answered that 302 to `HEAD` and
+    each of the six methods, with a token and a `Notion-Version` and with neither, and to a
+    preflight; a body the body reader refuses was its refusal instead.
+
+    Real's Express is read off its answers; Notion does not say which it runs. Its HTML body carries
+    the link Express 4.19.2 writes and 4.20.0 leaves out, and each `Accept` sent on 2026-10-31 drew
+    the type `negotiator` 0.6.3 picks, which 4.19.2 asks through `accepts` 1.3.8 and whose
+    `mediaType` reads `Accept` as 1.0.0's does (``apollo_http.preferred_media_type``)."""
+    accept = apollo_http.headers_seen(request.headers.raw).get("accept")
+    media_type = apollo_http.preferred_media_type(accept, _REDIRECTS) if accept else _REDIRECTS[0]
+    body = ""
+    if media_type == "text/plain":
+        body = f"Found. Redirecting to {_MARKETING_SITE}"
+    elif media_type == "text/html":
+        body = f'<p>Found. Redirecting to <a href="{_MARKETING_SITE}">{_MARKETING_SITE}</a></p>'
+    request_id = _request_id(request)
+    return Response(
+        body,
+        status_code=302,
+        headers={
+            "location": _MARKETING_SITE,
+            "vary": "Accept",
+            "x-notion-request-id": request_id,
+        },
+        media_type=media_type,
+    )
 
 
 @unmatched_router.api_route("/{rest:path}", methods=list(ROUTED_METHODS))
@@ -1460,13 +1605,11 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     before routing, so a slashed spelling of a served path does not land here
     (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
 
-    Not reproduced here: real's own root, `/`, a 302 to the marketing site, a page Backlot does not
-    serve; a path in another case, which real routes as the lower-case one (`GET /V1/USERS/ME`
-    and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and this answers the URL's
-    400; and a method outside the six that the front door passes on to the API, `PROPFIND` and
-    `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and this answers the
-    framework's 405. `/notion/` gets the URL's 400, and `/notion` is Starlette's 307 to it — the one
-    path under `/notion` where its slash redirect fires, since this route matches every other.
+    Not reproduced here: a path in another case, which real routes as the lower-case one
+    (`GET /V1/USERS/ME` and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and
+    this answers the URL's 400; and a method outside the six that the front door passes on to the
+    API, `PROPFIND` and `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and the
+    root's redirect on 2026-10-31 (:func:`root`), and this answers the framework's 405.
     """
     path = request.url.path.removeprefix("/notion")
     if published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
@@ -1475,3 +1618,22 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
         if (refusal := _refusal(request, auth.resolve_bearer(request))) is not None:
             return refusal
     return _error(request, 400, "invalid_request_url", "Invalid request URL.")
+
+
+def reading(scope, path: str):
+    """What answers a `/notion` request whose path is read as ``path``: the route that matches
+    it, or, where the catch-all (:func:`unmatched_path`) is the one, the two readings that
+    handler takes off the spelling — a published operation it names, and one of the OAuth
+    client endpoints."""
+    probe = {**scope, "path": path}
+    for route in (*router.routes, *unmatched_router.routes):
+        if route.matches(probe)[0] is Match.FULL:
+            if route.endpoint is unmatched_path:
+                rest = path.removeprefix("/notion")
+                return (
+                    "unmatched",
+                    published.includes(_PUBLISHED_NOT_SERVED, scope["method"], rest),
+                    (scope["method"], rest) in _CLIENT_AUTH_OPERATIONS,
+                )
+            return ("route", route.path, tuple(sorted(route.methods or ())))
+    return None

@@ -112,6 +112,71 @@ representation — a corpus states what a cell holds, and JSON has no date.
 word held only on a later sheet does not make the file a hit for `q=fullText contains`. Put what
 should be findable on the first sheet.
 
+### Documents
+
+A `document` record states its text one of two ways, as a spreadsheet does.
+
+Without `paragraphs`, `content` is the document, and the Docs API serves one plain paragraph per
+line of it.
+
+With `paragraphs`, the record states each paragraph's named style and its runs of text, and
+`content` must be **absent**: it is derived as the paragraphs' text, one line each. `documents.get`
+serves the headings, bold, italic, underlined and struck-through runs and links the record states,
+each indexed as real indexes it.
+
+```json
+{"source_type": "google_drive", "title": "Q1 planning notes", "folder": "finance", "author_email": "cfo@acme.com", "created": "2026-01-12T08:00:00Z", "updated": "2026-01-20T08:00:00Z", "paragraphs": [{"style": "HEADING_1", "text": "Goals"}, {"runs": [{"text": "Close the "}, {"text": "EU residency", "bold": true}, {"text": " gap before the "}, {"text": "security review", "link": "https://acme.example/security-review"}, {"text": "."}]}]}
+```
+
+A paragraph's `style` is one of `NORMAL_TEXT` (the default), `TITLE`, `SUBTITLE` and `HEADING_1` to
+`HEADING_6`. A paragraph states its text as `text` or as `runs`, never both, and holds no newline:
+the next line is the next paragraph. Nor does it hold a character real strips from a document's
+text (U+0000–U+0008, U+000C–U+001F, U+E000–U+F8FF), and a `link` carries its scheme. Neither a
+paragraph nor a document's `content` holds a character `insertText` refuses (U+FDD0–U+FDEF).
+
+A run may be, in place of `text`, a `footnote` reference holding its footnote's paragraphs, or a
+`pageBreak`; both stand in a document's body alone. A record stating `paragraphs` may state a
+`header` and a `footer`, each as paragraphs, and a document whose tabs are more than one, or whose
+tab has a title or an icon, states `tabs` instead: each with its `title`, an `icon`, its body as
+`paragraphs`, its own `header` and `footer`, and its child `tabs`. The first tab is `t.0`, as in a
+Doc real makes, an untitled one is `Tab n` by its place, and no two tabs share a title. A title's
+line breaks become one space, as real stores a title.
+
+```json
+{"source_type": "google_drive", "title": "Q1 board pack", "folder": "finance", "author_email": "cfo@acme.com", "created": "2026-01-25T08:00:00Z", "updated": "2026-01-26T08:00:00Z", "tabs": [{"title": "Summary", "paragraphs": [{"runs": [{"text": "Revenue up 12%"}, {"footnote": [{"text": "Unaudited."}]}, {"text": " on Q4."}, {"pageBreak": true}]}], "header": [{"text": "Board only"}], "tabs": [{"title": "Appendix", "paragraphs": [{"text": "Pipeline by region."}]}]}, {"title": "Risks", "paragraphs": [{"text": "EU residency."}]}]}
+```
+
+`documents.get` serves the footnote as real serves one, opening with a space in 10 PT and numbered
+by its reference's place in the tab, and `content` is the text Drive's full-text search reads, its
+tab titles, headers, footers and footnotes with the bodies.
+
+A paragraph in a list states its `list`: the `preset` that names its glyphs, as
+`createParagraphBullets` names a `bulletPreset`, and its `level`, 0 (the default) to 8.
+Consecutive paragraphs of one preset are one list, as that request joins a paragraph to the list
+before it, and a paragraph of another preset, or of no list, ends it. `documents.get` serves each
+item's bullet and indent and the list in the tab's `lists`, and `files.export` writes each item's
+marker, a numbered list counted from 1 at each level.
+
+```json
+{"source_type": "google_drive", "title": "Launch checklist", "folder": "ops", "author_email": "pm@acme.com", "created": "2026-02-02T08:00:00Z", "updated": "2026-02-03T08:00:00Z", "paragraphs": [{"style": "HEADING_1", "text": "Before launch"}, {"text": "Sign off the pricing page", "list": {"preset": "BULLET_CHECKBOX"}}, {"text": "Brief support", "list": {"preset": "BULLET_CHECKBOX"}}, {"text": "Escalation rota", "list": {"preset": "BULLET_CHECKBOX", "level": 1}}]}
+```
+
+An item of `paragraphs`, a cell's included, may be a `table` instead of a paragraph, stated alone:
+its rows, each the same number of cells, each cell its paragraphs. `documents.get` serves it as
+`insertTable` makes one, with real's indices, `files.export` writes it as real does, and Drive's
+full-text search reads each cell's paragraphs as lines of their own. An empty paragraph comes
+before a table that opens a body, a header, a footer or a cell or follows another table, and after
+one that ends it, as real always has one there. A footnote may stand in a cell of the body; a page
+break may not, and a footnote holds no table.
+
+```json
+{"source_type": "google_drive", "title": "Rollout owners", "folder": "ops", "author_email": "pm@acme.com", "created": "2026-02-04T08:00:00Z", "updated": "2026-02-05T08:00:00Z", "paragraphs": [{"text": "Owners by region:"}, {"table": [[[{"runs": [{"text": "Region", "bold": true}]}], [{"runs": [{"text": "Owner", "bold": true}]}]], [[{"text": "EMEA"}], [{"text": "Dana"}, {"text": "backup: Lee"}]], [[{"text": "APAC"}], [{"text": "Kim"}]]]}, {"text": "Escalate to the region's owner."}]}
+```
+
+A corpus states neither a font, a size, a colour or a paragraph's alignment and spacing, nor a
+named range, nor a cell's or a column's style: `documents.batchUpdate` makes the first two (see
+[the write overlay](write-overlay.md)).
+
 ## Load a public dataset
 
 [EnterpriseRAG-Bench](https://github.com/onyx-dot-app/EnterpriseRAG-Bench) is ~500k synthetic

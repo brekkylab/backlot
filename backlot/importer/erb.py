@@ -2750,7 +2750,7 @@ def export_byo(settings, gen_dir, out_dir, *, shard_records=None) -> dict:
             )
     if failures:
         print(
-            f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
+            f"  WARNING: skipped {len(failures)} doc(s). First few: {failures[:5]}",
             file=sys.stderr,
             flush=True,
         )
@@ -2841,7 +2841,7 @@ def _resolve_roster(settings, gen_dir):
     for rec in select_records(gen_dir, excluded):
         records.append(rec)
         if len(records) % 25000 == 0:
-            print(f"  materialized {len(records)} records...", file=sys.stderr, flush=True)
+            print(f"  materialized {len(records)} record(s)...", file=sys.stderr, flush=True)
     # An exclusion this file does not declare means the input changed: `generated_data` has had one
     # commit ever, so the same bench has to yield the same set. Refusing is unconditional — there is
     # no flag to wave it through, because accepting is how a document goes missing with a line on
@@ -2863,7 +2863,7 @@ def _resolve_roster(settings, gen_dir):
             file=sys.stderr,
             flush=True,
         )
-    print(f"  materialized {len(records)} records; loading...", file=sys.stderr, flush=True)
+    print(f"  materialized {len(records)} record(s); loading...", file=sys.stderr, flush=True)
     # (Gmail-header email harvesting was dropped: it scanned every message body — minutes of CPU —
     # for marginal value under the directory-only roster. Message senders come straight from the
     # parsed From: headers, and principals still dedupe by canonical name.)
@@ -2922,7 +2922,7 @@ def import_structured(settings, gen_dir) -> dict:
     _precompute_globals(records)
     if _SLACK_TS_REMAP:
         print(
-            f"  slack: remapped {len(_SLACK_TS_REMAP)} future-dated threads into a realistic "
+            f"  slack: remapped {len(_SLACK_TS_REMAP)} future-dated thread(s) into a realistic "
             f"window (order-preserving)",
             file=sys.stderr,
             flush=True,
@@ -2949,7 +2949,7 @@ def import_structured(settings, gen_dir) -> dict:
     )
     if failures:
         print(
-            f"  WARNING: skipped {len(failures)} docs. First few: {failures[:5]}",
+            f"  WARNING: skipped {len(failures)} doc(s). First few: {failures[:5]}",
             file=sys.stderr,
             flush=True,
         )
@@ -2990,7 +2990,7 @@ def run() -> int:
     """
     settings, gen_dir = _fetch_and_seed_roster()
     counts = import_structured(settings, gen_dir)
-    print(f"Loaded {sum(counts.values())} documents into {settings.db_path}")
+    print(f"Loaded {sum(counts.values())} document(s) into {settings.db_path}")
     for src, n in counts.items():
         print(f"  {src:14s} {n}")
     print(f"Org: {settings.org_name} ({settings.org_domain}) · tokens -> {settings.tokens_path}")
@@ -3011,7 +3011,7 @@ def run_export(out_dir: Path, *, shard_records: int | None = None) -> int:
         if shard_records
         else f"{out_dir}/corpus.jsonl"
     )
-    print(f"Converted {sum(counts.values())} documents -> {dest}")
+    print(f"Converted {sum(counts.values())} document(s) -> {dest}")
     for src, n in counts.items():
         print(f"  {src:14s} {n}")
     print(

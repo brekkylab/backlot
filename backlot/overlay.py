@@ -124,9 +124,11 @@ def _source_ddl(conn: sqlite3.Connection, source_type: str) -> list[str]:
         _mirror_ddl(conn, names["acl"]),
         # An overwrite of ONE column of a row that may live in either database. A corpus row is a
         # dozen columns and copying it to change one only moves the question of which copy is
-        # authoritative; this says exactly what changed.
+        # authoritative; this says exactly what changed. `value` is declared with no type so it
+        # keeps the one it was written with: TEXT affinity would store a patched INTEGER column as
+        # its digits, and a digit string sorts after every integer the corpus side holds.
         f"CREATE TABLE IF NOT EXISTS ov.{names['patch']} "
-        f"({key_decl}, field TEXT NOT NULL, value TEXT, PRIMARY KEY ({key_cols}, field))",
+        f"({key_decl}, field TEXT NOT NULL, value, PRIMARY KEY ({key_cols}, field))",
         # A corpus row cannot be removed, so a delete is subtracted at read time.
         f"CREATE TABLE IF NOT EXISTS ov.{names['tombstone']} "
         f"({key_decl}, PRIMARY KEY ({key_cols}))",
@@ -139,6 +141,9 @@ def _source_ddl(conn: sqlite3.Connection, source_type: str) -> list[str]:
         # of which is worth reimplementing in Python.
         f"CREATE VIRTUAL TABLE IF NOT EXISTS ov.{names['fts']} "
         f"USING fts5({fts_decl}, {fts_text}, tokenize='porter unicode61')",
+        # The tables holding parts of a document, mirrored like the document table and read by
+        # `store.parts_for`.
+        *(_mirror_ddl(conn, t) for t in store.SATELLITES.get(source_type, {})),
     ]
 
 

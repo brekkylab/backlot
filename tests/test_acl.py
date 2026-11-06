@@ -1,9 +1,27 @@
 """ACL resolution + visibility, asserted against the SAMPLE corpus's generated ACL."""
 
+import json
+
+import pytest
 import yaml
 
 from backlot import store
 from tests._helpers import client_for, gql
+
+_ADMIN = "admin-service-token"
+
+
+def _sent(client, path, query, authorization, via, **variables):
+    """``query`` sent to ``path`` as ``via`` names: ``POST`` as JSON (:func:`gql`), ``GET`` in the
+    query string and, on Fireflies, ``form`` as a form, the last two beside the preflight header
+    (`backlot.graphql.apollo_http.csrf_refusal`)."""
+    if via == "POST":
+        return gql(client, path, query, authorization, **variables)
+    fields = {"query": query, **({"variables": json.dumps(variables)} if variables else {})}
+    headers = {"Authorization": authorization, "apollo-require-preflight": "1"}
+    if via == "GET":
+        return client.get(path, params=fields, headers=headers)
+    return client.post(path, data=fields, headers=headers)
 
 
 def _visible(db, acl, token, source):
@@ -165,24 +183,30 @@ def test_linear_team_counts_are_acl_scoped(db, acl, tokens):
 # offline: an enumerable oracle, not merely a confirmable one.
 
 
-def _gql(client, query, token):
-    return gql(client, "/linear/graphql", query, token).json()
+def _gql(client, query, token, via="POST"):
+    """``query`` sent as ``via`` names it, a method and a path after `/linear` where not
+    `/graphql`: another path Express hands Apollo Server (`backlot.routers.linear.routes_to_apollo`)
+    reaches the resolvers too."""
+    method, _, path = via.partition(" ")
+    return _sent(client, f"/linear{path or '/graphql'}", query, token, method).json()
 
 
-def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settings, tokens):
+@pytest.mark.parametrize("via", ["POST", "GET", "POST /GRAPHQL/"])
+def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settings, tokens, via):
     """`blackops` is granted to hana only, so its "Triage" state, in no other team, must fail for
-    ava exactly as an absent id would — and must still work for hana, proving the id is real and
-    the difference is the ACL."""
+    ava exactly as an absent id would — and must still work for hana and the admin, proving the id
+    is real and the difference is the ACL, whichever way and to whichever path the document is
+    sent."""
     from backlot import synth
 
     with client_for(sample_settings) as client:
         state_id = synth.linear_state_id("Triage", "blackops")
         q = '{ workflowState(id: "%s") { name } }' % state_id
-        hidden = _gql(client, q, tokens["ava@acme.com"])
-        granted = _gql(client, q, tokens["hana@acme.com"])
+        hidden = _gql(client, q, tokens["ava@acme.com"], via)
         assert "data" not in hidden or hidden["data"] is None
         assert "Entity not found" in hidden["errors"][0]["message"]
-        assert granted["data"]["workflowState"]["name"] == "Triage"
+        for granted in (tokens["hana@acme.com"], _ADMIN):
+            assert _gql(client, q, granted, via)["data"]["workflowState"]["name"] == "Triage"
 
         # ...and indistinguishable from an id that genuinely does not exist.
         absent = _gql(
@@ -190,11 +214,9 @@ def test_linear_by_id_roots_do_not_leak_entities_off_hidden_issues(sample_settin
             '{ workflowState(id: "%s") { name } }'
             % synth.linear_state_id("No Such State", "engineering"),
             tokens["ava@acme.com"],
+            via,
         )
-        assert (
-            absent["errors"][0]["message"].split("id=")[0]
-            == hidden["errors"][0]["message"].split("id=")[0]
-        )
+        assert absent == hidden
 
 
 def test_linear_by_id_roots_still_answer_for_visible_entities(sample_settings, tokens):
@@ -361,8 +383,8 @@ def test_linear_hidden_assignee_is_not_nameable_by_id(sample_settings, tokens):
 # both the unfiltered list and every filter have to agree about hiding it.
 
 
-def _ff_gql(client, query, token, **variables):
-    return gql(client, "/fireflies/graphql", query, f"Bearer {token}", **variables).json()
+def _ff_gql(client, query, token, via="POST", **variables):
+    return _sent(client, "/fireflies/graphql", query, f"Bearer {token}", via, **variables).json()
 
 
 def test_fireflies_store_reads_are_acl_scoped(db, acl, tokens, keys):
@@ -377,13 +399,15 @@ def test_fireflies_store_reads_are_acl_scoped(db, acl, tokens, keys):
         )
 
 
-def test_fireflies_transcripts_list_hides_denied_meetings(sample_settings, tokens):
+@pytest.mark.parametrize("via", ["POST", "GET", "form"])
+def test_fireflies_transcripts_list_hides_denied_meetings(sample_settings, tokens, via):
     with client_for(sample_settings) as client:
         q = "{ transcripts(limit: 50) { title } }"
-        ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
-        hana = _ff_gql(client, q, tokens["hana@acme.com"])["data"]["transcripts"]
+        ava = _ff_gql(client, q, tokens["ava@acme.com"], via)["data"]["transcripts"]
         assert "Board pre-read walkthrough" not in [t["title"] for t in ava]
-        assert "Board pre-read walkthrough" in [t["title"] for t in hana]
+        for granted in (tokens["hana@acme.com"], _ADMIN):
+            seen = _ff_gql(client, q, granted, via)["data"]["transcripts"]
+            assert "Board pre-read walkthrough" in [t["title"] for t in seen]
 
 
 def test_fireflies_transcript_by_id_denies_rather_than_reveals(sample_settings, tokens):
@@ -418,7 +442,7 @@ def test_fireflies_filters_do_not_leak_a_denied_meeting(sample_settings, tokens)
             'keyword: "Board pre-read", scope: "title"',
         ):
             q = "{ transcripts(%s, limit: 50) { title } }" % args
-            ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"]
+            ava = _ff_gql(client, q, tokens["ava@acme.com"])["data"]["transcripts"] or []
             assert "Board pre-read walkthrough" not in [t["title"] for t in ava], args
             hana = _ff_gql(client, q, tokens["hana@acme.com"])["data"]["transcripts"]
             assert "Board pre-read walkthrough" in [t["title"] for t in hana], args

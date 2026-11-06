@@ -353,6 +353,53 @@ def _internal_error(context) -> GraphQLError:
     )
 
 
+def _not_in_team(context) -> GraphQLError:
+    """Real's answer to a `user` id that names nobody, an email address among them, the caller's
+    own too: the null stands and a ``not_in_team`` field error goes beside it, the id read as
+    naming someone outside the caller's team (api.fireflies.ai, 2026-10-27)."""
+    return GraphQLError(
+        "You do not have permissions for this team",
+        extensions={
+            "code": "not_in_team",
+            "correlationId": _correlation_id(context),
+            "status": 403,
+            "helpUrls": ["https://docs.fireflies.ai/miscellaneous/error-codes#not_in_team"],
+        },
+    )
+
+
+def _channel_not_found(context) -> GraphQLError:
+    """Real's answer to a `transcripts(channel_id:)` id that names no channel: the null stands and
+    an ``object_not_found`` field error goes beside it, `Channel` in its metadata (api.fireflies.ai,
+    2026-10-27)."""
+    return GraphQLError(
+        "Channel not found",
+        extensions={
+            "code": "object_not_found",
+            "correlationId": _correlation_id(context),
+            "status": 404,
+            "metadata": {"objectType": "Channel"},
+            "helpUrls": ["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"],
+        },
+    )
+
+
+def _object_not_found(context) -> GraphQLError:
+    """Real's answer to a `transcript` id that names nothing: the null stands and an
+    ``object_not_found`` field error goes beside it, the object type in its metadata
+    (api.fireflies.ai, 2026-10-27)."""
+    return GraphQLError(
+        "Transcript not found",
+        extensions={
+            "code": "object_not_found",
+            "correlationId": _correlation_id(context),
+            "status": 404,
+            "metadata": {"objectType": "Transcript"},
+            "helpUrls": ["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"],
+        },
+    )
+
+
 # validator.js's patterns, read as JavaScript reads them: `\s` is JavaScript's (no \x1c-\x1f or
 # \x85, and a BOM), and a range ending at \uffff takes either half of a surrogate pair.
 _JS_SPACE = "\t\n\x0b\x0c\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
@@ -556,6 +603,17 @@ def resolve_transcripts(
         end = start + 86399
         to_ts = end if to_ts is None else min(to_ts, end)
 
+    # An empty `channel_id` is read as none: real answered `""` with the page it answers with no
+    # `channel_id` and `x` with `Channel not found`, but `x` beside `limit: 51` with the `limit`
+    # error (api.fireflies.ai, 2026-10-28) and beside a `date` past `_DATE_SERVED` with
+    # `_internal_error` (2026-10-30). A channel holding no meeting this caller can read draws
+    # `Channel not found` too, as a transcript the caller cannot read draws `Transcript not found`.
+    channel_id = channel_id or None
+    if channel_id is not None and not store.fireflies_channel_exists(
+        ctx["conn"], channel_id, ctx.get("visible_ids")
+    ):
+        raise _channel_not_found(ctx)
+
     rows = store.list_fireflies_transcripts(
         ctx["conn"],
         channel=channel_id,
@@ -585,7 +643,9 @@ def _email_for_user_id(ctx, user_id):
 def resolve_transcript(_root, info, id):
     ctx = _ctx(info)
     row = store.fireflies_transcript_by_id(ctx["conn"], id, ctx.get("visible_ids"))
-    return _transcript(row, info) if row else None
+    if row is None:
+        raise _object_not_found(ctx)
+    return _transcript(row, info)
 
 
 def resolve_transcript_sentences(transcript, info, **_ignored):
@@ -658,14 +718,15 @@ def resolve_channel_members(channel, info, **_ignored):
 
 def resolve_user(_root, info, id=None):
     ctx = _ctx(info)
-    if id is None:
-        # No id -> the authenticated user, Fireflies' `user` default. An admin/service token is
-        # not a person, so it has no user to return.
+    if not id:
+        # No id, or an empty one (api.fireflies.ai, 2026-10-27) -> the authenticated user,
+        # Fireflies' `user` default. An admin/service token is not a person, so it has no user to
+        # return.
         email = ctx.get("caller_email")
         return _user(email) if email else None
-    email = _email_for_user_id(ctx, id) or (id if "@" in str(id) else None)
+    email = _email_for_user_id(ctx, id)
     if not email:
-        return None
+        raise _not_in_team(ctx)
     row = store.get_user(ctx["conn"], email)
     return _user(email, row["display_name"] if row else None)
 
@@ -709,11 +770,16 @@ RESOLVERS = {
 }
 
 
+# Fireflies' one other root type, which its introspection named beside `Query` with no
+# subscription type when measured on 2026-10-25 (UTC). Backlot serves no mutation.
+ROOTS = ("Mutation",)
+
+
 def build_engine():
     """The Fireflies engine, over the SDL beside this module."""
     from backlot.graphql import engine
 
-    return engine.from_sdl(__file__, "fireflies", RESOLVERS)
+    return engine.from_sdl(__file__, "fireflies", RESOLVERS, roots=ROOTS)
 
 
 __all__ = [

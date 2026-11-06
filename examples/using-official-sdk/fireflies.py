@@ -181,7 +181,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
             for spk in t["analytics"]["speakers"]:
                 print(
                     f"      {spk['name'] or '(unattributed)'}: {spk['duration']}s "
-                    f"({spk['duration_pct']}%), {spk['word_count']} words"
+                    f"({spk['duration_pct']}%), {spk['word_count']} word(s)"
                 )
             for a in t["meeting_attendees"]:
                 where = f" @ {a['location']}" if a["location"] else ""
@@ -225,5 +225,7 @@ with serve_or_connect(CORPUS, url=args.url) as s:
             else sentence["text"]
             for sentence in one["sentences"]
         )
-        print(f"\nrebuilt transcript ({len(rebuilt)} chars) — this is what full-text search sees:")
+        print(
+            f"\nrebuilt transcript ({len(rebuilt)} char(s)) — this is what full-text search sees:"
+        )
         print("  " + rebuilt.replace("\n", "\n  "))

@@ -32,6 +32,7 @@ from tests._helpers import (
     sent_as,
     served_id,
     tiny_corpus,
+    tok,
 )
 
 
@@ -1283,7 +1284,7 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers an `id`, `ancestor`
     or `parent` clause, alone and beside `type`, `space`, a `~` term and each other, each of those
     five and `label` negated, `space.key`, clauses joined by `or`, grouped and negated as a group,
-    clauses on fields it does not read, and `siteSearch ~`.
+    `created`, `lastmodified` and `title` clauses, and `siteSearch ~`.
 
     Not SAMPLE: its one child sits directly under its parent, so an `ancestor` clause would select
     the same rows as `parent`, and a `~` term that misses a chain's middle could not be sent."""
@@ -1299,8 +1300,22 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     settings = tiny_corpus(
         tmp_path,
         [
-            {**page, "doc_id": "q-gp", "title": "Guide"},
-            {**page, "doc_id": "q-c", "title": "Child", "parent": "q-gp", "labels": ["pager"]},
+            {
+                **page,
+                "doc_id": "q-gp",
+                "title": "Guide",
+                "created": "2024-05-12T02:56:26Z",
+                "updated": "2024-05-12T02:56:26Z",
+            },
+            {
+                **page,
+                "doc_id": "q-c",
+                "title": "Child",
+                "parent": "q-gp",
+                "labels": ["pager"],
+                "created": "2024-03-06T01:34:10Z",
+                "updated": "2024-03-06T01:34:10Z",
+            },
             {
                 **page,
                 "doc_id": "q-gc",
@@ -1308,9 +1323,26 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
                 "parent": "q-c",
                 "content": "Deep.",
                 "labels": ["oncall"],
+                "created": "2024-06-15T23:23:54Z",
+                "updated": "2024-06-15T23:23:54Z",
             },
-            {**page, "doc_id": "q-o", "title": "Other", "space": "ops"},
-            {**page, "doc_id": "q-b", "title": "Post", "space": "ops", "subtype": "blogpost"},
+            {
+                **page,
+                "doc_id": "q-o",
+                "title": "Other",
+                "space": "ops",
+                "created": "2024-07-24T22:28:22Z",
+                "updated": "2024-07-24T22:28:22Z",
+            },
+            {
+                **page,
+                "doc_id": "q-b",
+                "title": "Post",
+                "space": "ops",
+                "subtype": "blogpost",
+                "created": "2024-05-12T04:26:12Z",
+                "updated": "2024-05-12T04:26:12Z",
+            },
         ],
     )
     eng = synth.confluence_space_key("eng")
@@ -1438,10 +1470,10 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + ' and label = "pag\\er"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
         (three + " and (id={Guide} or id not in ({Guide},{Child}))", {"Guide", "Grand"}),
-        # beside a field this route does not read, which held for each of the three
+        # beside a field this route now reads, the admin's `currentUser()` matching nothing
         (three + " and lastmodified > 2020-01-01", {"Guide", "Child", "Grand"}),
         (three + ' and created >= "2020-01-01"', {"Guide", "Child", "Grand"}),
-        (three + " and creator = currentUser()", {"Guide", "Child", "Grand"}),
+        (three + " and creator = currentUser()", set()),
         # a function value on a field this route reads names no row here: real answered
         # none for each of the single-value calls, and `recentlyViewedContent` expands to
         # no ids, since the server keeps no recently viewed content
@@ -1456,9 +1488,43 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + " and id in recentlyViewedContent(5)", set()),
         ("id in ({Guide}, recentlyViewedContent(5))", {"Guide"}),
         (three + " and not lastmodified > 2999-01-01", {"Guide", "Child", "Grand"}),
-        ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide", "Child"}),
-        (three + ' and (created >= now("-4w") or id={Guide})', {"Guide", "Child", "Grand"}),
-        (three + ' and not (id={Guide} or created >= now("-4w"))', set()),
+        ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide"}),
+        (three + ' and (created >= now("-4w") or id={Guide})', {"Guide"}),
+        (three + ' and not (id={Guide} or created >= now("-4w"))', {"Child", "Grand"}),
+        # `created` and `lastmodified` on their seconds, a bare date its whole UTC day
+        (three + ' and created = "2024-05-12"', {"Guide"}),
+        (three + ' and created = "2024/05/12"', {"Guide"}),
+        (three + ' and created >= "2024/05/12"', {"Guide", "Grand"}),
+        (three + ' and created > "2024-06-01"', {"Grand"}),
+        (three + ' and created < "2024-06-01"', {"Guide", "Child"}),
+        (three + ' and created <= "2024-03-06"', {"Child"}),
+        (three + ' and created >= "2024-06-15"', {"Grand"}),
+        (three + ' and created > "2024-06-15 12:00"', {"Grand"}),
+        (three + ' and created > "2024-06-15 23:59"', set()),
+        (three + ' and created = "2024-06-15 23:23:54"', {"Grand"}),
+        (three + ' and created != "2024-05-12"', {"Child", "Grand"}),
+        (three + " and lastmodified > 2999-01-01", set()),
+        (three + " and not lastmodified > 2020-01-01", set()),
+        # relative dates, each boundary after the chain's 2024 dates or ten years back
+        (three + ' and created > now("-1d")', set()),
+        (three + ' and created > now("-1y")', set()),
+        (three + ' and created > now("-10y")', {"Guide", "Child", "Grand"}),
+        (three + " and created > startOfYear()", set()),
+        (three + ' and created > startOfYear("-10y")', {"Guide", "Child", "Grand"}),
+        (three + ' and created > startOfMonth("-60d")', set()),
+        (three + ' and created > startOfMonth("-2M")', set()),
+        (three + ' and created > startOfDay("-50d")', set()),
+        (three + " and created > startOfDay()", set()),
+        (three + ' and created > startOfWeek("-7w")', set()),
+        (three + ' and created > endOfMonth("-1M")', set()),
+        (three + ' and created > endOfMonth("-120M")', {"Guide", "Child", "Grand"}),
+        # `title` under `=` and `in (...)`: the whole title, case aside
+        (three + ' and title = "Guide"', {"Guide"}),
+        (three + ' and title != "Guide"', {"Child", "Grand"}),
+        (three + ' and title in ("Guide", "Grand")', {"Guide", "Grand"}),
+        (three + ' and title not in ("Guide")', {"Child", "Grand"}),
+        (three + ' and title = "guide"', {"Guide"}),
+        (three + ' and title = "My first space"', set()),
     ]
     with client_for(settings, reload=True) as c:
         written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
@@ -1492,6 +1558,116 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     assert answered == {template: (want, len(want)) for template, want in rows}
     # read as `text ~` is, which over this chain is not real's answer: see `_CQL_READABLE`
     assert {x["title"] for x in site["results"]} == {"Grand"}
+
+
+def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
+    """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers a `creator` or
+    `contributor` clause: the author's account id as the content reads serve it, and
+    `currentUser()` the caller's own, where the admin's matches nothing because the admin token
+    carries no email. A new function because no existing test sends the search as a user: the
+    structured-clause test above sends it as the admin alone."""
+    page = {
+        "source_type": "confluence",
+        "space": "eng",
+        "content": "Body.",
+        "visibility": "public",
+    }
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                **page,
+                "doc_id": "q-gp",
+                "title": "Guide",
+                "author_email": "ava@acme.com",
+                "created": "2024-05-12T02:56:26Z",
+                "updated": "2024-05-12T02:56:26Z",
+            },
+            {
+                **page,
+                "doc_id": "q-c",
+                "title": "Child",
+                "parent": "q-gp",
+                "author_email": "mia@acme.com",
+                "created": "2024-03-06T01:34:10Z",
+                "updated": "2024-03-06T01:34:10Z",
+            },
+            {
+                **page,
+                "doc_id": "q-gc",
+                "title": "Grand",
+                "parent": "q-c",
+                "author_email": "ava@acme.com",
+                "created": "2024-06-15T23:23:54Z",
+                "updated": "2024-06-15T23:23:54Z",
+            },
+            {
+                **page,
+                "doc_id": "q-o",
+                "title": "Other",
+                "space": "ops",
+                "author_email": "priya@acme.com",
+                "created": "2024-07-24T22:28:22Z",
+                "updated": "2024-07-24T22:28:22Z",
+            },
+            {
+                **page,
+                "doc_id": "q-b",
+                "title": "Post",
+                "space": "ops",
+                "subtype": "blogpost",
+                "author_email": "ava@acme.com",
+                "created": "2024-05-12T04:26:12Z",
+                "updated": "2024-05-12T04:26:12Z",
+            },
+        ],
+    )
+    rows = [
+        ("ava@acme.com", "creator = currentUser()", {"Guide", "Grand", "Post"}),
+        ("ava@acme.com", "contributor = currentUser()", {"Guide", "Grand", "Post"}),
+        ("ava@acme.com", 'creator = "{mia}"', {"Child"}),
+        ("ava@acme.com", 'creator = "{ava}"', {"Guide", "Grand", "Post"}),
+        ("ava@acme.com", 'creator = "nobody"', set()),
+        ("ava@acme.com", 'creator in ("{ava}", "{mia}")', {"Guide", "Child", "Grand", "Post"}),
+        ("ava@acme.com", 'creator != "{ava}"', {"Child", "Other"}),
+        ("ava@acme.com", 'creator not in ("{ava}")', {"Child", "Other"}),
+        ("ava@acme.com", "type=page and creator = currentUser()", {"Guide", "Grand"}),
+        ("ava@acme.com", 'contributor = "{mia}"', {"Child"}),
+        ("ava@acme.com", 'contributor != "{ava}"', {"Child", "Other"}),
+        ("ava@acme.com", "type=page and not creator = currentUser()", {"Child", "Other"}),
+        ("ava@acme.com", 'creator = "{ava}" and title = "Guide"', {"Guide"}),
+        ("ava@acme.com", 'creator = currentUser() and title = "Guide"', {"Guide"}),
+        ("mia@acme.com", "creator = currentUser()", {"Child"}),
+        ("priya@acme.com", "creator = currentUser()", {"Other"}),
+        ("admin", "creator = currentUser()", set()),
+        ("admin", 'creator = "{ava}"', {"Guide", "Grand", "Post"}),
+    ]
+    with client_for(settings, reload=True) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        headers = {
+            "admin": {"Authorization": f"Bearer {written['admin_token']}"},
+            "ava@acme.com": {"Authorization": f"Bearer {tok(written, 'ava@acme.com')}"},
+            "mia@acme.com": {"Authorization": f"Bearer {tok(written, 'mia@acme.com')}"},
+            "priya@acme.com": {"Authorization": f"Bearer {tok(written, 'priya@acme.com')}"},
+        }
+        listed = c.get("/atlassian/wiki/rest/api/content", headers=headers["admin"]).json()
+        ids = {r["title"]: r["id"] for r in listed["results"]}
+        accounts = {}
+        for name, title in (("ava", "Guide"), ("mia", "Child")):
+            read = c.get(
+                f"/atlassian/wiki/rest/api/content/{ids[title]}",
+                headers=headers["admin"],
+                params={"expand": "history"},
+            ).json()
+            accounts[name] = read["history"]["createdBy"]["accountId"]
+        answered = {}
+        for caller, template, _ in rows:
+            cql = template.format(**accounts)
+            r = c.get(
+                "/atlassian/wiki/rest/api/search", headers=headers[caller], params={"cql": cql}
+            ).json()
+            answered[(caller, template)] = ({x["title"] for x in r["results"]}, r["totalSize"])
+    assert answered == {(caller, cql): (want, len(want)) for caller, cql, want in rows}
 
 
 def test_confluence_cql_search_reads_its_rows_once_in_a_needed_terms_order(tmp_path, monkeypatch):
@@ -1686,7 +1862,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("space=OPS", {"Shut"}, set()),
         ("label=runbook", {"Guide"}, {"Guide"}),
         ("space=NOPE", set(), set()),
-        ('title="Guide"', set(), set()),
+        ('title="Guide"', {"Guide"}, {"Guide"}),  # `title` under `=` is read: the whole title
         ("type != blogpost", {"Guide", "Shut"}, {"Guide"}),
         (f'space != "{eng}"', {"Shut"}, set()),
         (["type=page", f"space={eng}"], {"Guide", "Shut"}, {"Guide"}),
@@ -4047,6 +4223,8 @@ _REFUSED, _FAILED = (
 
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
 _ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
+_NOT_PARSED_BODY = errors_atlassian.cql_not_parsed().body
+_OPERATOR_BODY = errors_atlassian.cql_operator_not_supported(">", "created").body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -4077,6 +4255,8 @@ _CQL_PAGE_ROWS = [
     ("&limit=1&cursor={c1}&cursor={c2}", [2], 2),
     ("&limit=2&cursor=abc", (400, _REFUSED), None),
     ("%20and%20title%20~%20%22a%5C%5C%22&limit=2&cursor=abc", (400, _ESCAPED_END_QUOTE), None),
+    ("%20and%20created%20%3E%20%22x%22&limit=2&cursor=abc", (400, _NOT_PARSED_BODY), None),
+    ("%20and%20created%20%3E%2020260910&limit=2&cursor=abc", (400, _OPERATOR_BODY), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=WyJcdDEiXQ%3D%3D_h_W10%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D_h_abc", (400, _REFUSED), None),
@@ -9398,6 +9578,9 @@ _CQL_PARSE_ROWS = [
             ('created>now("-1d")', 'created > now ( "-1d" )'),
             ("created>startOfDay()", "created > startOfDay ( )"),
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
+            ('created>"2026-09-10 12:00"', 'created > "2026-09-10 12:00"'),
+            ("creator=currentUser()", "creator = currentUser ( )"),
+            ('creator="ava@acme.com"', 'creator = "ava@acme.com"'),
             ("id in (1,2)", "id in ( 1 , 2 )"),
             ("label = currentUser()", "label = currentUser ( )"),
             ("creator = currentUser()", "creator = currentUser ( )"),
@@ -9503,6 +9686,51 @@ _CQL_PARSE_ROWS = [
             ("type=page 5", _CQL_NOT_PARSED),
             ("id = -1", _CQL_NOT_PARSED),
             ("created > -1d", _CQL_NOT_PARSED),
+            ('created > "x"', _CQL_NOT_PARSED),
+            ('created > "20260910"', _CQL_NOT_PARSED),
+            ('created > "2026-13-45"', _CQL_NOT_PARSED),
+            ('created > "10/09/2026"', _CQL_NOT_PARSED),
+            ('created > "2026-09-10T12:00"', _CQL_NOT_PARSED),
+            ('created > "2026-02-30"', _CQL_NOT_PARSED),
+            (
+                "created > 20260910",
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created in ("2026-09-15")',
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created not in ("2026-09-15")',
+                "Operator 'notin' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and lastmodified in ("2026-09-15")',
+                "Operator 'in' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created in ("x")',
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            ('type=page and created in ("2026-09-15") and created > "x"', _CQL_NOT_PARSED),
+            ('type=page and created > 20260910 and created > "x"', _CQL_NOT_PARSED),
+            (
+                'type=page and created > 20260910 and created in ("2026-09-15")',
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'created > startOfMonth("-1")',
+                "Invalid relative date : -1",
+            ),
+            ("created > startOfMonth(-1M)", _CQL_NOT_PARSED),
+            ("created > startOfMonth(-1)", _CQL_NOT_PARSED),
+            ('created > startOfMonth("1w", "2d")', _CQL_NOT_PARSED),
+            (
+                'created > startOfMonth("now()")',
+                "Invalid relative date : now()",
+            ),
+            ('lastmodified > "x"', _CQL_NOT_PARSED),
+            ('created > "2026-09-10 25:00"', _CQL_NOT_PARSED),
             ("title~a..b", _CQL_NOT_PARSED),
             ("title~a.", _CQL_NOT_PARSED),
             ("created>\u0662\u0660\u0662\u0666-01-01", _CQL_NOT_PARSED),
@@ -9538,6 +9766,7 @@ _CQL_PARSE_ROWS = [
                 "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
             ),
             ("(type=page", "Missing closing parenthesis near field (()"),
+            ("created>foo()", "Unable to find query function 'foo()'"),
             ("label = foo()", "Unable to find query function 'foo()'"),
             ("label = Foo()", "Unable to find query function 'Foo()'"),
             ("space.key = foo()", "Unable to find query function 'foo()'"),

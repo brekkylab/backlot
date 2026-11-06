@@ -126,6 +126,17 @@ def _from_end(offset: int | None, limit: int, floor: int, total: int) -> int:
     return max(floor, total - limit) if offset is None else offset
 
 
+def _check_slice_arguments(args: dict) -> None:
+    _slice(args.get("first"), args.get("after"), args.get("last"), args.get("before"))
+
+
+def _check_connection_arguments(args: dict) -> None:
+    _slice(args.get("first"), args.get("after"), args.get("last"), args.get("before"))
+    if args.get("filter") is None:
+        order_by = args.get("orderBy") if "orderBy" in args else args.get("order_by")
+        _reject_sort_with_order_by(args.get("sort"), order_by)
+
+
 def _connection(nodes: list, offset: int, has_next: bool, *, backward: bool = False) -> dict:
     """A Relay connection page whose cursors name the first and the last node it serves, as real's
     do: real's are node ids, these a node's one-based position, which ``after`` reads as the offset
@@ -1174,6 +1185,19 @@ def resolve_search_issues(
     return page
 
 
+def _check_search_issues_arguments(args: dict) -> None:
+    term = args.get("term")
+    if not term:
+        raise argument_validation_error()
+    team_id = args.get("teamId") if "teamId" in args else args.get("team_id")
+    if team_id is not None:
+        versioned = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+        nil_or_max = r"0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12}"
+        if not re.fullmatch(f"{versioned}|{nil_or_max}", team_id, re.IGNORECASE):
+            raise argument_validation_error()
+    _slice(args.get("first"), args.get("after"), args.get("last"), args.get("before"))
+
+
 def resolve_documents(_root, info, first=None, after=None, last=None, before=None, **_ignored):
     """Always empty: a corpus carries no Linear documents. A workspace without any answered this
     page, its cursors null (measured 2026-10-22)."""
@@ -1997,6 +2021,15 @@ def resolve_issue_labels(
         offset + limit < len(nodes),
         backward=_backward(first, last, before),
     )
+
+
+resolve_issues.check_arguments = _check_connection_arguments
+resolve_users.check_arguments = _check_connection_arguments
+resolve_teams.check_arguments = _check_slice_arguments
+resolve_comments.check_arguments = _check_slice_arguments
+resolve_documents.check_arguments = _check_slice_arguments
+resolve_team_memberships_root.check_arguments = _check_slice_arguments
+resolve_search_issues.check_arguments = _check_search_issues_arguments
 
 
 RESOLVERS = {

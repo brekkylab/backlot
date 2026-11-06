@@ -3139,7 +3139,7 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
 
 
 def test_linear_refused_root_arguments_answered_ahead_of_by_id_miss(client, admin_h):
-    """The refusal and location, as _PlainObjectExecution.execute_fields records them. Two
+    """The refusal and location, as Engine._refused_root_arguments records them. Two
     not-founds answer the first in document order."""
     cases = (
         (
@@ -3167,6 +3167,18 @@ def test_linear_refused_root_arguments_answered_ahead_of_by_id_miss(client, admi
             27,
         ),
         (
+            '{ issue(id: "nope") { id } searchIssues(term: "x", teamId: "ENG") { nodes { id } } }',
+            ["searchIssues"],
+            "Argument Validation Error",
+            28,
+        ),
+        (
+            '{ issue(id: "nope") { id } teams { nodes { issues(first: 1, last: 1) { nodes { id } } } } }',
+            ["issue"],
+            "Entity not found: Issue",
+            3,
+        ),
+        (
             '{ issue(id: "nope") { id } team(id: "nope") { id } }',
             ["issue"],
             "Entity not found: Issue",
@@ -3176,10 +3188,25 @@ def test_linear_refused_root_arguments_answered_ahead_of_by_id_miss(client, admi
     for query, path, message, column in cases:
         body = gql(client, query, admin_h).json()
         assert body["data"] is None
+        assert [e["path"] for e in body["errors"]] == [path]
         err = body["errors"][0]
-        assert err["path"] == path
         assert err["message"] == message
         assert err["locations"][0]["column"] == column
+
+    body = {
+        "query": 'query($t: String!) { issue(id: "nope") { id } searchIssues(term: $t) { nodes { id } } }',
+        "variables": {"t": "a\ud800b"},
+    }
+    surrogate = client.post(
+        "/linear/graphql",
+        content=json.dumps(body),
+        headers={**admin_h, "Content-Type": "application/json"},
+    ).json()
+    assert surrogate["data"] is None
+    assert [e["path"] for e in surrogate["errors"]] == [["issue"]]
+    err = surrogate["errors"][0]
+    assert err["message"] == "Entity not found: Issue"
+    assert err["locations"][0]["column"] == 22
 
 
 # --- Linear relations / children / attachments / releases -----------------------

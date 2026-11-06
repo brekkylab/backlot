@@ -4020,8 +4020,8 @@ def _cql_parse(
 
     Read without recursion, with a stack of the levels the groups open, so no depth of groups
     reaches Python's recursion limit. Real answered `type=page` in 1000 pairs of parentheses, and
-    `type=page` followed by 1000 `or id=1`, each sent unescaped, with the pages `type=page` alone
-    answered (Confluence Cloud, 2026-11-05)."""
+    `type=page` followed by 800 `or id=1`, each sent percent-encoded, with the pages `type=page`
+    alone answered (Confluence Cloud, 2026-11-06)."""
     at = 0
     if now is None:
         now = datetime.now(timezone.utc)

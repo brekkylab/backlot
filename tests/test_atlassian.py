@@ -1852,8 +1852,7 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
     eng, ops = synth.confluence_space_key("eng"), synth.confluence_space_key("ops")
     rows = [
         # cql, the titles the admin is served, the titles ava is served. A list goes out as a
-        # repeated `cql`, read from its first value as `cql_required` records, and bytes go out
-        # after `cql=` as written.
+        # repeated `cql`, read from its first value as `cql_required` records.
         ("type=page", {"Guide", "Shut"}, {"Guide"}),
         ("type=blogpost", {"Post"}, {"Post"}),
         (f"space={eng}", {"Guide", "Post"}, {"Guide", "Post"}),
@@ -1872,7 +1871,6 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("(id=1 or " * 500 + "type=page" + ")" * 500, {"Guide", "Shut"}, {"Guide"}),
         ("type=page" + " and not (id=1" * 380 + ")" * 380, {"Guide", "Shut"}, {"Guide"}),
         ("type=page" + " or id=1" * 800, {"Guide", "Shut"}, {"Guide"}),
-        (b"type=page" + b"+or+id=1" * 1000, {"Guide", "Shut"}, {"Guide"}),
     ]
     with client_for(settings, reload=True) as c:
         written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
@@ -1882,11 +1880,10 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
             "ava": {"Authorization": f"Bearer {tokens['ava@acme.com']}"},
         }
         for cql, admin, ava in rows:
-            url, params = "/atlassian/wiki/rest/api/search", {"cql": cql}
-            if isinstance(cql, bytes):
-                url, params = f"{url}?cql={cql.decode()}", None
             for who, want in (("admin", admin), ("ava", ava)):
-                r = c.get(url, headers=callers[who], params=params).json()
+                r = c.get(
+                    "/atlassian/wiki/rest/api/search", headers=callers[who], params={"cql": cql}
+                ).json()
                 assert {x["title"] for x in r["results"]} == want, (cql, who)
                 assert r["totalSize"] == len(want), (cql, who)
 

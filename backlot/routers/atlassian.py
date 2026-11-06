@@ -1999,7 +1999,7 @@ async def confluence_cql_search(request: Request):
     a `~` operand matches the rows a keyword search over the ACL-visible corpus finds, and
     `space`, `type`, `label`, `id`, `ancestor` and `parent` match on their fields. `created` and
     `lastmodified` match on their seconds, a bare date its whole UTC day; `creator` and
-    `contributor` match on the author's email, `currentUser()` the caller's; and `title` under `=`
+    `contributor` match on the author's account id, `currentUser()` the caller's; `title` under `=`
     or `in (...)` matches the whole title, case aside. `id`, `ancestor` and `parent` take `=` or
     `in (...)` and name the content id the content reads serve; `parent` selects the direct
     children and `ancestor` every descendant, grandchildren included (Confluence Cloud, 2026-10-26,
@@ -2111,9 +2111,6 @@ async def confluence_cql_search(request: Request):
     cannot_run = _cql_cannot_run(tokens)
     if cannot_run is not None:
         raise cannot_run
-    # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
-    sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
-    after = _cql_search_after(sent_cursor) if sent_cursor else None
 
     # the rows the clause readers filter, read only for a query `_cql_parse` does not cover: the
     # full ACL-visible match set, filtered by the clauses, then paginated — so totalSize reflects
@@ -2211,7 +2208,8 @@ async def confluence_cql_search(request: Request):
     # `not creator = currentUser()` with none, as this route does (Confluence Cloud, 2026-10-28).
     # Where the tokens do not parse this way, the clause readers above stay the answer.
     try:
-        expr = _cql_parse(tokens, caller.email)
+        account = synth.atlassian_account_id(caller.email) if caller.email else None
+        expr = _cql_parse(tokens, account)
         term_sets: dict[str, set[str]] = {}
 
         def _needed_term(node) -> str | None:
@@ -2261,7 +2259,7 @@ async def confluence_cql_search(request: Request):
             if field in ("text", "sitesearch") or (field == "title" and op == "~"):
                 hit = str(r["id"]) in _term_ids(values[0])
             elif field == "title":
-                hit = r["title"].casefold() in {v.casefold() for v in values}
+                hit = r["title"].lower() in {v.lower() for v in values}
             elif field in _CQL_DATE_FIELDS:
                 moment = (
                     _confluence_ts(r["updated_ts"], r["created_ts"], r["id"])
@@ -2278,7 +2276,7 @@ async def confluence_cql_search(request: Request):
                     else _cql_date_hit(values[0], op, moment)
                 )
             elif field in _CQL_PERSON_FIELDS:
-                hit = r["author_email"].casefold() in {v.casefold() for v in values}
+                hit = synth.atlassian_account_id(r["author_email"] or "unknown") in values
             elif field in ("space", "space.key"):
                 containers = {_space_container_for_key(conn, v) for v in values} - {None}
                 hit = r["space"] in containers
@@ -2309,6 +2307,9 @@ async def confluence_cql_search(request: Request):
         parents.update({str(r["id"]): r["parent_id"] for r in everything})
         matched = [r for r in everything if _match(r)]
 
+    # An empty `cursor` is none, and of a repeated one the first is read, measured 2026-10-04.
+    sent_cursor = (request.query_params.getlist("cursor") or [None])[0]
+    after = _cql_search_after(sent_cursor) if sent_cursor else None
     total = len(matched)
     position = _cql_position(matched, after[0]) if after else 0
     rows = matched[position : position + limit]
@@ -3348,7 +3349,7 @@ _CQL_DATE_FUNCTIONS = frozenset(
 # `now("-4w")` were measured, and `now("x")` and `now("a'b")` (Confluence Cloud, 2026-10-31) and
 # `now("1")`, `now("+1")` and `startOfDay("1")` (Confluence Cloud, 2026-11-04) were refused as
 # invalid relative dates.
-_CQL_RELATIVE_DATE = re.compile(r"^([+-]?\d+)([wdMyhm])$")
+_CQL_RELATIVE_DATE = re.compile(r"([+-]?[0-9]+)([wdMyhm])")
 
 
 class _CQLFunctionError(Exception):
@@ -3385,9 +3386,11 @@ def _cql_function_call(tokens: list[tuple[str, str]], at: int):
 
 def _cql_function_arity(name: str, args: list[tuple[str, str]]) -> bool:
     """Whether a call of ``name`` with ``args`` has the wrong arguments: too many or too few
-    for what :data:`_CQL_FUNCTIONS` records, or, for `recentlyViewedContent`, a count that is
-    no number and no quoted integer. A reserved word for the count is left to
-    :func:`_cql_refusal`, which refuses it."""
+    for what :data:`_CQL_FUNCTIONS` records, for `recentlyViewedContent` a count that is no
+    number and no quoted integer, and for a date function an unquoted number. A reserved word
+    for the count is left to :func:`_cql_refusal`, which refuses it. Real answered
+    `startOfMonth(-1)` with ``cql_not_parsed`` where it read `startOfMonth("-1")` as a relative
+    date (Confluence Cloud, 2026-10-31)."""
     low, high = _CQL_FUNCTIONS[name]
     if not low <= len(args) <= high:
         return True
@@ -3396,6 +3399,8 @@ def _cql_function_arity(name: str, args: list[tuple[str, str]]) -> bool:
         if kind == "NUMBER" or kind == "WORD" and text.lower() in _CQL_KEYWORDS:
             return False
         return kind != "QUOTED" or not re.fullmatch(r"[+-]?[0-9]+", _cql_unquote(kind, text))
+    if name in _CQL_DATE_FUNCTIONS and args:
+        return args[0][0] == "NUMBER"
     return False
 
 
@@ -3818,13 +3823,15 @@ class _CQLRefusal(Exception):
 _CQL_DATE_FIELDS = frozenset(("created", "lastmodified"))
 _CQL_PERSON_FIELDS = frozenset(("creator", "contributor"))
 _CQL_COMPARISON_OPS = frozenset(("<", "<=", ">", ">=", "="))
-_CQL_DATE = re.compile(r"^(\d{4})[-/](\d{2})[-/](\d{2})$")
-_CQL_DATETIME = re.compile(r"^(\d{4})[-/](\d{2})[-/](\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$")
+_CQL_DATE = re.compile(r"([0-9]{4})[-/]([0-9]{2})[-/]([0-9]{2})")
+_CQL_DATETIME = re.compile(
+    r"([0-9]{4})[-/]([0-9]{2})[-/]([0-9]{2}) ([0-9]{2}):([0-9]{2})(?::([0-9]{2}))?"
+)
 
 
 def _cql_add_months(moment: datetime, months: int) -> datetime:
     """A calendar month added to `moment`, clamping the day to the last day of the target month
-    when the day does not exist there (31 January minus one month is 28 February)."""
+    when the day does not exist there (31 March minus one month is the last day of February)."""
     index = moment.month - 1 + months
     year = moment.year + index // 12
     month = index % 12 + 1
@@ -3974,10 +3981,11 @@ def _cql_parse(
     the operator (see `_CQL_READABLE`). A date field carries date specs, not strings: a day spec
     is a whole UTC day, an instant spec is one second, and a never spec matches nothing (a
     function the date reader does not know, whose 400 belongs to the function validation).
-    `current_user` is the caller's email, which `currentUser()` on a person field resolves to.
-    Raises `_CQLParseError` for anything else, including a field with no operator, which real
-    refuses with a message of its own and this server answers at 200 through the clause readers,
-    and raises `_CQLRefusal` for a date value real refuses with a 400 of its own."""
+    `current_user` is the caller's account id, which `currentUser()` on a person field resolves to,
+    or None for the admin token. Raises `_CQLParseError` for anything else, including a field with
+    no operator, which real refuses with a message of its own and this server answers at 200 through
+    the clause readers, and raises `_CQLRefusal` for a date value real refuses with a 400 of its
+    own."""
     at = 0
     if now is None:
         now = datetime.now(timezone.utc)
@@ -3994,18 +4002,8 @@ def _cql_parse(
         kind, text = peek()
         if kind not in _CQL_VALUES or text.lower() in _CQL_KEYWORDS:
             raise _CQLParseError()
-        value_kind = kind  # the tail loop below rebinds `kind` to the last token it reads
         at += 1
-        empty_call = peek() == ("PUNCT", "(") and peek(1) == ("PUNCT", ")")
         if peek() == ("PUNCT", "("):  # a function value: now("..."), currentUser()
-            if (
-                field in _CQL_PERSON_FIELDS
-                and value_kind == "WORD"
-                and text.lower() == "currentuser"
-                and empty_call
-            ):
-                at += 2  # consume the empty call
-                return current_user or ""
             try:
                 name, args, after = _cql_function_call(tokens, at - 1)
             except _CQLFunctionError:
@@ -4018,11 +4016,11 @@ def _cql_parse(
 
     def date_value(op, field):
         """A date field's value as a date spec, consuming the value and its function tail. A bare
-        date is its whole UTC day; a datetime is one second; a relative function resolves against
-        `now`. Raises `_CQLRefusal` for a value real refuses: a bare integer, an unparseable
-        date, a relative argument with no unit, or a function argument that is not a quoted
-        string. A function this reader does not know is a never spec, matching nothing: its 400
-        belongs to the function validation, and a value real cannot read must not select rows."""
+        date is its whole UTC day; a datetime is one second; a date function resolves against `now`.
+        Raises `_CQLRefusal` for a value real refuses: a bare integer, a word that is no function
+        call, an unparseable date, or a date function's argument that is not a quoted string. A
+        quoted argument reaches here as a relative date, since `_cql_cannot_run` refuses any other
+        first, and a function that is no date function is a never spec, matching nothing."""
         nonlocal at
         kind, text = peek()
         if kind not in _CQL_VALUES:
@@ -4037,54 +4035,31 @@ def _cql_parse(
         # a bare word: a function call, or a word with no parens, which real cannot parse
         if peek() != ("PUNCT", "("):
             raise _CQLRefusal(errors_atlassian.cql_not_parsed())
-        args = []
-        depth = 0
-        while True:
-            arg_kind, arg_text = peek()
-            if arg_kind is None:
-                raise _CQLParseError()
-            if peek() == ("PUNCT", "("):
-                depth += 1
-            elif peek() == ("PUNCT", ")"):
-                depth -= 1
-                if depth == 0:
-                    at += 1
-                    break
-            elif depth == 1:
-                args.append((arg_kind, arg_text))
-            at += 1
-        name = text.lower()
-        if name not in (
-            "now",
-            "startofyear",
-            "startofmonth",
-            "startofday",
-            "startofweek",
-            "endofmonth",
-        ):
+        try:
+            name, args, at = _cql_function_call(tokens, at - 1)
+        except _CQLFunctionError:
+            raise _CQLParseError()
+        if name not in _CQL_DATE_FUNCTIONS:
             return ("never",)
-        if len(args) > 1 or (args and args[0][0] != "QUOTED"):
+        if args and args[0][0] != "QUOTED":
             raise _CQLRefusal(errors_atlassian.cql_not_parsed())
         base = now
-        if name == "startofyear":
+        if name == "startOfYear":
             base = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-        elif name == "startofmonth":
+        elif name == "startOfMonth":
             base = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        elif name == "startofday":
+        elif name == "startOfDay":
             base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        elif name == "startofweek":
+        elif name == "startOfWeek":
             base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(
                 days=now.weekday()
             )
-        elif name == "endofmonth":
+        elif name == "endOfMonth":
             base = _cql_add_months(
                 datetime(now.year, now.month, 1, tzinfo=timezone.utc), 1
             ) - timedelta(seconds=1)
         if args:
-            argument = args[0][1][1:-1]
-            match = _CQL_RELATIVE_DATE.match(argument)
-            if match is None:
-                raise _CQLRefusal(errors_atlassian.cql_invalid_relative_date(argument))
+            match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
             base = _cql_apply_offset(base, int(match.group(1)), match.group(2))
         return ("instant", int(base.timestamp()))
 
@@ -4092,7 +4067,7 @@ def _cql_parse(
         """A date or datetime string as a spec: a date alone is its whole UTC day, a datetime
         with hours and minutes (seconds optional) is one second. Raises `_CQLRefusal` when the
         text is not a date at all, or not a real calendar date."""
-        match = _CQL_DATETIME.match(text)
+        match = _CQL_DATETIME.fullmatch(text)
         if match:
             year, month, day, hour, minute, second = match.groups()
             try:
@@ -4108,7 +4083,7 @@ def _cql_parse(
             except ValueError:
                 raise _CQLRefusal(errors_atlassian.cql_not_parsed())
             return ("instant", int(point.timestamp()))
-        match = _CQL_DATE.match(text)
+        match = _CQL_DATE.fullmatch(text)
         if match is None:
             raise _CQLRefusal(errors_atlassian.cql_not_parsed())
         year, month, day = match.groups()
@@ -4138,7 +4113,8 @@ def _cql_parse(
                 negated = True
                 op = "=" if op == "!=" else "~"
             if field in _CQL_DATE_FIELDS and op in _CQL_COMPARISON_OPS:
-                return ("atom", field, op, (date_value(op, field),), negated, True)
+                sent = "!=" if negated else op
+                return ("atom", field, op, (date_value(sent, field),), negated, True)
             if op not in ("=", "~"):
                 value()  # an operator the field does not take: consume its value, read no row
                 return ("atom", field, op, (), False, False)

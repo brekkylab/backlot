@@ -1519,7 +1519,7 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + " and created > startOfDay()", set()),
         (three + ' and created > startOfWeek("-7w")', set()),
         (three + ' and created > endOfMonth("-1M")', set()),
-        (three + ' and created > endOfMonth("-60M")', {"Guide", "Child", "Grand"}),
+        (three + ' and created > endOfMonth("-120M")', {"Guide", "Child", "Grand"}),
         # `title` under `=` and `in (...)`: the whole title, case aside
         (three + ' and title = "Guide"', {"Guide"}),
         (three + ' and title != "Guide"', {"Child", "Grand"}),
@@ -1564,10 +1564,10 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
 
 def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
     """Pins what :func:`backlot.routers.atlassian.confluence_cql_search` answers a `creator` or
-    `contributor` clause: the author's email, case aside, and `currentUser()` the caller's own
-    email, where the admin's matches nothing because the admin token carries no email. A new
-    function because no existing test sends the search as a user: the structured-clause test
-    above sends it as the admin alone."""
+    `contributor` clause: the author's account id as the content reads serve it, and
+    `currentUser()` the caller's own, where the admin's matches nothing because the admin token
+    carries no email. A new function because no existing test sends the search as a user: the
+    structured-clause test above sends it as the admin alone."""
     page = {
         "source_type": "confluence",
         "space": "eng",
@@ -1627,27 +1627,22 @@ def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
     rows = [
         ("ava@acme.com", "creator = currentUser()", {"Guide", "Grand", "Post"}),
         ("ava@acme.com", "contributor = currentUser()", {"Guide", "Grand", "Post"}),
-        ("ava@acme.com", 'creator = "mia@acme.com"', {"Child"}),
-        ("ava@acme.com", 'creator = "ava@acme.com"', {"Guide", "Grand", "Post"}),
-        ("ava@acme.com", 'creator = "AVA@ACME.COM"', {"Guide", "Grand", "Post"}),
+        ("ava@acme.com", 'creator = "{mia}"', {"Child"}),
+        ("ava@acme.com", 'creator = "{ava}"', {"Guide", "Grand", "Post"}),
         ("ava@acme.com", 'creator = "nobody"', set()),
-        (
-            "ava@acme.com",
-            'creator in ("ava@acme.com", "mia@acme.com")',
-            {"Guide", "Child", "Grand", "Post"},
-        ),
-        ("ava@acme.com", 'creator != "ava@acme.com"', {"Child", "Other"}),
-        ("ava@acme.com", 'creator not in ("ava@acme.com")', {"Child", "Other"}),
+        ("ava@acme.com", 'creator in ("{ava}", "{mia}")', {"Guide", "Child", "Grand", "Post"}),
+        ("ava@acme.com", 'creator != "{ava}"', {"Child", "Other"}),
+        ("ava@acme.com", 'creator not in ("{ava}")', {"Child", "Other"}),
         ("ava@acme.com", "type=page and creator = currentUser()", {"Guide", "Grand"}),
-        ("ava@acme.com", 'contributor = "mia@acme.com"', {"Child"}),
-        ("ava@acme.com", 'contributor != "ava@acme.com"', {"Child", "Other"}),
+        ("ava@acme.com", 'contributor = "{mia}"', {"Child"}),
+        ("ava@acme.com", 'contributor != "{ava}"', {"Child", "Other"}),
         ("ava@acme.com", "type=page and not creator = currentUser()", {"Child", "Other"}),
-        ("ava@acme.com", 'creator = "ava@acme.com" and title = "Guide"', {"Guide"}),
+        ("ava@acme.com", 'creator = "{ava}" and title = "Guide"', {"Guide"}),
         ("ava@acme.com", 'creator = currentUser() and title = "Guide"', {"Guide"}),
         ("mia@acme.com", "creator = currentUser()", {"Child"}),
         ("priya@acme.com", "creator = currentUser()", {"Other"}),
         ("admin", "creator = currentUser()", set()),
-        ("admin", 'creator = "ava@acme.com"', {"Guide", "Grand", "Post"}),
+        ("admin", 'creator = "{ava}"', {"Guide", "Grand", "Post"}),
     ]
     with client_for(settings, reload=True) as c:
         written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
@@ -1657,12 +1652,23 @@ def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
             "mia@acme.com": {"Authorization": f"Bearer {tok(written, 'mia@acme.com')}"},
             "priya@acme.com": {"Authorization": f"Bearer {tok(written, 'priya@acme.com')}"},
         }
+        listed = c.get("/atlassian/wiki/rest/api/content", headers=headers["admin"]).json()
+        ids = {r["title"]: r["id"] for r in listed["results"]}
+        accounts = {}
+        for name, title in (("ava", "Guide"), ("mia", "Child")):
+            read = c.get(
+                f"/atlassian/wiki/rest/api/content/{ids[title]}",
+                headers=headers["admin"],
+                params={"expand": "history"},
+            ).json()
+            accounts[name] = read["history"]["createdBy"]["accountId"]
         answered = {}
-        for caller, cql, _ in rows:
+        for caller, template, _ in rows:
+            cql = template.format(**accounts)
             r = c.get(
                 "/atlassian/wiki/rest/api/search", headers=headers[caller], params={"cql": cql}
             ).json()
-            answered[(caller, cql)] = ({x["title"] for x in r["results"]}, r["totalSize"])
+            answered[(caller, template)] = ({x["title"] for x in r["results"]}, r["totalSize"])
     assert answered == {(caller, cql): (want, len(want)) for caller, cql, want in rows}
 
 
@@ -4219,6 +4225,8 @@ _REFUSED, _FAILED = (
 
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
 _ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
+_NOT_PARSED_BODY = errors_atlassian.cql_not_parsed().body
+_OPERATOR_BODY = errors_atlassian.cql_operator_not_supported(">", "created").body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -4249,6 +4257,8 @@ _CQL_PAGE_ROWS = [
     ("&limit=1&cursor={c1}&cursor={c2}", [2], 2),
     ("&limit=2&cursor=abc", (400, _REFUSED), None),
     ("%20and%20title%20~%20%22a%5C%5C%22&limit=2&cursor=abc", (400, _ESCAPED_END_QUOTE), None),
+    ("%20and%20created%20%3E%20%22x%22&limit=2&cursor=abc", (400, _NOT_PARSED_BODY), None),
+    ("%20and%20created%20%3E%2020260910&limit=2&cursor=abc", (400, _OPERATOR_BODY), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=WyJcdDEiXQ%3D%3D_h_W10%3D", (400, _REFUSED), None),
     ("&limit=2&cursor=_t_WyJcdDEiXQ%3D%3D_h_abc", (400, _REFUSED), None),
@@ -9697,7 +9707,7 @@ _CQL_PARSE_ROWS = [
                 "Invalid relative date : -1",
             ),
             ("created > startOfMonth(-1M)", _CQL_NOT_PARSED),
-            ("created > startOfMonth(-1)", "Invalid relative date : -1"),
+            ("created > startOfMonth(-1)", _CQL_NOT_PARSED),
             ('created > startOfMonth("1w", "2d")', _CQL_NOT_PARSED),
             (
                 'created > startOfMonth("now()")',

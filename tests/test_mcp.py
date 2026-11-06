@@ -53,7 +53,12 @@ pytest.importorskip("mcp")
 from backlot import mcp as backlot_mcp  # noqa: E402
 from backlot import store, synth  # noqa: E402
 from backlot.acl import Acl  # noqa: E402
-from tests._helpers import POSIX_SIGNALS, python_child_env, readline_within  # noqa: E402
+from tests._helpers import (  # noqa: E402
+    POSIX_SIGNALS,
+    python_child_env,
+    read_within,
+    readline_within,
+)
 
 
 def _why_docker_runs_no_linux_containers() -> str | None:
@@ -1354,9 +1359,14 @@ def test_build_server_fetches_every_source_concurrently(monkeypatch):
     assert fetched == set(backlot_mcp.OPENAPI_SOURCES)
 
 
-def _initialised_mcp(*args, env=None):
+def _initialised_mcp(*args, env=None, timeout=120):
     """`backlot mcp` as a subprocess with stdin held OPEN, past its MCP handshake. Returns the
-    process; the caller signals it. A supervisor that signals and waits holds stdin exactly so."""
+    process; the caller signals it. A supervisor that signals and waits holds stdin exactly so.
+
+    When the handshake gets no result, or none within ``timeout`` seconds, the process is ended and
+    the test fails with what it wrote to stderr. That read is bounded: the `backlot import` that
+    `serve()` runs inherits the same stderr, and may still be holding it once `backlot mcp` has
+    ended."""
     proc = subprocess.Popen(
         [sys.executable, "-m", "backlot", "mcp", *args],
         stdin=subprocess.PIPE,
@@ -1376,10 +1386,50 @@ def _initialised_mcp(*args, env=None):
     }
     proc.stdin.write((json.dumps(init) + "\n").encode())
     proc.stdin.flush()
-    line = readline_within(proc.stdout, 120)
-    assert line is not None, "no initialize response within 120s"
-    assert b'"result"' in line, line
+    line = readline_within(proc.stdout, timeout)
+    if line is None or b'"result"' not in line:
+        proc.kill()
+        proc.wait()
+        got = f"no initialize response within {timeout}s" if line is None else f"got {line!r}"
+        err = read_within(proc.stderr, 10).decode(errors="replace")
+        pytest.fail(f"{got}; `backlot mcp` wrote to stderr:\n{err}")
     return proc
+
+
+@pytest.mark.windows
+@pytest.mark.parametrize(
+    "listen, timeout, got, wrote",
+    [
+        pytest.param(False, 120, "got b''", ["no Backlot server answers at {url}"], id="exits"),
+        pytest.param(True, 2, "no initialize response within 2s", [], id="stalls"),
+    ],
+)
+def test_a_failed_handshake_ends_backlot_mcp_and_fails_the_test_with_its_stderr(
+    monkeypatch, listen, timeout, got, wrote
+):
+    """A port nothing listens on makes `backlot mcp` refuse the `--url` and exit; one that listens
+    and never answers holds it in its probe of that url for `NAMED_SERVER_TIMEOUT`, longer than the
+    row's ``timeout``. `Popen` is wrapped to keep the process, which `_initialised_mcp` does not
+    return when it fails."""
+    started = []
+    popen = subprocess.Popen
+
+    def start(*args, **kwargs):
+        started.append(popen(*args, **kwargs))
+        return started[-1]
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        if listen:
+            sock.listen()
+        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        with pytest.raises(pytest.fail.Exception) as failed:
+            _initialised_mcp("--source", "slack", "--url", url, timeout=timeout)
+    first, err = failed.value.msg.split("\n", 1)
+    assert first == f"{got}; `backlot mcp` wrote to stderr:"
+    assert err.splitlines() == [line.format(url=url) for line in wrote]
+    assert started[0].poll() is not None
 
 
 # The exit code `Popen.terminate()` leaves `backlot mcp` with: 128 + SIGTERM from its handler on

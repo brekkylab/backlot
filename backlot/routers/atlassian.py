@@ -3723,8 +3723,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         value(operator, field)
 
     def sequence():
-        """Clauses joined by `and` and `or`, any of them inside groups, read in one loop with
-        `groups` as the stack of the groups open (the depths real reads: :func:`_cql_parse`)."""
+        """Clauses joined by `and` and `or`, any of them inside groups, read in one loop (the depths
+        real reads: :func:`_cql_parse`)."""
         nonlocal at
         while True:
             while peek() == ("PUNCT", "("):

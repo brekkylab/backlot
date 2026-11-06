@@ -8459,3 +8459,51 @@ def test_linear_answers_a_path_sent_as_written_as_linear_does(
     request = raw_request(method, f"/linear{path}", settings.admin_token, body=sent)
     answer, headers, content = raw_exchange(base_url, request)
     assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)
+
+
+def test_linear_search_reads_numbers_one_space_apart_and_words_after_an_identifier(tmp_path):
+    """`_LINEAR_SEARCH_NUMBERS` and `_linear_search_words`: each number of `19 2` names its issue
+    at score 1, `19 19` names one issue once, and the words after `ENG-19.` or `ENG-19,` are
+    searched as they are after `ENG-19 `."""
+    titles = {
+        2: "Connect your tools",
+        19: "Probe children order (parent)",
+        21: "Probe children order (child 2)",
+    }
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"lin-{number}",
+            "team": "engineering",
+            "title": title,
+            "content": "x",
+            "author_email": "amaya.chen@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+            "identifier": f"ENG-{number}",
+            "state": "Todo",
+            "created": f"2026-09-{number:02d}T00:00:00Z",
+        }
+        for number, title in titles.items()
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+
+        def search(term):
+            body = gql(client, _SEARCH, headers, term=term).json()
+            assert "errors" not in body, body.get("errors")
+            return [
+                (node["identifier"], node["metadata"]["score"])
+                for node in body["data"]["searchIssues"]["nodes"]
+            ]
+
+        two = search("19 2")
+        assert sorted(i for i, score in two if score == 1) == ["ENG-19", "ENG-2"]
+        assert {i for i, _ in two[:2]} == {"ENG-19", "ENG-2"}  # ahead of the word matches
+        assert search("19 19") == [("ENG-19", 1)]
+        assert search("21 21") == [("ENG-21", 1)]
+        assert all(score < 1 for _, score in search("19 probe"))
+        spaced = search("ENG-19 probe")
+        assert spaced[0] == ("ENG-19", 1) and [i for i, _ in spaced[1:]] == ["ENG-21"]
+        for term in ("ENG-19.probe", "ENG-19,probe"):
+            assert [i for i, _ in search(term)] == [i for i, _ in spaced], term

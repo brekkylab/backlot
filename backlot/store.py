@@ -2455,6 +2455,11 @@ _LINEAR_SEARCH_TRIMMED = "\t\n\x0b\x0c\r \xa0\u1680\u2028\u2029\u202f\u205f\u300
 )
 # The number alone, with at most one space and that on one side.
 _LINEAR_SEARCH_BARE = re.compile(rf" ?({_LINEAR_SEARCH_NUM})|({_LINEAR_SEARCH_NUM}) ")
+# Numbers one space apart, nothing else: each names its issue. Measured on api.linear.app on
+# 2026-10-25: `19 2` answered KEY-2 and KEY-19 at score 1 ahead of the word matches, and `19 19` and
+# `21 21` their one issue once, where `19 probe` was read as words. A run with any other spacing
+# was not measured.
+_LINEAR_SEARCH_NUMBERS = re.compile(rf"{_LINEAR_SEARCH_NUM}(?: {_LINEAR_SEARCH_NUM})+")
 
 
 def _linear_search_identifier(term: str) -> tuple[str | None, str] | None:
@@ -2482,6 +2487,20 @@ def _linear_search_identifier(term: str) -> tuple[str | None, str] | None:
     if bare:
         return None, bare.group(1) or bare.group(2)
     return None
+
+
+def _linear_search_words(term: str) -> str:
+    """The text whose words ``searchIssues`` matches: ``term``, with what follows an identifier at
+    its start parted from it by a space, so punctuation does not join them into one word.
+    Measured on api.linear.app on 2026-10-25: `KEY-19.probe` and `KEY-19,probe` answered KEY-19 at
+    score 1 and then the issues `probe` matches, as `KEY-19 probe` did."""
+    text = term.strip(_LINEAR_SEARCH_TRIMMED)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+    named = _LINEAR_SEARCH_OPENING.match(text)
+    if named is None:
+        return term
+    return f"{text[: named.end()]} {text[named.end() :]}"
 
 
 def _linear_identifier_ids(conn, key: str | None, number: str) -> list[str]:
@@ -2529,11 +2548,12 @@ def search_linear_issues(
     ``score`` is 1 for the identifier, as real's was, and ``|bm25| / (1 + |bm25|)`` for an index
     match, so it falls between 0 and 1 and orders as the rank does; a comment-only match scores 0.
     Real's own word scores are not reproducible."""
-    words = re.findall(r"\w+", term.lower())
+    text = _linear_search_words(term)
+    words = re.findall(r"\w+", text.lower())
     # Each kind of match is collected on its own and the candidates are scoped afterwards: an FTS
     # MATCH joined into a scan of the issues is re-run per issue.
     ranks: dict[str, float | None] = {}
-    phrases = [w.replace('"', '""') for w in term.lower().split() if re.search(r"\w", w)]
+    phrases = [w.replace('"', '""') for w in text.lower().split() if re.search(r"\w", w)]
     if phrases and _has_fts(conn, "linear"):
         match = " OR ".join(f'"{w}"*' for w in phrases)
         for row in conn.execute(
@@ -2552,6 +2572,9 @@ def search_linear_issues(
             ranks.setdefault(row[0], None)
     named = _linear_search_identifier(term)
     exact = set(_linear_identifier_ids(conn, *named)) if named is not None else set()
+    if named is None and _LINEAR_SEARCH_NUMBERS.fullmatch(term):
+        for number in term.split(" "):
+            exact.update(_linear_identifier_ids(conn, None, number))
     for issue_id in exact:
         ranks.setdefault(issue_id, None)
     where = " WHERE id IN (SELECT value FROM json_each(?))"

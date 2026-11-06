@@ -37,7 +37,7 @@ _DEFAULTS = json.loads(
 )
 
 # `TextStyle`'s members in the order real serves them, in `namedStyles` and in every run read.
-_TEXT_STYLE_ORDER = (
+TEXT_STYLE_ORDER = (
     "bold",
     "italic",
     "underline",
@@ -49,6 +49,32 @@ _TEXT_STYLE_ORDER = (
     "weightedFontFamily",
     "baselineOffset",
     "link",
+)
+
+# `ParagraphStyle`'s members in the order real serves them: measured 2026-11-03 on a paragraph
+# given every member in one `updateParagraphStyle`.
+PARAGRAPH_STYLE_ORDER = (
+    "headingId",
+    "namedStyleType",
+    "alignment",
+    "lineSpacing",
+    "direction",
+    "spacingMode",
+    "spaceAbove",
+    "spaceBelow",
+    "borderBetween",
+    "borderTop",
+    "borderBottom",
+    "borderLeft",
+    "borderRight",
+    "indentFirstLine",
+    "indentStart",
+    "indentEnd",
+    "keepLinesTogether",
+    "keepWithNext",
+    "avoidWidowAndOrphan",
+    "shading",
+    "pageBreakBefore",
 )
 
 # The characters `insertText` strips from what it inserts: U+0000-U+0008, U+000C-U+001F (`\r`
@@ -95,8 +121,40 @@ def named_styles() -> dict:
 
 def utf16_len(text: str) -> int:
     """Length in UTF-16 code units, the unit every index counts in: a character outside the BMP
-    is two."""
-    return len(text.encode("utf-16-le")) // 2
+    is two, and each half of one a style split (`Body.cut`) one."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _paired(text: str) -> str:
+    """``text`` with each half of a character outside the BMP that stands beside its other half
+    joined to it again."""
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
+
+
+_HALF = re.compile("[\ud800-\udfff]")
+
+
+def _served_text(text: str) -> str:
+    """A run's text as real serves it: measured 2026-11-03, a character outside the BMP that a
+    style's edge split was served as `?` in each of the two runs, one index each."""
+    return _HALF.sub("?", _paired(text))
+
+
+# A run's members a write took off it, kept with its style under a name no `TextStyle` has, and
+# left out wherever the style is served (`shown`). Measured 2026-11-03: a run whose bold was set
+# and then taken off was served unstyled and kept apart from the unstyled text either side of it
+# through a later style; an insert after it joined it and a delete beside it did not join across
+# it; and `bold: false` set on text that was never bold changed nothing.
+CLEARED = "cleared"
+# The weight a run was given where bold serves it as another (`_weighed`), kept and left out of
+# what is served as `CLEARED` is.
+STATED_WEIGHT = "statedWeight"
+
+
+def shown(style: dict) -> dict:
+    if CLEARED in style or STATED_WEIGHT in style:
+        return {k: v for k, v in style.items() if k not in (CLEARED, STATED_WEIGHT)}
+    return style
 
 
 def text_style(marks: dict) -> dict:
@@ -106,7 +164,7 @@ def text_style(marks: dict) -> dict:
         style["underline"] = True
         style["foregroundColor"] = copy.deepcopy(_LINK_COLOR)
         style["link"] = {"url": marks["link"]}
-    return {k: style[k] for k in _TEXT_STYLE_ORDER if k in style}
+    return {k: style[k] for k in TEXT_STYLE_ORDER if k in style}
 
 
 def _newline_style(marks: dict) -> dict:
@@ -193,11 +251,16 @@ def blank_segment(footnote: bool = False) -> list[dict]:
 
 
 def _stated(
-    file_id: str, paragraphs: list[dict], seed: str, notes: dict | None, footnote: bool = False
+    file_id: str,
+    paragraphs: list[dict],
+    seed: str,
+    notes: dict | None,
+    lists: dict,
+    footnote: bool = False,
 ) -> list[dict]:
     """A corpus's paragraphs as stored content, a heading's `headingId` drawn here, once, from
     ``seed`` and its position. A stated footnote is added to ``notes``, formatted as
-    `_FOOTNOTE_TEXT`."""
+    `_FOOTNOTE_TEXT`, and a stated list to ``lists`` (`_listed`)."""
     content = []
     for i, p in enumerate(paragraphs):
         named = p.get("style") or "NORMAL_TEXT"
@@ -207,28 +270,79 @@ def _stated(
         runs: list[tuple[str, dict] | dict] = []
         for j, r in enumerate(stated):
             ts = text_style(r) | (_FOOTNOTE_TEXT if footnote else {})
-            ts = {k: ts[k] for k in _TEXT_STYLE_ORDER if k in ts}
+            ts = {k: ts[k] for k in TEXT_STYLE_ORDER if k in ts}
             if "footnote" in r:
                 fid = segment_id(file_id, f"{seed}{i}.{j}")
-                notes[fid] = _stated(file_id, r["footnote"], f"{seed}{i}.{j}.", None, True)
+                notes[fid] = _stated(file_id, r["footnote"], f"{seed}{i}.{j}.", None, lists, True)
                 runs.append({"footnoteReference": {"footnoteId": fid, "textStyle": ts}})
             elif r.get("pageBreak"):
                 runs.append({"pageBreak": {"textStyle": ts}})
             else:
                 runs.append((r["text"], ts))
         newline = _newline_style(stated[-1]) | (_FOOTNOTE_TEXT if footnote else {})
-        newline = {k: newline[k] for k in _TEXT_STYLE_ORDER if k in newline}
+        newline = {k: newline[k] for k in TEXT_STYLE_ORDER if k in newline}
         hid = heading_id(file_id, f"{seed}{i}") if named != "NORMAL_TEXT" else None
         content.append(_paragraph(runs, newline, _paragraph_style(named, footnote), hid))
+    return _listed(file_id, paragraphs, content, seed, lists)
+
+
+# The nesting levels of each `bulletPreset`, as `createParagraphBullets` made a list of it on
+# 2026-11-03, in the enum's number order (measured, `1` was BULLET_DISC_CIRCLE_SQUARE and `15`
+# NUMBERED_ZERODECIMAL_ALPHA_ROMAN).
+PRESETS: dict[str, list[dict]] = json.loads(
+    (Path(__file__).parent / "data" / "gdocs_lists.json").read_text(encoding="utf-8")
+)
+
+
+def _listed(
+    file_id: str, paragraphs: list[dict], content: list[dict], seed: str, lists: dict
+) -> list[dict]:
+    """``content`` with each paragraph a corpus states in a list made an item of it, as
+    `createParagraphBullets` makes one: consecutive paragraphs of one preset are one list, as the
+    request joins a paragraph to the list before it of its preset, each indented as its level is
+    and its bullet styled as its newline with `underline: false` (`Body.set_bullet`)."""
+    before = None
+    for i, (stated, el) in enumerate(zip(paragraphs, content)):
+        listed = stated.get("list")
+        if listed is None:
+            before = None
+            continue
+        if before is None or before[0] != listed["preset"]:
+            made = segment_id(file_id, f"{seed}list.{i}")
+            lists[made] = {
+                "listProperties": {"nestingLevels": copy.deepcopy(PRESETS[listed["preset"]])}
+            }
+            before = (listed["preset"], made)
+        level = listed.get("level", 0)
+        at = PRESETS[listed["preset"]][level]
+        paragraph = el["paragraph"]
+        style = paragraph["paragraphStyle"] | {
+            "indentFirstLine": copy.deepcopy(at["indentFirstLine"]),
+            "indentStart": copy.deepcopy(at["indentStart"]),
+        }
+        newline = shown(paragraph["elements"][-1].get("textRun", {}).get("textStyle", {}))
+        bullet = {"listId": before[1]} | ({"nestingLevel": level} if level else {})
+        paragraph["paragraphStyle"] = {k: style[k] for k in PARAGRAPH_STYLE_ORDER if k in style}
+        paragraph["bullet"] = bullet | {
+            "textStyle": _ordered(newline | {"underline": False}, set())
+        }
     return content
 
 
 def from_paragraphs(
-    file_id: str, paragraphs: list[dict], seed: str = "", notes: dict | None = None
+    file_id: str,
+    paragraphs: list[dict],
+    seed: str = "",
+    notes: dict | None = None,
+    lists: dict | None = None,
 ) -> list[dict]:
     """A corpus's `paragraphs` as a stored body: the section break every body opens with, then one
-    `paragraph` per entry. A stated footnote is added to ``notes``."""
-    return [_section_break(), *_stated(file_id, paragraphs, seed, notes)]
+    `paragraph` per entry. A stated footnote is added to ``notes`` and a stated list to
+    ``lists``."""
+    return [
+        _section_break(),
+        *_stated(file_id, paragraphs, seed, notes, {} if lists is None else lists),
+    ]
 
 
 def from_text(text: str) -> list[dict]:
@@ -266,9 +380,10 @@ def is_icon(text: str) -> bool:
 #
 # Stored as ``{"tabs": [tab, ...]}``, with ``"tabbed": true`` once the Doc has held more than one
 # tab (`document_text`), each tab ``{"tabProperties": {tabId, title, iconEmoji?}, "untitled"?,
-# "body": [...], "headers": {id: [...]}, "footers": {...}, "footnotes": {...}, "childTabs":
-# [...]}``, its contents as real serves them without indices or footnote numbers. A tab's index,
-# parent and depth are its place in the tree, read where it is served.
+# "body": [...], "headers": {id: [...]}, "footers": {...}, "footnotes": {...}, "lists": {id: {...}},
+# "namedRanges": [{namedRangeId, name, ranges}, ...], "childTabs": [...]}``, its contents as real
+# serves them without indices or footnote numbers and its named ranges in the order they were
+# made. A tab's index, parent and depth are its place in the tree, read where it is served.
 
 
 def new_tab(
@@ -285,6 +400,8 @@ def new_tab(
         "headers": {},
         "footers": {},
         "footnotes": {},
+        "lists": {},
+        "namedRanges": [],
         "childTabs": [],
     }
 
@@ -346,15 +463,17 @@ def from_record(file_id: str, rec: dict) -> dict:
         titles.append(title)
         built.append(title)
         notes: dict = {}
-        body = from_paragraphs(file_id, tab["paragraphs"], seed, notes)
+        lists: dict = {}
+        body = from_paragraphs(file_id, tab["paragraphs"], seed, notes, lists)
         out = new_tab(tid, title, body, untitled=untitled)
         if tab.get("icon"):
             out["tabProperties"]["iconEmoji"] = tab["icon"]
         for kind in ("header", "footer"):
             if tab.get(kind) is not None:
                 sid = segment_id(file_id, f"{seed}{kind}")
-                out[f"{kind}s"][sid] = _stated(file_id, tab[kind], f"{seed}{kind}.", None)
+                out[f"{kind}s"][sid] = _stated(file_id, tab[kind], f"{seed}{kind}.", None, lists)
         out["footnotes"] = notes
+        out["lists"] = lists
         return out
 
     ordinals = itertools.count()
@@ -404,12 +523,14 @@ def document_text(doc: dict) -> str:
             *tab["footers"].values(),
             *tab["footnotes"].values(),
         ):
-            text = "".join(
-                pe["textRun"]["content"] if "textRun" in pe else "\n"
-                for el in segment
-                if "paragraph" in el
-                for pe in el["paragraph"]["elements"]
-            )[:-1]
+            text = _paired(
+                "".join(
+                    pe["textRun"]["content"] if "textRun" in pe else "\n"
+                    for el in segment
+                    if "paragraph" in el
+                    for pe in el["paragraph"]["elements"]
+                )[:-1]
+            )
             if text.strip():
                 lines.append(text)
     return "\n".join(lines)
@@ -429,12 +550,14 @@ def footnote_numbers(tab: dict) -> dict[str, str]:
     return {fid: str(n) for n, fid in enumerate(refs, 1)}
 
 
-def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[dict]:
+def indexed(
+    content: list[dict], numbers: dict[str, str] | None = None, lone: bool = False
+) -> list[dict]:
     """Stored content as real serves it, each structural element and paragraph element carrying
     its `startIndex` and `endIndex` in UTF-16 code units, those two first, and a footnote
     reference its `footnoteNumber`. Content opens at 0, a body with its section break and a header,
     footer or footnote with its first paragraph, and a zero `startIndex` is left out, as proto3
-    leaves out every zero."""
+    leaves out every zero. A link to a heading is `_linked`'s."""
     out = []
     at = 0
     for el in content:
@@ -446,17 +569,23 @@ def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[
         elements = []
         for pe in el["paragraph"]["elements"]:
             if "textRun" in pe:
-                end = at + utf16_len(pe["textRun"]["content"])
-            else:
+                run = pe["textRun"]
+                end = at + utf16_len(run["content"])
+                pe = {"textRun": {"content": _served_text(run["content"])} | _run_style(run, lone)}
+            elif "footnoteReference" in pe:
                 end = at + 1
-            if "footnoteReference" in pe:
                 ref = pe["footnoteReference"]
                 pe = {
                     "footnoteReference": {
                         "footnoteId": ref["footnoteId"],
                         "footnoteNumber": (numbers or {}).get(ref["footnoteId"], ""),
-                        "textStyle": ref["textStyle"],
+                        "textStyle": _linked(shown(ref["textStyle"]), lone),
                     }
+                }
+            else:
+                end = at + 1
+                pe = {
+                    "pageBreak": {"textStyle": _linked(shown(pe["pageBreak"]["textStyle"]), lone)}
                 }
             elements.append(_span(at, end) | pe)
             at = end
@@ -468,28 +597,91 @@ def indexed(content: list[dict], numbers: dict[str, str] | None = None) -> list[
     return out
 
 
-def document_tab(tab: dict) -> dict:
+def document_tab(tab: dict, lone: bool = False) -> dict:
     """A stored tab as real serves its `documentTab`, and as a Doc's flat members when it is the
-    first tab: the body, then the header, footer and footnotes it has, then its styles (measured
-    2026-11-02)."""
+    first tab, ``lone`` when it is the Doc's only one (`_linked`): the body, then the header,
+    footer and footnotes it has, then its styles (measured 2026-11-02)."""
     numbers = footnote_numbers(tab)
-    out: dict = {"body": {"content": indexed(tab["body"], numbers)}}
+    out: dict = {"body": {"content": indexed(tab["body"], numbers, lone)}}
     for kind, key in (
         ("headers", "headerId"),
         ("footers", "footerId"),
         ("footnotes", "footnoteId"),
     ):
         if tab[kind]:
-            out[kind] = {sid: {key: sid, "content": indexed(c)} for sid, c in tab[kind].items()}
+            out[kind] = {
+                sid: {key: sid, "content": indexed(c, None, lone)} for sid, c in tab[kind].items()
+            }
     out["documentStyle"] = document_style(
         next(iter(tab["headers"]), None), next(iter(tab["footers"]), None)
     )
     out["namedStyles"] = named_styles()
+    if tab["lists"]:
+        out["lists"] = {lid: tab["lists"][lid] for lid in sorted(tab["lists"])}
+    if tab["namedRanges"]:
+        out["namedRanges"] = named_ranges(tab["namedRanges"])
     return out
+
+
+def named_ranges(made: list[dict]) -> dict:
+    """A tab's named ranges as real serves them: one entry per name, holding the ranges of that
+    name in the order a Java `HashMap` keyed by the ids of every range of the tab iterates them
+    (measured 2026-11-05 on eight names of three ranges each, all eight in that order and five
+    in the order of a map of the name's own ids), and the names in the order a Java `HashMap`
+    filled in the order the ranges were made iterates them (measured 2026-11-02 and 2026-11-03;
+    the reads that differed are counted in docs/write-overlay.md)."""
+    by_id = {named["namedRangeId"]: named for named in made}
+    by_name: dict[str, list[dict]] = {named["name"]: [] for named in made}
+    for i in _java_hash_order(by_id):
+        by_name[by_id[i]["name"]].append(by_id[i])
+    return {
+        name: {"name": name, "namedRanges": by_name[name]} for name in _java_hash_order(by_name)
+    }
+
+
+def _java_hash_order(keys: Iterable[str]) -> list[str]:
+    """``keys``, put in this order into a `java.util.HashMap` of the default capacity, in the order
+    it iterates them: by bucket, a bucket's keys in the order they came, the table doubling past
+    three quarters full."""
+    size, table = 16, [[] for _ in range(16)]
+    for n, key in enumerate(keys, 1):
+        table[_java_bucket(key, size)].append(key)
+        if n > size * 3 // 4:
+            size *= 2
+            grown = [[] for _ in range(size)]
+            for chain in table:
+                for k in chain:
+                    grown[_java_bucket(k, size)].append(k)
+            table = grown
+    return [k for chain in table for k in chain]
+
+
+def _java_bucket(key: str, size: int) -> int:
+    """The bucket of ``key`` among ``size``: `String.hashCode` over its UTF-16 code units, its high
+    half folded into its low as `HashMap` folds it."""
+    data = key.encode("utf-16-be", "surrogatepass")
+    h = 0
+    for i in range(0, len(data), 2):
+        h = (31 * h + int.from_bytes(data[i : i + 2], "big")) & 0xFFFFFFFF
+    return (h ^ (h >> 16)) & (size - 1)
 
 
 def _span(start: int, end: int) -> dict:
     return ({"startIndex": start} if start else {}) | {"endIndex": end}
+
+
+def _run_style(run: dict, lone: bool) -> dict:
+    return {"textStyle": _linked(shown(run["textStyle"]), lone)} if "textStyle" in run else {}
+
+
+def _linked(style: dict, lone: bool) -> dict:
+    """A style whose link goes to a heading, as real serves it: measured 2026-11-03, `heading`
+    with its `id` and `tabId` under `includeTabsContent` and on a Doc of several tabs, but by its
+    `headingId` alone on the flat read of a Doc of one tab (``lone``)."""
+    heading = style.get("link", {}).get("heading")
+    if heading is None or not lone:
+        return style
+    return style | {"link": {"headingId": heading["id"]}}
 
 
 # --- a body opened for a write --------------------------------------------------------------------
@@ -877,6 +1069,132 @@ def _unlinked(style: dict) -> dict:
     }
 
 
+def _left(style: dict, named: str) -> dict:
+    """A `paragraphStyle` once its paragraph leaves ``named``: each member ``named`` gives the same
+    value taken off, its direction kept. Measured 2026-11-03: a paragraph given a START alignment
+    and a line spacing of 115 lost both made a HEADING_2, as normal text gives them."""
+    given = {**_PARAGRAPH_STYLES["NORMAL_TEXT"], **_PARAGRAPH_STYLES.get(named, {})}
+    return {k: v for k, v in style.items() if k == "direction" or given.get(k) != v}
+
+
+def _resolved(named: str) -> dict:
+    """The text style a paragraph of ``named`` style gives its runs: its own, over normal
+    text's."""
+    return {**_TEXT_STYLES["NORMAL_TEXT"], **_TEXT_STYLES.get(named, {})}
+
+
+def _ordered(style: dict, cleared: set) -> dict:
+    out = {k: style[k] for k in TEXT_STYLE_ORDER if k in style}
+    return out | ({CLEARED: sorted(cleared)} if cleared else {})
+
+
+def _restyled(style: dict, stated: dict, named: dict, newline: bool) -> dict:
+    """One character's style once ``stated`` is set on it. Measured 2026-11-03:
+
+    * a member set to its paragraph's named style's value is taken off, as is one stated None,
+      and a member taken off is kept in `CLEARED` (`bold: false` set on normal text that was
+      bold was served unstyled, and `italic: false` in a HEADING_6 was served), but for the
+      underline and colour of linked text: `*` setting bold and a new link over a link and the
+      text either side served one run, where text that had lost a font size stayed a run apart;
+    * setting a link underlines the text and gives it `_LINK_COLOR`, but where the request
+      states those members itself, and taking one off takes off the underline and the colour,
+      whatever they were; neither reaches a newline;
+    * bold and a weight together are `_weighed`'s."""
+    out = dict(shown(style))
+    cleared = set(style.get(CLEARED, ()))
+    weighed = _weighed(style, stated)
+    if weighed is not None:
+        family, bold, _, mark = weighed
+        stated = {k: v for k, v in stated.items() if k != "bold"} | {"weightedFontFamily": family}
+        if bold:
+            out["bold"] = True
+            cleared.discard("bold")
+        else:
+            out.pop("bold", None)
+            if mark:
+                cleared.add("bold")
+    linked = "link" in out
+
+    def put(key: str, value) -> None:
+        if value is None or value == named.get(key):
+            if key in out:
+                del out[key]
+                if not (linked and key in ("underline", "foregroundColor")):
+                    cleared.add(key)
+        else:
+            out[key] = value
+            cleared.discard(key)
+
+    for key, value in stated.items():
+        if key != "link":
+            put(key, value)
+    if "link" in stated and not newline:
+        link = stated["link"]
+        put("link", link)
+        if link is None:
+            for key in ("underline", "foregroundColor"):
+                if key not in stated:
+                    put(key, None)
+        else:
+            if "underline" not in stated:
+                put("underline", True)
+            if "foregroundColor" not in stated:
+                put("foregroundColor", copy.deepcopy(_LINK_COLOR))
+    out = _ordered(out, cleared)
+    if weighed is not None and weighed[2] is not None:
+        out[STATED_WEIGHT] = weighed[2]
+    elif weighed is None and STATED_WEIGHT in style and "weightedFontFamily" in out:
+        out[STATED_WEIGHT] = style[STATED_WEIGHT]
+    return out
+
+
+def _weighed(style: dict, stated: dict) -> tuple[dict, bool, int | None, bool] | None:
+    """A run's family, bold, the weight it holds unserved (`STATED_WEIGHT`) and whether the bold
+    is marked taken off (`CLEARED`) once ``stated`` sets a weight or sets bold over one, or None
+    where neither is so. Measured 2026-11-05 on Lato at each weight from 100 to 900, the weight
+    set alone, with `bold: true` or `false` in one request or the next, and bold named with none
+    after:
+
+    * bold is served at 400 over a weight up to 700 and not at all over one past it, and a weight
+      of 700 set alone is bold at 400; `bold: false` serves a weight of 700 or more as 400;
+    * the weight stated is kept under both: `bold: false` after bold at 100 served 100, and bold
+      after `bold: false` at 800 served 800; runs of one served style and two kept weights (100
+      and 600 bold, 400 and 700 at `false`) stayed apart, and 700 alone and 400 bold were one run;
+    * bold named with none serves the weight served, 400 over bold or `false` at 800;
+    * a weight set alone takes the bold off; bold taken off so, by `false`, by bold named with none
+      (over `false` at 800 too) or by bold over a weight past 700 on bold text stayed apart from
+      the text either side, as any member taken off does, and bold over a weight past 700 on text
+      that was not bold joined its neighbours of that weight."""
+    if "weightedFontFamily" in stated:
+        family = stated["weightedFontFamily"]
+        if family is None:
+            return None
+        weight, bold, lowered = family["weight"], family["weight"] == 700, False
+    else:
+        family = shown(style).get("weightedFontFamily")
+        if family is None or "bold" not in stated:
+            return None
+        bold = bool(style.get("bold"))
+        weight = style.get(STATED_WEIGHT, family["weight"])
+        lowered = STATED_WEIGHT in style and not bold
+    was_bold, mark = bool(style.get("bold")), False
+    if "bold" in stated:
+        value = stated["bold"]
+        if value is None:
+            mark = was_bold or lowered
+            weight = 400 if bold or lowered else weight
+            bold = lowered = False
+        elif value:
+            bold, lowered = weight <= 700, False
+        else:
+            bold, lowered = False, weight >= 700
+    mark = mark or was_bold and not bold
+    if bold and weight == 700:
+        weight = 400
+    served = 400 if bold or lowered else weight
+    return family | {"weight": served}, bold, None if served == weight else weight, mark
+
+
 def _heading(style: dict) -> bool:
     return style.get("namedStyleType", "NORMAL_TEXT") != "NORMAL_TEXT"
 
@@ -930,7 +1248,13 @@ class Body:
     request's refusal names are the router's (`routers.google_docs`), which asks :meth:`position`
     and :meth:`splits_cluster`."""
 
-    def __init__(self, file_id: str, content: list[dict], revision: int):
+    def __init__(
+        self,
+        file_id: str,
+        content: list[dict],
+        revision: int,
+        headings: Iterator[int] | None = None,
+    ):
         self.file_id = file_id
         self.revision = revision
         self._section = content[0] if "sectionBreak" in content[0] else None
@@ -950,8 +1274,10 @@ class Body:
                     self.footnotes.append(pe["footnoteReference"]["footnoteId"])
                 else:
                     self.chars.append((PAGE_BREAK, pe["pageBreak"]["textStyle"], n))
-            self.paragraphs.append(el["paragraph"].get("paragraphStyle", {}))
-        self._split = 0
+            self.paragraphs.append({k: v for k, v in el["paragraph"].items() if k != "elements"})
+        # the headings this write has made, counted across every segment a `Document` opens
+        self._split = headings or itertools.count(1)
+        self.ranges: list[dict] = []
 
     @property
     def end(self) -> int:
@@ -960,19 +1286,36 @@ class Body:
 
     def position(self, index: int) -> int | None:
         """The character an index falls before, or None when it falls between the two halves
-        of a surrogate pair. ``index`` is at least :attr:`base` and at most :attr:`end`."""
+        of a surrogate pair, a pair a style split (:meth:`cut`) among them. ``index`` is at least
+        :attr:`base` and at most :attr:`end`."""
         at = self.base
         for pos, (c, *_) in enumerate(self.chars):
             if at == index:
-                return pos
+                return None if pos and "\udc00" <= c <= "\udfff" else pos
             if at > index:
                 return None
             at += utf16_len(c)
         return len(self.chars) if at == index else None
 
+    def cut(self, index: int) -> int:
+        """The character an index falls before, a character outside the BMP the index falls
+        inside first split into its two halves, each a character of its own (`_served_text`)."""
+        at = self.base
+        for pos, (c, style, run) in enumerate(self.chars):
+            if at == index:
+                return pos
+            if at < index < at + utf16_len(c):
+                high, low = chr(0xD800 + ((ord(c) - 0x10000) >> 10)), chr(0xDC00 + (ord(c) & 0x3FF))
+                self.chars[pos : pos + 1] = [(high, style, run), (low, style, run)]
+                return pos + 1
+            at += utf16_len(c)
+        return len(self.chars)
+
     def splits_cluster(self, pos: int) -> bool:
         """Whether an insert before the character at ``pos`` would land inside a grapheme cluster
-        (`_CLUSTER`). Inserting U+0301 after a letter composes a cluster and was taken."""
+        (`_CLUSTER`). Inserting U+0301 after a letter composes a cluster and was taken, and a
+        character a style split in two (`cut`) is still one: measured 2026-11-05, an insert inside
+        a flag or a ZWJ sequence whose first character was made bold was refused."""
         if pos == 0 or pos >= len(self.chars):
             return False
         start = pos
@@ -981,12 +1324,17 @@ class Body:
         end = pos
         while self.chars[end][0] != "\n":
             end += 1
-        at = start
-        for cluster in _CLUSTER.finditer("".join(c for c, *_ in self.chars[start : end + 1])):
-            if at >= pos:
+        at = utf16_len("".join(c for c, *_ in self.chars[start:pos]))
+        edge = 0
+        text = _paired("".join(c for c, *_ in self.chars[start : end + 1]))
+        for cluster in _CLUSTER.finditer(text):
+            if edge >= at:
                 break
-            at += len(cluster[0])
-        return at != pos
+            edge += utf16_len(cluster[0])
+        return edge != at
+
+    def _named(self, p: int) -> str:
+        return self.paragraphs[p]["paragraphStyle"].get("namedStyleType", "NORMAL_TEXT")
 
     def _paragraph_of(self, pos: int) -> int:
         return sum(1 for c, *_ in self.chars[:pos] if c == "\n")
@@ -1042,14 +1390,59 @@ class Body:
             return after[2]
         return next(self._runs)
 
-    def _split_style(self, style: dict) -> dict:
-        """The `paragraphStyle` of a paragraph an inserted newline makes: the one it was cut from,
-        a heading with a `headingId` of its own."""
+    def _split_style(self, props: dict) -> dict:
+        """The `paragraphStyle` and bullet of a paragraph an inserted newline makes: the ones it
+        was cut from, a heading with a `headingId` of its own. Measured 2026-11-03, a newline
+        inserted in a list paragraph made one more paragraph of that list at its level."""
+        style = props["paragraphStyle"]
         out = {k: v for k, v in style.items() if k != "headingId"}
-        if not _heading(style):
-            return out
-        self._split += 1
-        return {"headingId": heading_id(self.file_id, f"r{self.revision}.{self._split}")} | out
+        if _heading(style):
+            made = heading_id(self.file_id, f"r{self.revision}.{next(self._split)}")
+            out = {"headingId": made} | out
+        return props | {"paragraphStyle": out}
+
+    def _units(self, pos: int) -> int:
+        return self.base + sum(utf16_len(c) for c, *_ in self.chars[:pos])
+
+    def _inserted(self, at: int, n: int) -> None:
+        """Move :attr:`ranges` for ``n`` units inserted at index ``at``: measured 2026-11-02, text
+        inserted strictly inside a named range grew it, and text at its start or end stayed out."""
+        for r in self.ranges:
+            if at <= r["startIndex"]:
+                r["startIndex"] += n
+                r["endIndex"] += n
+            elif at < r["endIndex"]:
+                r["endIndex"] += n
+
+    def _deleted(self, start: int, end: int) -> None:
+        """Move :attr:`ranges` for the units ``[start, end)`` deleted: measured 2026-11-03, a named
+        range lost what of it was deleted, and one deleted whole was left empty, which
+        `Document.settle` removes."""
+        for r in self.ranges:
+            self._deleted_one(r, start, end)
+
+    @staticmethod
+    def _deleted_one(r: dict, start: int, end: int) -> None:
+        for key in ("startIndex", "endIndex"):
+            x = r[key]
+            r[key] = x if x <= start else start if x <= end else x - (end - start)
+
+    def _replaced(self, start: int, end: int, n: int) -> None:
+        """Move :attr:`ranges` for the units ``[start, end)`` replaced by ``n`` units: measured
+        2026-11-03, a named range holding the replaced text, from its start or not, held the text
+        that replaced it; one the replaced text held, or that was the replaced text exactly, was
+        left empty; and one the replaced text overlapped lost what of it was replaced."""
+        for r in self.ranges:
+            s, e = r["startIndex"], r["endIndex"]
+            if start <= s and e <= end:
+                r["startIndex"] = r["endIndex"] = start
+            elif s <= start and end <= e:
+                r["endIndex"] = e + n - (end - start)
+            else:
+                self._deleted_one(r, start, end)
+                if start <= r["startIndex"]:
+                    r["startIndex"] += n
+                    r["endIndex"] += n
 
     def insert(self, pos: int, text: str, style: dict | None = None) -> None:
         """``text`` before the character at ``pos``, every character of it in one style (`_style_at`
@@ -1061,6 +1454,8 @@ class Body:
         style = self._style_at(pos, text) if style is None else style
         run = self._run_at(pos, style)
         p = self._paragraph_of(pos)
+        if self.ranges:
+            self._inserted(self._units(pos), utf16_len(text))
         self.chars[pos:pos] = [(c, style, run) for c in text]
         own = self.paragraphs[p]
         made = [self._split_style(own) for _ in range(text.count("\n"))]
@@ -1098,11 +1493,285 @@ class Body:
         joined = sum(1 for c, *_ in self.chars[start:end] if c == "\n")
         keep = first + joined if self._starts_paragraph(start) else first
         self._drop_footnotes([(start, end)])
+        if self.ranges:
+            self._deleted(self._units(start), self._units(end))
         del self.chars[start:end]
         if joined:
             self.paragraphs[first : first + joined + 1] = [self.paragraphs[keep]]
         if 0 < start < len(self.chars):
             _join_runs(self.chars[start - 1], [(self.chars, start)])
+
+    def style(self, start: int, end: int, stated: dict) -> None:
+        """``stated``'s `TextStyle` members set on the characters in ``[start, end)``, each one
+        None taken off (`_restyled`). Measured 2026-11-03:
+
+        * a range that stops at a paragraph's newline styles the newline too, but for a link;
+        * a link set where another link already is relinks the whole of that one: text linked
+          either side of the range took the new URL;
+        * a paragraph of a list the range holds whole has its bullet styled too, with no member
+          its named style already gives it (an italic list paragraph's bullet became `italic`
+          alone, losing the `underline: false` it was made with).
+
+        The runs the change leaves are `_settle`'s, once text whose link it takes off takes the
+        style of the text after it where `_join_unlinked` says."""
+        if end < len(self.chars) and self.chars[end][0] == "\n":
+            end += 1
+        link = stated.get("link")
+        first, last = start, end
+        if link is not None:
+            had = [s.get("link") for _, s, _ in self.chars]
+            while first and had[first - 1] is not None and had[first - 1] == had[first]:
+                first -= 1
+            while last < len(self.chars) and had[last] is not None and had[last] == had[last - 1]:
+                last += 1
+        p = self._paragraph_of(first)
+        changed = [False] * len(self.chars)
+        lost = []
+        for pos in range(first, last):
+            c, style, run = self.chars[pos]
+            if start <= pos < end:
+                if c == "\n" and self._starts_paragraph_at(pos, start):
+                    self._style_bullet(p, stated)
+                new = _restyled(style, stated, _resolved(self._named(p)), c == "\n")
+            else:
+                new = style | {"link": link}
+            changed[pos] = new != style
+            if "link" in style and "link" not in new:
+                lost.append(pos)
+            self.chars[pos] = (c, new, run)
+            p += c == "\n"
+        self._join_unlinked(lost)
+        self._settle(first, last, changed)
+
+    def _join_unlinked(self, lost: list[int]) -> None:
+        """Each stretch of one style among ``lost``, the characters whose link the change takes off,
+        given the style of the character after it where that one has it but for `link` in its
+        `CLEARED`, when the stretch opens the body or follows linked text. Measured 2026-11-04 on
+        links in `Hello world`, real joined the text to the text after it when its link was taken
+        off from a point inside it, after another link or at the body's start, and kept it a run
+        apart from both sides when the link was taken off after unlinked text or a paragraph's
+        newline, whether the range ended with the link or went past it."""
+        a = 0
+        while a < len(lost):
+            style = self.chars[lost[a]][1]
+            z = a + 1
+            while z < len(lost) and lost[z] == lost[z - 1] + 1 and self.chars[lost[z]][1] == style:
+                z += 1
+            lo, hi = lost[a], lost[z - 1] + 1
+            plain = _ordered(shown(style), set(style.get(CLEARED, ())) - {"link"})
+            opens = not lo or "link" in self.chars[lo - 1][1] or a > 0 and lost[a - 1] == lo - 1
+            if opens and hi < len(self.chars) and self.chars[hi][1] == plain:
+                for i in range(lo, hi):
+                    self.chars[i] = (self.chars[i][0], plain, self.chars[i][2])
+            a = z
+
+    def _starts_paragraph_at(self, newline: int, start: int) -> bool:
+        """Whether the paragraph that ``newline`` ends starts at or after ``start``."""
+        pos = newline
+        while pos and self.chars[pos - 1][0] != "\n":
+            pos -= 1
+        return pos >= start
+
+    def _style_bullet(self, p: int, stated: dict) -> None:
+        props = self.paragraphs[p]
+        if "bullet" not in props:
+            return
+        named = _resolved(self._named(p))
+        restyled = shown(_restyled(props["bullet"]["textStyle"], stated, named, True))
+        kept = {k: v for k, v in restyled.items() if v != named.get(k)}
+        self.paragraphs[p] = props | {"bullet": props["bullet"] | {"textStyle": kept}}
+
+    def _settle(self, first: int, last: int, changed: list[bool]) -> None:
+        """The runs a style change leaves in ``[first, last)``. Measured 2026-11-03: a run the
+        change splits stays apart from the text either side once the change is undone (`CLEARED`),
+        while text the change gave a member joins a neighbour of its new style, and the pieces of
+        one run the change left alike join again. So the characters that changed take a run of their
+        own, one per run they came from and style they took, and each meets a neighbour of the same
+        style (`CLEARED` included) as one run."""
+        made: dict[tuple[int, str], int] = {}
+        for pos in range(first, last):
+            if not changed[pos]:
+                made.clear()
+                continue
+            c, style, run = self.chars[pos]
+            key = (run, json.dumps(style, sort_keys=True))
+            if key not in made:
+                made[key] = next(self._runs)
+            self.chars[pos] = (c, style, made[key])
+        for b in range(max(first, 1), min(last + 1, len(self.chars))):
+            (lc, ls, lr), (rc, rs, rr) = self.chars[b - 1], self.chars[b]
+            if lc == "\n" or not (changed[b - 1] or changed[b]) or ls != rs or lr == rr:
+                continue
+            if lc in _ELEMENTS or rc in _ELEMENTS:
+                continue
+            i = b
+            while i < len(self.chars) and self.chars[i][2] == rr:
+                self.chars[i] = (*self.chars[i][:2], lr)
+                i += 1
+
+    def floor(self, index: int) -> int:
+        """The character an index falls before or inside."""
+        at = self.base
+        for pos, (c, *_) in enumerate(self.chars):
+            at += utf16_len(c)
+            if at > index:
+                return pos
+        return len(self.chars) - 1
+
+    def paragraphs_in(self, start: int, end: int) -> range:
+        """The paragraphs a range of indices overlaps, or for an empty one the paragraph it falls
+        in: measured 2026-11-03, a range ending at a paragraph's first index left that paragraph
+        out, and one of a newline alone held its paragraph alone."""
+        first = self._paragraph_of(self.floor(start))
+        return range(first, self._paragraph_of(self.floor(max(end - 1, start))) + 1)
+
+    def style_paragraph(self, p: int, stated: dict) -> None:
+        """``stated``'s `ParagraphStyle` members set on paragraph ``p``, each one None taken off,
+        its named style first. Measured 2026-11-03:
+
+        * a heading keeps its `headingId` as another heading, loses it as normal text, and a
+          paragraph made a heading takes a new one;
+        * leaving a named style takes off each text style member of its runs, newline and bullet
+          that the style gave them, with nothing kept of it in `CLEARED`, and the runs it leaves
+          alike join: italic text made a HEADING_6 kept its italic, and lost it made normal text
+          again, as one run with the rest of the paragraph; text 20 PT made a HEADING_1 kept it;
+          and each paragraph member the style gives the same value (`_left`);
+        * a named style set, its own included, takes off what `_unformat` takes off;
+        * a paragraph member stated is kept though its named style gives the same value, a
+          direction taken off is `LEFT_TO_RIGHT` again, and nothing else is checked or bounded."""
+        props = self.paragraphs[p]
+        style = dict(props["paragraphStyle"])
+        old = style.get("namedStyleType", "NORMAL_TEXT")
+        new = stated.get("namedStyleType", old)
+        if new != old:
+            self._leave_named(p, old)
+            props = self.paragraphs[p]
+            style = _left(style, old)
+        if "namedStyleType" in stated:
+            self._unformat(p)
+            props = self.paragraphs[p]
+        if new == "NORMAL_TEXT":
+            style.pop("headingId", None)
+        elif old == "NORMAL_TEXT":
+            style["headingId"] = heading_id(self.file_id, f"r{self.revision}.{next(self._split)}")
+        for key, value in stated.items():
+            if value is None:
+                style.pop(key, None)
+            else:
+                style[key] = value
+        style.setdefault("direction", "LEFT_TO_RIGHT")
+        ordered = {k: style[k] for k in PARAGRAPH_STYLE_ORDER if k in style}
+        self.paragraphs[p] = props | {"paragraphStyle": ordered}
+
+    def _paragraph_span(self, p: int) -> range:
+        starts = [0] + [i + 1 for i, (c, *_) in enumerate(self.chars) if c == "\n"]
+        return range(starts[p], starts[p + 1])
+
+    def _unformat(self, p: int) -> None:
+        """Take off each text style member but the link that every character before paragraph
+        ``p``'s newline holds alike, a member a character lacks holding its named style's value,
+        from them, their `CLEARED` and the newline; give linked text back the underline and colour
+        of its link; take off each member of the newline that the character before it does not
+        hold alike; and give a bullet the newline's style. Measured 2026-11-03, a named style set,
+        the paragraph's own included: bold, 14 PT or red over the whole paragraph was taken off,
+        and over three of its letters kept; bold over the whole paragraph and italic over three
+        letters left the italic alone, and an italic set and taken off again left one run; a link
+        over the whole paragraph or part of it was kept, its own colour back over red set on all
+        the paragraph and its underline back where it had been taken off; bold, italic or
+        underline on the newline alone was taken off, while 14 PT over the paragraph and 18 PT
+        over its first three letters, or bold over it and taken off its first three, were kept
+        everywhere; and a bullet, bold or 14 PT, was served as its newline was left."""
+        span = self._paragraph_span(p)
+        text = range(span.start, span.stop - 1)
+        given = _resolved(self._named(p))
+        styles = [shown(self.chars[pos][1]) for pos in text]
+        keys = {k for pos in text for k in shown(self.chars[pos][1])}
+        keys |= {k for pos in text for k in self.chars[pos][1].get(CLEARED, ())}
+        alike = {
+            k
+            for k in keys - {"link"}
+            if all(s.get(k, given.get(k)) == styles[0].get(k, given.get(k)) for s in styles)
+        }
+        changed = [False] * len(self.chars)
+        for pos in span:
+            c, style, run = self.chars[pos]
+            new = {k: v for k, v in shown(style).items() if k not in alike}
+            if "link" in new:
+                new.setdefault("underline", True)
+                new.setdefault("foregroundColor", copy.deepcopy(_LINK_COLOR))
+            if pos == span.stop - 1:
+                last = shown(self.chars[pos - 1][1]) if styles else {}
+                new = {k: v for k, v in new.items() if last.get(k) == v}
+            new = _ordered(new, set(style.get(CLEARED, ())) - alike)
+            changed[pos] = new != style
+            self.chars[pos] = (c, new, run)
+        self._settle(span.start, span.stop, changed)
+        props = self.paragraphs[p]
+        if "bullet" in props:
+            newline = shown(self.chars[span.stop - 1][1])
+            self.paragraphs[p] = props | {"bullet": props["bullet"] | {"textStyle": newline}}
+
+    def _leave_named(self, p: int, named: str) -> None:
+        given = _resolved(named)
+        span = self._paragraph_span(p)
+        changed = [False] * len(self.chars)
+        for pos in span:
+            c, style, run = self.chars[pos]
+            new = {k: v for k, v in style.items() if k == CLEARED or given.get(k) != v}
+            changed[pos] = new != style
+            self.chars[pos] = (c, new, run)
+        self._settle(span.start, span.stop, changed)
+        props = self.paragraphs[p]
+        if "bullet" in props:
+            kept = {k: v for k, v in props["bullet"]["textStyle"].items() if given.get(k) != v}
+            self.paragraphs[p] = props | {"bullet": props["bullet"] | {"textStyle": kept}}
+
+    def leading_tabs(self, p: int) -> int:
+        """Delete the tabs paragraph ``p`` opens with, and how many there were."""
+        span = self._paragraph_span(p)
+        n = 0
+        while self.chars[span.start + n][0] == "\t":
+            n += 1
+        if n:
+            self.delete(span.start, span.start + n)
+        return n
+
+    def set_bullet(self, p: int, list_id: str, level: int, indents: tuple[dict, dict]) -> None:
+        """Make paragraph ``p`` an item of ``list_id`` at ``level``, its first line and start
+        indented by ``indents``. Measured 2026-11-03, a bullet's text style is the paragraph's
+        newline's with `underline: false`: a bold 14 PT paragraph's was bold, not underlined and
+        14 PT, and one in a footnote 10 PT."""
+        newline = shown(self.chars[self._paragraph_span(p).stop - 1][1])
+        text_style = _ordered(newline | {"underline": False}, set())
+        bullet = {"listId": list_id} | ({"nestingLevel": level} if level else {})
+        props = self.paragraphs[p]
+        first, start = copy.deepcopy(indents)
+        style = props["paragraphStyle"] | {"indentFirstLine": first, "indentStart": start}
+        self.paragraphs[p] = props | {
+            "paragraphStyle": {k: style[k] for k in PARAGRAPH_STYLE_ORDER if k in style},
+            "bullet": bullet | {"textStyle": text_style},
+        }
+
+    def drop_bullet(self, p: int) -> None:
+        """Take paragraph ``p`` out of its list, indented as far as its level was: measured
+        2026-11-03, an item at level 2 was left indented 72 PT, first line and start alike, and one
+        at level 0 not at all, an indent it had been given before dropped either way, as was that
+        of a paragraph in no list."""
+        props = self.paragraphs[p]
+        level = props.get("bullet", {}).get("nestingLevel", 0)
+        style = {
+            k: v
+            for k, v in props["paragraphStyle"].items()
+            if k not in ("indentFirstLine", "indentStart")
+        }
+        if level:
+            indent = {"magnitude": 36 * level, "unit": "PT"}
+            style |= {"indentFirstLine": indent, "indentStart": dict(indent)}
+        ordered = {k: style[k] for k in PARAGRAPH_STYLE_ORDER if k in style}
+        self.paragraphs[p] = {"paragraphStyle": ordered}
+
+    def bullet(self, p: int) -> dict | None:
+        return self.paragraphs[p].get("bullet")
 
     def find(self, text: str, *, match_case: bool, regex: bool) -> list[tuple[int, int]]:
         """Each match of ``text``, left to right, as the ``[start, end)`` characters it replaces,
@@ -1115,7 +1784,8 @@ class Body:
         measured on `z*`, which replaced every character of a Doc, and the search goes on one
         character after it, as Java's does: measured, `a??` in `aa` was three matches. A search
         that folds to nothing matches nothing."""
-        folded, spans = _fold("".join(c for c, *_ in self.chars))
+        whole, owner = self._whole()
+        folded, spans = _fold(whole)
         needle = _fold(text)[0]
         found: list[tuple[int, int]] = []
         if not needle:
@@ -1142,7 +1812,24 @@ class Body:
             while at >= 0:
                 found.append((at, at + len(needle)))
                 at = folded.find(needle, at + len(needle))
-        return [_unfold(spans, start, end) for start, end in found]
+        return [
+            (owner[begin], owner[finish])
+            for begin, finish in (_unfold(spans, start, end) for start, end in found)
+        ]
+
+    def _whole(self) -> tuple[str, list[int]]:
+        """The text with each character a style split whole again (`cut`), as `replaceAllText`
+        reads it (measured 2026-11-03, it matched an emoji whose halves were runs apart), and the
+        position of each of its characters, then the end."""
+        text: list[str] = []
+        owner: list[int] = []
+        for pos, (c, *_) in enumerate(self.chars):
+            if "\udc00" <= c <= "\udfff" and text and "\ud800" <= text[-1] <= "\udbff":
+                text[-1] = _paired(text[-1] + c)
+                continue
+            text.append(c)
+            owner.append(pos)
+        return "".join(text), owner + [len(self.chars)]
 
     def replace(self, matches: list[tuple[int, int]], text: str) -> None:
         """Each match replaced by ``text`` in the style of its first character, measured on matches
@@ -1167,6 +1854,14 @@ class Body:
             return
         last = len(self.chars) - 1
         self._drop_footnotes([(start, min(end, last)) for start, end in matches])
+        spans = []
+        if self.ranges:
+            units = list(
+                itertools.accumulate((utf16_len(c) for c, *_ in self.chars), initial=self.base)
+            )
+            spans = [
+                (units[start], units[min(end, last)]) for start, end in matches if start != end
+            ]
         newlines = list(itertools.accumulate((c == "\n" for c, *_ in self.chars), initial=0))
         cut = len(self.chars)
         tail: list[list[tuple[str, dict, int]]] = []  # chunks, the last one first in the body
@@ -1199,6 +1894,8 @@ class Body:
         tail_paragraphs += reversed(self.paragraphs[: newlines[cut]])
         self.chars = [c for chunk in reversed(tail) for c in chunk]
         self.paragraphs = tail_paragraphs[::-1]
+        for start, end in reversed(spans):
+            self._replaced(start, end, utf16_len(text))
 
     def content(self) -> list[dict]:
         """What is stored back, one `textRun` per run in each paragraph and an element of its own
@@ -1222,9 +1919,7 @@ class Body:
                 elements.append({"textRun": {"content": c, "textStyle": style}})
                 held = run
             if c == "\n":
-                out.append(
-                    {"paragraph": {"elements": elements, "paragraphStyle": self.paragraphs[p]}}
-                )
+                out.append({"paragraph": {"elements": elements, **self.paragraphs[p]}})
                 elements, held, p = [], None, p + 1
         return out
 
@@ -1243,6 +1938,7 @@ class Document:
         self.tabbed = stored.get("tabbed", False)
         self._open: dict[tuple[str, str], Body] = {}
         self._made = itertools.count()
+        self._headings = itertools.count(1)
         # the requests `routers.google_docs.docs_batch_update` counts as no write when they are all
         # a batch holds
         self.unchanged = 0
@@ -1272,8 +1968,69 @@ class Document:
         if key not in self._open:
             kind = self.kind(tab, segment)
             content = tab["body"] if kind == "body" else tab[f"{kind}s"][segment]
-            self._open[key] = Body(self.file_id, content, self.revision)
+            body = Body(self.file_id, content, self.revision, self._headings)
+            body.ranges = [r for r in self.ranges(tab) if r.get("segmentId", "") == segment]
+            self._open[key] = body
         return self._open[key]
+
+    @staticmethod
+    def ranges(tab: dict) -> list[dict]:
+        return [r for named in tab["namedRanges"] for r in named["ranges"]]
+
+    def add_range(self, tab: dict, segment: str, name: str, start: int, end: int) -> str:
+        """A named range of ``[start, end)`` in the tab's ``segment``, and its id."""
+        made = self.new_id(segment_id)
+        where = ({"segmentId": segment} if segment else {}) | {"startIndex": start, "endIndex": end}
+        tab["namedRanges"].append({"namedRangeId": made, "name": name, "ranges": [where]})
+        key = (tab["tabProperties"]["tabId"], segment)
+        if key in self._open:
+            self._open[key].ranges.append(where)
+        return made
+
+    def forget(self, tab: dict, named: dict) -> None:
+        """Stop moving the ranges of ``named``, a named range taken out of ``tab``."""
+        gone = {id(r) for r in named["ranges"]}
+        for (tid, _), body in self._open.items():
+            if tid == tab["tabProperties"]["tabId"]:
+                body.ranges = [r for r in body.ranges if id(r) not in gone]
+
+    def replace_range(self, tab: dict, named: dict, text: str, sent: str) -> None:
+        """The text of ``named``'s range replaced by ``text``, styled as the character it replaces
+        first; the range then covers ``text`` alone, or is gone with an empty one. Measured
+        2026-11-03: a range from a bold run took `NEW` bold, `x\ny` split its paragraph and stayed
+        over both lines, and the range's length is that of the text as ``sent``, before `STRIPPED`
+        (`a\x01b` left `ab` and a range of three)."""
+        self.forget(tab, named)
+        [first] = named["ranges"]
+        body = self.open(tab, first.get("segmentId", ""))
+        start = first["startIndex"]
+        pos = body.cut(start)
+        body.replace([(pos, body.cut(first["endIndex"]))], text)
+        first["endIndex"] = start + utf16_len(sent)
+        body.ranges.append(first)
+
+    def heading_ids(self, tab: dict) -> set[str]:
+        """Every `headingId` in ``tab`` as this write has left it."""
+        out = set()
+        for segment in [""] + [s for k in ("headers", "footers", "footnotes") for s in tab[k]]:
+            key = (tab["tabProperties"]["tabId"], segment)
+            if key in self._open:
+                styles = [p["paragraphStyle"] for p in self._open[key].paragraphs]
+            else:
+                content = tab["body"] if not segment else self._segment(tab, segment)
+                styles = [
+                    el["paragraph"].get("paragraphStyle", {}) for el in content if "paragraph" in el
+                ]
+            out |= {s["headingId"] for s in styles if "headingId" in s}
+        return out
+
+    def _segment(self, tab: dict, segment: str) -> list[dict]:
+        return tab[f"{self.kind(tab, segment)}s"][segment]
+
+    def new_list(self, tab: dict, levels: list[dict]) -> str:
+        made = self.new_id(segment_id)
+        tab["lists"][made] = {"listProperties": {"nestingLevels": copy.deepcopy(levels)}}
+        return made
 
     def segments(self, tab: dict) -> list[Body]:
         """The tab's body, header, footer and footnotes, each opened."""
@@ -1281,21 +2038,38 @@ class Document:
         return [self.open(tab, sid) for sid in ids]
 
     def settle(self) -> None:
-        """Drop each footnote whose reference a write removed, so a later request in the batch no
+        """Drop each footnote whose reference a write removed, and each named range a write left
+        empty or whose header, footer or footnote is gone, so a later request in the batch no
         longer finds it."""
         for tab in self.flat():
             key = (tab["tabProperties"]["tabId"], "")
-            if key not in self._open:
-                continue
-            kept = set(self._open[key].footnotes)
-            for fid in [f for f in tab["footnotes"] if f not in kept]:
-                del tab["footnotes"][fid]
-                self._open.pop((key[0], fid), None)
+            if key in self._open:
+                kept = set(self._open[key].footnotes)
+                for fid in [f for f in tab["footnotes"] if f not in kept]:
+                    del tab["footnotes"][fid]
+                    self._open.pop((key[0], fid), None)
+
+            def lives(r: dict) -> bool:
+                return r["endIndex"] > r["startIndex"] and self.kind(tab, r.get("segmentId", ""))
+
+            for named in tab["namedRanges"]:
+                named["ranges"] = [r for r in named["ranges"] if lives(r)]
+            tab["namedRanges"] = [n for n in tab["namedRanges"] if n["ranges"]]
+            for (tid, _), body in self._open.items():
+                if tid == key[0]:
+                    body.ranges = [r for r in body.ranges if lives(r)]
 
     def new_id(self, make) -> str:
-        """An id ``make`` draws from this write, one no tab, header, footer or footnote has."""
+        """An id ``make`` draws from this write, one no tab, header, footer, footnote, list or named
+        range has."""
         taken = {t["tabProperties"]["tabId"] for t in self.flat()}
-        taken |= {s for t in self.flat() for k in ("headers", "footers", "footnotes") for s in t[k]}
+        taken |= {
+            s
+            for t in self.flat()
+            for k in ("headers", "footers", "footnotes", "lists")
+            for s in t[k]
+        }
+        taken |= {n["namedRangeId"] for t in self.flat() for n in t["namedRanges"]}
         while (made := make(self.file_id, f"r{self.revision}.{next(self._made)}")) in taken:
             pass
         return made
@@ -1352,6 +2126,10 @@ _MARKDOWN_LEVEL = {"TITLE": 1, "SUBTITLE": 2, **{f"HEADING_{n}": n for n in rang
 # Each named style's own text style, which its paragraphs' runs take where they state nothing:
 # HEADING_6's italic is Markdown's `*`.
 _TEXT_STYLES = {s["namedStyleType"]: s["textStyle"] for s in _DEFAULTS["namedStyles"]["styles"]}
+_PARAGRAPH_STYLES = {
+    s["namedStyleType"]: {k: v for k, v in s["paragraphStyle"].items() if k != "namedStyleType"}
+    for s in _DEFAULTS["namedStyles"]["styles"]
+}
 
 # The space separators a plain export keeps: a figure space and a narrow no-break space. Every other
 # one, U+2028 and U+2029 among them, is a space.
@@ -1367,12 +2145,12 @@ def _paragraph_runs(paragraph: dict, note=None) -> list[tuple[str, dict]]:
     runs = []
     for pe in paragraph["elements"]:
         if "textRun" in pe:
-            runs.append((pe["textRun"]["content"], pe["textRun"].get("textStyle", {})))
+            runs.append((pe["textRun"]["content"], shown(pe["textRun"].get("textStyle", {}))))
         elif "footnoteReference" in pe:
             ref = pe["footnoteReference"]
-            runs.append((note(ref["footnoteId"]) if note else FOOTNOTE, ref["textStyle"]))
+            runs.append((note(ref["footnoteId"]) if note else FOOTNOTE, shown(ref["textStyle"])))
         else:
-            runs.append((PAGE_BREAK, pe["pageBreak"]["textStyle"]))
+            runs.append((PAGE_BREAK, shown(pe["pageBreak"]["textStyle"])))
     text, style = runs[-1]
     runs[-1] = (text.removesuffix("\n"), style)
     return [r for r in runs if r[0]]
@@ -1395,7 +2173,7 @@ def _spans(paragraph: dict) -> list[tuple[str, dict]]:
             out[-1] = (out[-1][0] + text, style)
         else:
             out.append((text, style))
-    return out
+    return [(_served_text(text), style) for text, style in out]
 
 
 def _named(paragraph: dict) -> str:
@@ -1500,7 +2278,7 @@ def _page_breaks(text: str, bare: str, heading: bool) -> str:
     return out
 
 
-def _plain_lines(content: list[dict], note) -> list[str]:
+def _plain_lines(content: list[dict], note, items: _Items) -> list[str]:
     """Stored content as `files.export` writes it as `text/plain`, a line per paragraph. A vertical
     tab is a CRLF and drops the separator after it (`_after_break`), a tab is eight spaces, a page
     break is `_page_breaks`' and a footnote reference ``note``'s. A paragraph holding no text but
@@ -1511,12 +2289,25 @@ def _plain_lines(content: list[dict], note) -> list[str]:
     then a vertical tab in a HEADING_2 the rule and one CRLF). Real's bytes and these agree on every
     paragraph of up to three of text, a vertical tab, a vertical-tab link, a page break and a
     footnote reference, and of four without the link, in NORMAL_TEXT, HEADING_2 and TITLE, each
-    between two paragraphs of text, measured 2026-11-03."""
+    between two paragraphs of text, measured 2026-11-03. A list paragraph opens with its marker
+    (`_Items`), and one holding nothing is its marker alone, with no CRLF after it (an empty
+    checkbox item then `bold item` were `* * bold item`)."""
     lines = []
+    held = ""
     for el in content:
         if "paragraph" not in el:
             continue
-        text = "".join(_after_break(t) for t, _ in _paragraph_runs(el["paragraph"], note))
+        paragraph = el["paragraph"]
+        text = "".join(_after_break(t) for t, _ in _paragraph_runs(paragraph, note))
+        if "bullet" in paragraph:
+            level, number, glyphs = items.item(paragraph["bullet"])
+            marker = held + "   " * level + (f"{number}. " if _numbered(glyphs) else "* ")
+            if not text:
+                held = marker
+                continue
+            text, held = marker + text, ""
+        elif held:
+            text, held = held + text, ""
         bare = text.replace(PAGE_BREAK, "")
         heading = _named(el["paragraph"]).startswith("HEADING_")
         if not heading:
@@ -1532,10 +2323,35 @@ def _plain_lines(content: list[dict], note) -> list[str]:
             if not bare.strip("\x0b"):
                 text += "\x0b"
         lines.append("".join(map(_plain_char, text)))
-    return lines
+    return lines + ([held] if held else [])
 
 
-def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, list]:
+class _Items:
+    """The level, number and glyphs of each list paragraph an export reaches, in order. Measured
+    2026-11-03: a numbered list counts 1, 2, 3 at each level whatever its glyphs (an UPPER_ROMAN
+    list was `1.`, an ALPHA level `1.` and `2.`), a level counting anew under each item above it,
+    and a list made after a paragraph of no list starts at 1."""
+
+    def __init__(self, lists: dict):
+        self.lists = lists
+        self.counts: dict[str, list[int]] = {}
+        # per list, the Markdown items a later one may nest under: level, marker, children so far
+        self.markers: dict[str, list[tuple[int, str, list[int]]]] = {}
+
+    def item(self, bullet: dict) -> tuple[int, int, dict]:
+        list_id = bullet["listId"]
+        level = bullet.get("nestingLevel", 0)
+        counts = self.counts.setdefault(list_id, [0] * 9)
+        counts[level] += 1
+        counts[level + 1 :] = [0] * (8 - level)
+        return level, counts[level], self.lists[list_id]["listProperties"]["nestingLevels"][level]
+
+
+def _numbered(glyphs: dict) -> bool:
+    return glyphs.get("glyphType") not in (None, "GLYPH_TYPE_UNSPECIFIED", "NONE")
+
+
+def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, list, dict]:
     """What an export renders of a document: every tab's body one after another, depth first, the
     first tab's header and footer, and the footnotes numbered across the tabs by their references,
     each footnote's id with its content. Measured 2026-11-02: a second tab's body followed the
@@ -1543,6 +2359,7 @@ def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, 
     after the first tab's `[1]`."""
     tabs = [tab for tab, *_ in walk(doc["tabs"])]
     body = [el for tab in tabs for el in tab["body"]]
+    lists = {lid: made for tab in tabs for lid, made in tab["lists"].items()}
     first = doc["tabs"][0]
     header = next(iter(first["headers"].values()), [])
     footer = next(iter(first["footers"].values()), [])
@@ -1558,26 +2375,34 @@ def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, 
         if "footnoteReference" in pe
     ]
     numbers = {fid: n for n, (fid, _) in enumerate(notes, 1)}
-    return body, header, footer, numbers, notes
+    return body, header, footer, numbers, notes, lists
 
 
 def plain_text(doc: dict) -> str:
     """A document as `files.export` serves it as `text/plain`: a byte-order mark, then the first
     tab's header, every tab's body, the first tab's footer, and when there are footnotes a
     `_RULE` and each footnote after its number in brackets, the number its reference is written
-    as too (`_plain_lines`), all joined by CRLF and trimmed at both ends. Measured 2026-11-02."""
-    body, header, footer, numbers, notes = _export_parts(doc)
+    as too (`_plain_lines`), all joined by CRLF and trimmed at both ends. Measured 2026-11-02; and
+    on 2026-11-03 a footnote that was a list paragraph started its marker on the line after its
+    number, and a character a style split was written whole."""
+    body, header, footer, numbers, notes, lists = _export_parts(doc)
+    items = _Items(lists)
 
     def note(fid: str) -> str:
         return f"[{numbers[fid]}]"
 
-    lines = _plain_lines(header, note) + _plain_lines(body, note) + _plain_lines(footer, note)
+    lines = [
+        *_plain_lines(header, note, items),
+        *_plain_lines(body, note, items),
+        *_plain_lines(footer, note, items),
+    ]
     if notes:
         lines.append(_RULE)
-        lines += [
-            f"[{n}]" + "\r\n".join(_plain_lines(c, note)) for n, (_, c) in enumerate(notes, 1)
-        ]
-    return "\ufeff" + "\r\n".join(lines).strip(_TRIMMED)
+        for n, (_, content) in enumerate(notes, 1):
+            listed = any("bullet" in el.get("paragraph", {}) for el in content[:1])
+            text = "\r\n".join(_plain_lines(content, note, items))
+            lines.append(f"[{n}]" + ("\r\n" if listed else "") + text)
+    return "\ufeff" + _served_text("\r\n".join(lines).strip(_TRIMMED))
 
 
 # Markdown. A paragraph is a line, and two lines of NORMAL_TEXT are joined by a hard break (two
@@ -1904,11 +2729,13 @@ def markdown(doc: dict) -> str:
     2026-11-02: a page break wrote nothing, a reference `[^n]` inside the marks around it, and no
     header or footer was written; measured 2026-11-03, a body ending in a blank line, after two
     or more empty paragraphs, took no second one before the first footnote."""
-    body, _, _, _, notes = _export_parts(doc)
+    body, _, _, _, notes, lists = _export_parts(doc)
     refs = iter(range(1, len(notes) + 1))
-    out = _markdown(body, refs)
+    items = _Items(lists)
+    anchors = _anchors(body, [content for _, content in notes])
+    out = _markdown(body, refs, items, anchors)
     for n, (_, content) in enumerate(notes, 1):
-        lines = _markdown(content, refs).split("\n")
+        lines = _markdown(content, refs, items, anchors).split("\n")
         out = (
             (out.removesuffix("\n\n") if n == 1 else out)
             + f"\n\n[^{n}]: "
@@ -1917,23 +2744,72 @@ def markdown(doc: dict) -> str:
     return out
 
 
-def _markdown(content: list[dict], notes: Iterator[int]) -> str:
+def _anchors(body: list[dict], notes: list[list[dict]]) -> dict[str, str]:
+    """The anchor of each heading a link of the Doc goes to, by its `headingId`: its text trimmed
+    and lower-cased, each run of white space a `-`, and `-1`, `-2` after each anchor one before it
+    has. Measured 2026-11-03: `Punct! ?., end` was `punct!-?.,-end`, `Ünïcode Ä` `ünïcode-ä`, a
+    second `Same` `same-1`, and a heading no link goes to took none."""
+    linked = {
+        pe["textRun"]["textStyle"]["link"]["heading"]["id"]
+        for content in (body, *notes)
+        for el in content
+        if "paragraph" in el
+        for pe in el["paragraph"]["elements"]
+        if "heading" in pe.get("textRun", {}).get("textStyle", {}).get("link", {})
+    }
+    out: dict[str, str] = {}
+    taken: dict[str, int] = {}
+    for el in body:
+        hid = el.get("paragraph", {}).get("paragraphStyle", {}).get("headingId")
+        if hid not in linked:
+            continue
+        text = "".join(t for t, _ in _paragraph_runs(el["paragraph"]))
+        slug = re.sub(r"\s+", "-", text.strip().lower())
+        n = taken.get(slug, 0)
+        taken[slug] = n + 1
+        out[hid] = f"{slug}-{n}" if n else slug
+    return out
+
+
+def _anchored(style: dict, anchors: dict[str, str]) -> dict:
+    """A run's style with a link to a heading as a link to its anchor, and one to a tab as a
+    link to nothing: measured 2026-11-03, `[cd](#head)` and `[cd]()`."""
+    link = style.get("link", {})
+    if "heading" in link:
+        return style | {"link": {"url": "#" + anchors.get(link["heading"]["id"], "")}}
+    if "tabId" in link:
+        return style | {"link": {"url": ""}}
+    return style
+
+
+def _markdown(
+    content: list[dict], notes: Iterator[int], items: _Items, anchors: dict[str, str]
+) -> str:
     """Stored content as Markdown: TITLE as `#`, SUBTITLE as `##` and HEADING_n as n `#`s, a
     heading's vertical tab a space; bold, italic, strikethrough and links in a paragraph's named
-    style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing. Nothing is
-    trimmed, and nothing ends the last line."""
+    style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
+    paragraph after its marker (`_list_marker`), its items apart from the paragraphs either side
+    of the list as a heading is. Nothing is trimmed, and nothing ends the last line."""
     paragraphs = [el["paragraph"] for el in content if "paragraph" in el]
     levels = [_MARKDOWN_LEVEL.get(_named(p)) for p in paragraphs]
+    listed = ["bullet" in p for p in paragraphs]
     tokens: list = []
     for i, (paragraph, level) in enumerate(zip(paragraphs, levels)):
         if i:
-            tokens.append(_BLOCK if level or levels[i - 1] else _BREAK)
-        runs = _spans(paragraph)
+            apart = level or levels[i - 1] or listed[i] != listed[i - 1]
+            tokens.append(_BLOCK if apart else _BREAK)
+        runs = [(text, _anchored(style, anchors)) for text, style in _spans(paragraph)]
         named = _TEXT_STYLES.get(_named(paragraph), {})
+        marker = _list_marker(items, paragraph["bullet"]) if listed[i] else ""
         if level:
-            tokens.append("#" * level + " " + "".join(_inline(runs, named, notes, heading=True)))
+            heading = "".join(_inline(runs, named, notes, heading=True))
+            anchor = anchors.get(paragraph["paragraphStyle"].get("headingId"))
+            tokens.append(
+                marker + "#" * level + " " + heading + (f" {{#{anchor}}}" if anchor else "")
+            )
             continue
         line = _inline(runs, named, notes)
+        line[0] = marker + line[0]
         if line == ["  "] and i + 1 < len(paragraphs) and levels[i + 1]:
             tokens.append(_GAP)
         else:
@@ -1946,6 +2822,37 @@ def _markdown(content: list[dict], notes: Iterator[int]) -> str:
             out += _separator(pending) + t
             pending = []
     return out + _separator(pending)
+
+
+# The arrow and left-triangle glyphs `_list_marker` writes as `-`.
+_DASHED = frozenset("\u2794\u27a2\u25c4")
+
+
+def _list_marker(items: _Items, bullet: dict) -> str:
+    """A list paragraph's marker in Markdown and the space after it, indented by the width of the
+    first word of each level's marker above it, and a space. Measured 2026-11-03 on every preset: a
+    numbered level is its number and `.`, or `)` where its glyph format ends with one, an arrow or a
+    left triangle `-`, a checkbox `- [ ]` and any other glyph `*`; a level under `*` or `- [ ]` was
+    indented two spaces, and under `1.` three. Measured 2026-11-05 on items under a level no item
+    above them holds: an item nests under the last item above it of a lower level, numbered among
+    that item's children and indented by its markers alone (levels 0, 3, 1, 2, 3 as `1.`, `   1.`,
+    `   2.`, `      1.`, `         1.`), and an item of no lower level above it is counted among
+    the list's first items."""
+    level, _, glyphs = items.item(bullet)
+    above = items.markers.setdefault(bullet["listId"], [(-1, "", [0])])
+    while above[-1][0] >= level:
+        above.pop()
+    counted = above[-1][2]
+    counted[0] += 1
+    if _numbered(glyphs):
+        marker = f"{counted[0]}{')' if glyphs['glyphFormat'].endswith(')') else '.'}"
+    elif "glyphSymbol" not in glyphs:
+        marker = "- [ ]"
+    else:
+        marker = "-" if glyphs["glyphSymbol"] in _DASHED else "*"
+    indent = sum(len(m.split(" ")[0]) + 1 for _, m, _ in above[1:])
+    above.append((level, marker, [0]))
+    return " " * indent + marker + " "
 
 
 def _separator(breaks: list) -> str:

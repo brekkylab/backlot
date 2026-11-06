@@ -856,6 +856,10 @@ def test_gmail_attachment_size_matches_part_metadata(client, admin_h, ro_conn):
 _WORDS = " ".join(f"word{i}" for i in range(120))
 
 
+def _listed(text: str, preset: str, level: int) -> dict:
+    return {"text": text, "list": {"preset": preset, "level": level}}
+
+
 def _runs(*runs: str | tuple[str, str] | dict, style: str | None = None) -> dict:
     """A paragraph as a record's `paragraphs` states it, from `runs`: each a text, a (text, marks)
     pair, or a run as `paragraphs` states it. In marks, `i`, `b`, `s` and `u` are italic, bold,
@@ -1953,6 +1957,78 @@ _DOCS_EXPORTS = {
         {"tabs": [{"title": "Zero", "paragraphs": [{"text": ""}]}, _SEGMENTED_TAB("one", "N1", "H1", "F1"), {"title": "Two", **_SEGMENTED_TAB("two", "N2", "H2", "F2")}]},
         "\ufeffone[1] body\r\ntwo[2] body\r\n" + _RULE + "\r\n[1] N1\r\n[2] N2",
         "  \none[^1] body  \ntwo[^2] body\n\n[^1]:  N1\n\n[^2]:  N2",
+    ),
+    # lists, as `gdocs._Items` and `gdocs._list_marker` say real writes them: nested, counted, a
+    # checkbox list with an empty item, and a heading in a list
+    "lists": (
+        {
+            "paragraphs": [
+                *(_listed(t, "BULLET_DISC_CIRCLE_SQUARE", n) for t, n in [("one", 0), ("two", 0), ("nested a", 1), ("nested b", 1), ("deep", 2), ("three", 0)]),
+                {"text": "after"},
+                *(_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("n1", 0), ("n2", 0), ("na", 1), ("nb", 1), ("ni", 2), ("nii", 2), ("n3", 0)]),
+                {"text": "gap"},
+                *(_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", 0) for t in ("r1", "r2")),
+                *(_listed(t, "BULLET_CHECKBOX", n) for t, n in [("c1", 0), ("c2", 1), ("", 0)]),
+                {"runs": [{"text": "bold", "bold": True}, {"text": " item"}], "list": {"preset": "BULLET_CHECKBOX"}},
+                _listed("x", "NUMBERED_DECIMAL_NESTED", 0),
+                {"style": "HEADING_2", "text": "h", "list": {"preset": "NUMBERED_DECIMAL_NESTED"}},
+                _listed("y", "NUMBERED_DECIMAL_NESTED", 0),
+            ]
+        },
+        "\ufeff* one\r\n* two\r\n   * nested a\r\n   * nested b\r\n      * deep\r\n* three\r\nafter\r\n1. n1\r\n2. n2\r\n   1. na\r\n   2. nb\r\n      1. ni\r\n      2. nii\r\n3. n3\r\ngap\r\n1. r1\r\n2. r2\r\n* c1\r\n   * c2\r\n* * bold item\r\n1. x\r\n2. h\r\n3. y",
+        "* one  \n* two  \n  * nested a  \n  * nested b  \n    * deep  \n* three\n\nafter\n\n1. n1  \n2. n2  \n   1. na  \n   2. nb  \n      1. ni  \n      2. nii  \n3. n3\n\ngap\n\n1. r1  \n2. r2  \n- [ ] c1  \n  - [ ] c2  \n- [ ]   \n- [ ] **bold** item  \n1. x\n\n2. ## h\n\n3. y",
+    ),
+    # an item under a level no item above it holds (`gdocs._list_marker`)
+    "skipped_a": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 0), ("b", 0), ("c", 1), ("d", 1), ("e", 0), ("f", 2), ("g", 0), ("", 0), ("h", 0)]]},
+        "\ufeff1. a\r\n2. b\r\n   1. c\r\n   2. d\r\n3. e\r\n      1. f\r\n4. g\r\n5. 6. h",
+        "1. a  \n2. b  \n   1. c  \n   2. d  \n3. e  \n   1. f  \n4. g  \n5.   \n6. h",
+    ),
+    "skipped_c": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 0), ("b", 3), ("c", 1), ("d", 2), ("e", 3)]]},
+        "\ufeff1. a\r\n         1. b\r\n   1. c\r\n      1. d\r\n         1. e",
+        "1. a  \n   1. b  \n   2. c  \n      1. d  \n         1. e",
+    ),
+    "skipped_d": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 2), ("b", 0), ("c", 1)]]},
+        "\ufeff1. a\r\n1. b\r\n   1. c",
+        "1. a  \n2. b  \n   1. c",
+    ),
+    "skipped_e": (
+        {"paragraphs": [_listed(t, "BULLET_CHECKBOX", n) for t, n in [("a", 0), ("b", 2), ("c", 1), ("d", 2)]]},
+        "\ufeff* a\r\n      * b\r\n   * c\r\n      * d",
+        "- [ ] a  \n  - [ ] b  \n  - [ ] c  \n    - [ ] d",
+    ),
+    "skipped_f": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("a", 0), ("b", 1), ("c", 2), ("d", 3), ("e", 1), ("f", 3)]]},
+        "\ufeff1. a\r\n   1. b\r\n      1. c\r\n         1. d\r\n   2. e\r\n         1. f",
+        "1. a  \n   1. b  \n      1. c  \n         1. d  \n   2. e  \n      1. f",
+    ),
+    "skipped_g": (
+        {"paragraphs": [_listed(t, "NUMBERED_DECIMAL_ALPHA_ROMAN", n) for t, n in [("n1", 0), ("n2", 0), ("n3", 0), ("n4", 0), ("n5", 0), ("n6", 0), ("n7", 0), ("n8", 0), ("n9", 0), ("n10", 0), ("x", 2), ("y", 1)]]},
+        "\ufeff1. n1\r\n2. n2\r\n3. n3\r\n4. n4\r\n5. n5\r\n6. n6\r\n7. n7\r\n8. n8\r\n9. n9\r\n10. n10\r\n      1. x\r\n   1. y",
+        "1. n1  \n2. n2  \n3. n3  \n4. n4  \n5. n5  \n6. n6  \n7. n7  \n8. n8  \n9. n9  \n10. n10  \n    1. x  \n    2. y",
+    ),
+    "skipped_i": (
+        {"paragraphs": [_listed(t, "BULLET_ARROW_DIAMOND_DISC", n) for t, n in [("a", 0), ("b", 2), ("c", 1), ("d", 3)]]},
+        "\ufeff* a\r\n      * b\r\n   * c\r\n         * d",
+        "- a  \n  * b  \n  * c  \n    * d",
+    ),
+    # an empty item then a paragraph outside the list, which takes the item's marker in plain text
+    "held_out": (
+        {"paragraphs": [_listed("a", "NUMBERED_DECIMAL_ALPHA_ROMAN", 0), _listed("", "NUMBERED_DECIMAL_ALPHA_ROMAN", 0), {"text": "after"}]},
+        "\ufeff1. a\r\n2. after",
+        "1. a  \n2. \n\nafter",
+    ),
+    "held_out_checkbox": (
+        {"paragraphs": [_listed("a", "BULLET_CHECKBOX", 0), _listed("", "BULLET_CHECKBOX", 0), {"text": "after"}]},
+        "\ufeff* a\r\n* after",
+        "- [ ] a  \n- [ ] \n\nafter",
+    ),
+    "presets": (
+        {"paragraphs": [*(p for preset in gdocs.PRESETS for p in (_listed(preset, preset, 0), {"text": "sep"})), {"text": "end"}]},
+        "\ufeff* BULLET_DISC_CIRCLE_SQUARE\r\nsep\r\n* BULLET_DIAMONDX_ARROW3D_SQUARE\r\nsep\r\n* BULLET_CHECKBOX\r\nsep\r\n* BULLET_ARROW_DIAMOND_DISC\r\nsep\r\n* BULLET_STAR_CIRCLE_SQUARE\r\nsep\r\n* BULLET_ARROW3D_CIRCLE_SQUARE\r\nsep\r\n* BULLET_LEFTTRIANGLE_DIAMOND_DISC\r\nsep\r\n* BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE\r\nsep\r\n* BULLET_DIAMOND_CIRCLE_SQUARE\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS\r\nsep\r\n1. NUMBERED_DECIMAL_NESTED\r\nsep\r\n1. NUMBERED_UPPERALPHA_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL\r\nsep\r\n1. NUMBERED_ZERODECIMAL_ALPHA_ROMAN\r\nsep\r\nend",
+        "* BULLET\\_DISC\\_CIRCLE\\_SQUARE\n\nsep\n\n* BULLET\\_DIAMONDX\\_ARROW3D\\_SQUARE\n\nsep\n\n- [ ] BULLET\\_CHECKBOX\n\nsep\n\n- BULLET\\_ARROW\\_DIAMOND\\_DISC\n\nsep\n\n* BULLET\\_STAR\\_CIRCLE\\_SQUARE\n\nsep\n\n- BULLET\\_ARROW3D\\_CIRCLE\\_SQUARE\n\nsep\n\n- BULLET\\_LEFTTRIANGLE\\_DIAMOND\\_DISC\n\nsep\n\n* BULLET\\_DIAMONDX\\_HOLLOWDIAMOND\\_SQUARE\n\nsep\n\n* BULLET\\_DIAMOND\\_CIRCLE\\_SQUARE\n\nsep\n\n1. NUMBERED\\_DECIMAL\\_ALPHA\\_ROMAN\n\nsep\n\n1) NUMBERED\\_DECIMAL\\_ALPHA\\_ROMAN\\_PARENS\n\nsep\n\n1. NUMBERED\\_DECIMAL\\_NESTED\n\nsep\n\n1. NUMBERED\\_UPPERALPHA\\_ALPHA\\_ROMAN\n\nsep\n\n1. NUMBERED\\_UPPERROMAN\\_UPPERALPHA\\_DECIMAL\n\nsep\n\n1. NUMBERED\\_ZERODECIMAL\\_ALPHA\\_ROMAN\n\nsep  \nend",
     ),
 }
 # fmt: on
@@ -8015,7 +8091,9 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     underlined in the link colour; and the newline in its paragraph's last run's style, but for a
     link and the underline it brought. A document stating no paragraphs is read without the
     characters `insertText` strips, `\r` among them. A document stating tabs is served as real
-    serves tabs, headers, footers, footnotes and page breaks."""
+    serves tabs, headers, footers, footnotes and page breaks, and one stating lists as
+    `createParagraphBullets` made them: a bullet styled as its newline with no underline, indented
+    as its level, and each list in `lists` after `namedStyles`."""
     url = "https://example.com/"
     link = {
         "underline": True,
@@ -8133,7 +8211,21 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
             },
         }
 
-    with corpus_client(tmp_path, [record, prose, tabbed]) as (client, settings):
+    listed = {
+        "source_type": "google_drive",
+        "doc_id": "listed",
+        "title": "Listed",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {
+                "runs": [{"text": "one", "bold": True}],
+                "list": {"preset": "BULLET_DISC_CIRCLE_SQUARE"},
+            },
+            {"text": "two", "list": {"preset": "BULLET_DISC_CIRCLE_SQUARE", "level": 1}},
+            {"text": "three", "list": {"preset": "NUMBERED_DECIMAL_ALPHA_ROMAN"}},
+        ],
+    }
+    with corpus_client(tmp_path, [record, prose, tabbed, listed]) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         fid = served_id("google_drive", "plan")
         doc = client.get(f"/docs/v1/documents/{fid}", headers=h).json()
@@ -8141,6 +8233,40 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         tid = served_id("google_drive", "tabbed")
         flat = client.get(f"/docs/v1/documents/{tid}", headers=h).json()
         tabs = client.get(f"/docs/v1/documents/{tid}", headers=h, params=_TABS).json()["tabs"]
+        lid = served_id("google_drive", "listed")
+        lists = client.get(f"/docs/v1/documents/{lid}", headers=h).json()
+    bullets, numbers = gdocs.segment_id(lid, "list.0"), gdocs.segment_id(lid, "list.2")
+    assert list(lists)[3:5] == ["namedStyles", "lists"]
+    assert lists["lists"] == {
+        bullets: {"listProperties": {"nestingLevels": gdocs.PRESETS["BULLET_DISC_CIRCLE_SQUARE"]}},
+        numbers: {
+            "listProperties": {"nestingLevels": gdocs.PRESETS["NUMBERED_DECIMAL_ALPHA_ROMAN"]}
+        },
+    }
+
+    def indent(first, start):
+        return {
+            "indentFirstLine": {"magnitude": first, "unit": "PT"},
+            "indentStart": {"magnitude": start, "unit": "PT"},
+        }
+
+    assert [
+        (el["paragraph"]["paragraphStyle"], el["paragraph"]["bullet"])
+        for el in lists["body"]["content"][1:]
+    ] == [
+        (
+            {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **indent(18, 36)},
+            {"listId": bullets, "textStyle": {"bold": True, "underline": False}},
+        ),
+        (
+            {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **indent(54, 72)},
+            {"listId": bullets, "nestingLevel": 1, "textStyle": {"underline": False}},
+        ),
+        (
+            {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **indent(18, 36)},
+            {"listId": numbers, "textStyle": {"underline": False}},
+        ),
+    ]
     assert doc["body"]["content"][1:] == [
         para(1, 16, [("Quarterly plan\n", {}, 15)], "TITLE"),
         para(
@@ -18372,7 +18498,8 @@ def _rep(text, by, **criteria):
 def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left(wc, wh):
     """Measured: each request's indices count what the ones before it inserted, the answer is one
     reply and one suggestion response per request with `replaceAllText`'s count left out at zero,
-    every write moves the `revisionId` the next read serves, and Drive reads the written text,
+    every write moves the `revisionId` the next read serves but a `replaceNamedRangeContent` of a
+    name no range has, and Drive reads the written text,
     with `modifiedTime` the write's, and `size` and `version` as `docs_batch_update` stores
     them."""
     from tests._helpers import served_id
@@ -18403,7 +18530,11 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
         "replies": [{"replaceAllText": {"occurrencesChanged": 3}}, {"replaceAllText": {}}]
     }
     unchanged = _docs_write(wc, h, "wr-text", {"requests": [_rep("zzz", "y")]}).json()
-    assert unchanged["writeControl"]["requiredRevisionId"] not in (before, revision)
+    moved = unchanged["writeControl"]["requiredRevisionId"]
+    assert moved not in (before, revision)
+    nameless = {"replaceNamedRangeContent": {"namedRangeName": "nobody", "text": "X"}}
+    kept = _docs_write(wc, h, "wr-text", {"requests": [nameless]}).json()
+    assert (kept["replies"], kept["writeControl"]["requiredRevisionId"]) == ([{}], moved)
     fields = {"fields": "modifiedTime,version,size,quotaBytesUsed"}
     f = wc.get(f"/drive/v3/files/{did}", headers=h, params=fields).json()
     assert f["modifiedTime"] > "2026-07-14T17:20:00.000Z"
@@ -18825,6 +18956,1256 @@ def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs
     if changed is not None:
         count = {"occurrencesChanged": changed} if changed else {}
         assert r.json()["replies"][-1] == {"replaceAllText": count}
+
+
+# --- styles, lists and named ranges ---------------------------------------------------------------
+#
+# Each row a measurement of `backlot.gdocs`' or `routers.google_docs`' style, list or named range
+# section, on `wr-text` (`Hello world` [1, 12), `Second para` [13, 25)) unless it names another
+# Doc; ids as `_docs_ids` writes them.
+
+_LINK = {"color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}}}
+
+
+def _ts(start, end, fields="bold", **style):
+    return {
+        "updateTextStyle": {
+            "range": {"startIndex": start, "endIndex": end},
+            "textStyle": style,
+            "fields": fields,
+        }
+    }
+
+
+def _wf(start, end, weight, **bold):
+    """A Lato weight set over [start, end), with bold in the same request when ``bold`` holds it."""
+    fields = "weightedFontFamily" + (",bold" if bold else "")
+    return _ts(
+        start, end, fields, weightedFontFamily={"fontFamily": "Lato", "weight": weight}, **bold
+    )
+
+
+def _lato(weight, bold=False):
+    return {
+        **({"bold": True} if bold else {}),
+        "weightedFontFamily": {"fontFamily": "Lato", "weight": weight},
+    }
+
+
+def _ps(start, end, fields, **style):
+    return {
+        "updateParagraphStyle": {
+            "range": {"startIndex": start, "endIndex": end},
+            "paragraphStyle": style,
+            "fields": fields,
+        }
+    }
+
+
+def _bullets(start, end, preset="BULLET_DISC_CIRCLE_SQUARE"):
+    return {
+        "createParagraphBullets": {
+            "range": {"startIndex": start, "endIndex": end},
+            "bulletPreset": preset,
+        }
+    }
+
+
+def _named(name, start, end, **where):
+    return {
+        "createNamedRange": {"name": name, "range": {"startIndex": start, "endIndex": end, **where}}
+    }
+
+
+def _url(u):
+    return {"link": {"url": f"https://example.com/{u}"}}
+
+
+def _linked(u, **style):
+    return {"underline": True, "foregroundColor": _LINK, **style, **_url(u)}
+
+
+_HELLO = [("Hello world\n", {})]
+_DISC = {
+    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+    "indentStart": {"magnitude": 36, "unit": "PT"},
+}
+
+_H2 = {
+    "updateParagraphStyle": {
+        "range": {"startIndex": 1, "endIndex": 2},
+        "paragraphStyle": {"namedStyleType": "HEADING_2"},
+        "fields": "namedStyleType",
+    }
+}
+_RED = {"color": {"rgbColor": {"red": 1}}}
+_14, _18 = ({"magnitude": n, "unit": "PT"} for n in (14, 18))
+
+# `requests` (one batch, or a list of batches), then the first paragraph's runs as
+# `(content, textStyle)`; from the measurements of runs a style change splits and joins
+_STYLE_RUN_ROWS = [
+    # a named style set takes off what the whole paragraph holds alike and what its newline holds
+    # the character before it does not, and keeps what part of it holds (`gdocs.Body._unformat`)
+    ([_ts(1, 12, bold=True), _H2], [("Hello world\n", {})]),
+    (
+        [_ts(1, 12, bold=True), _ts(1, 4, "italic", italic=True), _H2],
+        [("Hel", {"italic": True}), ("lo world\n", {})],
+    ),
+    (
+        [_ts(1, 4, bold=True), _ts(12, 13, bold=True), _H2],
+        [("Hel", {"bold": True}), ("lo world\n", {})],
+    ),
+    (
+        [_ts(1, 12, "fontSize", fontSize=_14), _ts(1, 4, "fontSize", fontSize=_18), _H2],
+        [("Hel", {"fontSize": _18}), ("lo world\n", {"fontSize": _14})],
+    ),
+    (
+        [_ts(1, 12, bold=True), _ts(1, 4, bold=False), _H2],
+        [("Hel", {}), ("lo world\n", {"bold": True})],
+    ),
+    (
+        [_ts(1, 12, bold=True), _ps(1, 2, "namedStyleType", namedStyleType="NORMAL_TEXT")],
+        [("Hello world\n", {})],
+    ),
+    (
+        [_ts(1, 12, bold=True), _ps(1, 2, "alignment", alignment="CENTER")],
+        [("Hello world\n", {"bold": True})],
+    ),
+    # all but the link, which keeps or takes back its own underline and colour, and a member set
+    # and taken off again too
+    (
+        [_ts(1, 12, "link", **_url("a")), _ts(1, 12, "foregroundColor", foregroundColor=_RED), _H2],
+        [("Hello world", _linked("a")), ("\n", {})],
+    ),
+    (
+        [_ts(1, 4, "link", **_url("a")), _ts(1, 4, "underline", underline=False), _H2],
+        [("Hel", _linked("a")), ("lo world\n", {})],
+    ),
+    ([_ts(1, 13, bold=True), _ts(4, 7, "italic", italic=True), _ts(4, 7, "italic"), _H2], _HELLO),
+    # a run whose bold is set and taken off stays apart, however it was taken off
+    ([_ts(4, 6, bold=True), _ts(4, 6)], [("Hel", {}), ("lo", {}), (" world\n", {})]),
+    ([_ts(4, 6, bold=True), _ts(4, 6, bold=False)], [("Hel", {}), ("lo", {}), (" world\n", {})]),
+    # text given a member joins a neighbour of its new style
+    (
+        [_ts(4, 6, bold=True), _ts(6, 8, bold=True)],
+        [("Hel", {}), ("lo w", {"bold": True}), ("orld\n", {})],
+    ),
+    (
+        [_ts(2, 4, bold=True), _ts(6, 8, bold=True), _ts(4, 6, bold=True)],
+        [("H", {}), ("ello w", {"bold": True}), ("orld\n", {})],
+    ),
+    # a range up to a newline styles it
+    ([_ts(4, 6, bold=True), _ts(2, 12, bold=True)], [("H", {}), ("ello world\n", {"bold": True})]),
+    (
+        [_ts(1, 12, bold=True), _ts(10, 12, "italic", italic=True)],
+        [("Hello wor", {"bold": True}), ("ld\n", {"bold": True, "italic": True})],
+    ),
+    ([_ts(12, 13, bold=True)], [("Hello world", {}), ("\n", {"bold": True})]),
+    # `*` takes off what it does not state, and what it took off keeps runs apart
+    (
+        [_ts(3, 7, bold=True), _ts(4, 6, "italic", italic=True), _ts(1, 12, "*")],
+        [("He", {}), ("l", {}), ("lo", {}), (" ", {}), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, bold=True), _ts(4, 6, "italic", italic=True), _ts(1, 12, "*", bold=True)],
+        [("Hel", {"bold": True}), ("lo", {"bold": True}), (" world\n", {"bold": True})],
+    ),
+    (
+        [_ts(3, 7, bold=True), _ts(4, 6, "italic", italic=True), _ts(4, 6, "italic")],
+        [
+            ("He", {}),
+            ("l", {"bold": True}),
+            ("lo", {"bold": True}),
+            (" ", {"bold": True}),
+            ("world\n", {}),
+        ],
+    ),
+    (
+        [_ts(3, 6, "fontSize", fontSize={"magnitude": 13, "unit": "PT"}), _ts(1, 12, "*")],
+        [("He", {}), ("llo", {}), (" world\n", {})],
+    ),
+    # setting what is already there changes nothing, and false on text never bold is nothing
+    ([_ts(4, 6)], _HELLO),
+    ([_ts(4, 6, "*")], _HELLO),
+    ([_ts(4, 6, bold=False)], _HELLO),
+    (
+        [_ts(4, 6, bold=True), _ts(4, 6, bold=True)],
+        [("Hel", {}), ("lo", {"bold": True}), (" world\n", {})],
+    ),
+    # an insert takes, and a delete keeps apart, the style a run lost
+    (
+        [_ts(4, 6, bold=True), _ts(4, 6), {"insertText": {"location": {"index": 6}, "text": "XY"}}],
+        [("Hel", {}), ("loXY", {}), (" world\n", {})],
+    ),
+    (
+        [
+            _ts(4, 6, bold=True),
+            _ts(4, 6),
+            _ts(6, 7, "italic", italic=True),
+            {"deleteContentRange": {"range": {"startIndex": 6, "endIndex": 7}}},
+        ],
+        [("Hel", {}), ("lo", {}), ("world\n", {})],
+    ),
+    (
+        [_ts(4, 6, bold=True), {"deleteContentRange": {"range": {"startIndex": 4, "endIndex": 6}}}],
+        [("Hel world\n", {})],
+    ),
+    # each member as real keeps it
+    (
+        [_ts(4, 7, "fontSize", fontSize={"magnitude": 0, "unit": "PT"})],
+        [("Hel", {}), ("lo ", {"fontSize": {"magnitude": 1, "unit": "PT"}}), ("world\n", {})],
+    ),
+    (
+        [_ts(4, 7, "fontSize", fontSize={"magnitude": 513, "unit": "PT"})],
+        [("Hel", {}), ("lo ", {"fontSize": {"magnitude": 512, "unit": "PT"}}), ("world\n", {})],
+    ),
+    (
+        [_ts(4, 7, "fontSize", fontSize={"magnitude": 14.567, "unit": "PT"})],
+        [("Hel", {}), ("lo ", {"fontSize": {"magnitude": 14.567, "unit": "PT"}}), ("world\n", {})],
+    ),
+    (
+        [
+            _ts(
+                4,
+                7,
+                "foregroundColor",
+                foregroundColor={"color": {"rgbColor": {"red": 0.1, "green": 0.2, "blue": 0.3}}},
+            )
+        ],
+        [
+            ("Hel", {}),
+            (
+                "lo ",
+                {
+                    "foregroundColor": {
+                        "color": {"rgbColor": {"red": 0.101960786, "green": 0.2, "blue": 0.3019608}}
+                    }
+                },
+            ),
+            ("world\n", {}),
+        ],
+    ),
+    (
+        [_ts(4, 7, "foregroundColor", foregroundColor={})],
+        [("Hel", {}), ("lo ", {"foregroundColor": {}}), ("world\n", {})],
+    ),
+    (
+        [_ts(4, 7, "foregroundColor", foregroundColor={"color": {"rgbColor": {"red": 0.001}}})],
+        _HELLO,
+    ),
+    (
+        [
+            _ts(
+                4,
+                7,
+                "backgroundColor",
+                backgroundColor={"color": {"rgbColor": {"red": 1, "green": 1, "blue": 1}}},
+            )
+        ],
+        [
+            ("Hel", {}),
+            (
+                "lo ",
+                {"backgroundColor": {"color": {"rgbColor": {"red": 1, "green": 1, "blue": 1}}}},
+            ),
+            ("world\n", {}),
+        ],
+    ),
+    (
+        [_ts(4, 7, "weightedFontFamily", weightedFontFamily={"fontFamily": "roboto"})],
+        [
+            ("Hel", {}),
+            ("lo ", {"weightedFontFamily": {"fontFamily": "roboto", "weight": 400}}),
+            ("world\n", {}),
+        ],
+    ),
+    (
+        [_ts(4, 7, "weightedFontFamily", weightedFontFamily={"fontFamily": "Arial", "weight": 0})],
+        _HELLO,
+    ),
+    ([_ts(4, 7, "baselineOffset", baselineOffset="NONE")], _HELLO),
+    ([_ts(4, 7, "smallCaps", smallCaps=False)], _HELLO),
+    (
+        [_ts(4, 7, "baselineOffset", baselineOffset="SUBSCRIPT")],
+        [("Hel", {}), ("lo ", {"baselineOffset": "SUBSCRIPT"}), ("world\n", {})],
+    ),
+    (
+        [
+            _ts(
+                4,
+                7,
+                "fontSize,bold",
+                fontSize={"magnitude": 9, "unit": "PT"},
+                bold=True,
+                italic=True,
+            )
+        ],
+        [
+            ("Hel", {}),
+            ("lo ", {"bold": True, "fontSize": {"magnitude": 9, "unit": "PT"}}),
+            ("world\n", {}),
+        ],
+    ),
+    (
+        [_ts(4, 7, "fontSize.magnitude", fontSize={"magnitude": 30, "unit": "PT"})],
+        [("Hel", {}), ("lo ", {"fontSize": {"magnitude": 30, "unit": "PT"}}), ("world\n", {})],
+    ),
+    ([_ts(4, 7, "BOLD", bold=True)], [("Hel", {}), ("lo ", {"bold": True}), ("world\n", {})]),
+    # bold and a weight together, as `gdocs._weighed` serves them
+    *(
+        (requests, [("Hel", {}), ("lo ", served), ("world\n", {})])
+        for requests, served in [
+            *(([_ts(4, 7, bold=True), _wf(4, 7, w)], _lato(w)) for w in (100, 600, 900)),
+            ([_ts(4, 7, bold=True), _wf(4, 7, 700)], _lato(400, bold=True)),
+            *(([_wf(4, 7, w, bold=True)], _lato(400, bold=True)) for w in (100, 600, 700)),
+            *(([_wf(4, 7, w, bold=True)], _lato(w)) for w in (800, 900)),
+            ([_wf(4, 7, 600, bold=False)], _lato(600)),
+            *(([_wf(4, 7, w, bold=False)], _lato(400)) for w in (700, 900)),
+            ([_wf(4, 7, 100, bold=True), _ts(4, 7, bold=False)], _lato(100)),
+            ([_wf(4, 7, 800, bold=False), _ts(4, 7, bold=True)], _lato(800)),
+            ([_wf(4, 7, 100, bold=True), _ts(4, 7)], _lato(400)),
+            ([_wf(4, 7, 800, bold=False), _ts(4, 7)], _lato(400)),
+            ([_wf(4, 7, 800), _ts(4, 7)], _lato(800)),
+            (
+                [
+                    _wf(4, 7, 800, bold=False),
+                    _ts(4, 7, "italic", italic=True),
+                    _ts(4, 7, bold=True),
+                ],
+                {"italic": True} | _lato(800),
+            ),
+        ]
+    ),
+    # runs of one served style stay apart where the weights they keep differ or a bold was taken
+    # off, and join where neither is so
+    (
+        [_wf(4, 7, 100, bold=True), _wf(7, 10, 600, bold=True)],
+        [("Hel", {}), ("lo ", _lato(400, True)), ("wor", _lato(400, True)), ("ld\n", {})],
+    ),
+    (
+        [_wf(4, 7, 700, bold=False), _wf(7, 10, 400, bold=False)],
+        [("Hel", {}), ("lo ", _lato(400)), ("wor", _lato(400)), ("ld\n", {})],
+    ),
+    (
+        [_ts(4, 7, bold=True), _wf(4, 7, 300), _wf(7, 10, 300)],
+        [("Hel", {}), ("lo ", _lato(300)), ("wor", _lato(300)), ("ld\n", {})],
+    ),
+    (
+        [_wf(4, 7, 800, bold=False), _ts(4, 7), _wf(7, 10, 400)],
+        [("Hel", {}), ("lo ", _lato(400)), ("wor", _lato(400)), ("ld\n", {})],
+    ),
+    (
+        [_wf(4, 7, 700), _wf(7, 10, 400, bold=True)],
+        [("Hel", {}), ("lo wor", _lato(400, True)), ("ld\n", {})],
+    ),
+    (
+        [
+            _wf(4, 10, 800),
+            _ts(4, 7, bold=True),
+            _wf(10, 12, 800, bold=False),
+            _ts(10, 12, bold=True),
+        ],
+        [("Hel", {}), ("lo world\n", _lato(800))],
+    ),
+    # a range may split a character outside the BMP, each half served as `?`
+    (
+        [{"insertText": {"location": {"index": 1}, "text": "x\U0001f600y"}}, _ts(3, 5, bold=True)],
+        [("x?", {}), ("?y", {"bold": True}), ("Hello world\n", {})],
+    ),
+    # links: underlined and coloured, a newline left out, the whole of a link it lands on
+    # relinked, and taken off with its underline and colour
+    ([_ts(9, 12, "link", **_url("e"))], [("Hello wo", {}), ("rld", _linked("e")), ("\n", {})]),
+    (
+        [_ts(3, 9, "link", **_url("a")), _ts(7, 11, "link", **_url("b"))],
+        [("He", {}), ("llo worl", _linked("b")), ("d\n", {})],
+    ),
+    (
+        [
+            _ts(3, 5, "link", **_url("a")),
+            _ts(7, 9, "link", **_url("a")),
+            _ts(4, 8, "link", **_url("b")),
+        ],
+        [("He", {}), ("llo wo", _linked("b")), ("rld\n", {})],
+    ),
+    (
+        [_ts(3, 5, "link", **_url("a")), _ts(5, 7, "link", **_url("b"))],
+        [("He", {}), ("ll", _linked("a")), ("o ", _linked("b")), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, "link", **_url("o")), _ts(3, 7, "link")],
+        [("He", {}), ("llo ", {}), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, "link", **_url("o")), _ts(4, 6, "link")],
+        [("He", {}), ("l", _linked("o")), ("lo", {}), (" ", _linked("o")), ("world\n", {})],
+    ),
+    (
+        [
+            _ts(1, 3, "bold,fontSize", bold=True, fontSize={"magnitude": 15, "unit": "PT"}),
+            _ts(3, 7, "link", **_url("a")),
+            _ts(3, 7, "link"),
+        ],
+        [
+            ("He", {"bold": True, "fontSize": {"magnitude": 15, "unit": "PT"}}),
+            ("llo ", {}),
+            ("world\n", {}),
+        ],
+    ),
+    (
+        [_ts(3, 7, "link", **_url("a")), _ts(3, 7, "link,italic", italic=True)],
+        [("He", {}), ("llo ", {"italic": True}), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, "link,underline", **_url("r"))],
+        [("He", {}), ("llo ", {"foregroundColor": _LINK, **_url("r")}), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, "link", **_url("u")), _ts(3, 7, "link", link={"url": ""})],
+        [("He", {}), ("llo ", _linked("u")), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, "link", link={"tabId": "t.0"})],
+        [
+            ("He", {}),
+            ("llo ", {"underline": True, "foregroundColor": _LINK, "link": {"tabId": "t.0"}}),
+            ("world\n", {}),
+        ],
+    ),
+    (
+        [_ts(1, 3, "link", link={"tabId": ""})],
+        [
+            ("He", {"underline": True, "foregroundColor": _LINK, "link": {"tabId": "t.0"}}),
+            ("llo world\n", {}),
+        ],
+    ),
+    # links taken off where `_docs_update_text_style` says
+    (
+        [_ts(3, 7, "link", **_url("z")), _ts(2, 7, "*")],
+        [("He", {}), ("llo ", _url("z")), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, "link", **_url("z")), _ts(3, 9, "*")],
+        [("He", {}), ("llo ", {}), ("world\n", {})],
+    ),
+    (
+        [_ts(3, 7, "link", **_url("s")), _ts(1, 12, "*", bold=True, **_url("t"))],
+        [("Hello world", {"bold": True, **_url("t")}), ("\n", {"bold": True})],
+    ),
+    (
+        [_ts(4, 9, "link", **_url("q")), _ts(1, 7, "link")],
+        [("Hel", {}), ("lo wo", _linked("q")), ("rld\n", {})],
+    ),
+    # text whose link is taken off, joined to the text after it where `Body._join_unlinked` says
+    (
+        [_ts(4, 9, "link", **_url("q")), _ts(5, 9, "link")],
+        [("Hel", {}), ("l", _linked("q")), ("o world\n", {})],
+    ),
+    ([_ts(1, 6, "link", **_url("q")), _ts(1, 6, "link")], _HELLO),
+    (
+        [_ts(1, 4, "link", **_url("p")), _ts(4, 9, "link", **_url("q")), _ts(4, 11, "link")],
+        [("Hel", _linked("p")), ("lo world\n", {})],
+    ),
+]
+
+# `doc`, `requests`, then what is read back of it: `paragraphs` as each paragraph's style and
+# bullet, `lists`, `namedRanges`, the first two tabs' `namedRanges` (`tabs`), the first tab's
+# links flat and as a tab (`links`), the first two tabs' first `headingId`s (`headings`) or its
+# `text/plain` and `text/markdown` exports (`export`)
+_STYLE_DOC_ROWS = [
+    # a named style set gives a bullet its newline's style
+    (
+        "wr-text",
+        [_bullets(1, 2), _ts(1, 13, bold=True), _ts(1, 4, bold=False), _H2],
+        "paragraphs",
+        [
+            [
+                {
+                    "headingId": "$H0",
+                    "namedStyleType": "HEADING_2",
+                    "direction": "LEFT_TO_RIGHT",
+                    **_DISC,
+                },
+                {"listId": "$1.0", "textStyle": {"bold": True}},
+            ],
+            "$REST",
+        ],
+    ),
+    (
+        "wr-text",
+        [_bullets(1, 2), _ts(1, 13, bold=True), _H2],
+        "paragraphs",
+        [
+            [
+                {
+                    "headingId": "$H0",
+                    "namedStyleType": "HEADING_2",
+                    "direction": "LEFT_TO_RIGHT",
+                    **_DISC,
+                },
+                {"listId": "$1.0", "textStyle": {}},
+            ],
+            "$REST",
+        ],
+    ),
+    # leaving a named style takes off each paragraph member it gives the same value
+    (
+        "wr-text",
+        [_ps(1, 2, "alignment,lineSpacing", alignment="START", lineSpacing=115), _H2],
+        "paragraphs",
+        [
+            [
+                {"headingId": "$H0", "namedStyleType": "HEADING_2", "direction": "LEFT_TO_RIGHT"},
+                None,
+            ],
+            "$REST",
+        ],
+    ),
+    # a link to a heading is its `headingId` on a lone tab's flat read, and else its `heading`;
+    # a heading of another tab is reached through its `tabId`
+    (
+        "wr-styled",
+        [_ts(12, 17, "link", link={"heading": {"id": "$ORIG"}})],
+        "links",
+        [
+            [{"headingId": "$ORIG"}, {"url": "https://example.com/"}],
+            [{"heading": {"id": "$ORIG", "tabId": "t.0"}}, {"url": "https://example.com/"}],
+        ],
+    ),
+    (
+        "wr-tabs",
+        [
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": 1, "endIndex": 2, "tabId": "$T2"},
+                    "paragraphStyle": {"namedStyleType": "HEADING_2"},
+                    "fields": "namedStyleType",
+                }
+            },
+            _ts(2, 4, "link", link={"heading": {"id": "$H0", "tabId": "$T2"}}),
+        ],
+        "links",
+        [[{"heading": {"id": "$H0", "tabId": "$T2"}}]] * 2,
+    ),
+    # each heading one batch makes takes an id of its own, in whichever tab
+    (
+        "wr-tabs",
+        [
+            _ps(1, 2, "namedStyleType", namedStyleType="HEADING_1"),
+            {
+                "updateParagraphStyle": {
+                    "range": {"startIndex": 1, "endIndex": 2, "tabId": "$T2"},
+                    "paragraphStyle": {"namedStyleType": "HEADING_2"},
+                    "fields": "namedStyleType",
+                }
+            },
+        ],
+        "headings",
+        [["$H0"], ["$H1"]],
+    ),
+    # a character a style split is written whole in plain text, and as `?` halves in Markdown
+    (
+        "wr-text",
+        [
+            {"insertText": {"location": {"index": 1}, "text": "x\U0001f600y\n"}},
+            _ts(3, 5, bold=True),
+        ],
+        "export",
+        [
+            "\ufeffx\U0001f600y\r\nHello world\r\nSecond para",
+            "x?**?y**  \nHello world  \nSecond para",
+        ],
+    ),
+    # a heading a link goes to takes an anchor, and a link to a tab goes nowhere
+    (
+        "wr-styled",
+        [
+            _ts(12, 17, "link", link={"headingId": "$ORIG"}),
+            _ts(33, 37, "link", link={"tabId": "t.0"}),
+        ],
+        "export",
+        [
+            "\ufeffTitle line\r\nplain BOLD tail\r\nlink here\r\nstruck\r\nBOLDSTART x\r\n\r\n\r\nlast",
+            "# Title line {#title-line}\n\n[plain](#title-line) **BOLD** tail  \n"
+            "[link](https://example.com/) [here]()  \n~~struck~~  \n*BOLDSTART* x\n\nlast",
+        ],
+    ),
+    # every paragraph member, in the order real serves them
+    (
+        "wr-text",
+        [
+            _ps(
+                1,
+                3,
+                "*",
+                **{
+                    "namedStyleType": "HEADING_2",
+                    "alignment": "CENTER",
+                    "lineSpacing": 150,
+                    "direction": "RIGHT_TO_LEFT",
+                    "spacingMode": "NEVER_COLLAPSE",
+                    "spaceAbove": {"magnitude": 7, "unit": "PT"},
+                    "spaceBelow": {"magnitude": 0, "unit": "PT"},
+                    "borderTop": {
+                        "color": {"color": {"rgbColor": {"green": 1}}},
+                        "width": {"magnitude": 1, "unit": "PT"},
+                        "padding": {"magnitude": 2, "unit": "PT"},
+                        "dashStyle": "DOT",
+                    },
+                    "indentFirstLine": {"magnitude": -5, "unit": "PT"},
+                    "keepWithNext": False,
+                    "shading": {"backgroundColor": {"color": {"rgbColor": {"red": 0.1}}}},
+                },
+            )
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "headingId": "$H0",
+                    "namedStyleType": "HEADING_2",
+                    "alignment": "CENTER",
+                    "lineSpacing": 150,
+                    "direction": "RIGHT_TO_LEFT",
+                    "spacingMode": "NEVER_COLLAPSE",
+                    "spaceAbove": {"magnitude": 7, "unit": "PT"},
+                    "spaceBelow": {"unit": "PT"},
+                    "borderTop": {
+                        "color": {"color": {"rgbColor": {"green": 1}}},
+                        "width": {"magnitude": 1, "unit": "PT"},
+                        "padding": {"magnitude": 2, "unit": "PT"},
+                        "dashStyle": "DOT",
+                    },
+                    "indentFirstLine": {"magnitude": -5, "unit": "PT"},
+                    "keepWithNext": False,
+                    "shading": {"backgroundColor": {"color": {"rgbColor": {"red": 0.101960786}}}},
+                },
+                None,
+            ),
+            ({"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"}, None),
+        ],
+    ),
+    # a member a named style gives is kept, an empty range styles its paragraph, and one ending
+    # at a paragraph's start leaves it out
+    (
+        "wr-text",
+        [_ps(3, 3, "alignment", alignment="START"), _ps(5, 13, "lineSpacing", lineSpacing=115)],
+        "paragraphs",
+        [
+            (
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "alignment": "START",
+                    "lineSpacing": 115,
+                    "direction": "LEFT_TO_RIGHT",
+                },
+                None,
+            ),
+            ({"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"}, None),
+        ],
+    ),
+    # a heading keeps its id as another heading, and takes a new one once normal text again
+    (
+        "wr-styled",
+        [
+            _ps(1, 2, "namedStyleType", namedStyleType="HEADING_2"),
+            _ps(12, 13, "namedStyleType", namedStyleType="TITLE"),
+        ],
+        "paragraphs",
+        [
+            (
+                {"headingId": "$ORIG", "namedStyleType": "HEADING_2", "direction": "LEFT_TO_RIGHT"},
+                None,
+            ),
+            ({"headingId": "$H0", "namedStyleType": "TITLE", "direction": "LEFT_TO_RIGHT"}, None),
+            "$REST",
+        ],
+    ),
+    (
+        "wr-styled",
+        [
+            [_ps(1, 2, "namedStyleType", namedStyleType="NORMAL_TEXT")],
+            [_ps(1, 2, "namedStyleType", namedStyleType="HEADING_1")],
+        ],
+        "paragraphs",
+        [
+            (
+                {"headingId": "$H0", "namedStyleType": "HEADING_1", "direction": "LEFT_TO_RIGHT"},
+                None,
+            ),
+            "$REST",
+        ],
+    ),
+    # bullets: the preset's list, each paragraph indented as its level, a tab its level and gone
+    (
+        "wr-text",
+        [{"insertText": {"location": {"index": 13}, "text": "\t"}}, _bullets(1, 14)],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            (
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                },
+                {"listId": "$1.0", "nestingLevel": 1, "textStyle": {"underline": False}},
+            ),
+        ],
+    ),
+    (
+        "wr-text",
+        [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+        "lists",
+        {
+            "$1.0": {
+                "listProperties": {"nestingLevels": gdocs.PRESETS["NUMBERED_DECIMAL_ALPHA_ROMAN"]}
+            }
+        },
+    ),
+    # a request's tabs indent its list: one tab before each paragraph, a list a tab further in
+    (
+        "wr-text",
+        [
+            {"insertText": {"location": {"index": 13}, "text": "\t"}},
+            {"insertText": {"location": {"index": 1}, "text": "\t"}},
+            _bullets(1, 15),
+        ],
+        "lists",
+        {
+            "$1.0": {
+                "listProperties": {
+                    "nestingLevels": [
+                        {
+                            **level,
+                            "indentFirstLine": {
+                                "magnitude": level["indentFirstLine"]["magnitude"] + 36,
+                                "unit": "PT",
+                            },
+                            "indentStart": {
+                                "magnitude": level["indentStart"]["magnitude"] + 36,
+                                "unit": "PT",
+                            },
+                        }
+                        for level in gdocs.PRESETS["BULLET_DISC_CIRCLE_SQUARE"]
+                    ]
+                }
+            }
+        },
+    ),
+    # the next paragraph joins a list of its preset, another preset starts a list, and a preset
+    # over a list item gives the whole list its glyphs
+    (
+        "wr-text",
+        [[_bullets(1, 2)], [_bullets(13, 14)]],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            )
+        ]
+        * 2,
+    ),
+    (
+        "wr-text",
+        [[_bullets(1, 2)], [_bullets(13, 14, "NUMBERED_DECIMAL_NESTED")]],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$2.0", "textStyle": {"underline": False}},
+            ),
+        ],
+    ),
+    (
+        "wr-text",
+        [
+            [_bullets(1, 14, "NUMBERED_DECIMAL_NESTED")],
+            [_bullets(1, 2, "BULLET_STAR_CIRCLE_SQUARE")],
+        ],
+        "lists",
+        {"$1.0": {"listProperties": {"nestingLevels": gdocs.PRESETS["BULLET_STAR_CIRCLE_SQUARE"]}}},
+    ),
+    # a paragraph of another list joins the first one's list, and the other list keeps its glyphs
+    (
+        "wr-text",
+        [
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_bullets(13, 14)],
+            [_bullets(1, 14, "BULLET_CHECKBOX")],
+        ],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            )
+        ]
+        * 2,
+    ),
+    (
+        "wr-text",
+        [
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_bullets(13, 14)],
+            [_bullets(1, 14, "BULLET_CHECKBOX")],
+        ],
+        "lists",
+        {
+            "$1.0": {"listProperties": {"nestingLevels": gdocs.PRESETS["BULLET_CHECKBOX"]}},
+            "$2.0": {
+                "listProperties": {"nestingLevels": gdocs.PRESETS["BULLET_DISC_CIRCLE_SQUARE"]}
+            },
+        },
+    ),
+    # a bullet styled as its newline, then as a style over its whole paragraph, and its named
+    # style's members taken off with it
+    (
+        "wr-text",
+        [
+            _ts(1, 12, "bold,fontSize", bold=True, fontSize={"magnitude": 14, "unit": "PT"}),
+            _bullets(1, 2),
+            _ts(13, 24, "italic", italic=True),
+            _bullets(13, 14),
+        ],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {
+                    "listId": "$1.0",
+                    "textStyle": {
+                        "bold": True,
+                        "underline": False,
+                        "fontSize": {"magnitude": 14, "unit": "PT"},
+                    },
+                },
+            ),
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"italic": True, "underline": False}},
+            ),
+        ],
+    ),
+    (
+        "wr-text",
+        [
+            _bullets(1, 2),
+            _ts(1, 12, "italic", italic=True),
+            _bullets(13, 14),
+            _ps(13, 14, "namedStyleType", namedStyleType="HEADING_1"),
+        ],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"italic": True}},
+            ),
+            (
+                {
+                    "headingId": "$H0",
+                    "namedStyleType": "HEADING_1",
+                    "direction": "LEFT_TO_RIGHT",
+                    **_DISC,
+                },
+                {"listId": "$1.0", "textStyle": {}},
+            ),
+        ],
+    ),
+    # bullets taken off leave each paragraph indented as its level was, and the list
+    (
+        "wr-text",
+        [
+            {"insertText": {"location": {"index": 13}, "text": "\t\t"}},
+            _bullets(1, 14),
+            {"deleteParagraphBullets": {"range": {"startIndex": 1, "endIndex": 14}}},
+        ],
+        "paragraphs",
+        [
+            ({"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"}, None),
+            (
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 72, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                },
+                None,
+            ),
+        ],
+    ),
+    # text whose link is taken off after a paragraph's newline stays a run apart, as
+    # `Body._join_unlinked` says
+    (
+        "wr-text",
+        [_ts(13, 18, "link", **_url("q")), _ts(13, 18, "link")],
+        "runs",
+        [[["Hello world\n", {}]], [["Secon", {}], ["d para\n", {}]]],
+    ),
+    (
+        "wr-text",
+        [_ts(13, 24, "link", **_url("q")), _ts(13, 25, "*", bold=True)],
+        "runs",
+        [[["Hello world\n", {}]], [["Second para", {"bold": True}], ["\n", {"bold": True}]]],
+    ),
+    # thirteen ranges: each name's ranges in the order of the doubled map of every id
+    (
+        "wr-text",
+        [_named("nr" if n < 2 else "pad", n + 1, n + 2) for n in range(13)],
+        "rangeIds",
+        {
+            "nr": ["$1.0", "$1.1"],
+            "pad": [f"$1.{n}" for n in (2, 7, 8, 10, 11, 3, 12, 5, 4, 9, 6)],
+        },
+    ),
+    # named ranges: by name, each range of a name in the order `named_ranges` says, its start and
+    # end as indices
+    (
+        "wr-text",
+        [_named("nr", 1, 6), _named("span", 3, 15), _named("nr", 7, 11), _named("zero", 0, 3)],
+        "namedRanges",
+        {
+            "nr": {
+                "name": "nr",
+                "namedRanges": [
+                    {
+                        "namedRangeId": "$1.2",
+                        "name": "nr",
+                        "ranges": [{"startIndex": 7, "endIndex": 11}],
+                    },
+                    {
+                        "namedRangeId": "$1.0",
+                        "name": "nr",
+                        "ranges": [{"startIndex": 1, "endIndex": 6}],
+                    },
+                ],
+            },
+            "span": {
+                "name": "span",
+                "namedRanges": [
+                    {
+                        "namedRangeId": "$1.1",
+                        "name": "span",
+                        "ranges": [{"startIndex": 3, "endIndex": 15}],
+                    }
+                ],
+            },
+            "zero": {
+                "name": "zero",
+                "namedRanges": [
+                    {
+                        "namedRangeId": "$1.3",
+                        "name": "zero",
+                        "ranges": [{"startIndex": 0, "endIndex": 3}],
+                    }
+                ],
+            },
+        },
+    ),
+    # an insert inside a range grows it, one at its start or end does not; a delete takes what
+    # of it it deleted, and a range deleted whole is gone
+    (
+        "wr-text",
+        [
+            _named("a", 3, 7),
+            _named("b", 3, 7),
+            _named("c", 3, 7),
+            _named("d", 3, 7),
+            {"insertText": {"location": {"index": 7}, "text": "AT END"}},
+            {"insertText": {"location": {"index": 5}, "text": "IN"}},
+            {"insertText": {"location": {"index": 3}, "text": "S"}},
+            {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 5}}},
+        ],
+        "namedRanges",
+        {
+            k: {
+                "name": k,
+                "namedRanges": [
+                    {
+                        "namedRangeId": f"$1.{n}",
+                        "name": k,
+                        "ranges": [{"startIndex": 1, "endIndex": 6}],
+                    }
+                ],
+            }
+            for n, k in enumerate("abcd")
+        },
+    ),
+    (
+        "wr-text",
+        [
+            _named("gone", 3, 7),
+            _named("cut", 5, 10),
+            {"deleteContentRange": {"range": {"startIndex": 2, "endIndex": 8}}},
+        ],
+        "namedRanges",
+        {
+            "cut": {
+                "name": "cut",
+                "namedRanges": [
+                    {
+                        "namedRangeId": "$1.1",
+                        "name": "cut",
+                        "ranges": [{"startIndex": 2, "endIndex": 4}],
+                    }
+                ],
+            }
+        },
+    ),
+    # replaced text: a range holding it holds what replaced it, one it holds is gone
+    (
+        "wr-text",
+        [
+            _named("holds", 1, 7),
+            _named("held", 2, 4),
+            _named("exact", 1, 4),
+            {
+                "replaceAllText": {
+                    "containsText": {"text": "Hel", "matchCase": True},
+                    "replaceText": "JELLO",
+                }
+            },
+        ],
+        "namedRanges",
+        {
+            "holds": {
+                "name": "holds",
+                "namedRanges": [
+                    {
+                        "namedRangeId": "$1.0",
+                        "name": "holds",
+                        "ranges": [{"startIndex": 1, "endIndex": 9}],
+                    }
+                ],
+            }
+        },
+    ),
+    # a named range's own text replaced: it holds the new text, newlines and all, a range of the
+    # text as sent; deleted with an empty one
+    (
+        "wr-text",
+        [
+            _named("nl", 3, 7),
+            _named("empty", 13, 15),
+            _named("strip", 20, 22),
+            {"replaceNamedRangeContent": {"namedRangeName": "nl", "text": "x\ny"}},
+            {"replaceNamedRangeContent": {"namedRangeName": "empty", "text": ""}},
+            {"replaceNamedRangeContent": {"namedRangeName": "strip", "text": "a\x01b"}},
+        ],
+        "namedRanges",
+        {
+            "nl": {
+                "name": "nl",
+                "namedRanges": [
+                    {
+                        "namedRangeId": "$1.0",
+                        "name": "nl",
+                        "ranges": [{"startIndex": 3, "endIndex": 6}],
+                    }
+                ],
+            },
+            "strip": {
+                "name": "strip",
+                "namedRanges": [
+                    {
+                        "namedRangeId": "$1.2",
+                        "name": "strip",
+                        "ranges": [{"startIndex": 17, "endIndex": 20}],
+                    }
+                ],
+            },
+        },
+    ),
+    # in a header and in a second tab, served with the header's id, per tab
+    (
+        "wr-tabs",
+        [
+            _named("hdr", 0, 3, segmentId="$H"),
+            _named("two", 1, 3, tabId="$T2"),
+            _named("first", 1, 4),
+        ],
+        "tabs",
+        [
+            {
+                "hdr": {
+                    "name": "hdr",
+                    "namedRanges": [
+                        {
+                            "namedRangeId": "$1.0",
+                            "name": "hdr",
+                            "ranges": [{"segmentId": "$H", "startIndex": 0, "endIndex": 3}],
+                        }
+                    ],
+                },
+                "first": {
+                    "name": "first",
+                    "namedRanges": [
+                        {
+                            "namedRangeId": "$1.2",
+                            "name": "first",
+                            "ranges": [{"startIndex": 1, "endIndex": 4}],
+                        }
+                    ],
+                },
+            },
+            {
+                "two": {
+                    "name": "two",
+                    "namedRanges": [
+                        {
+                            "namedRangeId": "$1.1",
+                            "name": "two",
+                            "ranges": [{"startIndex": 1, "endIndex": 3}],
+                        }
+                    ],
+                }
+            },
+        ],
+    ),
+    # deleted by name in the tabs listed, by id, or none at all for no tab
+    (
+        "wr-tabs",
+        [
+            _named("both", 1, 3),
+            _named("both", 1, 3, tabId="$T2"),
+            _named("one", 1, 3),
+            {"deleteNamedRange": {"name": "both", "tabsCriteria": {"tabIds": ["$T2"]}}},
+            {"deleteNamedRange": {"namedRangeId": "$1.2"}},
+            {"deleteNamedRange": {"name": "both", "tabsCriteria": {"tabIds": []}}},
+        ],
+        "tabs",
+        [
+            {
+                "both": {
+                    "name": "both",
+                    "namedRanges": [
+                        {
+                            "namedRangeId": "$1.0",
+                            "name": "both",
+                            "ranges": [{"startIndex": 1, "endIndex": 3}],
+                        }
+                    ],
+                }
+            },
+            None,
+        ],
+    ),
+]
+
+
+def _docs_served(wc, h, doc: str, part: str):
+    """What a row of `_STYLE_DOC_ROWS` reads of a Doc."""
+    from tests._helpers import served_id
+
+    did = served_id("google_drive", doc)
+    if part == "tabs":
+        read = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+        return [t["documentTab"].get("namedRanges") for t in read["tabs"][:2]]
+    if part == "links":
+        flat = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]
+        tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+        return [
+            [
+                pe["textRun"]["textStyle"]["link"]
+                for el in body["content"][1:]
+                for pe in el["paragraph"]["elements"]
+                if "link" in pe.get("textRun", {}).get("textStyle", {})
+            ]
+            for body in (flat, tabbed["tabs"][0]["documentTab"]["body"])
+        ]
+    if part == "headings":
+        tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
+        return [
+            [
+                el["paragraph"]["paragraphStyle"].get("headingId")
+                for el in t["documentTab"]["body"]["content"][1:2]
+            ]
+            for t in tabbed["tabs"][:2]
+        ]
+    if part == "export":
+        return [
+            wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": m}).text
+            for m in ("text/plain", "text/markdown")
+        ]
+    read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+    if part == "paragraphs":
+        return [
+            [el["paragraph"]["paragraphStyle"], el["paragraph"].get("bullet")]
+            for el in read["body"]["content"][1:]
+        ]
+    if part == "runs":
+        return [
+            [
+                [pe["textRun"]["content"], pe["textRun"]["textStyle"]]
+                for pe in el["paragraph"]["elements"]
+            ]
+            for el in read["body"]["content"][1:]
+        ]
+    if part == "rangeIds":
+        return {
+            name: [r["namedRangeId"] for r in v["namedRanges"]]
+            for name, v in read["namedRanges"].items()
+        }
+    return read.get(part)
+
+
+def _docs_ids(value, did: str, batches: int):
+    """``value`` with `$<b>.<n>` the id the ``b``-th batch of a row made ``n``-th
+    (`gdocs.Document.new_id`), `$H0` the first heading id the last batch made, `$ORIG`
+    `wr-styled`'s own, and `wr-tabs`' ids."""
+    names = {"$ORIG": gdocs.heading_id(did, 0), "$H0": gdocs.heading_id(did, f"r{batches}.1")}
+    names["$H1"] = gdocs.heading_id(did, f"r{batches}.2")
+    names |= {
+        f"${b}.{n}": gdocs.segment_id(did, f"r{b}.{n}")
+        for b in range(1, batches + 1)
+        for n in range(13)
+    }
+    text = json.dumps(value)
+    for name, real in names.items():
+        text = text.replace(f'"{name}"', json.dumps(real))
+    return _with_tab_ids(json.loads(text), did)
+
+
+@pytest.mark.parametrize("requests,runs", _STYLE_RUN_ROWS)
+def test_a_text_style_is_set_and_its_runs_split_and_join_as_real_does(wc, wh, requests, runs):
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    assert _docs_write(wc, h, "wr-text", {"requests": requests}).status_code == 200
+    did = served_id("google_drive", "wr-text")
+    content = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]["content"]
+    served = [
+        (pe["textRun"]["content"], pe["textRun"]["textStyle"])
+        for pe in content[1]["paragraph"]["elements"]
+    ]
+    assert served == runs
+
+
+@pytest.mark.parametrize("doc,requests,part,expected", _STYLE_DOC_ROWS)
+def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
+    wc, wh, doc, requests, part, expected
+):
+    from tests._helpers import served_id
+
+    h = wh[_OWNER]
+    did = served_id("google_drive", doc)
+    batches = requests if isinstance(requests[0], list) else [requests]
+    for batch in batches:
+        r = _docs_write(wc, h, doc, {"requests": _docs_ids(batch, did, len(batches))})
+        assert r.status_code == 200, r.text
+    served = _docs_served(wc, h, doc, part)
+    want = _docs_ids(expected, did, len(batches))
+    if isinstance(want, list) and want[-1] == "$REST":
+        served, want = served[: len(want) - 1], want[:-1]
+    assert served == want
 
 
 def _docs_outline(wc, h, doc) -> list[str]:
@@ -19473,6 +20854,11 @@ _DOCS_BATCH_REFUSALS = [
             ("\U0001f1f0\u0301", 3),
         ]
     ),
+    # and where a style split the first character of one in two
+    *(
+        ([_ins(1, seed), _ts(1, 2), _ins(at, "x")], 400, _GRAPHEME.replace("[1]", "[2]"))
+        for seed, at in [("\U0001f1f0\U0001f1f7", 3), ("\U0001f469\u200d\U0001f4bb", 4)]
+    ),
     (
         [{"deleteContentRange": {}}],
         400,
@@ -19596,9 +20982,9 @@ _DOCS_BATCH_REFUSALS = [
     ),
     # what is not served here names itself
     (
-        [{"updateTextStyle": {}}],
+        [{"insertTable": {}}],
         400,
-        "Invalid requests[0].updateTextStyle: 'updateTextStyle' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
+        "Invalid requests[0].insertTable: 'insertTable' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
     ),
     (
         {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "SUGGEST"}},
@@ -19689,12 +21075,413 @@ _DOCS_BATCH_REFUSALS = [
 ]
 
 
+_ERR500 = (500, "Internal error encountered.")
+_SECTION = "Cannot operate on the first section break in the document."
+_NO_FIELD = "At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"
+_UNIT = "Unsupported dimension unit:UNIT_UNSPECIFIED"
+_NO_INDEX = "Invalid range: must contain a start and end index"
+_NO_NAME = "Invalid name: must be at least 1 and no more than 256 characters."
+_BAD_TAB = {"startIndex": 1, "endIndex": 3, "tabId": "t.nope"}
+_NOPE_SEGMENT = {"startIndex": 1, "endIndex": 3, "segmentId": "kix.nope"}
+_NO_UNIT = {"fontSize": {"magnitude": 3}}
+_RED3 = {"foregroundColor": {"color": {"rgbColor": {"red": 3}}}}
+_BASELINE = "The baseline offset type is invalid: null"
+_DASH = "The dash style is invalid: UNRECOGNIZED"
+_BORDER = {
+    "color": {"color": {"rgbColor": {"red": 1}}},
+    "width": {"magnitude": 1, "unit": "PT"},
+    "padding": {"magnitude": 1, "unit": "PT"},
+}
+
+# Refused on `wr-text` as real refuses the style, bullet and named range requests
+# (`routers.google_docs`), each `(kind, request, message)`, a 500 by its status as well, and in the
+# order real checks.
+_DOCS_STYLE_REFUSALS = [
+    ("updateTextStyle", {}, "Update text style requests must specify an update range."),
+    (
+        "updateTextStyle",
+        {"textStyle": {"bold": True}},
+        "Update text style requests must specify an update range.",
+    ),
+    ("updateTextStyle", _ts(1, 6, ""), _NO_FIELD),
+    ("updateTextStyle", _ts(1, 6, ","), _NO_FIELD),
+    ("updateTextStyle", _ts(1, 6, "nope"), "Invalid field: nope"),
+    ("updateTextStyle", _ts(1, 6, "bold.x"), "Invalid field: bold.x"),
+    ("updateTextStyle", _ts(1, 6, "textStyle.bold"), "Invalid field: text_style"),
+    ("updateTextStyle", _ts(1, 6, "link.nope"), "Invalid field: link.nope"),
+    ("updateTextStyle", _ts(1, 6, "link.nope.z"), "Invalid field: link.nope"),
+    ("updateTextStyle", _ts(1, 6, "bold.x.Y"), "Invalid field: bold.x"),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "fontSize.magnitude.x.y"),
+        "Invalid field: fontSize.magnitude.x.y",
+    ),
+    ("updateTextStyle", _ts(1, 6, "bold.x,nope"), "Invalid field: nope"),
+    ("updateTextStyle", _ts(1, 6, "fooBar"), "Invalid field: foo_bar"),
+    ("updateTextStyle", _ts(1, 6, "."), _ERR500),
+    (
+        "updateTextStyle",
+        {"range": _BAD_TAB, "fields": "nope"},
+        "Cannot apply request to an invalid tab ID.",
+    ),
+    ("updateTextStyle", {"range": _NOPE_SEGMENT, "fields": "bold"}, _NO_SEGMENT),
+    (
+        "updateTextStyle",
+        {"range": {"endIndex": 3, "segmentId": "kix.nope"}, "fields": "bold"},
+        _NO_INDEX,
+    ),
+    (
+        "updateTextStyle",
+        {"range": {"startIndex": -1, "endIndex": 3, "segmentId": "kix.nope"}, "fields": "bold"},
+        "Index must be greater than or equal to 0.",
+    ),
+    (
+        "updateTextStyle",
+        {"range": {"startIndex": 6, "endIndex": 2}, "fields": "nope"},
+        "Invalid range: end index cannot be less than start index",
+    ),
+    (
+        "updateTextStyle",
+        _ts(20, 40),
+        "Index 39 must be less than the end index of the referenced segment, 25.",
+    ),
+    ("updateTextStyle", {"range": {"startIndex": 0, "endIndex": 3}}, _NO_FIELD),
+    ("updateTextStyle", _ts(0, 3, "fontSize", **_NO_UNIT), _UNIT),
+    ("updateTextStyle", _ts(3, 3, "fontSize", **_NO_UNIT), _UNIT),
+    ("updateTextStyle", _ts(0, 0), "The range should not be empty."),
+    ("updateTextStyle", _ts(3, 3), "The range should not be empty."),
+    ("updateTextStyle", _ts(0, 3), _SECTION),
+    ("updateTextStyle", _ts(1, 6, "*", **_NO_UNIT), _UNIT),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "weightedFontFamily", weightedFontFamily={"fontFamily": ""}),
+        "Invalid `weighted_font_family.font_family`. Must provide a valid font family.",
+    ),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "weightedFontFamily", weightedFontFamily={"weight": 700}),
+        "Invalid `weighted_font_family.font_family`. Must provide a valid font family.",
+    ),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "weightedFontFamily", weightedFontFamily={"fontFamily": "Roboto", "weight": 150}),
+        "Font weight 150 is not supported.",
+    ),
+    (
+        "updateTextStyle",
+        _ts(
+            1, 6, "weightedFontFamily", weightedFontFamily={"fontFamily": "Roboto", "weight": 1000}
+        ),
+        "Font weight 1000 is not supported.",
+    ),
+    ("updateTextStyle", _ts(1, 6, "link", link={}), "Links must include at least one type."),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "link", link={"headingId": "h.nope"}),
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "link", link={"heading": {}}),
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "link", link={"bookmarkId": "id.nope"}),
+        "Cannot link to an invalid bookmark ID.",
+    ),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "link", link={"tabId": "t.nope"}),
+        "Cannot link to an invalid tab ID.",
+    ),
+    ("updateTextStyle", _ts(1, 6, "foregroundColor", **_RED3), _ERR500),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "backgroundColor", backgroundColor={"color": {"rgbColor": {"green": -0.5}}}),
+        _ERR500,
+    ),
+    ("updateTextStyle", _ts(1, 5, "baselineOffset", baselineOffset=99), _BASELINE),
+    ("updateTextStyle", _ts(1, 5, "baselineOffset", baselineOffset=-1), _BASELINE),
+    # the values in real's order, whatever `fields` lists first
+    ("updateTextStyle", _ts(1, 6, "fontSize,foregroundColor", **_NO_UNIT, **_RED3), _ERR500),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "weightedFontFamily,fontSize", **_NO_UNIT, weightedFontFamily={"fontFamily": ""}),
+        _UNIT,
+    ),
+    ("updateTextStyle", _ts(1, 6, "fontSize,link", **_NO_UNIT, link={}), _UNIT),
+    (
+        "updateTextStyle",
+        _ts(1, 6, "link,weightedFontFamily", link={}, weightedFontFamily={"fontFamily": ""}),
+        "Invalid `weighted_font_family.font_family`. Must provide a valid font family.",
+    ),
+    (
+        "updateTextStyle",
+        _ts(
+            1,
+            6,
+            "weightedFontFamily,link",
+            link={},
+            weightedFontFamily={"fontFamily": "Arial", "weight": 150},
+        ),
+        "Links must include at least one type.",
+    ),
+    ("updateParagraphStyle", {}, _NO_INDEX),
+    (
+        "updateParagraphStyle",
+        {"paragraphStyle": {"alignment": "CENTER"}, "fields": "alignment"},
+        _NO_INDEX,
+    ),
+    ("updateParagraphStyle", _ps(1, 3, ""), _NO_FIELD),
+    ("updateParagraphStyle", _ps(1, 3, "nope"), "Invalid field: nope"),
+    ("updateParagraphStyle", _ps(1, 3, "spaceAbove.nope"), "Invalid field: spaceAbove.nope"),
+    ("updateParagraphStyle", _ps(1, 3, "nope,borderTop.width"), "Invalid field: nope"),
+    (
+        "updateParagraphStyle",
+        _ps(1, 3, "borderLeft.width,nope"),
+        "Unallowed field: cannot request subfield of borderLeft",
+    ),
+    ("updateParagraphStyle", {"range": _NOPE_SEGMENT, "fields": "alignment"}, _NO_SEGMENT),
+    (
+        "updateParagraphStyle",
+        _ps(20, 40, "alignment"),
+        "Index 39 must be less than the end index of the referenced segment, 25.",
+    ),
+    ("updateParagraphStyle", _ps(1, 3, "headingId", headingId="h.x"), "Unallowed field: headingId"),
+    ("updateParagraphStyle", _ps(1, 3, "tabStops"), "Unallowed field: tabStops"),
+    (
+        "updateParagraphStyle",
+        _ps(1, 3, "headingId,spaceAbove", spaceAbove={"magnitude": 5}),
+        "Unallowed field: headingId",
+    ),
+    (
+        "updateParagraphStyle",
+        _ps(1, 3, "*", alignment="CENTER"),
+        "Named style property is not inherited and cannot be cleared.",
+    ),
+    (
+        "updateParagraphStyle",
+        _ps(1, 3, "namedStyleType", namedStyleType="NAMED_STYLE_TYPE_UNSPECIFIED"),
+        "Named style property is not inherited and cannot be cleared.",
+    ),
+    ("updateParagraphStyle", _ps(1, 3, "spaceAbove", spaceAbove={"magnitude": 5}), _UNIT),
+    (
+        "updateParagraphStyle",
+        _ps(1, 3, "borderTop", borderTop={"width": {"magnitude": 1, "unit": "PT"}}),
+        _UNIT,
+    ),
+    (
+        "updateParagraphStyle",
+        _ps(
+            1,
+            3,
+            "borderTop",
+            borderTop={
+                "color": {},
+                "width": {"magnitude": 1, "unit": "PT"},
+                "padding": {"magnitude": 1, "unit": "PT"},
+            },
+        ),
+        "The dash style is invalid: DASH_STYLE_UNSPECIFIED",
+    ),
+    ("updateParagraphStyle", _ps(1, 5, "borderTop", borderTop={**_BORDER, "dashStyle": 99}), _DASH),
+    ("updateParagraphStyle", _ps(1, 5, "borderTop", borderTop={**_BORDER, "dashStyle": -1}), _DASH),
+    ("updateParagraphStyle", _ps(1, 5, "alignment", alignment=-1), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "alignment", alignment=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "namedStyleType", namedStyleType=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "namedStyleType", namedStyleType=-1), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "direction", direction=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "direction", direction=-1), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "spacingMode", spacingMode=99), _ERR500),
+    ("updateParagraphStyle", _ps(1, 5, "spacingMode", spacingMode=-1), _ERR500),
+    ("updateParagraphStyle", _ps(0, 3, "alignment", alignment="CENTER"), _SECTION),
+    ("updateParagraphStyle", _ps(0, 3, "spaceAbove", spaceAbove={"magnitude": 5}), _UNIT),
+    ("updateParagraphStyle", {"range": {"startIndex": 0, "endIndex": 3}}, _NO_FIELD),
+    ("createParagraphBullets", {}, _NO_INDEX),
+    (
+        "createParagraphBullets",
+        {"range": {"startIndex": 1, "endIndex": 2}},
+        "Unknown bullet preset BULLET_GLYPH_PRESET_UNSPECIFIED",
+    ),
+    ("createParagraphBullets", _bullets(1, 2, 99), "Unknown bullet preset UNRECOGNIZED"),
+    ("createParagraphBullets", _bullets(1, 2, -1), "Unknown bullet preset UNRECOGNIZED"),
+    ("createParagraphBullets", {"range": _BAD_TAB}, "Cannot apply request to an invalid tab ID."),
+    (
+        "createParagraphBullets",
+        {"range": {"startIndex": 5, "endIndex": 30}},
+        "Index 29 must be less than the end index of the referenced segment, 25.",
+    ),
+    (
+        "createParagraphBullets",
+        {"range": {"startIndex": 0, "endIndex": 2}},
+        "Unknown bullet preset BULLET_GLYPH_PRESET_UNSPECIFIED",
+    ),
+    ("createParagraphBullets", _bullets(0, 2), _SECTION),
+    ("deleteParagraphBullets", {}, _NO_INDEX),
+    ("deleteParagraphBullets", {"range": _NOPE_SEGMENT}, _NO_SEGMENT),
+    ("deleteParagraphBullets", {"range": {"startIndex": 0, "endIndex": 2}}, _SECTION),
+    ("createNamedRange", {}, _NO_INDEX),
+    (
+        "createNamedRange",
+        {"range": {"startIndex": 4, "endIndex": 2}},
+        "Invalid range: end index cannot be less than start index",
+    ),
+    ("createNamedRange", {"range": {"startIndex": 1, "endIndex": 2}}, _NO_NAME),
+    (
+        "createNamedRange",
+        {"range": {"startIndex": 1, "endIndex": 2, "tabId": "t.nope"}},
+        "Cannot apply request to an invalid tab ID.",
+    ),
+    (
+        "createNamedRange",
+        {"range": {"startIndex": 1, "endIndex": 30}},
+        "Index 29 must be less than the end index of the referenced segment, 25.",
+    ),
+    ("createNamedRange", {"range": {"startIndex": 2, "endIndex": 2}}, _NO_NAME),
+    ("createNamedRange", _named("x" * 257, 1, 2)["createNamedRange"], _NO_NAME),
+    ("createNamedRange", _named("\U0001f600" * 129, 1, 2)["createNamedRange"], _NO_NAME),
+    (
+        "createNamedRange",
+        _named("x" * 257, 1, 2, segmentId="kix.nope")["createNamedRange"],
+        _NO_SEGMENT,
+    ),
+    (
+        "createNamedRange",
+        _named("x", 2, 2)["createNamedRange"],
+        "Invalid range: endIndex must be strictly greater than startIndex.",
+    ),
+    ("deleteNamedRange", {}, "ID or name for named range must be set."),
+    ("deleteNamedRange", {"name": ""}, _ERR500),
+    ("deleteNamedRange", {"name": "nope", "tabsCriteria": {"tabIds": ["t.nope"]}}, _ERR500),
+    ("deleteNamedRange", {"name": "nope"}, "No named range with name: nope"),
+    ("deleteNamedRange", {"namedRangeId": "kix.nope"}, "No named range with ID: kix.nope"),
+    ("replaceNamedRangeContent", {}, "Must specify a named range reference"),
+    ("replaceNamedRangeContent", {"text": "a"}, "Must specify a named range reference"),
+    (
+        "replaceNamedRangeContent",
+        {"namedRangeName": "nope", "text": "a", "tabsCriteria": {"tabIds": ["t.nope"]}},
+        _ERR500,
+    ),
+    (
+        "replaceNamedRangeContent",
+        {"namedRangeId": "kix.nope", "text": "a"},
+        "No named range with ID kix.nope",
+    ),
+]
+
+
+def _style_refusal(kind, request, message):
+    body = [request] if kind in request else [{kind: request}]
+    if isinstance(message, tuple):
+        return (body, *message)
+    return body, 400, f"Invalid requests[0].{kind}: {message}"
+
+
+_DOCS_BATCH_REFUSALS += [_style_refusal(*row) for row in _DOCS_STYLE_REFUSALS]
+_DOCS_BATCH_REFUSALS += [
+    (
+        [
+            {
+                "createParagraphBullets": {
+                    "range": {"startIndex": 1, "endIndex": 2},
+                    "bulletPreset": "NOPE",
+                }
+            }
+        ],
+        400,
+        "Invalid value at 'requests[0].create_paragraph_bullets.bullet_preset' (type.googleapis.com/google.apps.docs.v1.BulletGlyphPreset), \"NOPE\"",
+    ),
+    (
+        [_ts(1, 6, "link", link={"url": "https://example.com/", "tabId": "t.0"})],
+        400,
+        "Invalid value at 'requests[0].update_text_style.text_style.link' (oneof), oneof field 'destination' is already set. Cannot set 'tabId'",
+    ),
+    (
+        [{"deleteNamedRange": {"name": "x", "namedRangeId": "kix.x"}}],
+        400,
+        "Invalid value at 'requests[0].delete_named_range' (oneof), oneof field 'named_range_reference' is already set. Cannot set 'namedRangeId'",
+    ),
+    # a 500 a colour leads to comes at its own request, ahead of a later request's refusal
+    ([_ts(1, 6, "foregroundColor", **_RED3), _ts(0, 3)], *_ERR500),
+    (
+        [_ts(0, 3), _ts(1, 6, "foregroundColor", **_RED3)],
+        400,
+        f"Invalid requests[0].updateTextStyle: {_SECTION}",
+    ),
+    # ranges whose content `_docs_replace_named_range` says cannot be replaced
+    (
+        [
+            _named("whole", 13, 25),
+            {"replaceNamedRangeContent": {"namedRangeName": "whole", "text": "P"}},
+        ],
+        400,
+        "Invalid requests[1].replaceNamedRangeContent: Named range with ID $MADE contains content that cannot be replaced.",
+    ),
+    (
+        [
+            _named("zero", 0, 3),
+            {"replaceNamedRangeContent": {"namedRangeName": "zero", "text": "X"}},
+        ],
+        400,
+        "Invalid requests[1].replaceNamedRangeContent: Named range with ID $MADE contains content that cannot be replaced.",
+    ),
+    *[
+        (
+            [
+                _ins(1, "\U0001f600"),
+                _named("half", start, end),
+                {"replaceNamedRangeContent": {"namedRangeName": "half", "text": "X"}},
+            ],
+            400,
+            "Invalid requests[2].replaceNamedRangeContent: Named range with ID $MADE contains content that cannot be replaced.",
+        )
+        for start, end in ((2, 4), (1, 2))
+    ],
+]
+
+
 def _tab_refusal(kind: str, message: str, i: int = 0) -> str:
     return f"Invalid requests[{i}].{kind}: {message}"
 
 
 def _tab_refusals(kind: str, rows) -> list:
     return [(requests, 400, _tab_refusal(kind, message, i)) for requests, message, i in rows]
+
+
+def _heading_in(tab: str) -> dict:
+    return {
+        "updateParagraphStyle": {
+            "range": {"startIndex": 1, "endIndex": 2, "tabId": tab},
+            "paragraphStyle": {"namedStyleType": "HEADING_2"},
+            "fields": "namedStyleType",
+        }
+    }
+
+
+# A heading looked for in the tab a link names, else the range's: refused on `wr-tabs` as real
+# refused them (`routers.google_docs._docs_link`), `$HEAD` the heading the first request makes.
+_HEADING_LINK_REFUSALS = [
+    (
+        [_heading_in("$T2"), _ts(2, 4, "link", link={"headingId": "$HEAD"})],
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        [_heading_in("$T2"), _ts(2, 4, "link", link={"heading": {"id": "$HEAD"}})],
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        [_heading_in("t.0"), _ts(2, 4, "link", link={"heading": {"id": "$HEAD", "tabId": "$T2"}})],
+        "Cannot link to an invalid heading ID.",
+    ),
+    (
+        [
+            _heading_in("$T2"),
+            _ts(2, 4, "link", link={"heading": {"id": "$HEAD", "tabId": "t.nope"}}),
+        ],
+        "Cannot link to an invalid tab ID.",
+    ),
+]
 
 
 # Refused on `wr-tabs` as real refused them, its ids written `$H`, `$F` and `$N` for its header,
@@ -20344,6 +22131,7 @@ _DOCS_TAB_REFUSALS = [
                     ("title.x,nope", "nope"),
                     ("icon_emoji.x", "iconEmoji.x"),
                     ("TITLE.x", "title.x"),
+                    ("title.x.Y", "title.x.y"),
                 ]
             ),
             (
@@ -20438,6 +22226,8 @@ def _tab_ids(did: str) -> dict[str, str]:
         "$KID": gdocs.tab_id(did, "2"),
         "$T3": gdocs.tab_id(did, "3"),
         "$NEW0": gdocs.tab_id(did, "r1.0"),
+        "$MADE": gdocs.segment_id(did, "r1.0"),
+        "$HEAD": gdocs.heading_id(did, "r1.1"),
     }
 
 
@@ -20462,7 +22252,11 @@ def _with_tab_ids(value, did: str):
 @pytest.mark.parametrize(
     "doc,body,status,message",
     [("wr-text", *row) for row in _DOCS_BATCH_REFUSALS]
-    + [("wr-tabs", *row) for row in _DOCS_TAB_REFUSALS],
+    + [("wr-tabs", *row) for row in _DOCS_TAB_REFUSALS]
+    + [
+        ("wr-tabs", requests, 400, f"Invalid requests[1].updateTextStyle: {message}")
+        for requests, message in _HEADING_LINK_REFUSALS
+    ],
 )
 def test_a_batch_update_real_refuses_is_refused_with_reals_message(
     wc, wh, doc, body, status, message
@@ -20510,6 +22304,16 @@ def test_a_batch_update_takes_what_real_takes(wc, wh):
         [_ins(1, "a\u200d\U0001f600"), _ins(3, "x")],
         [_ins(1, "\U0001f1f0\U0001f1f7\U0001f1fa"), _ins(5, "x")],
         [_ins(1, "가\u1100"), _ins(2, "x")],
+        # a value `fields` does not name is not read (`routers.google_docs._docs_text_style`)
+        *(
+            [_ts(1, 6, "bold", **style)]
+            for style in (
+                {"fontSize": {"magnitude": 3}},
+                {"foregroundColor": {"color": {"rgbColor": {"red": 3}}}},
+                {"link": {}},
+                {"weightedFontFamily": {"fontFamily": "Arial", "weight": 150}},
+            )
+        ),
     ]
     for requests in taken:
         assert _docs_write(wc, h, "wr-text", {"requests": requests}).status_code == 200

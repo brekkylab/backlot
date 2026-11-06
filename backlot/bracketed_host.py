@@ -110,15 +110,29 @@ def _refused_ahead(scope: Scope) -> bool:
     """Whether the front door refuses the request's target or method ahead of its `Host`, as it
     refuses them under its own: a raw byte of :data:`_RAW_AHEAD`; a header Cloudflare refuses twice
     (``backlot.auth.repeated_cloudflare_refused_header``); a target past GitHub's bound
-    (``backlot.routers.github.target_past_its_bound``); a `%00` on Slack, Notion and HubSpot
-    (``backlot.request_target.escape_answer``); in front of Jira and Confluence the CDN's 400s and
+    (``backlot.routers.github.target_past_its_bound``); a `%00` on Slack
+    (``backlot.request_target.escape_answer``); on Notion and HubSpot an escape Cloudflare refuses
+    (``backlot.request_target.refused_escape``); in front of Jira and Confluence the CDN's 400s and
     405s (``backlot.errors.atlassian.cdn_refusal``), where its 403s come after the `Host`'s; and on
-    Linear and Fireflies a path Cloudflare refuses (``backlot.request_target.refused_path``) and
-    `TRACE`.
+    Linear and Fireflies `TRACE` and a path Cloudflare refuses
+    (``backlot.request_target.refused_path``).
 
-    Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]`, and on 2026-11-04 beside `[x]` as well
-    for a `%2` or `%` that ends a path sent with no `?`, each beside the door's own `Host` too; the
-    rows of ``_HOSTS`` in ``tests/test_request_target.py`` hold each request and its answer."""
+    Measured on 2026-11-03 (UTC) beside `[0:0]` and `[v1.x]` and beside the door's own `Host`. Each
+    front door answered a raw byte of each kind in the path as the table
+    :data:`_RAW_AHEAD` says, and so did Slack, Drive, Jira, Notion, Linear and Graph one after the
+    path's `?`; Notion, HubSpot, Linear and Fireflies answered an `Authorization` sent twice with
+    Cloudflare's 400 page; GitHub answered a target of 8,214 bytes with its 414. Jira and Confluence
+    answered `%00`, `%zz`, `TRACE` and `CONNECT`, and Jira `MKCALENDAR` and `UNSUBSCRIBE`, as they
+    did under the tenant's `Host`, and `PROPFIND`, `PATCH`, `/..;/`, a `%3Cscript%3E` segment and a
+    `;` with the CDN's 403 for the `Host`. Linear and Fireflies answered `%00`, `%zz`, `/../graphql`
+    and `TRACE` as under their own `Host`, and `CONNECT` and `PURGE` as the `Host` says, and on
+    2026-11-04 beside `[x]` as well a `%2` or `%` that ends a path sent with no `?` as the `Host`
+    says. Notion and HubSpot answered `%zz`, with more path after it or none, and HubSpot a
+    `%2` a query followed, as under their own `Host`, and a `{` and Notion a `%2` that ends the
+    target as the `Host` says. GitHub and Graph answered the `Host` beside `%00`, GitHub beside a
+    broken escape in its query, Slack beside a broken escape, Slack, Drive, Jira, Confluence and
+    Graph beside an `Authorization` sent twice, and each host but S3 beside `%0A`, `%80`, a raw `\\`
+    and a raw `"`."""
     path, method, sent = scope["path"], scope["method"], scope["raw_path"]
     door = (request_target.front_door(path) or (None, None))[0]
     if request_target.kinds_sent(scope) & _RAW_AHEAD.get(door, set()):
@@ -127,16 +141,19 @@ def _refused_ahead(scope: Scope) -> bool:
         return True
     if door == "github":
         return github.target_past_its_bound(scope)
-    if _under(path, "/slack") or any(_under(path, p) for p in ("/notion", "/hubspot")):
+    if _under(path, "/slack"):
         return b"%00" in sent
+    if any(_under(path, p) for p in ("/notion", "/hubspot")):
+        own = b"/" + sent.partition(b"/")[2].partition(b"/")[2]
+        return request_target.refused_escape(own, request_target.path_ends_the_target(scope))
     if errors.atlassian.owns(path):
         query = scope["query_string"].decode("latin-1")
         refusal = errors.atlassian.cdn_refusal(method, sent.decode("latin-1"), query)
         return refusal is not None and refusal.status != 403
     if any(_under(path, p) for p in ("/linear", "/fireflies")):
         own = b"/" + sent.partition(b"/")[2].partition(b"/")[2]
-        query_or_none = scope["query_string"] or None
-        return method == "TRACE" or request_target.refused_path(own, query_or_none)
+        ends = request_target.path_ends_the_target(scope)
+        return method == "TRACE" or request_target.refused_path(own, ends)
     return False
 
 

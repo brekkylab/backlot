@@ -22,13 +22,12 @@ import functools
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, cast
 
 from graphql import (
     DocumentNode,
     ExecutionContext,
     ExecutionResult,
-    FragmentDefinitionNode,
     GraphQLError,
     GraphQLID,
     GraphQLInputObjectType,
@@ -50,7 +49,8 @@ from graphql import (
     validate,
 )
 from graphql.execution.collect_fields import collect_fields
-from graphql.execution.values import get_argument_values, get_variable_values
+from graphql.execution.values import get_argument_values
+from graphql.pyutils import Path as ResponsePath
 from graphql.type.introspection import TypeMetaFieldDef
 
 from backlot.graphql import body as request_body
@@ -362,7 +362,9 @@ def persisted_query_refusal(payload: dict) -> Result | None:
     return None
 
 
-def from_sdl(module_file: str, name: str, resolvers, scalars=None, roots=()) -> "Engine":
+def from_sdl(
+    module_file: str, name: str, resolvers, scalars=None, roots=(), checks=None
+) -> "Engine":
     """An :class:`Engine` over the ``<name>.graphql`` sitting beside ``module_file``.
 
     Each vendor's resolver module keeps its SDL as a sibling file, so this is the one place that
@@ -372,6 +374,7 @@ def from_sdl(module_file: str, name: str, resolvers, scalars=None, roots=()) -> 
         resolvers,
         scalars,
         roots,
+        checks,
     )
 
 
@@ -403,6 +406,10 @@ class Engine:
     what is emitted.
 
     ``roots`` names the root types :func:`_with_roots` adds.
+
+    ``checks`` maps a query root field to ``fn(info, **arguments)``, which raises the
+    ``GraphQLError`` its resolver refuses the field's arguments with before it looks anything up;
+    :meth:`run` runs them ahead of the run.
     """
 
     def __init__(
@@ -411,6 +418,7 @@ class Engine:
         resolvers: Mapping[str, Mapping[str, Resolver]] | None = None,
         scalars: Mapping[str, Scalar] | None = None,
         roots: tuple[str, ...] = (),
+        checks: Mapping[str, Resolver] | None = None,
     ):
         self.schema: GraphQLSchema = build_schema(sdl)
         # validate() would do this on the first request otherwise, surfacing a vendor's broken
@@ -440,9 +448,12 @@ class Engine:
                         f"resolver map references unknown field {type_name}.{field_name}"
                     )
                 field.resolve = _marking_refusals(fn)
-                check = getattr(fn, "check_arguments", None)
-                if check is not None:
-                    field.check_arguments = check
+        query = self.schema.query_type
+        self._checks: dict[str, Resolver] = {}
+        for field_name, fn in (checks or {}).items():
+            if field_name not in query.fields:
+                raise ValueError(f"check map references unknown field {query.name}.{field_name}")
+            self._checks[field_name] = _marking_refusals(fn)
 
     def resolve(
         self,
@@ -538,11 +549,11 @@ class Engine:
         variables_in_a_plain_object: bool = False,
     ) -> Result:
         """Coerce the variables of ``operation``, refused with Apollo Server's code, and run it
-        with ``context``, the errors of the root arguments graphql-js refuses
-        (:meth:`_refused_root_arguments`) ahead of the run's at the other root fields, or in its
-        place where one is a non-null field's. With ``variables_in_a_plain_object``, both read the
-        coerced variables in a :class:`_PlainObject`, as api.linear.app does; api.fireflies.ai read
-        a ``$__proto__`` given a default as any other variable on 2026-11-04 (UTC)."""
+        with ``context``, the errors of the root arguments graphql-js and the vendor's ``checks``
+        refuse (:meth:`_refused_root_arguments`) ahead of the run's at the other root fields, or in
+        its place where one is a non-null field's. With ``variables_in_a_plain_object``, both read
+        the coerced variables in a :class:`_PlainObject`, as api.linear.app does; api.fireflies.ai
+        read a ``$__proto__`` given a default as any other variable on 2026-11-04 (UTC)."""
         variables = operation.variables
         coercion = js_words.coerce_variable_values(
             self.schema, list(operation.operation.variable_definitions), variables
@@ -575,7 +586,9 @@ class Engine:
         argued, nulled = (
             ([], False)
             if on_a_root
-            else self._refused_root_arguments(operation, variables, variables_in_a_plain_object)
+            else self._refused_root_arguments(
+                operation, variables, variables_in_a_plain_object, context
+            )
         )
         if nulled:
             result = ExecutionResult(None, argued)
@@ -620,7 +633,7 @@ class Engine:
         )
 
     def _refused_root_arguments(
-        self, operation: Operation, variables: Any, in_a_plain_object: bool
+        self, operation: Operation, variables: Any, in_a_plain_object: bool, context: Any
     ) -> tuple[list[GraphQLError], bool]:
         """The errors of the root fields of ``operation`` whose arguments graphql-js refuses, in
         the order the fields come, and whether the last is a non-null field's, which nulls the
@@ -632,25 +645,31 @@ class Engine:
         the same error at a `__type(name: $y)` sent `null` before it on 2026-10-26; and it answered
         one or two `__type(name: $y)` sent `null` ahead of an earlier `issue` it does not hold, the
         data null, and ahead of an `issue` before a served `__type`, on 2026-10-29. A refused
-        directive refuses none here, and the run answers it."""
+        directive refuses none here, and the run answers it.
+
+        The vendor's ``checks`` then refuse the arguments of the other root fields, in the order
+        the fields come and ending at a non-null field's alike: a resolver's refusals made before
+        its first lookup answer ahead of every lookup, and after every refusal graphql-js makes as
+        it starts the fields. api.linear.app answered `Internal server error` at a later
+        `issue(id: $x)` sent `null` ahead of `Argument Validation Error` for `first` with `last` at
+        an earlier `issues` on 2026-11-06 (UTC)."""
         root = self.schema.get_root_type(operation.operation.operation)
-        fragments = {
-            d.name.value: d
-            for d in operation.document.definitions
-            if isinstance(d, FragmentDefinitionNode)
-        }
-        coerced = get_variable_values(
-            self.schema, list(operation.operation.variable_definitions), variables or {}
+        # `run` refused the variables graphql-js refuses, so the build answers a context.
+        execution = cast(
+            ExecutionContext,
+            (_PlainObjectExecution if in_a_plain_object else ExecutionContext).build(
+                self.schema, operation.document, None, context, variables, operation.name
+            ),
         )
-        if in_a_plain_object:
-            coerced = _PlainObject(coerced)
+        coerced = execution.variable_values
         try:
             fields = collect_fields(
-                self.schema, fragments, coerced, root, operation.operation.selection_set
+                self.schema, execution.fragments, coerced, root, operation.operation.selection_set
             )
         except GraphQLError:
             return [], False
         refused: list[GraphQLError] = []
+        checked = []
         for key, nodes in fields.items():
             name = nodes[0].name.value
             field = (
@@ -661,19 +680,20 @@ class Engine:
             if field is None:
                 continue
             try:
-                args = get_argument_values(field, nodes[0], coerced)
-                check = getattr(field, "check_arguments", None)
-                if check is not None:
-                    try:
-                        check(args)
-                    except GraphQLError as error:
-                        error.refusal = True
-                        raise
+                arguments = get_argument_values(field, nodes[0], coerced)
             except GraphQLError as error:
-                loc = located_error(error, nodes, [key])
-                if getattr(error, "refusal", False):
-                    loc.refusal = True
-                refused.append(loc)
+                refused.append(located_error(error, nodes, [key]))
+                if isinstance(field.type, GraphQLNonNull):
+                    return refused, True
+                continue
+            if root is self.schema.query_type and name in self._checks:
+                checked.append((key, nodes, field, self._checks[name], arguments))
+        for key, nodes, field, check, arguments in checked:
+            path = ResponsePath(None, key, root.name)
+            try:
+                check(execution.build_resolve_info(field, nodes, root, path), **arguments)
+            except GraphQLError as error:
+                refused.append(located_error(error, nodes, [key]))
                 if isinstance(field.type, GraphQLNonNull):
                     return refused, True
         return refused, False

@@ -456,28 +456,27 @@ def test_linear_search_issues(client, admin_h, tokens_yaml, variables, caller, i
 _VALIDATION = "Argument Validation Error"
 
 
-@pytest.mark.parametrize(
-    "variables,message",
-    [
-        ({"term": ""}, _VALIDATION),
-        ({"term": "x", "teamId": "ENG"}, _VALIDATION),
-        ({"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"}, _VALIDATION),
-        ({"term": "a\ud800b", "teamId": "ENG"}, _VALIDATION),
-        ({"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}}, _VALIDATION),
-        ({"term": "a\ud800b", "first": 1, "last": 1}, None),
-    ],
-)
-def test_linear_search_issues_refuses_what_real_refuses(client, admin_h, variables, message):
-    """Each row refused as `resolve_search_issues` and `_search_backend_failed` record, a
-    lone-surrogate term beside three of them, and none with the search backend's error. `_slice`
-    refuses `first` with `last` in its own words, where Linear answers `_VALIDATION`, so that row's
-    message is `None`. The body is `json.dumps`'s, which writes a lone surrogate as its escape."""
-    body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
+_SEARCH_REFUSALS = [
+    {"term": ""},
+    {"term": "x", "teamId": "ENG"},
+    {"term": "x", "teamId": "11111111-1111-0111-8111-111111111111"},
+    {"term": "a\ud800b", "teamId": "ENG"},
+    {"term": "a\ud800b", "filter": {"id": {"eq": "not-a-uuid"}}},
+    {"term": "a\ud800b", "first": 1, "last": 1},
+]
+
+
+def test_linear_search_issues_refuses_what_real_refuses(client, admin_h):
+    """Each row's variables refused with `_VALIDATION` and `data: null`, as `resolve_search_issues`
+    and `_search_backend_failed` record, a lone-surrogate term beside three of them. `json.dumps`
+    writes the lone surrogate as an escape."""
     headers = {**admin_h, "Content-Type": "application/json"}
-    r = client.post("/linear/graphql", content=body, headers=headers).json()
-    assert r["data"] is None
-    assert r["errors"][0]["message"] != "Failed to query search backend"
-    assert message is None or r["errors"][0]["message"] == message
+    answered = []
+    for variables in _SEARCH_REFUSALS:
+        body = json.dumps({"query": _SEARCH, "variables": variables}).encode()
+        r = client.post("/linear/graphql", content=body, headers=headers).json()
+        answered.append((r["data"], r["errors"][0]["message"]))
+    assert answered == [(None, _VALIDATION)] * len(_SEARCH_REFUSALS)
 
 
 def test_linear_search_ranks_by_relevance_unless_order_by(client, admin_h):
@@ -3138,75 +3137,125 @@ def test_linear_root_connections_reject_sort_with_order_by(client, admin_h):
         assert gql(client, query, admin_h).json()["errors"][0]["message"] == message
 
 
-def test_linear_refused_root_arguments_answered_ahead_of_by_id_miss(client, admin_h):
-    """The refusal and location, as Engine._refused_root_arguments records them. Two
-    not-founds answer the first in document order."""
-    cases = (
-        (
-            '{ issue(id: "nope") { id } issues(sort: [{createdAt: {order: Descending}}], orderBy: createdAt) { nodes { id } } }',
-            ["issues"],
-            "Cannot use both sort and orderBy options",
-            28,
-        ),
-        (
-            '{ issues(sort: [{createdAt: {order: Descending}}], orderBy: createdAt) { nodes { id } } issue(id: "nope") { id } }',
-            ["issues"],
-            "Cannot use both sort and orderBy options",
-            3,
-        ),
-        (
-            '{ issue(id: "nope") { id } issues(first: 1, last: 1) { nodes { id } } }',
-            ["issues"],
-            "Argument Validation Error",
-            28,
-        ),
-        (
-            '{ team(id: "nope") { id } users(first: 1, last: 1) { nodes { id } } }',
-            ["users"],
-            "Argument Validation Error",
-            27,
-        ),
-        (
-            '{ issue(id: "nope") { id } searchIssues(term: "x", teamId: "ENG") { nodes { id } } }',
-            ["searchIssues"],
-            "Argument Validation Error",
-            28,
-        ),
-        (
-            '{ issue(id: "nope") { id } teams { nodes { issues(first: 1, last: 1) { nodes { id } } } } }',
-            ["issue"],
-            "Entity not found: Issue",
-            3,
-        ),
-        (
-            '{ issue(id: "nope") { id } team(id: "nope") { id } }',
-            ["issue"],
-            "Entity not found: Issue",
-            3,
-        ),
-    )
-    for query, path, message, column in cases:
-        body = gql(client, query, admin_h).json()
-        assert body["data"] is None
-        assert [e["path"] for e in body["errors"]] == [path]
-        err = body["errors"][0]
-        assert err["message"] == message
-        assert err["locations"][0]["column"] == column
+_SURROGATE = "a" + chr(0xD800) + "b"
+_MISS = "Entity not found: Issue"
+_ROOT_REFUSAL_ROWS = [
+    (
+        '{ issue(id: "nope") { id } issues(sort: [{createdAt: {order: Descending}}], '
+        "orderBy: createdAt) { nodes { id } } }",
+        None,
+        ("Cannot use both sort and orderBy options", ["issues"], 28),
+    ),
+    (
+        "{ issues(sort: [{createdAt: {order: Descending}}], orderBy: createdAt) { nodes { id } } "
+        'issue(id: "nope") { id } }',
+        None,
+        ("Cannot use both sort and orderBy options", ["issues"], 3),
+    ),
+    (
+        '{ issue(id: "nope") { id } issues(first: 1, last: 1) { nodes { id } } }',
+        None,
+        (_VALIDATION, ["issues"], 28),
+    ),
+    (
+        '{ team(id: "nope") { id } users(first: 1, last: 1) { nodes { id } } }',
+        None,
+        (_VALIDATION, ["users"], 27),
+    ),
+    (
+        '{ team(id: "nope") { id } users(sort: [{name: {order: Ascending}}], orderBy: createdAt) '
+        "{ nodes { id } } }",
+        None,
+        ("Cannot use both sort and orderBy options", ["users"], 27),
+    ),
+    ('{ issue(id: "nope") { id } team(id: "nope") { id } }', None, (_MISS, ["issue"], 3)),
+    (
+        '{ issue(id: "nope") { id } teams { nodes { issues(first: 1, last: 1) { nodes { id } } } } }',
+        None,
+        (_MISS, ["issue"], 3),
+    ),
+    (
+        '{ issue(id: "nope") { id } searchIssues(term: "x", teamId: "ENG") { nodes { id } } }',
+        None,
+        (_VALIDATION, ["searchIssues"], 28),
+    ),
+    (
+        'query($t: String!) { issue(id: "nope") { id } searchIssues(term: $t) { nodes { id } } }',
+        {"t": _SURROGATE},
+        (_MISS, ["issue"], 22),
+    ),
+    (
+        '{ issue(id: "nope") { id } issues(filter: {id: {eq: "not-a-uuid"}}) { nodes { id } } }',
+        None,
+        (_VALIDATION, ["issues"], 28),
+    ),
+    (
+        '{ issue(id: "nope") { id } teams(first: 1, last: 1) { nodes { id } } }',
+        None,
+        (_VALIDATION, ["teams"], 28),
+    ),
+    (
+        '{ issue(id: "nope") { id } comments(first: 1, last: 1) { nodes { id } } }',
+        None,
+        (_VALIDATION, ["comments"], 28),
+    ),
+    (
+        '{ issue(id: "nope") { id } documents(first: 1, last: 1) { nodes { id } } }',
+        None,
+        (_VALIDATION, ["documents"], 28),
+    ),
+    (
+        '{ issue(id: "nope") { id } teamMemberships(first: 1, last: 1) { nodes { id } } }',
+        None,
+        (_VALIDATION, ["teamMemberships"], 28),
+    ),
+    (
+        '{ issue(id: "nope") { id } searchIssues(term: "") { nodes { id } } }',
+        None,
+        (_VALIDATION, ["searchIssues"], 28),
+    ),
+    (
+        '{ issue(id: "nope") { id } searchIssues(term: "x", filter: {id: {eq: "not-a-uuid"}}) '
+        "{ nodes { id } } }",
+        None,
+        (_VALIDATION, ["searchIssues"], 28),
+    ),
+    (
+        'query($x: String = "nope") { issues(first: 1, last: 1) { nodes { id } } '
+        "issue(id: $x) { id } }",
+        {"x": None},
+        ("Internal server error", ["issue"], 83),
+    ),
+    (
+        'query($x: String = "nope") { issue(id: $x) { id } '
+        "issues(first: 1, last: 1) { nodes { id } } }",
+        {"x": None},
+        ("Internal server error", ["issue"], 40),
+    ),
+]
 
-    body = {
-        "query": 'query($t: String!) { issue(id: "nope") { id } searchIssues(term: $t) { nodes { id } } }',
-        "variables": {"t": "a\ud800b"},
-    }
-    surrogate = client.post(
-        "/linear/graphql",
-        content=json.dumps(body),
-        headers={**admin_h, "Content-Type": "application/json"},
-    ).json()
-    assert surrogate["data"] is None
-    assert [e["path"] for e in surrogate["errors"]] == [["issue"]]
-    err = surrogate["errors"][0]
-    assert err["message"] == "Entity not found: Issue"
-    assert err["locations"][0]["column"] == 22
+
+def test_linear_root_argument_refusals_answer_ahead_of_lookups(client, admin_h):
+    """Each row as api.linear.app answered it on the day `CHECKS` records, one error and
+    `data: null`: a refusal `CHECKS` makes ahead of a root's not-found wherever the two come, the
+    first of two not-founds, the not-found ahead of a nested field's refused arguments and of a
+    lone-surrogate term, and graphql-js's refusal of a `null` argument ahead of a `CHECKS` refusal
+    wherever the two come."""
+    headers = {**admin_h, "Content-Type": "application/json"}
+    answered = []
+    for query, variables, _ in _ROOT_REFUSAL_ROWS:
+        payload = (
+            {"query": query} if variables is None else {"query": query, "variables": variables}
+        )
+        body = client.post(
+            "/linear/graphql", content=json.dumps(payload).encode(), headers=headers
+        ).json()
+        errors = [(e["message"], e["path"], e["locations"]) for e in body["errors"]]
+        answered.append((body["data"], errors))
+    assert answered == [
+        (None, [(message, path, [{"line": 1, "column": column}])])
+        for _, _, (message, path, column) in _ROOT_REFUSAL_ROWS
+    ]
 
 
 # --- Linear relations / children / attachments / releases -----------------------

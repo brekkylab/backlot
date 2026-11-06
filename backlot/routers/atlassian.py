@@ -3252,13 +3252,14 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 # those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
 # reads `a` and then `b`, and on 2026-10-26 `title~` and U+0663 (an Arabic-Indic three) or U+FF11 (a
 # fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
-# `title~a:b` cannot be parsed.
+# `title~a:b` cannot be parsed. The Confluence Cloud capture reported in
+# https://github.com/brekkylab/backlot/issues/1259 reads `5b16` as `5` then `b16`.
 _CQL_TOKEN = re.compile(
     r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"[^"]*"|'[^']*')"""
     r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
     r"|(?P<PUNCT>[(),])"
     r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
-    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![A-Za-z_.]))"
+    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![_.]))"
     r"|(?P<WORD>[A-Za-z0-9_]+(?:[.][A-Za-z0-9_]+)*)"
     r"|(?P<DROPPED>[\s#$%&*+;?@^`{|}\x00-\x1f\x7f]|[^\x00-\x7f])"
     r"|(?P<OTHER>.)",

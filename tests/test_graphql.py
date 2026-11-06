@@ -1584,6 +1584,11 @@ def test_binding_a_resolver_to_an_unknown_type_fails_loudly():
         engine.Engine(SDL, {"NoSuchType": {"x": lambda *_: None}})
 
 
+def test_a_check_on_an_unknown_root_field_fails_loudly():
+    with pytest.raises(ValueError, match="Query.nosuchfield"):
+        engine.Engine(SDL, checks={"nosuchfield": lambda *_: None})
+
+
 def test_an_unsound_schema_fails_at_construction_not_at_request_time():
     # A schema with no Query root builds happily and would otherwise raise from inside the
     # first request; a vendor's broken SDL should break at import instead. graphql-core

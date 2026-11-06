@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-05",
+  "measured": "2026-11-06",
   "root": {
     "query": "Query"
   },
@@ -5748,20 +5748,13 @@
           "type": "AgentSession!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "No corpus states an agent session. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says an agent was delegated a piece of work, what it did while it held it, or what machine it ran on, so the whole family is a gap \u2014 `agentSession`, `agentSessions`, `agentSessionSandbox`, `agentSessionSshAddress`, `agentActivity`, `agentActivities`, `agentSkill` and `agentSkills`. Backlot states that absence rather than leaving it open: `User.supportsAgentSessions` resolves to `false` and `Comment.agentSession` to null, and `AgentSession` itself is the id-only stub that field and the `@linear/sdk` fragments need in order to validate. Measured against api.linear.app on 2026-09-29, the vendor's `AgentSession` carries 32 fields, five of them deprecated, and the 31 it declares beyond `id` are the `AgentSession.*` entries this file opens with; most are live session state (`status`, `startedAt`, `endedAt`, `summary`, `plan`, `context`, `sourceMetadata`, `activities`, `pullRequest`, `pullRequests`, `codingHarnessModelLabel`, `codingHarness`), over `AgentSessionStatus`, `AgentActivityConnection`, `PullRequest`, `AgentSessionToPullRequestConnection` and `AgentSessionCodingHarness`, none of which this schema declares."
+          "note": "No corpus states an agent session. A Linear record here is an issue with its team, its comments and the people on it; nothing in it says an agent was delegated a piece of work, what it did while it held it, or what machine it ran on, so the whole family is a gap \u2014 `agentSession`, `agentSessions`, `agentSessionSandbox`, `agentActivity`, `agentActivities`, `agentSkill` and `agentSkills`. Backlot states that absence rather than leaving it open: `User.supportsAgentSessions` resolves to `false` and `Comment.agentSession` to null, and `AgentSession` itself is the id-only stub that field and the `@linear/sdk` fragments need in order to validate. Measured against api.linear.app on 2026-09-29, the vendor's `AgentSession` carries 32 fields, five of them deprecated, and the 31 it declares beyond `id` are the `AgentSession.*` entries this file opens with; most are live session state (`status`, `startedAt`, `endedAt`, `summary`, `plan`, `context`, `sourceMetadata`, `activities`, `pullRequest`, `pullRequests`, `codingHarnessModelLabel`, `codingHarness`), over `AgentSessionStatus`, `AgentActivityConnection`, `PullRequest`, `AgentSessionToPullRequestConnection` and `AgentSessionCodingHarness`, none of which this schema declares."
         },
         "agentSessionSandbox": {
           "status": "missing",
           "type": "CodingAgentSandboxPayload",
           "kind": "missing_field",
           "severity": "gap"
-        },
-        "agentSessionSshAddress": {
-          "status": "missing",
-          "type": "String",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "Linear's own description marks it internal: \"[Internal] SSH address of the current user's running coding sandbox for this agent session.\" It joins the family whose gap is recorded on `Query.agentSession`, and it carries a note of its own because the 2026-09-09 scheduled run read it as new surface and because its answer is the family's odd one out: measured against api.linear.app on 2026-09-11 with a personal API key, `agentSession`, `agentActivity` and `agentSkill` answer an unknown id with an `errors` member (`Entity not found`, `INPUT_ERROR`) and `agentSessionSandbox` with `Access denied` (`FORBIDDEN`). Measured against api.linear.app on 2026-09-10: it takes one argument, `agentSessionId: String!`, it is not deprecated, and it answers `null` with no `errors` member for an unknown UUID, for a string that is not a UUID, and for the empty string alike \u2014 a client reading it cannot tell a session it may not see from one with no sandbox running. Backlot states no session, so every id it could be asked about is one of those; a constant `null` would match that measurement and state nothing."
         },
         "agentSessions": {
           "status": "missing",

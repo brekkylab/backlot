@@ -608,11 +608,21 @@ async def _canonical_path_repo(request: Request) -> None:
 
 #: The baseline's operations api.github.com does not route as a `{}` for any one segment would:
 #: `{archive_format}` routes `zip`, where the other three values sent, `tar` among them, were the
-#: 404, and `POST …/releases/{}/assets` routes nothing.
+#: 404, and `POST …/releases/{}/assets` routes nothing. Nor does `GET` or `PUT` on
+#: `/repos/{}/{}/dependabot/runner-settings`: on 2026-11-06 each was 404 `Not Found` with no
+#: credential, with `Bearer nope`, `Digest x` and a bearer after a tab, and with a token, an
+#: administrator's among them for the `GET`, where `GET …/dependabot/secrets` on the same public
+#: repository was 401 for the first two.
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
 }
-_NOT_ROUTED = frozenset({"POST /repos/{}/{}/releases/{}/assets"})
+_NOT_ROUTED = frozenset(
+    {
+        "POST /repos/{}/{}/releases/{}/assets",
+        "GET /repos/{}/{}/dependabot/runner-settings",
+        "PUT /repos/{}/{}/dependabot/runner-settings",
+    }
+)
 #: The GitHub baseline's ``missing`` operations (``backlot.published``), read as those two say.
 #: One under `/organizations/{}` is matched at `/orgs/{}`, the path ``backlot.main``'s
 #: `resolve_github_id_paths` hands on for it; real answered each of the 13 under both with "Bad

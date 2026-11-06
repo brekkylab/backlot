@@ -9608,6 +9608,8 @@ _CQL_PARSE_ROWS = [
             ("creator = currentUser()", "creator = currentUser ( )"),
             ("ancestor = currentContent()", "ancestor = currentContent ( )"),
             ("parent = currentContent()", "parent = currentContent ( )"),
+            ("mention = currentUser()", "mention = currentUser ( )"),
+            ("macro = toc", "macro = toc"),
             ("created > now()", "created > now ( )"),
             ('label = now("-1d")', 'label = now ( "-1d" )'),
             ("label = currentSpace", "label = currentSpace"),

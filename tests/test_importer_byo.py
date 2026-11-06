@@ -6131,6 +6131,30 @@ def test_a_file_that_is_not_a_doc_may_hold_what_insert_text_refuses(tmp_path):
             "real strips",
         ),
         ("paragraphs", {"tabs": [{"paragraphs": [{"text": "a"}]}]}, "not both"),
+        # a table is stated alone, rectangular and not empty, which nothing else could mean; a
+        # footnote holds none and a cell no page break, as real's `insertTable` and
+        # `insertPageBreak` refuse them
+        (
+            "paragraphs",
+            {"paragraphs": [{"text": "a", "table": [[[{"text": "x"}]]]}]},
+            "stated alone",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"table": [[[{"text": "x"}], [{"text": "y"}]], [[{"text": "z"}]]]}]},
+            "same number of cells",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"table": [[[{"runs": [{"pageBreak": True}]}]]]}]},
+            "outside a table",
+        ),
+        (
+            "paragraphs",
+            {"paragraphs": [{"runs": [{"footnote": [{"table": [[[{"text": "x"}]]]}]}]}]},
+            "holds no table",
+        ),
+        ("paragraphs", {"paragraphs": [{"table": [[]]}]}, "should be non-empty"),
         # a list is one of `createParagraphBullets`' presets, nine levels deep at most
         (
             "paragraphs",

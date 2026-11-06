@@ -2025,6 +2025,63 @@ _DOCS_EXPORTS = {
         "\ufeff* a\r\n* after",
         "- [ ] a  \n- [ ] \n\nafter",
     ),
+    # tables, each as a Doc `insertTable` made (`gdocs._plain_lines`, `gdocs._table`)
+    "table": (
+        {"paragraphs": [{"text": "before"}, {"text": ""}, {"table": [[[{"text": "x"}], [{"text": ""}], [{"text": "y"}, {"text": "z"}]], [[{"text": ""}], [{"text": "w"}], [{"text": ""}]]]}, {"text": "after"}]},
+        "﻿before\r\n\r\n\r\nx\r\n\t\r\n\r\n\ty\r\nz\r\n\t\r\n\r\n\tw\r\n\t\r\n\r\n\tafter",
+        "before\n\n| x |  | y z |\n| :---- | :---- | :---- |\n|  | w |  |\n\nafter",
+    ),
+    "table_alone": (
+        {"paragraphs": [{"table": [[[{"text": "a"}], [{"text": "b"}]]]}]},
+        "﻿a\r\n\tb",
+        "\n\n| a | b |\n| :---- | :---- |\n\n",
+    ),
+    "table_nested": (
+        {"paragraphs": [{"text": "one"}, {"text": ""}, {"table": [[[{"text": ""}, {"table": [[[{"text": "in1"}], [{"text": "in2"}]]]}, {"text": "outer"}], [{"text": "side"}]]]}, {"text": "two"}]},
+        "﻿one\r\n\r\n\r\n\r\n\r\nin1\r\n\tin2\r\n\touter\r\n\tside\r\n\ttwo",
+        "one\n\n|  in1 in2 outer | side |\n| :---- | :---- |\n\ntwo",
+    ),
+    "table_nested_empty": (
+        {"paragraphs": [{"text": "ab"}, {"text": ""}, {"table": [[[{"text": ""}, {"table": [[[{"text": "x"}], [{"text": ""}]]]}, {"text": "c1"}], [{"text": "c2"}]], [[{"text": "c3"}], [{"text": "c4"}]]]}, {"text": "cd"}]},
+        "\ufeffab\r\n\r\n\r\n\r\n\r\nx\r\n\t\r\n\r\n\tc1\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd",
+        "ab\n\n|  x c1 | c2 |\n| :---- | :---- |\n| c3 | c4 |\n\ncd",
+    ),
+    "table_two": (
+        {"paragraphs": [{"text": "one"}, {"text": ""}, {"table": [[[{"text": "first"}]]]}, {"text": ""}, {"table": [[[{"text": "second"}]]]}, {"text": "two"}]},
+        "﻿one\r\n\r\n\r\nfirst\r\n\t\r\n\r\nsecond\r\n\ttwo",
+        "one\n\n| first |\n| :---- |\n\n| second |\n| :---- |\n\ntwo",
+    ),
+    # two tables stated one after the other have an empty paragraph between them
+    "table_adjacent": (
+        {"paragraphs": [{"text": "one"}, {"text": ""}, {"table": [[[{"text": "first"}]]]}, {"table": [[[{"text": "second"}]]]}, {"text": "two"}]},
+        "\ufeffone\r\n\r\n\r\nfirst\r\n\t\r\n\r\nsecond\r\n\ttwo",
+        "one\n\n| first |\n| :---- |\n\n| second |\n| :---- |\n\ntwo",
+    ),
+    "table_styled": (
+        {"paragraphs": [{"text": "one"}, {"text": ""}, {"table": [
+            [[{"runs": [{"text": "Bold", "bold": True}, {"text": " "}, {"text": "Ital", "italic": True}]}], [{"runs": [{"text": "Lnk", "link": "https://example.com/x"}, {"text": " x"}]}], [{"style": "HEADING_1", "text": "Head"}, {"text": "body"}]],
+            [[_listed("item1", "BULLET_DISC_CIRCLE_SQUARE", 0), {"text": "item2"}], [_listed("num1", "NUMBERED_DECIMAL_ALPHA_ROMAN", 0), {"text": "num2"}], [{"text": "a|b *c* `d`\ta\x0bb  sp  "}]],
+        ]}, {"text": "two"}]},
+        "﻿one\r\n\r\n\r\nBold Ital\r\n\tLnk x\r\n\tHead\r\nbody\r\n\t* item1\r\nitem2\r\n\t1. num1\r\nnum2\r\n\ta|b *c* `d`        a\r\nb  sp  \r\n\ttwo",
+        "one\n\n| Bold *Ital* | [Lnk](https://example.com/x) x | Head body |\n| :---- | :---- | :---- |\n| item1 item2 | num1 num2 | a\\|b \\*c\\* \\`d\\`\ta\x0bb  sp   |\n\ntwo",
+    ),
+    "table_footnote": (
+        {"paragraphs": [{"runs": [{"text": "one"}, {"footnote": [{"text": ""}]}]}, {"text": ""}, {"table": [[[{"runs": [{"text": "cellnote"}, {"footnote": [{"text": "the note"}]}]}], [{"text": "x"}]]]}, {"text": "two"}]},
+        "﻿one[1]\r\n\r\n\r\ncellnote[2]\r\n\tx\r\n\ttwo\r\n________________\r\n[1] \r\n[2] the note",
+        "one[^1]\n\n| cellnote[^2] | x |\n| :---- | :---- |\n\ntwo\n\n[^1]:  \n\n[^2]:  the note",
+    ),
+    "table_header": (
+        {
+            "paragraphs": [{"text": "one"}, {"text": ""}, {"table": [
+                [[{"runs": [{"text": "hb", "bold": True}]}], [{"runs": [{"text": "hi", "italic": True, "strikethrough": True}]}], [{"runs": [{"text": "hbl", "bold": True, "link": "https://example.com/"}]}]],
+                [[{"runs": [{"text": "rb", "bold": True}]}], [{"runs": [{"text": "ri", "italic": True}]}], [{"runs": [{"text": "rbl", "bold": True, "link": "https://example.com/"}]}]],
+                [[_listed("n1", "NUMBERED_DECIMAL_ALPHA_ROMAN", 0)], [_listed("n2", "NUMBERED_DECIMAL_ALPHA_ROMAN", 0)], [{"style": "HEADING_6", "text": "h6"}]],
+            ]}, {"text": "two"}],
+            "header": [{"text": "head"}, {"table": [[[{"text": "hx"}], [{"text": "hy"}]]]}],
+        },
+        "﻿head\r\nhx\r\n\thy\r\n\t\r\n\r\none\r\n\r\n\r\nhb\r\n\thi\r\n\thbl\r\n\trb\r\n\tri\r\n\trbl\r\n\t1. n1\r\n\t1. n2\r\n\th6\r\n\ttwo",
+        "one\n\n| hb | *~~hi~~* | [hbl](https://example.com/) |\n| :---- | :---- | :---- |\n| **rb** | *ri* | [**rbl**](https://example.com/) |\n| n1 | n2 | *h6* |\n\ntwo",
+    ),
     "presets": (
         {"paragraphs": [*(p for preset in gdocs.PRESETS for p in (_listed(preset, preset, 0), {"text": "sep"})), {"text": "end"}]},
         "\ufeff* BULLET_DISC_CIRCLE_SQUARE\r\nsep\r\n* BULLET_DIAMONDX_ARROW3D_SQUARE\r\nsep\r\n* BULLET_CHECKBOX\r\nsep\r\n* BULLET_ARROW_DIAMOND_DISC\r\nsep\r\n* BULLET_STAR_CIRCLE_SQUARE\r\nsep\r\n* BULLET_ARROW3D_CIRCLE_SQUARE\r\nsep\r\n* BULLET_LEFTTRIANGLE_DIAMOND_DISC\r\nsep\r\n* BULLET_DIAMONDX_HOLLOWDIAMOND_SQUARE\r\nsep\r\n* BULLET_DIAMOND_CIRCLE_SQUARE\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_DECIMAL_ALPHA_ROMAN_PARENS\r\nsep\r\n1. NUMBERED_DECIMAL_NESTED\r\nsep\r\n1. NUMBERED_UPPERALPHA_ALPHA_ROMAN\r\nsep\r\n1. NUMBERED_UPPERROMAN_UPPERALPHA_DECIMAL\r\nsep\r\n1. NUMBERED_ZERODECIMAL_ALPHA_ROMAN\r\nsep\r\nend",
@@ -8093,7 +8150,10 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
     characters `insertText` strips, `\r` among them. A document stating tabs is served as real
     serves tabs, headers, footers, footnotes and page breaks, and one stating lists as
     `createParagraphBullets` made them: a bullet styled as its newline with no underline, indented
-    as its level, and each list in `lists` after `namedStyles`."""
+    as its level, and each list in `lists` after `namedStyles`. One stating a table is served as
+    `insertTable` made it: an index at its start, each row's, each cell's and its end, every cell's
+    paragraph stating each member, a heading's only those normal text gives otherwise, and an empty
+    paragraph before a table that opens a cell and after one that ends it."""
     url = "https://example.com/"
     link = {
         "underline": True,
@@ -8225,7 +8285,27 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
             {"text": "three", "list": {"preset": "NUMBERED_DECIMAL_ALPHA_ROMAN"}},
         ],
     }
-    with corpus_client(tmp_path, [record, prose, tabbed, listed]) as (client, settings):
+    tabled = {
+        "source_type": "google_drive",
+        "doc_id": "tabled",
+        "title": "Tabled",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {"text": "ab"},
+            {"text": ""},
+            {
+                "table": [
+                    [[{"style": "HEADING_2", "text": "c1"}], [{"text": "c2"}]],
+                    [
+                        [{"text": "c3", "list": {"preset": "BULLET_DISC_CIRCLE_SQUARE"}}],
+                        [{"table": [[[{"text": "in"}]]]}],
+                    ],
+                ]
+            },
+            {"text": "cd"},
+        ],
+    }
+    with corpus_client(tmp_path, [record, prose, tabbed, listed, tabled]) as (client, settings):
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         fid = served_id("google_drive", "plan")
         doc = client.get(f"/docs/v1/documents/{fid}", headers=h).json()
@@ -8235,6 +8315,8 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         tabs = client.get(f"/docs/v1/documents/{tid}", headers=h, params=_TABS).json()["tabs"]
         lid = served_id("google_drive", "listed")
         lists = client.get(f"/docs/v1/documents/{lid}", headers=h).json()
+        did = served_id("google_drive", "tabled")
+        table = client.get(f"/docs/v1/documents/{did}", headers=h).json()["body"]["content"]
     bullets, numbers = gdocs.segment_id(lid, "list.0"), gdocs.segment_id(lid, "list.2")
     assert list(lists)[3:5] == ["namedStyles", "lists"]
     assert lists["lists"] == {
@@ -8442,6 +8524,57 @@ def test_docs_get_serves_stated_paragraphs_as_real_does(tmp_path):
         ("nestingLevel", 1),
     ]
     assert list(kid["documentTab"]) == ["body", "documentStyle", "namedStyles"]
+
+    def spans(content):
+        return [(el.get("startIndex", 0), el["endIndex"]) for el in content]
+
+    assert spans(table) == [(0, 1), (1, 4), (4, 5), (5, 31), (31, 34)]
+    made = table[3]
+    assert list(made) == ["startIndex", "endIndex", "table"]
+    assert list(made["table"]) == ["rows", "columns", "tableRows", "tableStyle"]
+    assert (made["table"]["rows"], made["table"]["columns"]) == (2, 2)
+    assert made["table"]["tableStyle"] == {
+        "tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}] * 2
+    }
+    rows = made["table"]["tableRows"]
+    assert [(r["startIndex"], r["endIndex"]) for r in rows] == [(6, 15), (15, 30)]
+    assert [list(r) for r in rows] == [
+        ["startIndex", "endIndex", "tableCells", "tableRowStyle"]
+    ] * 2
+    assert rows[0]["tableRowStyle"] == {"minRowHeight": {"unit": "PT"}}
+    cells = [c for r in rows for c in r["tableCells"]]
+    assert [(c["startIndex"], c["endIndex"]) for c in cells] == [
+        (7, 11),
+        (11, 15),
+        (16, 20),
+        (20, 30),
+    ]
+    assert list(cells[0]) == ["startIndex", "endIndex", "content", "tableCellStyle"]
+    pad = {"magnitude": 5, "unit": "PT"}
+    assert cells[0]["tableCellStyle"] == {
+        "rowSpan": 1,
+        "columnSpan": 1,
+        "backgroundColor": {},
+        "paddingLeft": pad,
+        "paddingRight": pad,
+        "paddingTop": pad,
+        "paddingBottom": pad,
+        "contentAlignment": "TOP",
+    }
+    heading = cells[0]["content"][0]["paragraph"]["paragraphStyle"]
+    assert heading == {
+        "headingId": ANY,
+        "namedStyleType": "HEADING_2",
+        "lineSpacing": 100,
+        "direction": "LEFT_TO_RIGHT",
+        "avoidWidowAndOrphan": False,
+    }
+    assert cells[1]["content"][0]["paragraph"]["paragraphStyle"] == _CELL
+    assert list(cells[1]["content"][0]["paragraph"]["paragraphStyle"]) == list(_CELL)
+    # a list item in a cell has no `spacingMode`, as one `createParagraphBullets` makes
+    assert cells[2]["content"][0]["paragraph"]["paragraphStyle"] == _LISTED_CELL
+    # a table that opens and ends a cell has an empty paragraph either side
+    assert spans(cells[3]["content"]) == [(21, 22), (22, 29), (29, 30)]
 
 
 _DOCS_FLAT = [
@@ -16010,6 +16143,28 @@ WRITE_RECORDS = [
     },
     {
         "source_type": "google_drive",
+        "doc_id": "wr-table",
+        "subtype": "document",
+        "title": "Table",
+        "folder": "ops",
+        "visibility": "public",
+        "author_email": "owner@acme.com",
+        "paragraphs": [
+            {"text": "ab"},
+            {"text": ""},
+            {
+                "table": [
+                    [[{"text": "c1"}], [{"text": "c2"}]],
+                    [[{"text": "c3"}], [{"text": "c4"}]],
+                ]
+            },
+            {"text": "cd"},
+        ],
+        "created": "2026-07-01T09:00:00Z",
+        "updated": "2026-07-14T17:20:00Z",
+    },
+    {
+        "source_type": "google_drive",
         "doc_id": "wr-hidden",
         "subtype": "document",
         "title": "Hidden",
@@ -18659,6 +18814,11 @@ def test_a_batch_update_applies_each_request_to_the_body_the_ones_before_it_left
     assert _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(gone, tabs)}).status_code == 200
     found = wc.get("/drive/v3/files", headers=h, params={"q": "fullText contains '\"Tab 1\"'"})
     assert tabs in {x["id"] for x in found.json()["files"]}
+    # each paragraph of a table's cells is a line of its own (`gdocs.document_text`)
+    table = served_id("google_drive", "wr-table")
+    for q, hit in [("c3", True), ('"c1 c2"', False), ('"c2 c3"', False), ('"ab cd"', False)]:
+        found = wc.get("/drive/v3/files", headers=h, params={"q": f"fullText contains '{q}'"})
+        assert (table in {x["id"] for x in found.json()["files"]}) == hit, q
     # a Doc that held two tabs keeps its lone tab's default title
     gone = {
         "deleteTab": {"tabId": renamed["updateDocumentTabProperties"]["tabProperties"]["tabId"]}
@@ -18965,6 +19125,16 @@ def test_a_write_styles_what_it_inserts_as_real_does(wc, wh, doc, requests, runs
 # Doc; ids as `_docs_ids` writes them.
 
 _LINK = {"color": {"rgbColor": {"red": 0.06666667, "green": 0.33333334, "blue": 0.8}}}
+
+
+def _table(index=None, rows=1, columns=1, **where):
+    loc = {"location": {"index": index, **where}} if index is not None else {}
+    return {"insertTable": {"rows": rows, "columns": columns, **loc}}
+
+
+def _cell(kind, row=0, column=0, start=5, **extra):
+    cell = {"tableStartLocation": {"index": start}, "rowIndex": row, "columnIndex": column}
+    return {kind: {"tableCellLocation": cell, **extra}}
 
 
 def _ts(start, end, fields="bold", **style):
@@ -20100,6 +20270,458 @@ _STYLE_DOC_ROWS = [
     ),
 ]
 
+# What real served each paragraph of a table's cell on a Doc `insertTable` made: every member, those
+# normal text leaves at zero or false among them.
+_CELL = {
+    "namedStyleType": "NORMAL_TEXT",
+    "alignment": "START",
+    "lineSpacing": 100,
+    "direction": "LEFT_TO_RIGHT",
+    "spacingMode": "COLLAPSE_LISTS",
+    "spaceAbove": {"unit": "PT"},
+    "spaceBelow": {"unit": "PT"},
+    "borderBetween": {
+        "color": {},
+        "width": {"unit": "PT"},
+        "padding": {"unit": "PT"},
+        "dashStyle": "SOLID",
+    },
+    "borderTop": {
+        "color": {},
+        "width": {"unit": "PT"},
+        "padding": {"unit": "PT"},
+        "dashStyle": "SOLID",
+    },
+    "borderBottom": {
+        "color": {},
+        "width": {"unit": "PT"},
+        "padding": {"unit": "PT"},
+        "dashStyle": "SOLID",
+    },
+    "borderLeft": {
+        "color": {},
+        "width": {"unit": "PT"},
+        "padding": {"unit": "PT"},
+        "dashStyle": "SOLID",
+    },
+    "borderRight": {
+        "color": {},
+        "width": {"unit": "PT"},
+        "padding": {"unit": "PT"},
+        "dashStyle": "SOLID",
+    },
+    "indentFirstLine": {"unit": "PT"},
+    "indentStart": {"unit": "PT"},
+    "indentEnd": {"unit": "PT"},
+    "keepLinesTogether": False,
+    "keepWithNext": False,
+    "avoidWidowAndOrphan": False,
+    "shading": {"backgroundColor": {}},
+    "pageBreakBefore": False,
+}
+
+
+def _cell_style(*dropped, **changes) -> dict:
+    return {k: v for k, v in _CELL.items() if k not in dropped} | changes
+
+
+_NORMAL = {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"}
+_PT = lambda n: {"magnitude": n, "unit": "PT"}  # noqa: E731
+_LISTED_CELL = _cell_style("spacingMode", indentFirstLine=_PT(18), indentStart=_PT(36))
+_EVEN = {"widthType": "EVENLY_DISTRIBUTED"}
+_MIN_ROW = {"minRowHeight": {"unit": "PT"}}
+_PLAIN_RUNS = [[[t + "\n", {}]] for t in ("ab", "", "c1", "c2", "c3", "c4", "cd")]
+
+
+def _plain_runs(**changed) -> list:
+    """`wr-table`'s runs, those of the paragraphs ``changed`` names by their text in its place."""
+    return [changed.get(runs[0][0].strip() or "empty", runs) for runs in _PLAIN_RUNS]
+
+
+_TABLE_STYLE_ROWS = [
+    # a style over a table's character reaches the next character that is not one, but a range of
+    # its start or a row alone reaches the segment's last newline as a batch's own request, and of
+    # its end alone nothing
+    (
+        "wr-table",
+        [_ts(4, 6, bold=True)],
+        "runs",
+        _plain_runs(empty=[["\n", {"bold": True}]], c1=[["c", {"bold": True}], ["1\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ts(5, 6, bold=True)],
+        "runs",
+        _plain_runs(cd=[["cd", {}], ["\n", {"bold": True}]]),
+    ),
+    ("wr-table", [_ts(24, 25, bold=True)], "runs", _PLAIN_RUNS),
+    # a paragraph style over a table's start alone styles the paragraph after it, over a cell the
+    # cell's first paragraph
+    (
+        "wr-table",
+        [_ps(5, 6, "alignment", alignment="CENTER")],
+        "paragraphs",
+        [[_NORMAL, None]] * 2 + [[_CELL, None]] * 4 + [[_NORMAL | {"alignment": "CENTER"}, None]],
+    ),
+    (
+        "wr-table",
+        [_ps(7, 8, "alignment", alignment="CENTER")],
+        "paragraphs",
+        [[_NORMAL, None]] * 2
+        + [[_CELL | {"alignment": "CENTER"}, None]]
+        + [[_CELL, None]] * 3
+        + [[_NORMAL, None]],
+    ),
+    # a cell's heading keeps only what normal text gives otherwise, and a row made under it
+    # repeats it, `headingId` and all
+    (
+        "wr-table",
+        [
+            _ps(8, 9, "namedStyleType", namedStyleType="HEADING_2"),
+            _cell("insertTableRow", insertBelow=True),
+        ],
+        "paragraphs",
+        [[_NORMAL, None]] * 2
+        + [
+            [
+                {
+                    "headingId": "$H0",
+                    "namedStyleType": "HEADING_2",
+                    "lineSpacing": 100,
+                    "direction": "LEFT_TO_RIGHT",
+                    "avoidWidowAndOrphan": False,
+                },
+                None,
+            ],
+            [_CELL, None],
+        ]
+        * 2
+        + [[_CELL, None]] * 2
+        + [[_NORMAL, None]],
+    ),
+    # a list made in a cell drops its spacing mode and joins no list of another cell; a column
+    # made beside a list item is indented as it and in no list
+    (
+        "wr-table",
+        [
+            {
+                "createParagraphBullets": {
+                    "range": {"startIndex": 8, "endIndex": 9},
+                    "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN",
+                }
+            },
+            {
+                "createParagraphBullets": {
+                    "range": {"startIndex": 12, "endIndex": 13},
+                    "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN",
+                }
+            },
+            _cell("insertTableColumn", 0, 1, insertRight=True),
+        ],
+        "paragraphs",
+        [[_NORMAL, None]] * 2
+        + [[_LISTED_CELL, {"listId": "$1.0", "textStyle": {"underline": False}}]]
+        + [
+            [_LISTED_CELL, {"listId": "$1.1", "textStyle": {"underline": False}}],
+            [_LISTED_CELL, None],
+        ]
+        + [[_CELL, None]] * 3
+        + [[_NORMAL, None]],
+    ),
+    # taking a table out of a list takes the paragraph after it too, and leaves no indent
+    (
+        "wr-table",
+        [
+            {
+                "createParagraphBullets": {
+                    "range": {"startIndex": 1, "endIndex": 27},
+                    "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                }
+            },
+            {"deleteParagraphBullets": {"range": {"startIndex": 5, "endIndex": 25}}},
+        ],
+        "paragraphs",
+        [
+            [
+                _NORMAL | {"indentFirstLine": _PT(18), "indentStart": _PT(36)},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ]
+        ]
+        * 2
+        + [[_cell_style("spacingMode", "indentFirstLine", "indentStart"), None]] * 4
+        + [[_NORMAL, None]],
+    ),
+    # a named range of a whole table replaced takes the style of the paragraph after it, one run
+    # with it
+    (
+        "wr-table",
+        [
+            {"createNamedRange": {"name": "t", "range": {"startIndex": 5, "endIndex": 25}}},
+            {"replaceNamedRangeContent": {"namedRangeName": "t", "text": "new"}},
+        ],
+        "runs",
+        [[["ab\n", {}]], [["\n", {}]], [["newcd\n", {}]]],
+    ),
+    # a row made under a cell takes its first character's style for its newline
+    (
+        "wr-table",
+        [
+            _ts(8, 10, "fontSize", fontSize=_PT(14)),
+            _ts(10, 11, "bold,italic", bold=True, italic=True),
+            _cell("insertTableRow", insertBelow=True),
+        ],
+        "runs",
+        _plain_runs(
+            c1=[
+                ["c1", {"fontSize": _PT(14)}],
+                ["\n", {"bold": True, "italic": True, "fontSize": _PT(14)}],
+            ]
+        )[:4]
+        + [[["\n", {"fontSize": _PT(14)}]], [["\n", {}]]]
+        + _PLAIN_RUNS[4:],
+    ),
+    # text typed into a cell `insertTable` made is one run with the cell's newline
+    (
+        "wr-table",
+        [{"insertTable": {"rows": 1, "columns": 1, "location": {"index": 1}}}, _ins(5, "a")],
+        "runs",
+        [[["\n", {}]], [["a\n", {}]], *_PLAIN_RUNS],
+    ),
+    # a new column repeats its column's properties, a new row its row's style, and a deleted
+    # column takes its properties with it
+    (
+        "wr-table",
+        [_cell("insertTableColumn", insertRight=True)],
+        "table",
+        [[2, 3, {"tableColumnProperties": [_EVEN] * 3}, [_MIN_ROW] * 2]],
+    ),
+    (
+        "wr-table",
+        [_cell("insertTableRow", insertBelow=True)],
+        "table",
+        [[3, 2, {"tableColumnProperties": [_EVEN] * 2}, [_MIN_ROW] * 3]],
+    ),
+    (
+        "wr-table",
+        [_cell("deleteTableColumn")],
+        "table",
+        [[2, 1, {"tableColumnProperties": [_EVEN]}, [_MIN_ROW] * 2]],
+    ),
+    # the request before a style or a list in its batch and its tab decides what a range of a
+    # table's start or a row reaches (`Body._reached`), past the requests `_docs_settled` keeps
+    # none of: the newline before the table, or before the row, or the segment's last
+    *(
+        ("wr-table", [before, _ts(5, 6, bold=True)], "runs", _plain_runs(**changed))
+        for before, changed in (
+            ({"createHeader": {"type": "DEFAULT"}}, {"empty": [["\n", {"bold": True}]]}),
+            ({"createFooter": {"type": "DEFAULT"}}, {"empty": [["\n", {"bold": True}]]}),
+            (
+                {"insertText": {"endOfSegmentLocation": {}, "text": "x"}},
+                {"empty": [["\n", {"bold": True}]], "cd": [["cdx\n", {}]]},
+            ),
+            (
+                _ts(25, 27, "italic", italic=True),
+                {"empty": [["\n", {"bold": True}]], "cd": [["cd\n", {"italic": True}]]},
+            ),
+            (_ts(25, 27, bold=False), {"empty": [["\n", {"bold": True}]]}),
+            (
+                _ts(5, 6, "italic", italic=True),
+                {"empty": [["\n", {"bold": True}]], "cd": [["cd", {}], ["\n", {"italic": True}]]},
+            ),
+            (
+                _ts(2, 9, "italic", italic=True),
+                {
+                    "ab": [["a", {}], ["b\n", {"italic": True}]],
+                    "empty": [["\n", {"italic": True}]],
+                    "c1": [["c", {"italic": True}], ["1\n", {}]],
+                    "cd": [["cd", {}], ["\n", {"bold": True}]],
+                },
+            ),
+        )
+    ),
+    (
+        "wr-table",
+        [_fn(2), _bullets(6, 7)],
+        "paragraphs",
+        [[_NORMAL, None]]
+        + [
+            [
+                _NORMAL | {"indentFirstLine": _PT(18), "indentStart": _PT(36)},
+                {"listId": "$1.1", "textStyle": {"underline": False}},
+            ]
+        ]
+        + [[_CELL, None]] * 4
+        + [[_NORMAL, None]],
+    ),
+    (
+        "wr-table",
+        [
+            {"insertTable": {"rows": 1, "columns": 1, "location": {"index": 1}}},
+            _ts(2, 3, bold=True),
+        ],
+        "runs",
+        [[["\n", {"bold": True}]], [["\n", {}]], *_PLAIN_RUNS],
+    ),
+    *(
+        (
+            "wr-table",
+            [
+                [{"addDocumentTab": {"tabProperties": {"title": "T2"}}}],
+                [before, _ts(5, 6, bold=True)],
+            ],
+            "runs",
+            _plain_runs(cd=[["cd", {}], ["\n", {"bold": True}]]),
+        )
+        for before in (
+            {"insertText": {"location": {"tabId": "$T1.0", "index": 1}, "text": "x"}},
+            {
+                "createHeader": {
+                    "type": "DEFAULT",
+                    "sectionBreakLocation": {"tabId": "$T1.0", "index": 0},
+                }
+            },
+            {"insertText": {"endOfSegmentLocation": {"tabId": "$T1.0"}, "text": "x"}},
+        )
+    ),
+    (
+        "wr-table",
+        [
+            [{"addDocumentTab": {"tabProperties": {"title": "T2"}}}],
+            [
+                _ts(1, 3, "italic", italic=True),
+                {"insertText": {"location": {"tabId": "$T1.0", "index": 1}, "text": "x"}},
+                _ts(5, 6, bold=True),
+            ],
+        ],
+        "runs",
+        _plain_runs(ab=[["ab\n", {"italic": True}]], cd=[["cd", {}], ["\n", {"bold": True}]]),
+    ),
+    # each kind `_DOCS_UNSEEN` holds, after an insert at 8 (the newline before the table) and
+    # alone (the segment's last)
+    *(
+        (
+            "wr-table",
+            [*setup, [*lead, before, _ts(5, 6, bold=True)]],
+            "runs",
+            _plain_runs(**reached, **changed),
+        )
+        for lead, reached in (
+            ([_ins(8, "x")], {"empty": [["\n", {"bold": True}]], "c1": [["xc1\n", {}]]}),
+            ([], {"cd": [["cd", {}], ["\n", {"bold": True}]]}),
+        )
+        for setup, before, changed in (
+            ([], _rep("ab", "zz"), {"ab": [["zz\n", {}]]}),
+            (
+                [],
+                {"createNamedRange": {"name": "n", "range": {"startIndex": 1, "endIndex": 3}}},
+                {},
+            ),
+            ([], {"addDocumentTab": {"tabProperties": {"title": "T2"}}}, {}),
+            ([], _upd({"tabId": "t.0", "title": "T1"}, "title"), {}),
+            (
+                [[{"createNamedRange": {"name": "n", "range": {"startIndex": 1, "endIndex": 3}}}]],
+                {"deleteNamedRange": {"name": "n"}},
+                {},
+            ),
+            (
+                [[{"createNamedRange": {"name": "n", "range": {"startIndex": 1, "endIndex": 3}}}]],
+                {"replaceNamedRangeContent": {"namedRangeName": "n", "text": "zz"}},
+                {"ab": [["zz\n", {}]]},
+            ),
+            ([[{"createHeader": {"type": "DEFAULT"}}]], {"deleteHeader": {"headerId": "$1.0"}}, {}),
+            ([[{"createFooter": {"type": "DEFAULT"}}]], {"deleteFooter": {"footerId": "$1.0"}}, {}),
+            (
+                [[{"addDocumentTab": {"tabProperties": {"title": "T2"}}}]],
+                {"deleteTab": {"tabId": "$T1.0"}},
+                {},
+            ),
+        )
+    ),
+    (
+        "wr-table",
+        [_ins(8, "x"), _ts(5, 6, bold=True)],
+        "runs",
+        _plain_runs(empty=[["\n", {"bold": True}]], c1=[["xc1\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(8, "x"), _ts(4, 6, bold=True)],
+        "runs",
+        _plain_runs(empty=[["\n", {"bold": True}]], c1=[["xc1\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(25, "x"), _ts(15, 16, bold=True)],
+        "runs",
+        _plain_runs(c2=[["c2", {}], ["\n", {"bold": True}]], cd=[["xcd\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(8, "x"), _rep("qqq", "r"), _ts(5, 6, bold=True)],
+        "runs",
+        _plain_runs(empty=[["\n", {"bold": True}]], c1=[["xc1\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(8, "x"), _bullets(5, 6)],
+        "paragraphs",
+        [[_NORMAL, None]]
+        + [
+            [
+                _NORMAL | {"indentFirstLine": _PT(18), "indentStart": _PT(36)},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ]
+        ]
+        + [[_CELL, None]] * 4
+        + [[_NORMAL, None]],
+    ),
+    (
+        "wr-table",
+        [[_ins(27, "\ne")], [_ts(5, 6, bold=True)]],
+        "runs",
+        _plain_runs() + [[["e", {}], ["\n", {"bold": True}]]],
+    ),
+    *(
+        (
+            "wr-table",
+            [
+                [{"createHeader": {"type": "DEFAULT"}}],
+                [
+                    {
+                        "insertText": {
+                            "location": {"segmentId": "$1.0", "index": 0},
+                            "text": "abcdefgh",
+                        }
+                    }
+                ],
+                [before, _ts(5, 6, bold=True)],
+            ],
+            "runs",
+            _plain_runs(empty=[["\n", {"bold": True}]]),
+        )
+        for before in (
+            {"insertText": {"location": {"segmentId": "$1.0", "index": 0}, "text": "x"}},
+            {
+                "updateTextStyle": {
+                    "range": {"segmentId": "$1.0", "startIndex": 0, "endIndex": 2},
+                    "textStyle": {"bold": True},
+                    "fields": "bold",
+                }
+            },
+        )
+    ),
+    # the cells of a table inserted where a HEADING_1 paragraph starts: each newline 20 PT
+    (
+        "wr-table",
+        [
+            _ps(1, 3, "namedStyleType", namedStyleType="HEADING_1"),
+            {"insertTable": {"rows": 1, "columns": 1, "location": {"index": 1}}},
+        ],
+        "runs",
+        [[["\n", {}]], [["\n", {"fontSize": _PT(20)}]], *_PLAIN_RUNS],
+    ),
+]
+
 
 def _docs_served(wc, h, doc: str, part: str):
     """What a row of `_STYLE_DOC_ROWS` reads of a Doc."""
@@ -20138,16 +20760,18 @@ def _docs_served(wc, h, doc: str, part: str):
     read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
     if part == "paragraphs":
         return [
-            [el["paragraph"]["paragraphStyle"], el["paragraph"].get("bullet")]
-            for el in read["body"]["content"][1:]
+            [paragraph["paragraphStyle"], paragraph.get("bullet")]
+            for paragraph in gdocs.paragraphs_of(read["body"]["content"])
         ]
     if part == "runs":
         return [
-            [
-                [pe["textRun"]["content"], pe["textRun"]["textStyle"]]
-                for pe in el["paragraph"]["elements"]
-            ]
-            for el in read["body"]["content"][1:]
+            [[pe["textRun"]["content"], pe["textRun"]["textStyle"]] for pe in paragraph["elements"]]
+            for paragraph in gdocs.paragraphs_of(read["body"]["content"])
+        ]
+    if part == "table":
+        return [
+            [t["rows"], t["columns"], t["tableStyle"], [r["tableRowStyle"] for r in t["tableRows"]]]
+            for t in (el["table"] for el in read["body"]["content"] if "table" in el)
         ]
     if part == "rangeIds":
         return {
@@ -20159,15 +20783,14 @@ def _docs_served(wc, h, doc: str, part: str):
 
 def _docs_ids(value, did: str, batches: int):
     """``value`` with `$<b>.<n>` the id the ``b``-th batch of a row made ``n``-th
-    (`gdocs.Document.new_id`), `$H0` the first heading id the last batch made, `$ORIG`
-    `wr-styled`'s own, and `wr-tabs`' ids."""
+    (`gdocs.Document.new_id`) and `$T<b>.<n>` that id as a tab's, `$H0` the first heading id the
+    last batch made, `$ORIG` `wr-styled`'s own, and `wr-tabs`' ids."""
     names = {"$ORIG": gdocs.heading_id(did, 0), "$H0": gdocs.heading_id(did, f"r{batches}.1")}
     names["$H1"] = gdocs.heading_id(did, f"r{batches}.2")
-    names |= {
-        f"${b}.{n}": gdocs.segment_id(did, f"r{b}.{n}")
-        for b in range(1, batches + 1)
-        for n in range(13)
-    }
+    for b in range(1, batches + 1):
+        for n in range(13):
+            names[f"${b}.{n}"] = gdocs.segment_id(did, f"r{b}.{n}")
+            names[f"$T{b}.{n}"] = gdocs.tab_id(did, f"r{b}.{n}")
     text = json.dumps(value)
     for name, real in names.items():
         text = text.replace(f'"{name}"', json.dumps(real))
@@ -20189,7 +20812,7 @@ def test_a_text_style_is_set_and_its_runs_split_and_join_as_real_does(wc, wh, re
     assert served == runs
 
 
-@pytest.mark.parametrize("doc,requests,part,expected", _STYLE_DOC_ROWS)
+@pytest.mark.parametrize("doc,requests,part,expected", _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS)
 def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
     wc, wh, doc, requests, part, expected
 ):
@@ -20211,7 +20834,7 @@ def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
 def _docs_outline(wc, h, doc) -> list[str]:
     """A Doc's tabs, depth first, each as `<indent><title>[ <icon>]: <body>` and its header
     `H:`, footer `F:` and footnotes `N<n>:`, a segment's paragraphs joined by `/`, a reference
-    written `[<n>]` and a page break `[PB]`."""
+    written `[<n>]`, a page break `[PB]` and a table `[<cell>|<cell>;<row>]`."""
     from tests._helpers import served_id
 
     did = served_id("google_drive", doc)
@@ -20220,6 +20843,11 @@ def _docs_outline(wc, h, doc) -> list[str]:
     def text(content):
         lines = []
         for el in content:
+            if "table" in el:
+                rows = el["table"]["tableRows"]
+                cells = [[text(c["content"]) for c in r["tableCells"]] for r in rows]
+                lines.append("[" + ";".join("|".join(row) for row in cells) + "]")
+                continue
             if "paragraph" not in el:
                 continue
             line = ""
@@ -20250,9 +20878,8 @@ def _docs_outline(wc, h, doc) -> list[str]:
                     line += f" {mark}:{text(segment['content'])}"
             numbers = {
                 pe["footnoteReference"]["footnoteId"]: pe["footnoteReference"]["footnoteNumber"]
-                for el in dt["body"]["content"]
-                if "paragraph" in el
-                for pe in el["paragraph"]["elements"]
+                for paragraph in gdocs.paragraphs_of(dt["body"]["content"])
+                for pe in paragraph["elements"]
                 if "footnoteReference" in pe
             }
             assert set(numbers) == set(dt.get("footnotes", {}))
@@ -20714,25 +21341,107 @@ _TAB_WRITES = [
     ),
 ]
 
+# `wr-table` states `ab` [1, 4), an empty paragraph [4, 5), a table [5, 25) of `c1` [8, 11), `c2`
+# [12, 15), `c3` [17, 20) and `c4` [21, 24), its end at 24, and `cd` [25, 28), as a Doc real made by
+# `insertTable` at the start of `cd`; each row as real answered that Doc (`_TAB_WRITES`).
+_TABLE_START = "Tab 1: ab//[c1|c2;c3|c4]/cd"
 
-def test_a_tab_or_segment_write_changes_the_doc_as_real_does(write_settings, wh):
-    """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`: its replies, the tabs and segments it
-    leaves, whether the `revisionId` moved (a batch real keeps the revision for keeps it, so a
-    write pinned to it is taken), and the flat read being the first tab's, whatever its id."""
+
+_TABLE_WRITES = [
+    # a table splits the paragraph it is inserted in, or follows an empty one at its start
+    ([_table(2, columns=2)], ["Tab 1: a/[|]/b//[c1|c2;c3|c4]/cd"], None),
+    ([_table(9)], ["Tab 1: ab//[c/[]/1|c2;c3|c4]/cd"], None),
+    ([_table(8)], ["Tab 1: ab//[/[]/c1|c2;c3|c4]/cd"], None),
+    ([_table(27)], [_TABLE_START + "/[]/"], None),
+    (
+        [{"insertTable": {"rows": 1, "columns": 1, "endOfSegmentLocation": {}}}],
+        [_TABLE_START + "/[]/"],
+        None,
+    ),
+    (
+        [{"createHeader": {"type": "DEFAULT"}}, _table(0, segmentId="$MADE")],
+        [_TABLE_START + " H:/[]/"],
+        [{"createHeader": {"headerId": "$MADE"}}, {}],
+    ),
+    # a row above, or below with `insertBelow`; a column left, or right with `insertRight`
+    ([_cell("insertTableRow", insertBelow=True)], ["Tab 1: ab//[c1|c2;|;c3|c4]/cd"], None),
+    ([_cell("insertTableRow")], ["Tab 1: ab//[|;c1|c2;c3|c4]/cd"], None),
+    ([_cell("insertTableRow", 1, 1, insertBelow=True)], ["Tab 1: ab//[c1|c2;c3|c4;|]/cd"], None),
+    ([_cell("insertTableColumn", insertRight=True)], ["Tab 1: ab//[c1||c2;c3||c4]/cd"], None),
+    ([_cell("insertTableColumn")], ["Tab 1: ab//[|c1|c2;|c3|c4]/cd"], None),
+    ([_cell("deleteTableRow")], ["Tab 1: ab//[c3|c4]/cd"], None),
+    ([_cell("deleteTableRow", 1, 1)], ["Tab 1: ab//[c1|c2]/cd"], None),
+    ([_cell("deleteTableColumn")], ["Tab 1: ab//[c2;c4]/cd"], None),
+    # the last row or column takes the table with it, and leaves the paragraphs either side
+    ([_cell("deleteTableRow"), _cell("deleteTableRow")], ["Tab 1: ab//cd"], None),
+    ([_cell("deleteTableColumn"), _cell("deleteTableColumn")], ["Tab 1: ab//cd"], None),
+    # text writes count the table's indices: one at its start, each row's, each cell's and its end
+    ([_ins(9, "X"), _ins(26, "Y")], ["Tab 1: ab//[cX1|c2;c3|c4]/Ycd"], None),
+    ([_del(5, 25)], ["Tab 1: ab//cd"], None),
+    ([_del(4, 25)], ["Tab 1: ab/cd"], None),
+    ([_del(3, 26)], ["Tab 1: abd"], None),
+    ([_del(8, 10)], ["Tab 1: ab//[|c2;c3|c4]/cd"], None),
+    # a search reads each cell, and the text either side of the table, apart, and keeps the last
+    # newline of each
+    (
+        [_rep("1\n", "Q")],
+        ["Tab 1: ab//[cQ|c2;c3|c4]/cd"],
+        [{"replaceAllText": {"occurrencesChanged": 1}}],
+    ),
+    (
+        [_rep("\n\n", "Q")],
+        ["Tab 1: abQ/[c1|c2;c3|c4]/cd"],
+        [{"replaceAllText": {"occurrencesChanged": 1}}],
+    ),
+    (
+        [_rep("$", "!", searchByRegex=True)],
+        ["Tab 1: ab!!/[c1!|c2!;c3!|c4!]/cd!"],
+        [{"replaceAllText": {"occurrencesChanged": 7}}],
+    ),
+    ([_rep("c2\nc3", "X")], [_TABLE_START], [{"replaceAllText": {}}]),
+    (
+        [_rep("c", "Long\nText")],
+        ["Tab 1: ab//[Long/Text1|Long/Text2;Long/Text3|Long/Text4]/Long/Textd"],
+        [{"replaceAllText": {"occurrencesChanged": 5}}],
+    ),
+    # a footnote in a cell is numbered by its place in the body
+    (
+        [_fn(9), _fn(3)],
+        ["Tab 1: ab[1]//[c[2]1|c2;c3|c4]/cd N1:  N2: "],
+        [{"createFootnote": {"footnoteId": "$ANY"}}] * 2,
+    ),
+    # a named range of a whole table is replaced whole
+    (
+        [
+            {"createNamedRange": {"name": "t", "range": {"startIndex": 5, "endIndex": 25}}},
+            {"replaceNamedRangeContent": {"namedRangeName": "t", "text": "new"}},
+        ],
+        ["Tab 1: ab//newcd"],
+        [{"createNamedRange": {"namedRangeId": "$MADE"}}, {}],
+    ),
+]
+
+
+def test_a_tab_segment_or_table_write_changes_the_doc_as_real_does(write_settings, wh):
+    """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`, and of `_TABLE_WRITES` to a fresh
+    `wr-table`: its replies, the tabs, segments and tables it leaves, whether the `revisionId`
+    moved (a batch after which real kept the revision keeps it here, so a write pinned to it is
+    taken), and the flat read being the first tab's, whatever its id."""
     from tests._helpers import client_for, served_id
 
     h = wh[_OWNER]
-    did = served_id("google_drive", "wr-tabs")
+    rows = [("wr-tabs", row) for row in _TAB_WRITES] + [("wr-table", row) for row in _TABLE_WRITES]
     got, want = [], []
-    for requests, outline, replies, moves in ((*row, True)[:4] for row in _TAB_WRITES):
+    for doc, (requests, outline, replies, moves) in ((d, (*row, True)[:4]) for d, row in rows):
+        did = served_id("google_drive", doc)
         with client_for(write_settings, reload=True) as wc:
             before = wc.get(f"/docs/v1/documents/{did}", headers=h).json()["revisionId"]
-            r = _docs_write(wc, h, "wr-tabs", {"requests": _with_tab_ids(requests, did)})
+            r = _docs_write(wc, h, doc, {"requests": _with_tab_ids(requests, did)})
             answer = r.json()
             after = answer.get("writeControl", {}).get("requiredRevisionId")
-            left = _docs_outline(wc, h, "wr-tabs")
+            left = _docs_outline(wc, h, doc)
             pinned = {"requests": [_ins(1, "x")], "writeControl": {"requiredRevisionId": before}}
-            pinned_status = _docs_write(wc, h, "wr-tabs", pinned).status_code
+            pinned_status = _docs_write(wc, h, doc, pinned).status_code
             flat = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
             tabbed = wc.get(f"/docs/v1/documents/{did}", headers=h, params=_TABS).json()
             first = tabbed["tabs"][0]["documentTab"]["body"]
@@ -20982,9 +21691,9 @@ _DOCS_BATCH_REFUSALS = [
     ),
     # what is not served here names itself
     (
-        [{"insertTable": {}}],
+        [{"mergeTableCells": {}}],
         400,
-        "Invalid requests[0].insertTable: 'insertTable' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
+        "Invalid requests[0].mergeTableCells: 'mergeTableCells' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
     ),
     (
         {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "SUGGEST"}},
@@ -22215,6 +22924,128 @@ _DOCS_TAB_REFUSALS = [
     ),
 ]
 
+_OUTSIDE = "The insertion index must be inside the bounds of an existing paragraph."
+_NO_DELETE = "Invalid deletion range. Cannot delete the requested range."
+_NOT_TABLE = "Invalid table start location. Must specify the start index of the table."
+
+# Refused on `wr-table` as real refused them on a Doc of its shape (`_TABLE_WRITES`).
+_DOCS_TABLE_REFUSALS = [
+    # an insert at the table's start, a row, a cell or its end, as at the first section break
+    *(([_ins(i, "X")], 400, _IN_PARAGRAPH) for i in (5, 6, 7, 11, 24)),
+    *_tab_refusals("createFootnote", [([_fn(i)], _OUTSIDE, 0) for i in (5, 7, 24)]),
+    *_tab_refusals(
+        "insertPageBreak",
+        [
+            ([_pb(5)], _OUTSIDE, 0),
+            *(([_pb(i)], "Cannot insert page break in a table.", 0) for i in (6, 9, 24)),
+        ],
+    ),
+    # a delete takes a whole table or none of it, a cell's last newline and the newline before
+    # the table among it
+    *_tab_refusals(
+        "deleteContentRange",
+        [
+            ([_del(*r)], _NO_DELETE, 0)
+            for r in [(8, 11), (10, 11), (4, 5), (2, 5), (5, 24), (6, 15), (24, 26), (1, 8)]
+        ],
+    ),
+    *_tab_refusals(
+        "insertTable",
+        [
+            ([{"insertTable": {"rows": 1, "columns": 1}}], "No insertion location set.", 0),
+            ([_table(2, rows=0)], "The number of table rows should be greater than zero.", 0),
+            ([_table(2, columns=0)], "The number of table columns should be greater than zero.", 0),
+            (
+                [_table(2, rows=0, columns=0)],
+                "The number of table rows should be greater than zero.",
+                0,
+            ),
+            ([_table(2, rows=0, tabId="t.x")], "Cannot apply request to an invalid tab ID.", 0),
+            ([_table(-1, rows=0)], "Index must be greater than or equal to 0.", 0),
+            (
+                [_table(99, rows=0)],
+                "Index 99 must be less than the end index of the referenced segment, 28.",
+                0,
+            ),
+            ([_table(0, rows=0)], "The number of table rows should be greater than zero.", 0),
+            *(([_table(i)], _OUTSIDE, 0) for i in (0, 5, 7, 24)),
+            ([_fn(2), _table(1, segmentId="$MADE")], "Cannot insert table in a footnote.", 1),
+        ],
+    ),
+    # a cell location: the table's start, then the row, then the column
+    *(
+        row
+        for kind, name in [
+            ("insertTableRow", "Insert table row"),
+            ("insertTableColumn", "Insert table column"),
+            ("deleteTableRow", "Delete table row"),
+            ("deleteTableColumn", "Delete table column"),
+        ]
+        for row in _tab_refusals(
+            kind,
+            [
+                ([{kind: {}}], f"{name} requests must specify a table cell location.", 0),
+                (
+                    [{kind: {"tableCellLocation": {"rowIndex": 0}}}],
+                    "Table cell location must specify a table start location.",
+                    0,
+                ),
+                ([_cell(kind, start=4)], _NOT_TABLE, 0),
+                ([_cell(kind, start=0)], _NOT_TABLE, 0),
+                ([_cell(kind, start=9)], _NOT_TABLE, 0),
+                ([_cell(kind, start=-1)], "Index must be greater than or equal to 0.", 0),
+                (
+                    [_cell(kind, start=40)],
+                    "Index 40 must be less than the end index of the referenced segment, 28.",
+                    0,
+                ),
+                ([_cell(kind, start=4, row=9)], _NOT_TABLE, 0),
+                (
+                    [_cell(kind, 9, 9)],
+                    "The row index 9 should be less than the total number of rows 2.",
+                    0,
+                ),
+                ([_cell(kind, -1, 9)], "The row index -1 should be non-negative.", 0),
+                ([_cell(kind, 9, -1)], "The column index -1 should be non-negative.", 0),
+                ([_cell(kind, 2, -1)], "The column index -1 should be non-negative.", 0),
+                (
+                    [_cell(kind, 0, 2)],
+                    "The column index 2 should be less than the total number of columns 2.",
+                    0,
+                ),
+                ([_cell(kind, 0, -1)], "The column index -1 should be non-negative.", 0),
+            ],
+        )
+    ),
+    # a named range holding a cell's last newline holds content that cannot be replaced
+    (
+        [
+            {"createNamedRange": {"name": "c", "range": {"startIndex": 8, "endIndex": 11}}},
+            {"replaceNamedRangeContent": {"namedRangeName": "c", "text": "new"}},
+        ],
+        400,
+        _tab_refusal(
+            "replaceNamedRangeContent",
+            "Named range with ID $MADE contains content that cannot be replaced.",
+            1,
+        ),
+    ),
+    (
+        [
+            {
+                "insertTable": {
+                    "rows": 1,
+                    "columns": 1,
+                    "location": {"index": 1},
+                    "endOfSegmentLocation": {},
+                }
+            }
+        ],
+        400,
+        "Invalid value at 'requests[0].insert_table' (oneof), oneof field 'insertion_location' is already set. Cannot set 'endOfSegmentLocation'",
+    ),
+]
+
 
 def _tab_ids(did: str) -> dict[str, str]:
     """`wr-tabs`' ids by the names its rows write them as."""
@@ -22253,6 +23084,7 @@ def _with_tab_ids(value, did: str):
     "doc,body,status,message",
     [("wr-text", *row) for row in _DOCS_BATCH_REFUSALS]
     + [("wr-tabs", *row) for row in _DOCS_TAB_REFUSALS]
+    + [("wr-table", *row) for row in _DOCS_TABLE_REFUSALS]
     + [
         ("wr-tabs", requests, 400, f"Invalid requests[1].updateTextStyle: {message}")
         for requests, message in _HEADING_LINK_REFUSALS

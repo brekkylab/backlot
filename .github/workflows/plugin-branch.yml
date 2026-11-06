@@ -1,7 +1,7 @@
 # Publishes the branch the Claude Code and Codex marketplaces install the plugin from: the tree
 # scripts/plugin_branch.py builds for one release, as one commit on top of the branch's last. main
-# keeps the package, its tests and its lock file; the branch carries the skill and what its
-# manifests name, nothing else.
+# keeps the package, its tests and its lock file; the branch carries the skill, what its manifests
+# name, the plugin README, LICENSE and NOTICE.md.
 #
 # A published release builds `plugin` from its tag. A manual run builds any ref at any version into
 # any branch, so the workflow can be exercised against a scratch branch before a release relies on it.
@@ -36,6 +36,8 @@ concurrency:
 
 jobs:
   publish:
+    # `pip install backlot`, which the skill runs, skips a prerelease once a final release exists.
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -6,8 +6,9 @@ files git tracks are copied. Run by ``.github/workflows/plugin-branch.yml``.
 
 - Both manifests get ``--version``. Codex reinstalls a cached plugin only when that string changes
   (openai/codex ``core-plugins/src/loader.rs``, 2026-10-20), so it has to move with every release.
-- A Markdown link in the skill that points elsewhere in the repository becomes a GitHub URL at
-  ``--ref``, since the branch does not carry what it points at.
+- A relative Markdown link becomes a GitHub URL at ``--ref`` unless both ends sit on the branch at
+  their repository paths. The README moves from ``plugin/`` to the root, so every one of its
+  relative links is rewritten.
 
 ``python scripts/plugin_branch.py --version 1.2.3 --ref v1.2.3 <out>`` writes the tree to ``<out>``.
 """
@@ -86,7 +87,7 @@ def build(version: str, ref: str, out: Path) -> None:
             files.update({f: f for f in _tracked(named)})
     files.update({dst: src for src, dst in CARRIED.items()})
 
-    tree = set(files)
+    tree = {dst for dst, src in files.items() if dst == src}
     for dst, src in sorted(files.items()):
         target = out / dst
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -97,9 +98,14 @@ def build(version: str, ref: str, out: Path) -> None:
             if n != 1:
                 raise SystemExit(f"{src} carries {n} version fields, not one")
             target.write_text(text, encoding="utf-8")
-        elif dst.startswith("skills/") and dst.endswith(".md"):
-            text = (REPO / src).read_text(encoding="utf-8")
-            target.write_text(_absolute_links(text, REPO / src, ref, tree), encoding="utf-8")
+        elif dst.endswith(".md"):
+            text = _absolute_links(
+                (REPO / src).read_text(encoding="utf-8"),
+                REPO / src,
+                ref,
+                tree if dst == src else set(),
+            )
+            target.write_text(text, encoding="utf-8")
         else:
             shutil.copyfile(REPO / src, target)
 

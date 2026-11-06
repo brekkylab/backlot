@@ -237,9 +237,10 @@ def _named(value) -> list[str]:
 def test_the_plugin_branch_carries_the_skill_at_one_release_and_nothing_else(tmp_path):
     """The tree ``scripts/plugin_branch.py`` builds for the ``plugin`` branch. It holds what either
     manifest names, both manifests at the release's version and otherwise as committed, a README
-    over the 40 words outside code blocks that Anthropic's directory requires (pre-submission
-    checklist, 2026-10-27), and the license. The skill's links into the rest of the repository,
-    which the branch does not carry, point at that file on GitHub at the release's ref."""
+    of at least 40 words outside code blocks that Anthropic's directory requires (pre-submission
+    checklist, 2026-10-27), and the LICENSE and NOTICE.md that Apache-2.0 section 4 asks a
+    redistribution to carry. A relative link stays only where it reaches the same file on the
+    branch as in the repository; the rest point at their file on GitHub at the release's ref."""
     out = tmp_path / "plugin"
     subprocess.run(
         [sys.executable, str(REPO / "scripts" / "plugin_branch.py")]
@@ -256,18 +257,31 @@ def test_the_plugin_branch_carries_the_skill_at_one_release_and_nothing_else(tmp
         named |= set(_named(committed))
     for path in named:
         assert path in built or any(f.startswith(f"{path}/") for f in built), path
-    extra = built - {".claude-plugin/plugin.json", ".codex-plugin/plugin.json"}
-    extra -= {"README.md", "LICENSE", "NOTICE.md"}
+    carried = {"README.md", "LICENSE", "NOTICE.md"}
+    assert carried <= built
+    extra = built - {".claude-plugin/plugin.json", ".codex-plugin/plugin.json"} - carried
     assert not {f for f in extra if not any(f == n or f.startswith(f"{n}/") for n in named)}
 
     readme = re.sub(r"```.*?```", "", (out / "README.md").read_text(encoding="utf-8"), flags=re.S)
     assert len(readme.split()) >= 40
 
-    skill = (out / "skills" / "backlot" / "SKILL.md").read_text(encoding="utf-8")
-    links = re.findall(r"\]\(([^)\s]+)\)", skill)
-    assert not [link for link in links if not link.startswith(("https://", "http://", "#"))]
-    pinned = re.findall(r"github\.com/brekkylab/backlot/(blob|tree)/v9\.8\.7/([^)#\s]+)", skill)
-    assert pinned
+    # The branch's README.md is plugin/README.md, so a link reaching it means another file there.
+    root = out.resolve()
+    pages = {
+        p.relative_to(root).as_posix(): p.read_text(encoding="utf-8") for p in root.rglob("*.md")
+    }
+    for page, text in pages.items():
+        for link in re.findall(r"\]\((?!https?://|mailto:|#)([^)\s#]+)", text):
+            target = ((root / page).parent / link).resolve()
+            assert target.exists() and target.is_relative_to(root), (page, link)
+            assert target.relative_to(root).as_posix() != "README.md", (page, link)
+    pinned = []
+    for page in ("README.md", "skills/backlot/SKILL.md"):
+        at_ref = re.findall(
+            r"github\.com/brekkylab/backlot/(blob|tree)/([^/\s]+)/([^)#\s]+)", pages[page]
+        )
+        assert at_ref and {ref for _, ref, _ in at_ref} == {"v9.8.7"}, page
+        pinned += [(kind, path) for kind, _, path in at_ref]
     for kind, path in pinned:
         assert (REPO / path).is_dir() if kind == "tree" else (REPO / path).is_file(), path
 

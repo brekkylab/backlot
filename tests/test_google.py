@@ -20507,10 +20507,136 @@ _TABLE_STYLE_ROWS = [
         "table",
         [[2, 1, {"tableColumnProperties": [_EVEN]}, [_MIN_ROW] * 2]],
     ),
-    # the request before a style or a list decides what a range of a table's start or a row reaches
-    # (`Body._reached`): the newline before the table, or before the row, after a write at or past
-    # the range or any request in another segment, with a `replaceAllText` that changed nothing
-    # skipped back over
+    # the request before a style or a list in its batch and its tab decides what a range of a
+    # table's start or a row reaches (`Body._reached`), past the requests `_docs_settled` keeps
+    # none of: the newline before the table, or before the row, or the segment's last
+    *(
+        ("wr-table", [before, _ts(5, 6, bold=True)], "runs", _plain_runs(**changed))
+        for before, changed in (
+            ({"createHeader": {"type": "DEFAULT"}}, {"empty": [["\n", {"bold": True}]]}),
+            ({"createFooter": {"type": "DEFAULT"}}, {"empty": [["\n", {"bold": True}]]}),
+            (
+                {"insertText": {"endOfSegmentLocation": {}, "text": "x"}},
+                {"empty": [["\n", {"bold": True}]], "cd": [["cdx\n", {}]]},
+            ),
+            (
+                _ts(25, 27, "italic", italic=True),
+                {"empty": [["\n", {"bold": True}]], "cd": [["cd\n", {"italic": True}]]},
+            ),
+            (_ts(25, 27, bold=False), {"empty": [["\n", {"bold": True}]]}),
+            (
+                _ts(5, 6, "italic", italic=True),
+                {"empty": [["\n", {"bold": True}]], "cd": [["cd", {}], ["\n", {"italic": True}]]},
+            ),
+            (
+                _ts(2, 9, "italic", italic=True),
+                {
+                    "ab": [["a", {}], ["b\n", {"italic": True}]],
+                    "empty": [["\n", {"italic": True}]],
+                    "c1": [["c", {"italic": True}], ["1\n", {}]],
+                    "cd": [["cd", {}], ["\n", {"bold": True}]],
+                },
+            ),
+        )
+    ),
+    (
+        "wr-table",
+        [_fn(2), _bullets(6, 7)],
+        "paragraphs",
+        [[_NORMAL, None]]
+        + [
+            [
+                _NORMAL | {"indentFirstLine": _PT(18), "indentStart": _PT(36)},
+                {"listId": "$1.1", "textStyle": {"underline": False}},
+            ]
+        ]
+        + [[_CELL, None]] * 4
+        + [[_NORMAL, None]],
+    ),
+    (
+        "wr-table",
+        [
+            {"insertTable": {"rows": 1, "columns": 1, "location": {"index": 1}}},
+            _ts(2, 3, bold=True),
+        ],
+        "runs",
+        [[["\n", {"bold": True}]], [["\n", {}]], *_PLAIN_RUNS],
+    ),
+    *(
+        (
+            "wr-table",
+            [
+                [{"addDocumentTab": {"tabProperties": {"title": "T2"}}}],
+                [before, _ts(5, 6, bold=True)],
+            ],
+            "runs",
+            _plain_runs(cd=[["cd", {}], ["\n", {"bold": True}]]),
+        )
+        for before in (
+            {"insertText": {"location": {"tabId": "$T1.0", "index": 1}, "text": "x"}},
+            {
+                "createHeader": {
+                    "type": "DEFAULT",
+                    "sectionBreakLocation": {"tabId": "$T1.0", "index": 0},
+                }
+            },
+            {"insertText": {"endOfSegmentLocation": {"tabId": "$T1.0"}, "text": "x"}},
+        )
+    ),
+    (
+        "wr-table",
+        [
+            [{"addDocumentTab": {"tabProperties": {"title": "T2"}}}],
+            [
+                _ts(1, 3, "italic", italic=True),
+                {"insertText": {"location": {"tabId": "$T1.0", "index": 1}, "text": "x"}},
+                _ts(5, 6, bold=True),
+            ],
+        ],
+        "runs",
+        _plain_runs(ab=[["ab\n", {"italic": True}]], cd=[["cd", {}], ["\n", {"bold": True}]]),
+    ),
+    # each kind `_DOCS_UNSEEN` holds, after an insert at 8 (the newline before the table) and
+    # alone (the segment's last)
+    *(
+        (
+            "wr-table",
+            [*setup, [*lead, before, _ts(5, 6, bold=True)]],
+            "runs",
+            _plain_runs(**reached, **changed),
+        )
+        for lead, reached in (
+            ([_ins(8, "x")], {"empty": [["\n", {"bold": True}]], "c1": [["xc1\n", {}]]}),
+            ([], {"cd": [["cd", {}], ["\n", {"bold": True}]]}),
+        )
+        for setup, before, changed in (
+            ([], _rep("ab", "zz"), {"ab": [["zz\n", {}]]}),
+            (
+                [],
+                {"createNamedRange": {"name": "n", "range": {"startIndex": 1, "endIndex": 3}}},
+                {},
+            ),
+            ([], {"addDocumentTab": {"tabProperties": {"title": "T2"}}}, {}),
+            ([], _upd({"tabId": "t.0", "title": "T1"}, "title"), {}),
+            (
+                [[{"createNamedRange": {"name": "n", "range": {"startIndex": 1, "endIndex": 3}}}]],
+                {"deleteNamedRange": {"name": "n"}},
+                {},
+            ),
+            (
+                [[{"createNamedRange": {"name": "n", "range": {"startIndex": 1, "endIndex": 3}}}]],
+                {"replaceNamedRangeContent": {"namedRangeName": "n", "text": "zz"}},
+                {"ab": [["zz\n", {}]]},
+            ),
+            ([[{"createHeader": {"type": "DEFAULT"}}]], {"deleteHeader": {"headerId": "$1.0"}}, {}),
+            ([[{"createFooter": {"type": "DEFAULT"}}]], {"deleteFooter": {"footerId": "$1.0"}}, {}),
+            (
+                [[{"addDocumentTab": {"tabProperties": {"title": "T2"}}}]],
+                {"deleteTab": {"tabId": "$T1.0"}},
+                {},
+            ),
+        )
+    ),
     (
         "wr-table",
         [_ins(8, "x"), _ts(5, 6, bold=True)],
@@ -20657,15 +20783,14 @@ def _docs_served(wc, h, doc: str, part: str):
 
 def _docs_ids(value, did: str, batches: int):
     """``value`` with `$<b>.<n>` the id the ``b``-th batch of a row made ``n``-th
-    (`gdocs.Document.new_id`), `$H0` the first heading id the last batch made, `$ORIG`
-    `wr-styled`'s own, and `wr-tabs`' ids."""
+    (`gdocs.Document.new_id`) and `$T<b>.<n>` that id as a tab's, `$H0` the first heading id the
+    last batch made, `$ORIG` `wr-styled`'s own, and `wr-tabs`' ids."""
     names = {"$ORIG": gdocs.heading_id(did, 0), "$H0": gdocs.heading_id(did, f"r{batches}.1")}
     names["$H1"] = gdocs.heading_id(did, f"r{batches}.2")
-    names |= {
-        f"${b}.{n}": gdocs.segment_id(did, f"r{b}.{n}")
-        for b in range(1, batches + 1)
-        for n in range(13)
-    }
+    for b in range(1, batches + 1):
+        for n in range(13):
+            names[f"${b}.{n}"] = gdocs.segment_id(did, f"r{b}.{n}")
+            names[f"$T{b}.{n}"] = gdocs.tab_id(did, f"r{b}.{n}")
     text = json.dumps(value)
     for name, real in names.items():
         text = text.replace(f'"{name}"', json.dumps(real))

@@ -1642,26 +1642,24 @@ _DOCS_BATCH_KEPT = {
 _P_DOCS_BATCH_UPDATE = [qp("fields")]
 
 
-# The requests that write the document, which the request after one of them reads as the write
-# before it (`_docs_settled`).
-_DOCS_WRITES = {
-    "insert_text",
-    "delete_content_range",
+# The requests the next one in the batch looks past, to the one before them (`_docs_settled`,
+# `gdocs.Body._reached`).
+_DOCS_UNSEEN = {
     "replace_all_text",
-    "create_footnote",
-    "insert_page_break",
-    "insert_table",
-    "insert_table_row",
-    "insert_table_column",
-    "delete_table_row",
-    "delete_table_column",
+    "create_named_range",
+    "delete_named_range",
     "replace_named_range_content",
+    "delete_header",
+    "delete_footer",
+    "add_document_tab",
+    "delete_tab",
+    "update_document_tab_properties",
 }
 
 
 def _docs_write_index(req: dict) -> int | None:
-    """The index a write names: its location's, its range's start or its cell's table's start;
-    None for one at a segment's end or in a named range."""
+    """The index a request names: its location's, its range's start or its cell's table's start;
+    None for one at a segment's end or with no location, range or cell."""
     if "location" in req:
         return req["location"].get("index", 0)
     if "range" in req:
@@ -1671,28 +1669,24 @@ def _docs_write_index(req: dict) -> int | None:
     return None
 
 
-def _docs_write_key(doc: gdocs.Document, req: dict) -> tuple[str, str] | None:
-    """The tab id and segment id a request's location, range or cell names; None for one that
-    names none of them."""
+def _docs_write_key(doc: gdocs.Document, req: dict) -> tuple[str, str]:
+    """The tab id and segment id a request's location, range, cell or section break names, the
+    first tab's body for one that names none of them."""
     cell = req.get("table_cell_location", {}).get("table_start_location")
-    where = next(
-        (req[k] for k in ("location", "range", "end_of_segment_location") if k in req), cell
-    )
-    if where is None:
-        return None
+    names = ("location", "range", "end_of_segment_location", "section_break_location")
+    where = next((req[k] for k in names if k in req), cell) or {}
     tab = doc.tab(where.get("tab_id"))
     return tab["tabProperties"]["tabId"], where.get("segment_id", "")
 
 
 def _docs_settled(kind: str, apply, doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """One request applied, then `gdocs.Document.settle`, then kept as the request before the next
-    (`gdocs.Document.note`): a write with the index it names, any other request with none, each
-    with the tab and segment it names, and a `replaceAllText` that changed nothing not at all."""
+    in its tab (`gdocs.Document.note`) with the index, tab and segment it names, unless
+    `_DOCS_UNSEEN` holds its kind."""
     reply, fails = apply(doc, req)
     doc.settle()
-    if kind != "replace_all_text" or reply["replaceAllText"]:
-        index = _docs_write_index(req) if kind in _DOCS_WRITES else None
-        doc.note(kind, index, _docs_write_key(doc, req))
+    if kind not in _DOCS_UNSEEN:
+        doc.note(kind, _docs_write_index(req), _docs_write_key(doc, req))
     return reply, fails
 
 

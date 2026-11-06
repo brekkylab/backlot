@@ -1353,7 +1353,8 @@ _REGEX_FLAGS = regex.V1 | regex.MULTILINE
 _REGEX_CASELESS = regex.IGNORECASE
 
 
-# a batch's last request: its kind, the index it named, and the tab and segment it named
+# a tab's last request in a batch that the next reads: its kind, the index
+# `routers.google_docs._docs_write_index` gives for it, and the tab and segment it named
 Previous = tuple[str | None, int | None, tuple[str, str] | None]
 
 
@@ -1393,7 +1394,7 @@ class Body:
         # the headings this write has made, counted across every segment a `Document` opens
         self._split = headings or itertools.count(1)
         self.ranges: list[dict] = []
-        # the batch's last request so far, kept by `Document.note` and read by `_reached`
+        # the last request so far in this body's tab (`Document.note`), which `_reached` reads
         self.previous: Previous = (None, None, None)
         # the tab and segment this is, set by `Document.open`
         self.key: tuple[str, str] | None = None
@@ -1881,19 +1882,21 @@ class Body:
     def _reached(self, pos: int, start: int) -> bool:
         """Whether a style or list request from index ``start`` over the table's start or row at
         ``pos`` reaches the newline before that character (`_newline_before`), or else the segment's
-        last newline: it does after a write at or past ``start`` in the same batch, after the
-        `insertTable` that made the table, or after any request in another tab or segment
-        (`previous`), and not as a batch's first request, after a style or list request, or after a
-        write before ``start``. A range of those characters alone reaches that newline alone. A wider range that reaches the newline before the character
-        reaches it with its text and, ending at a start or a row, nothing after that; one that does
-        not reaches its text and, at a start or a row, the paragraph after it. Measured 2026-11-05
-        on 201 batches over tables of one to three rows and one inside a cell, and 2026-11-06 after a
-        write at either end of a header, a delete and a bold there."""
+        last newline; a range of that character alone reaches nothing else. The request before it
+        in the batch and in this tab decides (`previous`): it does after one in another segment, a
+        `createHeader`, `createFooter` or `createFootnote`, one at the segment's end, the
+        `insertTable` that made the table, or one whose location, range or cell's table starts at or
+        past ``start``, and not after one before ``start`` or with none. A wider range that reaches
+        the newline before the character reaches it with its text and, ending at a start or a row,
+        nothing after that; one that does not reaches its text and, at a start or a row, the
+        paragraph after it. Measured 2026-11-05 on 201 batches over tables of one to three rows and
+        one inside a cell, and 2026-11-06 after each kind of request a batch takes, with writes in a
+        header, a footnote and another tab."""
         kind, index, key = self.previous
-        if key is not None and key != self.key:
-            return True
-        if index is None:
+        if kind is None:
             return False
+        if kind == "create_footnote" or key != self.key or index is None:
+            return True
         made = kind == "insert_table" and self._units(self._opening(pos)) == index + 1
         return index >= start or made
 
@@ -2454,8 +2457,8 @@ class Document:
         # the requests `routers.google_docs.docs_batch_update` counts as no write when they are all
         # a batch holds
         self.unchanged = 0
-        # what each segment's `Body.previous` is set to (`note`)
-        self.previous: Previous = (None, None, None)
+        # each tab's `Body.previous` (`note`)
+        self.previous: dict[str, Previous] = {}
 
     def flat(self) -> list[dict]:
         return [tab for tab, *_ in walk(self.tabs)]
@@ -2484,17 +2487,18 @@ class Document:
             content = tab["body"] if kind == "body" else tab[f"{kind}s"][segment]
             body = Body(self.file_id, content, self.revision, self._headings)
             body.ranges = [r for r in self.ranges(tab) if r.get("segmentId", "") == segment]
-            body.previous, body.key = self.previous, key
+            body.previous, body.key = self.previous.get(key[0], (None, None, None)), key
             self._open[key] = body
         return self._open[key]
 
-    def note(self, kind: str, index: int | None, key: tuple[str, str] | None) -> None:
-        """Keep the request just applied, of ``kind`` at ``index`` (None for one that names no
-        index, or is no write) in the tab and segment ``key`` (None for one that names neither), as
-        the one before the next, for each segment open and each opened later (`Body.previous`)."""
-        self.previous = (kind, index, key)
+    def note(self, kind: str, index: int | None, key: tuple[str, str]) -> None:
+        """Keep the request just applied, of ``kind`` at ``index`` in the tab and segment ``key``
+        (`Previous`), as the one before the next in that tab, for each of the tab's segments open
+        and each opened later (`Body.previous`)."""
+        self.previous[key[0]] = (kind, index, key)
         for body in self._open.values():
-            body.previous = self.previous
+            if body.key[0] == key[0]:
+                body.previous = self.previous[key[0]]
 
     @staticmethod
     def ranges(tab: dict) -> list[dict]:

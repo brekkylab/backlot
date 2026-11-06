@@ -693,9 +693,11 @@ def _docs_insert_table(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     (`gdocs.Body.insert_table`), in real's order of refusals, measured 2026-11-03: no location,
     the tab, an index below zero, the segment, the index at or past the segment's end, no rows, no
     columns, a footnote, the first section break or a table's start, row, cell or end, then inside
-    a grapheme cluster. No number of rows or columns is too many: a table of 1,000 columns and
-    one of 5,000 rows were made. `endOfSegmentLocation` is before the segment's last newline, a
-    header's or footer's included."""
+    a grapheme cluster. No number of rows or columns is refused here; real made a table of
+    100,000 rows and one of 20,000 columns, and answered one of 400,000 rows or of 1,000 by 1,000
+    with a 503 and one of 2,147,483,647 rows with a 500 (measured 2026-11-05).
+    `endOfSegmentLocation` is before the segment's last newline, a header's or footer's
+    included."""
     where = req.get("location", req.get("end_of_segment_location"))
     if where is None:
         raise _EditorRefused("No insertion location set.")
@@ -1640,11 +1642,58 @@ _DOCS_BATCH_KEPT = {
 _P_DOCS_BATCH_UPDATE = [qp("fields")]
 
 
-def _docs_settled(apply, doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """One request applied, then `gdocs.Document.settle`."""
-    answer = apply(doc, req)
+# The requests that write the document, which the request after one of them reads as the write
+# before it (`_docs_settled`).
+_DOCS_WRITES = {
+    "insert_text",
+    "delete_content_range",
+    "replace_all_text",
+    "create_footnote",
+    "insert_page_break",
+    "insert_table",
+    "insert_table_row",
+    "insert_table_column",
+    "delete_table_row",
+    "delete_table_column",
+    "replace_named_range_content",
+}
+
+
+def _docs_write_index(req: dict) -> int | None:
+    """The index a write names: its location's, its range's start or its cell's table's start;
+    None for one at a segment's end or in a named range."""
+    if "location" in req:
+        return req["location"].get("index", 0)
+    if "range" in req:
+        return req["range"].get("start_index", 0)
+    if "table_cell_location" in req:
+        return req["table_cell_location"].get("table_start_location", {}).get("index", 0)
+    return None
+
+
+def _docs_write_key(doc: gdocs.Document, req: dict) -> tuple[str, str] | None:
+    """The tab id and segment id a request's location, range or cell names; None for one that
+    names none of them."""
+    cell = req.get("table_cell_location", {}).get("table_start_location")
+    where = next(
+        (req[k] for k in ("location", "range", "end_of_segment_location") if k in req), cell
+    )
+    if where is None:
+        return None
+    tab = doc.tab(where.get("tab_id"))
+    return tab["tabProperties"]["tabId"], where.get("segment_id", "")
+
+
+def _docs_settled(kind: str, apply, doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
+    """One request applied, then `gdocs.Document.settle`, then kept as the request before the next
+    (`gdocs.Document.note`): a write with the index it names, any other request with none, each
+    with the tab and segment it names, and a `replaceAllText` that changed nothing not at all."""
+    reply, fails = apply(doc, req)
     doc.settle()
-    return answer
+    if kind != "replace_all_text" or reply["replaceAllText"]:
+        index = _docs_write_index(req) if kind in _DOCS_WRITES else None
+        doc.note(kind, index, _docs_write_key(doc, req))
+    return reply, fails
 
 
 @router.post(
@@ -1722,7 +1771,10 @@ async def docs_batch_update(document_id: str, request: Request):
     replies = _editor_batch(
         requests,
         _DOCS_KINDS,
-        {kind: functools.partial(_docs_settled, apply, doc) for kind, apply in _DOCS_APPLY.items()},
+        {
+            kind: functools.partial(_docs_settled, kind, apply, doc)
+            for kind, apply in _DOCS_APPLY.items()
+        },
         "Docs",
     )
 

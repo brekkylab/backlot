@@ -102,9 +102,10 @@ goes to.
 A table is made as `insertTable` makes one, after a newline it inserts, and a row or a column takes
 the style of the cells it is made beside; the last row or column deleted takes the table with it.
 A request's indices count one at a table's start, at each row's and each cell's, and at its end:
-text goes nowhere but a paragraph, a delete takes a whole table or none of it, and a style or a
-list over a table's characters reaches the paragraphs real reaches. `replaceAllText` searches each
-cell, and the text either side of a table, apart.
+text goes nowhere but a paragraph, a delete takes a whole table or none of it, and a style or a list
+over the start of a table or over a row reaches the newline real's does, which the request before it
+in the batch decides. A table made at the first index of a heading gives its cells the heading's
+text style. `replaceAllText` searches each cell, and the text either side of a table, apart.
 
 `values.append` finds the table it writes below the way real does: from the last cell in the range
 holding a value, row by row, grown through every cell in the row or column next to it, and

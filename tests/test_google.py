@@ -2041,6 +2041,11 @@ _DOCS_EXPORTS = {
         "﻿one\r\n\r\n\r\n\r\n\r\nin1\r\n\tin2\r\n\touter\r\n\tside\r\n\ttwo",
         "one\n\n|  in1 in2 outer | side |\n| :---- | :---- |\n\ntwo",
     ),
+    "table_nested_empty": (
+        {"paragraphs": [{"text": "ab"}, {"text": ""}, {"table": [[[{"text": ""}, {"table": [[[{"text": "x"}], [{"text": ""}]]]}, {"text": "c1"}], [{"text": "c2"}]], [[{"text": "c3"}], [{"text": "c4"}]]]}, {"text": "cd"}]},
+        "\ufeffab\r\n\r\n\r\n\r\n\r\nx\r\n\t\r\n\r\n\tc1\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd",
+        "ab\n\n|  x c1 | c2 |\n| :---- | :---- |\n| c3 | c4 |\n\ncd",
+    ),
     "table_two": (
         {"paragraphs": [{"text": "one"}, {"text": ""}, {"table": [[[{"text": "first"}]]]}, {"text": ""}, {"table": [[[{"text": "second"}]]]}, {"text": "two"}]},
         "﻿one\r\n\r\n\r\nfirst\r\n\t\r\n\r\nsecond\r\n\ttwo",
@@ -20335,7 +20340,8 @@ def _plain_runs(**changed) -> list:
 
 _TABLE_STYLE_ROWS = [
     # a style over a table's character reaches the next character that is not one, but a range of
-    # its start or a row alone reaches the newline after the table, and of its end alone nothing
+    # its start or a row alone reaches the segment's last newline as a batch's own request, and of
+    # its end alone nothing
     (
         "wr-table",
         [_ts(4, 6, bold=True)],
@@ -20500,6 +20506,93 @@ _TABLE_STYLE_ROWS = [
         [_cell("deleteTableColumn")],
         "table",
         [[2, 1, {"tableColumnProperties": [_EVEN]}, [_MIN_ROW] * 2]],
+    ),
+    # the request before a style or a list decides what a range of a table's start or a row reaches
+    # (`Body._reached`): the newline before the table, or before the row, after a write at or past
+    # the range or any request in another segment, with a `replaceAllText` that changed nothing
+    # skipped back over
+    (
+        "wr-table",
+        [_ins(8, "x"), _ts(5, 6, bold=True)],
+        "runs",
+        _plain_runs(empty=[["\n", {"bold": True}]], c1=[["xc1\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(8, "x"), _ts(4, 6, bold=True)],
+        "runs",
+        _plain_runs(empty=[["\n", {"bold": True}]], c1=[["xc1\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(25, "x"), _ts(15, 16, bold=True)],
+        "runs",
+        _plain_runs(c2=[["c2", {}], ["\n", {"bold": True}]], cd=[["xcd\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(8, "x"), _rep("qqq", "r"), _ts(5, 6, bold=True)],
+        "runs",
+        _plain_runs(empty=[["\n", {"bold": True}]], c1=[["xc1\n", {}]]),
+    ),
+    (
+        "wr-table",
+        [_ins(8, "x"), _bullets(5, 6)],
+        "paragraphs",
+        [[_NORMAL, None]]
+        + [
+            [
+                _NORMAL | {"indentFirstLine": _PT(18), "indentStart": _PT(36)},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ]
+        ]
+        + [[_CELL, None]] * 4
+        + [[_NORMAL, None]],
+    ),
+    (
+        "wr-table",
+        [[_ins(27, "\ne")], [_ts(5, 6, bold=True)]],
+        "runs",
+        _plain_runs() + [[["e", {}], ["\n", {"bold": True}]]],
+    ),
+    *(
+        (
+            "wr-table",
+            [
+                [{"createHeader": {"type": "DEFAULT"}}],
+                [
+                    {
+                        "insertText": {
+                            "location": {"segmentId": "$1.0", "index": 0},
+                            "text": "abcdefgh",
+                        }
+                    }
+                ],
+                [before, _ts(5, 6, bold=True)],
+            ],
+            "runs",
+            _plain_runs(empty=[["\n", {"bold": True}]]),
+        )
+        for before in (
+            {"insertText": {"location": {"segmentId": "$1.0", "index": 0}, "text": "x"}},
+            {
+                "updateTextStyle": {
+                    "range": {"segmentId": "$1.0", "startIndex": 0, "endIndex": 2},
+                    "textStyle": {"bold": True},
+                    "fields": "bold",
+                }
+            },
+        )
+    ),
+    # the cells of a table inserted where a HEADING_1 paragraph starts: each newline 20 PT
+    (
+        "wr-table",
+        [
+            _ps(1, 3, "namedStyleType", namedStyleType="HEADING_1"),
+            {"insertTable": {"rows": 1, "columns": 1, "location": {"index": 1}}},
+        ],
+        "runs",
+        [[["\n", {}]], [["\n", {"fontSize": _PT(20)}]], *_PLAIN_RUNS],
     ),
 ]
 
@@ -21206,8 +21299,9 @@ _TABLE_WRITES = [
 
 def test_a_tab_segment_or_table_write_changes_the_doc_as_real_does(write_settings, wh):
     """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`, and of `_TABLE_WRITES` to a fresh
-    `wr-table`: its replies, the tabs, segments and tables it leaves, whether the `revisionId` moved (a batch real keeps the revision for keeps it, so a
-    write pinned to it is taken), and the flat read being the first tab's, whatever its id."""
+    `wr-table`: its replies, the tabs, segments and tables it leaves, whether the `revisionId`
+    moved (a batch after which real kept the revision keeps it here, so a write pinned to it is
+    taken), and the flat read being the first tab's, whatever its id."""
     from tests._helpers import client_for, served_id
 
     h = wh[_OWNER]

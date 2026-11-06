@@ -1213,7 +1213,7 @@ def _table_errors(para: dict, at: str, body: bool, note: bool) -> list[str]:
         msgs.append(f"{at}.table: state every row with the same number of cells")
     for r, row in enumerate(rows):
         for c, cell in enumerate(row if isinstance(row, list) else []):
-            msgs += _paragraph_errors(cell, f"{at}.table[{r}][{c}]", body, note, cell=True)
+            msgs += _paragraph_errors(cell, f"{at}.table[{r}][{c}]", body, cell=True)
     return msgs
 
 

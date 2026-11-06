@@ -1353,6 +1353,10 @@ _REGEX_FLAGS = regex.V1 | regex.MULTILINE
 _REGEX_CASELESS = regex.IGNORECASE
 
 
+# a batch's last request: its kind, the index it named, and the tab and segment it named
+Previous = tuple[str | None, int | None, tuple[str, str] | None]
+
+
 class Body:
     """A body, header, footer or footnote opened for a write: each character with the `TextStyle`
     of the run it sits in and that run, and each paragraph's `paragraphStyle`, every paragraph
@@ -1389,6 +1393,10 @@ class Body:
         # the headings this write has made, counted across every segment a `Document` opens
         self._split = headings or itertools.count(1)
         self.ranges: list[dict] = []
+        # the batch's last request so far, kept by `Document.note` and read by `_reached`
+        self.previous: Previous = (None, None, None)
+        # the tab and segment this is, set by `Document.open`
+        self.key: tuple[str, str] | None = None
 
     def _flatten(self, content: list[dict]) -> None:
         """Stored content as characters, a table as its `TABLE`, `ROW`, `CELL` and `TABLE_END`
@@ -1827,34 +1835,74 @@ class Body:
     def paragraphs_in(self, start: int, end: int) -> range:
         """The paragraphs a range of indices overlaps, or for an empty one the paragraph it falls
         in: measured 2026-11-03, a range ending at a paragraph's first index left that paragraph
-        out, and one of a newline alone held its paragraph alone. A table's character counts as
-        the paragraph after it, the cell's first for a cell's, but for a range of a table's start or
-        a row alone, which reaches the paragraph after the table: measured 2026-11-03 on 21 ranges
-        from, to and over a table's characters (`TABLE`)."""
+        out, and one of a newline alone held its paragraph alone. A table's character counts as the
+        paragraph after it, the cell's first for a cell's, but a table's start or a row counts the
+        paragraph of the newline it reaches (`_reached`)."""
         first, last = self.floor(start), self.floor(max(end - 1, start))
-        if end > start and first == last and self.chars[first][0] in (TABLE, ROW):
-            p = self._paragraph_of(self._closes(self._opening(first)) + 1)
+        found = range(self._paragraph_of(first), self._paragraph_of(last) + 1)
+        tables = [p for p in range(first, last + 1) if self.chars[p][0] in (TABLE, ROW)]
+        if end <= start or not tables:
+            return found
+        reached = self._reached(tables[0], start)
+        if len(tables) == last + 1 - first:
+            p = self._paragraph_of(self._newline_before(first) if reached else len(self.chars) - 1)
             return range(p, p + 1)
-        return range(self._paragraph_of(first), self._paragraph_of(last) + 1)
+        if not reached:
+            return found
+        held = {self._paragraph_of(self._newline_before(p)) for p in tables}
+        held |= {self._paragraph_of(p) for p in range(first, last + 1) if self.in_paragraph(p)}
+        if self.chars[last][0] not in (TABLE, ROW):
+            held |= set(found)
+        return range(min(held), max(held) + 1)
 
     def reach(self, first: int, last: int) -> tuple[int, int] | None:
         """The characters `updateTextStyle` styles for ``[first, last)``: those, and when the last
-        is a table's, the next character that is not (`paragraphs_in`), but for a table's start or
-        a row alone, which styles the newline of the paragraph after the table, and its end alone,
-        which styles nothing. Measured 2026-11-03: bold over a table's empty paragraph and its
-        start reached the first cell's first letter, and over its start alone the newline after
-        the table."""
-        if last - first == 1 and self.chars[first][0] in (TABLE, ROW):
-            after = self._closes(self._opening(first)) + 1
-            newline = self._paragraph_span(self._paragraph_of(after)).stop - 1
-            return newline, newline + 1
+        is a table's, the next character that is not (`paragraphs_in`); a table's end alone styles
+        nothing, and a table's start or a row styles the newline it reaches instead (`_reached`).
+        Measured 2026-11-03: as a batch's only request, bold over a table's empty paragraph and its
+        start reached the first cell's first letter."""
         if last - first == 1 and self.chars[first][0] == TABLE_END:
             return None
+        tables = [p for p in range(first, last) if self.chars[p][0] in (TABLE, ROW)]
+        reached = bool(tables) and self._reached(tables[0], self._units(first))
+        if tables and len(tables) == last - first:
+            newline = self._newline_before(first) if reached else len(self.chars) - 1
+            return newline, newline + 1
+        if reached:
+            first = min([first, *(self._newline_before(p) for p in tables)])
+            if self.chars[last - 1][0] in (TABLE, ROW):
+                return first, last
         if self.chars[last - 1][0] in _STRUCTURE:
             while self.chars[last][0] in _STRUCTURE:
                 last += 1
             last += 1
         return first, last
+
+    def _reached(self, pos: int, start: int) -> bool:
+        """Whether a style or list request from index ``start`` over the table's start or row at
+        ``pos`` reaches the newline before that character (`_newline_before`), or else the segment's
+        last newline: it does after a write at or past ``start`` in the same batch, after the
+        `insertTable` that made the table, or after any request in another tab or segment
+        (`previous`), and not as a batch's first request, after a style or list request, or after a
+        write before ``start``. A range of those characters alone reaches that newline alone. A wider range that reaches the newline before the character
+        reaches it with its text and, ending at a start or a row, nothing after that; one that does
+        not reaches its text and, at a start or a row, the paragraph after it. Measured 2026-11-05
+        on 201 batches over tables of one to three rows and one inside a cell, and 2026-11-06 after a
+        write at either end of a header, a delete and a bold there."""
+        kind, index, key = self.previous
+        if key is not None and key != self.key:
+            return True
+        if index is None:
+            return False
+        made = kind == "insert_table" and self._units(self._opening(pos)) == index + 1
+        return index >= start or made
+
+    def _newline_before(self, pos: int) -> int:
+        """The nearest newline before ``pos``: for a table's start or its first row, the one before
+        the table; for a later row, the last of the cell before it."""
+        while self.chars[pos][0] != "\n":
+            pos -= 1
+        return pos
 
     def _opening(self, pos: int) -> int:
         """The position of the `TABLE` of the table whose start, row, cell or end ``pos`` is."""
@@ -2039,8 +2087,16 @@ class Body:
         newline that ends the paragraph there (`insert`). Measured 2026-11-03: inserted inside a
         paragraph, the table split it, the text before it keeping the paragraph's style; at a
         paragraph's start it followed an empty paragraph; and each cell's newline was in the style
-        text inserted there takes, bold where it went between two bold characters."""
+        text inserted there takes, bold where it went between two bold characters. Measured
+        2026-11-05: at the first index of a heading, a title or a subtitle, each cell's newline
+        took what that named style gives text beyond normal text (`_TEXT_STYLES`) under the style
+        the text there has, a font size of 20 PT at a HEADING_1 and of 14 PT where the heading's
+        text was 14 PT; inside such a paragraph, nothing of it."""
         style = self._style_at(pos, "\n")
+        if self._starts_paragraph(pos):
+            named = _TEXT_STYLES.get(self._named(self._paragraph_of(pos)), {})
+            normal = _TEXT_STYLES["NORMAL_TEXT"]
+            style = {k: v for k, v in named.items() if normal.get(k) != v} | style
         self.insert(pos, "\n")
         made = new_table(rows, columns)["table"]
         chars: list[tuple[str, dict, int]] = [
@@ -2398,6 +2454,8 @@ class Document:
         # the requests `routers.google_docs.docs_batch_update` counts as no write when they are all
         # a batch holds
         self.unchanged = 0
+        # what each segment's `Body.previous` is set to (`note`)
+        self.previous: Previous = (None, None, None)
 
     def flat(self) -> list[dict]:
         return [tab for tab, *_ in walk(self.tabs)]
@@ -2426,8 +2484,17 @@ class Document:
             content = tab["body"] if kind == "body" else tab[f"{kind}s"][segment]
             body = Body(self.file_id, content, self.revision, self._headings)
             body.ranges = [r for r in self.ranges(tab) if r.get("segmentId", "") == segment]
+            body.previous, body.key = self.previous, key
             self._open[key] = body
         return self._open[key]
+
+    def note(self, kind: str, index: int | None, key: tuple[str, str] | None) -> None:
+        """Keep the request just applied, of ``kind`` at ``index`` (None for one that names no
+        index, or is no write) in the tab and segment ``key`` (None for one that names neither), as
+        the one before the next, for each segment open and each opened later (`Body.previous`)."""
+        self.previous = (kind, index, key)
+        for body in self._open.values():
+            body.previous = self.previous
 
     @staticmethod
     def ranges(tab: dict) -> list[dict]:
@@ -3304,20 +3371,26 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
     Measured 2026-11-03: a cell of `Head` as HEADING_1 and `body` was `Head body`, a list item
     `item1 item2`, a vertical tab and a tab were written as themselves, a cell's trailing spaces
     kept and an empty cell `|  |`; a bold run and a bold link in the first row were plain, in the
-    second `**` and `[**…**]`, and italic and struck-through text in the first row was marked."""
+    second `**` and `[**…**]`, and italic and struck-through text in the first row was marked.
+    Measured 2026-11-05: an empty paragraph of a table inside a cell was left out, where the
+    cell's own empty paragraph was kept."""
     rows = []
     for n, row in enumerate(table["tableRows"]):
         cells = []
         for cell in row["tableCells"]:
             lines = []
-            for paragraph in paragraphs_of(cell["content"]):
-                named = _TEXT_STYLES.get(_named(paragraph), {})
-                pieces = []
-                for text, style in _spans(paragraph):
-                    marks = _marks({**named, **_anchored(style, anchors)})
-                    marks = marks - {"bold"} if n == 0 else marks
-                    pieces.append((marks, text, _escape(text, notes)))
-                lines.append(_stretch(pieces))
+            for el in cell["content"]:
+                own = "paragraph" in el
+                for paragraph in [el["paragraph"]] if own else paragraphs_of([el]):
+                    named = _TEXT_STYLES.get(_named(paragraph), {})
+                    pieces = []
+                    for text, style in _spans(paragraph):
+                        marks = _marks({**named, **_anchored(style, anchors)})
+                        marks = marks - {"bold"} if n == 0 else marks
+                        pieces.append((marks, text, _escape(text, notes)))
+                    line = _stretch(pieces)
+                    if own or line:
+                        lines.append(line)
             cells.append(" ".join(lines))
         rows.append("| " + " | ".join(cells) + " |")
     columns = len(table["tableStyle"]["tableColumnProperties"])

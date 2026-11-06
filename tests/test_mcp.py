@@ -1364,15 +1364,15 @@ def _initialised_mcp(*args, env=None, timeout=120):
     process; the caller signals it. A supervisor that signals and waits holds stdin exactly so.
 
     When the handshake gets no result, or none within ``timeout`` seconds, the process is ended and
-    the test fails with what it wrote to stderr. That read is bounded: the `backlot import` that
-    `serve()` runs inherits the same stderr, and may still be holding it once `backlot mcp` has
-    ended."""
+    the test fails with what it wrote to stderr, which ``PYTHONIOENCODING`` has it write in the
+    UTF-8 it is read in. That read is bounded: the `backlot import` that `serve()` runs inherits the
+    same stderr, and may still be holding it once `backlot mcp` has ended."""
     proc = subprocess.Popen(
         [sys.executable, "-m", "backlot", "mcp", *args],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=env,
+        env={**(os.environ if env is None else env), "PYTHONIOENCODING": "utf-8"},
     )
     init = {
         "jsonrpc": "2.0",
@@ -1409,8 +1409,11 @@ def test_a_failed_handshake_ends_backlot_mcp_and_fails_the_test_with_its_stderr(
 ):
     """A port nothing listens on makes `backlot mcp` refuse the `--url` and exit; one that listens
     and never answers holds it in its probe of that url for `NAMED_SERVER_TIMEOUT`, longer than the
-    row's ``timeout``. `Popen` is wrapped to keep the process, which `_initialised_mcp` does not
-    return when it fails."""
+    row's ``timeout``. The url ends in a fragment, which the probe does not send, holding a
+    character cp1252 has none for, and the test runs under ``PYTHONIOENCODING=cp1252``, the encoding
+    `serve()` notes for a redirected stream on a Western Windows: the refusal reaches the failure
+    message as written only when `_initialised_mcp` sets the child's encoding. `Popen` is wrapped to
+    keep the process, which `_initialised_mcp` does not return when it fails."""
     started = []
     popen = subprocess.Popen
 
@@ -1419,11 +1422,12 @@ def test_a_failed_handshake_ends_backlot_mcp_and_fails_the_test_with_its_stderr(
         return started[-1]
 
     monkeypatch.setattr(subprocess, "Popen", start)
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         if listen:
             sock.listen()
-        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        url = f"http://127.0.0.1:{sock.getsockname()[1]}#한"
         with pytest.raises(pytest.fail.Exception) as failed:
             _initialised_mcp("--source", "slack", "--url", url, timeout=timeout)
     first, err = failed.value.msg.split("\n", 1)

@@ -77,8 +77,8 @@ def _reject_sort_with_order_by(sort, order_by) -> None:
     measured on api.linear.app 2026-10-04. Sending the argument is what counts, so ``sort: []``
     is refused and an explicit ``null`` is absent. The arguments are validated before the pair:
     ``first`` with ``last`` and a malformed filter id each answered ``Argument Validation Error``
-    beside it, so ``_issue_page`` and ``resolve_users`` call this after ``_slice``, and
-    ``_issue_page`` after compiling the filter too."""
+    beside it, so :func:`_issue_arguments` and :func:`_user_arguments` call this after
+    ``_slice``, and ``_issue_arguments`` after compiling the filter too."""
     if sort is not None and order_by is not None:
         raise GraphQLError(
             "Cannot use both sort and orderBy options",
@@ -104,7 +104,7 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
     when combined with ``last`` (Relay applies ``after`` first, then takes the last n of the rest).
     Asking for both ``first`` and ``last`` is a client bug the spec says to reject."""
     if first is not None and last is not None:
-        raise GraphQLError("passing both `first` and `last` is not supported")
+        raise argument_validation_error()
     start = pagination.decode_cursor(after) if after else 0
     if _backward(first, last, before):
         limit = pagination.clamp_limit(last, PAGE_DEFAULT, PAGE_MAX)
@@ -113,6 +113,11 @@ def _slice(first, after, last, before) -> tuple[int | None, int, int]:
         end = max(0, pagination.decode_cursor(before) - 1)
         return max(start, end - limit), min(limit, max(0, end - start)), start
     return start, pagination.clamp_limit(first, PAGE_DEFAULT, PAGE_MAX), start
+
+
+def _page_arguments(_info, *, first=None, after=None, last=None, before=None, **_ignored):
+    """The page :func:`_slice` reads from a connection's arguments."""
+    return _slice(first, after, last, before)
 
 
 def _backward(first, last, before) -> bool:
@@ -1053,6 +1058,28 @@ def _resolve_issue_ids(info, flt):
     return out
 
 
+def _issue_arguments(
+    info,
+    *,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    orderBy=None,
+    sort=None,
+    **_ignored,
+):
+    """``(page, prefilter)`` of an issue connection: :func:`_slice`'s page and the compiled
+    filter."""
+    page = _slice(first, after, last, before)
+    prefilter = compile_issue_filter(
+        _ctx(info)["conn"], _resolve_issue_ids(info, filter), _team_keys(info)
+    )
+    _reject_sort_with_order_by(sort, orderBy)
+    return page, prefilter
+
+
 def _issue_page(
     info,
     *,
@@ -1069,9 +1096,16 @@ def _issue_page(
 ) -> dict:
     ctx = _ctx(info)
     conn, visible = ctx["conn"], ctx["visible_ids"]
-    offset, limit, floor = _slice(first, after, last, before)
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
-    _reject_sort_with_order_by(sort, orderBy)
+    (offset, limit, floor), prefilter = _issue_arguments(
+        info,
+        first=first,
+        after=after,
+        last=last,
+        before=before,
+        filter=filter,
+        orderBy=orderBy,
+        sort=sort,
+    )
     if offset is None:
         # `last:` with no `before:` is the only shape that needs a total, so the COUNT is paid
         # here and not on every page.
@@ -1104,6 +1138,35 @@ def resolve_issues(_root, info, **kwargs) -> dict:
     return _issue_page(info, **kwargs)
 
 
+def _search_arguments(
+    info,
+    *,
+    term,
+    teamId=None,
+    first=None,
+    after=None,
+    last=None,
+    before=None,
+    filter=None,
+    **_ignored,
+):
+    """The compiled filter of ``searchIssues``, or the refusal of its arguments."""
+    if not term:
+        raise argument_validation_error()
+    if teamId is not None:
+        # Measured 2026-10-22: a UUID of version 1-8 and variant 8-b, the nil UUID and the all-`f`
+        # one were looked up, in either case; version 0 or 9, variant c, no dashes and a trailing
+        # space were refused.
+        versioned = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+        nil_or_max = r"0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12}"
+        if not re.fullmatch(f"{versioned}|{nil_or_max}", teamId, re.IGNORECASE):
+            raise argument_validation_error()
+    _slice(first, after, last, before)
+    return compile_issue_filter(
+        _ctx(info)["conn"], _resolve_issue_ids(info, filter), _team_keys(info)
+    )
+
+
 def resolve_search_issues(
     _root,
     info,
@@ -1124,24 +1187,22 @@ def resolve_search_issues(
     UUID, and with ``includeComments`` absent matched a word found only in a comment, as with
     ``true``, where ``false`` did not (measured 2026-10-22). ``orderBy`` replaces the relevance
     order with the newest first. A term holding a lone surrogate is
-    :func:`_search_backend_failed`, checked after ``teamId``, :func:`_slice` and the filter, the
-    refusals Backlot makes."""
+    :func:`_search_backend_failed`, checked after :func:`_search_arguments`."""
     ctx = _ctx(info)
     conn = ctx["conn"]
-    if not term:
-        raise argument_validation_error()
+    prefilter = _search_arguments(
+        info,
+        term=term,
+        teamId=teamId,
+        first=first,
+        after=after,
+        last=last,
+        before=before,
+        filter=filter,
+    )
     team = None
     if teamId is not None:
-        # Measured 2026-10-22: a UUID of version 1-8 and variant 8-b, the nil UUID and the all-`f`
-        # one were looked up, in either case; version 0 or 9, variant c, no dashes and a trailing
-        # space were refused.
-        versioned = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
-        nil_or_max = r"0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12}"
-        if not re.fullmatch(f"{versioned}|{nil_or_max}", teamId, re.IGNORECASE):
-            raise argument_validation_error()
         team = store.linear_team_by_served_id(conn, teamId.lower()) or "\x00none"
-    _slice(first, after, last, before)
-    prefilter = compile_issue_filter(conn, _resolve_issue_ids(info, filter), _team_keys(info))
     if node_utf8.holds_a_lone_surrogate(term):
         raise _search_backend_failed()
     hits, total = store.search_linear_issues(
@@ -1371,11 +1432,20 @@ def resolve_users(
     return _user_page(rows, info, first, after, last, before, filter, orderBy, sort)
 
 
+def _user_arguments(
+    _info, *, first=None, after=None, last=None, before=None, orderBy=None, sort=None, **_ignored
+) -> None:
+    """Raise the refusal of a user connection's page and order arguments, if any."""
+    _slice(first, after, last, before)
+    _reject_sort_with_order_by(sort, orderBy)
+
+
 def _user_page(rows, info, first, after, last, before, filter, order_by, sort) -> dict:
     """A ``UserConnection`` page over principal rows: ``users`` and ``Team.members`` take the same
     arguments and read them the same way."""
-    _slice(first, after, last, before)
-    _reject_sort_with_order_by(sort, order_by)
+    _user_arguments(
+        info, first=first, after=after, last=last, before=before, orderBy=order_by, sort=sort
+    )
     users = [_user(r["email"], r["display_name"], info) for r in rows if _match_user(r, filter)]
     users = _sorted_users(users, sort) if sort else _ordered_users(users, order_by)
     return _list_page(users, first, after, last, before)
@@ -2064,6 +2134,22 @@ RESOLVERS["IssueSearchResult"] = RESOLVERS["Issue"]
 # 2026-10-25 (UTC), and Backlot serves no field of either.
 ROOTS = ("Mutation", "Subscription")
 
+# The root fields whose arguments Linear refuses before it looks anything up, which the engine
+# checks ahead of the run. api.linear.app answered `first` with `last` at a later `issues`,
+# `teams`, `comments`, `users`, `documents` and `teamMemberships`, `sort` beside `orderBy` at a
+# later `issues` and `users`, a filter id that is not a UUID at a later `issues` and
+# `searchIssues`, and an empty `term` and a `teamId` that is not a UUID at a later `searchIssues`,
+# ahead of an earlier `issue` or `team` it does not hold, on 2026-11-06 (UTC).
+CHECKS = {
+    "issues": _issue_arguments,
+    "searchIssues": _search_arguments,
+    "users": _user_arguments,
+    "comments": _page_arguments,
+    "teams": _page_arguments,
+    "documents": _page_arguments,
+    "teamMemberships": _page_arguments,
+}
+
 
 def build_engine():
     """The Linear engine, over the SDL beside this module. ``SCALARS`` binds Linear's date-operand
@@ -2071,7 +2157,7 @@ def build_engine():
     a validation error (a 400) exactly where the real API makes it one."""
     from backlot.graphql import engine
 
-    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS, ROOTS)
+    return engine.from_sdl(__file__, "linear", RESOLVERS, SCALARS, ROOTS, CHECKS)
 
 
 __all__ = ["RESOLVERS", "build_engine", "PAGE_DEFAULT", "PAGE_MAX"]

@@ -1980,20 +1980,20 @@
     },
     "docs.DeleteTableColumnRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "tableCellLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TableCellLocation"
         }
       }
     },
     "docs.DeleteTableRowRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "tableCellLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TableCellLocation"
         }
       }
@@ -3134,50 +3134,50 @@
     },
     "docs.InsertTableColumnRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "insertRight": {
-          "status": "missing",
+          "status": "implemented",
           "type": "boolean"
         },
         "tableCellLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TableCellLocation"
         }
       }
     },
     "docs.InsertTableRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "columns": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "endOfSegmentLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.EndOfSegmentLocation"
         },
         "location": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Location"
         },
         "rows": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         }
       }
     },
     "docs.InsertTableRowRequest": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "insertBelow": {
-          "status": "missing",
+          "status": "implemented",
           "type": "boolean"
         },
         "tableCellLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TableCellLocation"
         }
       }
@@ -4299,16 +4299,12 @@
           "type": "docs.DeleteTabRequest"
         },
         "deleteTableColumn": {
-          "status": "missing",
-          "type": "docs.DeleteTableColumnRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.DeleteTableColumnRequest"
         },
         "deleteTableRow": {
-          "status": "missing",
-          "type": "docs.DeleteTableRowRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.DeleteTableRowRequest"
         },
         "insertComment": {
           "status": "missing",
@@ -4357,22 +4353,16 @@
           "severity": "gap"
         },
         "insertTable": {
-          "status": "missing",
-          "type": "docs.InsertTableRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.InsertTableRequest"
         },
         "insertTableColumn": {
-          "status": "missing",
-          "type": "docs.InsertTableColumnRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.InsertTableColumnRequest"
         },
         "insertTableRow": {
-          "status": "missing",
-          "type": "docs.InsertTableRowRequest",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.InsertTableRowRequest"
         },
         "insertText": {
           "status": "implemented",
@@ -4863,10 +4853,8 @@
           "type": "integer"
         },
         "table": {
-          "status": "missing",
-          "type": "docs.Table",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented",
+          "type": "docs.Table"
         },
         "tableOfContents": {
           "status": "missing",
@@ -5206,64 +5194,74 @@
     },
     "docs.Table": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "columns": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "rows": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "suggestedDeletionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedInsertionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "tableRows": {
-          "status": "missing",
+          "status": "implemented",
           "type": "[docs.TableRow]"
         },
         "tableStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TableStyle"
         }
       }
     },
     "docs.TableCell": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "content": {
-          "status": "missing",
+          "status": "implemented",
           "type": "[docs.StructuralElement]"
         },
         "endIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "startIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "suggestedDeletionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedInsertionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedTableCellStyleChanges": {
           "status": "missing",
-          "type": "map<string, docs.SuggestedTableCellStyle>"
+          "type": "map<string, docs.SuggestedTableCellStyle>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "tableCellStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TableCellStyle"
         }
       }
@@ -5288,72 +5286,80 @@
     },
     "docs.TableCellLocation": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "columnIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "rowIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "tableStartLocation": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Location"
         }
       }
     },
     "docs.TableCellStyle": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "backgroundColor": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.OptionalColor"
         },
         "borderBottom": {
           "status": "missing",
-          "type": "docs.TableCellBorder"
+          "type": "docs.TableCellBorder",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "borderLeft": {
           "status": "missing",
-          "type": "docs.TableCellBorder"
+          "type": "docs.TableCellBorder",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "borderRight": {
           "status": "missing",
-          "type": "docs.TableCellBorder"
+          "type": "docs.TableCellBorder",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "borderTop": {
           "status": "missing",
-          "type": "docs.TableCellBorder"
+          "type": "docs.TableCellBorder",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "columnSpan": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "contentAlignment": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         },
         "paddingBottom": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Dimension"
         },
         "paddingLeft": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Dimension"
         },
         "paddingRight": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Dimension"
         },
         "paddingTop": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Dimension"
         },
         "rowSpan": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         }
       }
@@ -5414,14 +5420,16 @@
     },
     "docs.TableColumnProperties": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "width": {
           "status": "missing",
-          "type": "docs.Dimension"
+          "type": "docs.Dimension",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "widthType": {
-          "status": "missing",
+          "status": "implemented",
           "type": "string"
         }
       }
@@ -5464,53 +5472,63 @@
     },
     "docs.TableRow": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "endIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "startIndex": {
-          "status": "missing",
+          "status": "implemented",
           "type": "integer"
         },
         "suggestedDeletionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedInsertionIds": {
           "status": "missing",
-          "type": "[string]"
+          "type": "[string]",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "suggestedTableRowStyleChanges": {
           "status": "missing",
-          "type": "map<string, docs.SuggestedTableRowStyle>"
+          "type": "map<string, docs.SuggestedTableRowStyle>",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "tableCells": {
-          "status": "missing",
+          "status": "implemented",
           "type": "[docs.TableCell]"
         },
         "tableRowStyle": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.TableRowStyle"
         }
       }
     },
     "docs.TableRowStyle": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "minRowHeight": {
-          "status": "missing",
+          "status": "implemented",
           "type": "docs.Dimension"
         },
         "preventOverflow": {
           "status": "missing",
-          "type": "boolean"
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
         },
         "tableHeader": {
           "status": "missing",
-          "type": "boolean"
+          "type": "boolean",
+          "kind": "missing_field",
+          "severity": "gap"
         }
       }
     },
@@ -5526,10 +5544,10 @@
     },
     "docs.TableStyle": {
       "type_kind": "object",
-      "status": "missing",
+      "status": "implemented",
       "fields": {
         "tableColumnProperties": {
-          "status": "missing",
+          "status": "implemented",
           "type": "[docs.TableColumnProperties]"
         }
       }

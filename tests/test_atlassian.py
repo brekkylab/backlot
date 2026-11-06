@@ -1502,8 +1502,6 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + ' and created > "2024-06-15 12:00"', {"Grand"}),
         (three + ' and created > "2024-06-15 23:59"', set()),
         (three + ' and created = "2024-06-15 23:23:54"', {"Grand"}),
-        (three + ' and created in ("2024-05-12", "2024-06-15")', {"Guide", "Grand"}),
-        (three + ' and created not in ("2024-05-12")', {"Child", "Grand"}),
         (three + ' and created != "2024-05-12"', {"Child", "Grand"}),
         (three + " and lastmodified > 2999-01-01", set()),
         (three + " and not lastmodified > 2020-01-01", set()),
@@ -9581,10 +9579,6 @@ _CQL_PARSE_ROWS = [
             ("created>startOfDay()", "created > startOfDay ( )"),
             ("created >= 2026-01-01 and type=page", "created >= 2026-01-01 and type = page"),
             ('created>"2026-09-10 12:00"', 'created > "2026-09-10 12:00"'),
-            (
-                'created in ("2024-05-12", "2024-06-15")',
-                'created in ( "2024-05-12" , "2024-06-15" )',
-            ),
             ("creator=currentUser()", "creator = currentUser ( )"),
             ('creator="ava@acme.com"', 'creator = "ava@acme.com"'),
             ("id in (1,2)", "id in ( 1 , 2 )"),
@@ -9700,6 +9694,28 @@ _CQL_PARSE_ROWS = [
             ('created > "2026-02-30"', _CQL_NOT_PARSED),
             (
                 "created > 20260910",
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created in ("2026-09-15")',
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created not in ("2026-09-15")',
+                "Operator 'notin' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and lastmodified in ("2026-09-15")',
+                "Operator 'in' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                'type=page and created in ("x")',
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            ('type=page and created in ("2026-09-15") and created > "x"', _CQL_NOT_PARSED),
+            ('type=page and created > 20260910 and created > "x"', _CQL_NOT_PARSED),
+            (
+                'type=page and created > 20260910 and created in ("2026-09-15")',
                 "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
             ),
             (

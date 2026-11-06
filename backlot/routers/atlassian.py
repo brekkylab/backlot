@@ -2204,9 +2204,9 @@ async def confluence_cql_search(request: Request):
     # not, and a query with no atom it reads answers no row. Beside an `id in (...)` naming three
     # pages made that day, real answered `lastmodified > 2020-01-01`, `created >= "2020-01-01"`,
     # `creator = currentUser()` and `not lastmodified > 2999-01-01` with the three, and
-    # `lastmodified > 2999-01-01`, `not lastmodified > 2020-01-01` and
-    # `not creator = currentUser()` with none, as this route does (Confluence Cloud, 2026-10-28).
-    # Where the tokens do not parse this way, the clause readers above stay the answer.
+    # `lastmodified > 2999-01-01`, `not lastmodified > 2020-01-01` and `not creator = currentUser()`
+    # with none, as this route does (Confluence Cloud, 2026-10-28). Where the tokens do not parse
+    # this way, the clause readers above stay the answer.
     try:
         account = synth.atlassian_account_id(caller.email) if caller.email else None
         expr = _cql_parse(tokens, account)
@@ -2270,11 +2270,7 @@ async def confluence_cql_search(request: Request):
                         else synth.epoch(str(r["id"]))
                     )
                 )
-                hit = (
-                    any(_cql_date_hit(spec, "=", moment) for spec in values)
-                    if op == "in"
-                    else _cql_date_hit(values[0], op, moment)
-                )
+                hit = _cql_date_hit(values[0], op, moment)
             elif field in _CQL_PERSON_FIELDS:
                 hit = synth.atlassian_account_id(r["author_email"] or "unknown") in values
             elif field in ("space", "space.key"):
@@ -3950,7 +3946,8 @@ def _cql_function_value(name: str, args: list[tuple[str, str]], current_user: st
 # word: `siteSearch ~` for the word answered all three, and the same clause in an `or` beside the
 # first page's `id` answered that page alone (Confluence Cloud). A bare date is its whole day in
 # UTC: this server carries no site time zone, where the measurement read it in the site's
-# (Asia/Seoul).
+# (Asia/Seoul). A date field under `in (...)` or `not in (...)` does not pass: `_cql_parse`
+# refuses it.
 _CQL_READABLE = {
     "text": {"~"},
     "title": {"~", "=", "in"},
@@ -3962,8 +3959,8 @@ _CQL_READABLE = {
     "id": {"=", "in"},
     "ancestor": {"=", "in"},
     "parent": {"=", "in"},
-    "created": {"<", "<=", ">", ">=", "=", "in"},
-    "lastmodified": {"<", "<=", ">", ">=", "=", "in"},
+    "created": {"<", "<=", ">", ">=", "="},
+    "lastmodified": {"<", "<=", ">", ">=", "="},
     "creator": {"=", "in"},
     "contributor": {"=", "in"},
 }
@@ -3985,10 +3982,19 @@ def _cql_parse(
     or None for the admin token. Raises `_CQLParseError` for anything else, including a field with
     no operator, which real refuses with a message of its own and this server answers at 200 through
     the clause readers, and raises `_CQLRefusal` for a date value real refuses with a 400 of its
-    own."""
+    own.
+
+    A date value real cannot parse is refused where the reading meets it. An operator a date field
+    does not take with its value, and `in` or `not in` before a list of values, is refused once the
+    whole query is read, the leftmost of them, so an unparseable date value anywhere in the query
+    answers first: real answered `created > 20260910 and created > "x"` and
+    `created in ("2026-09-15") and created > "x"` with `Could not parse cql : `, `created in ("x")`
+    with the operator refusal, and `created > 20260910 and created in ("2026-09-15")` with the one
+    for `>` (Confluence Cloud, 2026-11-06)."""
     at = 0
     if now is None:
         now = datetime.now(timezone.utc)
+    operator_refusals = []
 
     def peek(offset=0):
         return tokens[at + offset] if at + offset < len(tokens) else (None, None)
@@ -4017,17 +4023,19 @@ def _cql_parse(
     def date_value(op, field):
         """A date field's value as a date spec, consuming the value and its function tail. A bare
         date is its whole UTC day; a datetime is one second; a date function resolves against `now`.
-        Raises `_CQLRefusal` for a value real refuses: a bare integer, a word that is no function
-        call, an unparseable date, or a date function's argument that is not a quoted string. A
-        quoted argument reaches here as a relative date, since `_cql_cannot_run` refuses any other
-        first, and a function that is no date function is a never spec, matching nothing."""
+        Raises `_CQLRefusal` for a value real cannot parse: a word that is no function call, an
+        unparseable date, or a date function's argument that is not a quoted string. A bare
+        integer is the operator's refusal, kept for the end of the reading, and a never spec here.
+        A quoted argument reaches here as a relative date, since `_cql_cannot_run` refuses any
+        other first, and a function that is no date function is a never spec, matching nothing."""
         nonlocal at
         kind, text = peek()
         if kind not in _CQL_VALUES:
             raise _CQLParseError()
         at += 1
         if kind == "NUMBER":  # a bare integer is not a date: `created > 20260910` is a 400
-            raise _CQLRefusal(errors_atlassian.cql_operator_not_supported(op, field))
+            operator_refusals.append(errors_atlassian.cql_operator_not_supported(op, field))
+            return ("never",)
         if kind == "DATE":
             return _cql_parsed_date(text)
         if kind == "QUOTED":
@@ -4135,9 +4143,12 @@ def _cql_parse(
         if peek() != ("PUNCT", "("):
             raise _CQLParseError()
         at += 1
+        if field in _CQL_DATE_FIELDS:
+            refused = "notin" if negated else "in"
+            operator_refusals.append(errors_atlassian.cql_operator_not_supported(refused, field))
         values = []
         while True:
-            values.append(date_value("in", field) if field in _CQL_DATE_FIELDS else value(field))
+            values.append(value(field))
             if peek() == ("PUNCT", ","):
                 at += 1
                 continue
@@ -4187,10 +4198,16 @@ def _cql_parse(
             node = ("or", node, parse_and())
         return node
 
-    node = parse_or()
-    rest = tokens[at:]
-    if rest and not (keyword("order") and keyword("by", 1)):
-        raise _CQLParseError()
+    try:
+        node = parse_or()
+        if tokens[at:] and not (keyword("order") and keyword("by", 1)):
+            raise _CQLParseError()
+    except _CQLParseError:
+        if operator_refusals:
+            raise _CQLRefusal(operator_refusals[0])
+        raise
+    if operator_refusals:
+        raise _CQLRefusal(operator_refusals[0])
     return node
 
 

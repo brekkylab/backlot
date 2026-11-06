@@ -418,10 +418,11 @@ def _service_refusal(status: int, exception: str, message: str) -> AtlassianErro
 
 
 def cql_operator_not_supported(operator: str, field: str) -> AtlassianError:
-    """The CQL search's refusal of a value form a date field does not take with an operator:
-    `created > 20260910` answered `Operator '>' is not supported for field 'created'.
-    Supported operators are : <, <=, >, >=, =, !=` (Confluence Cloud, 2026-10-31). The operator
-    in the message is the one sent; the list is the six comparison operators whatever it is."""
+    """The CQL search's 400 naming the operator of a date clause: real answered `created > 20260910`
+    with it for `>` (Confluence Cloud, 2026-10-31), and `created` before a list of dates with it for
+    `in` and `notin` and `lastmodified` for `in` (Confluence Cloud, 2026-11-06). The operator in the
+    message is the one sent, `not in` written `notin`; the list is the six comparison operators
+    whatever it is."""
     return _service_refusal(
         400,
         "api.BadRequestException",

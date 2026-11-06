@@ -2416,10 +2416,11 @@ async def confluence_child_pages(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     content_id, _ = _content_id(content_id)
-    limit, start = _confluence_page_params(request, bounded_sum=True)
+    limit, start = _confluence_page_params(request)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise errors_atlassian.content_not_found("child/page", content_id)
+    _refuse_a_start_past_java_int(limit, start)
     expand = _str_param(request, "expand", "") or ""
     kids = store.children(conn, "confluence", content_id, visible_ids=ids)
     page = kids[start : start + limit]
@@ -2445,10 +2446,11 @@ async def confluence_comments(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     content_id, _ = _content_id(content_id)
-    limit, start = _confluence_page_params(request, cap=1000, bounded_sum=True)
+    limit, start = _confluence_page_params(request, cap=1000)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise errors_atlassian.content_not_found("child/comment", content_id)
+    _refuse_a_start_past_java_int(limit, start)
     comments = store.doc_comments(conn, "confluence", content_id)
     results = []
     for c in comments[start : start + limit]:
@@ -2500,7 +2502,8 @@ async def confluence_attachments(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
     content_id, _ = _content_id(content_id)
-    limit, start = _confluence_page_params(request, default=50, bounded_sum=True)
+    limit, start = _confluence_page_params(request, default=50)
+    _refuse_a_start_past_java_int(limit, start)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise errors_atlassian.content_not_found("child/attachment", content_id)
@@ -3146,7 +3149,6 @@ def _confluence_page_params(
     default: int = 25,
     cap: int | None = None,
     refuse_zero: bool = False,
-    bounded_sum: bool = False,
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
@@ -3186,11 +3188,28 @@ def _confluence_page_params(
     _refuse_negative_page_params(limit, start)
     if refuse_zero and limit == 0:
         raise errors_atlassian.zero_limit_not_allowed()
-    if bounded_sum and start + limit > 2_147_483_647:
-        raise errors_atlassian.negative_not_allowed("limit")
     if cap is not None:
         limit = min(limit, cap)
     return limit, start
+
+
+def _refuse_a_start_past_java_int(limit: int, start: int) -> None:
+    """The `child/*` listings' refusal of a page that would end past Java's `int`: `start` plus
+    `limit` up to 1000, whether or not the route caps the `limit` it echoes, refused with the
+    message real gives a negative `limit`.
+
+    Measured on Confluence Cloud on 2026-11-04 and 2026-11-05. `child/page` and `child/attachment`
+    serve `?start=2147482647&limit=2147483647`, echoing that `limit`, and refuse
+    `?start=2147482648&limit=1001`; `child/comment` serves the first, echoing 1000, and refuses
+    the second. Under 1000 the sum is `start` plus the `limit` answered, the default included:
+    `child/page` serves `?start=2147483622` and refuses `?start=2147483623`, and
+    `child/attachment` does the same at 2147483597 and 2147483598.
+
+    On an id naming nothing, `child/attachment` refuses this ahead of its 404 and `child/page` and
+    `child/comment` only after theirs, so each route calls it on its own side of the lookup.
+    """
+    if start + min(limit, 1000) > JAVA_INT[1]:
+        raise errors_atlassian.negative_not_allowed("limit")
 
 
 # What Java's `String.trim()` removes: every character up to and including the space.

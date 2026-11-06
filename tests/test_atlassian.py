@@ -2620,6 +2620,19 @@ _SERVED_PAGE = "{page}"
         ("999999999/label?start=-1", "No content found with id : 999999999", "refused", 287),
         (f"att{_SERVED_PAGE}/label?limit=-1", "null", "attachment", 178),
         (f"att{_SERVED_PAGE}/label?limit=0", "null", "attachment", 178),
+        # a page ending past Java's `int` (`_refuse_a_start_past_java_int`)
+        (
+            "999999999/child/page?start=2147483647",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
+        (
+            "999999999/child/comment?start=2147483647&limit=1",
+            "No parent or not permitted to view content with id : ContentId{id=999999999}",
+            "readable",
+            248,
+        ),
         # with nothing wrong but the id, each listing looks it up
         (
             "999999999/child/page?limit=0",
@@ -3896,8 +3909,9 @@ _ATTACHMENT_PAGES = [
 def test_confluence_child_attachment_is_the_empty_page_from_any_start(
     client, admin_h, query, start, limit, prev
 ):
-    """Measured: no rows and no `next` at any `start`, a `prev` from any `start` past 0, and no
-    bound on `start` of the kind `content` has."""
+    """Measured: no rows and no `next` at any `start` served, a `prev` from any `start` past 0, and
+    no bound on `start` of the kind `content` has (where a page would end is what
+    :func:`backlot.routers.atlassian._refuse_a_start_past_java_int` bounds)."""
     api = "/atlassian/wiki/rest/api"
     cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
     r = client.get(f"{api}/content/{cid}/child/attachment?{query}", headers=admin_h)
@@ -4465,6 +4479,11 @@ def test_confluence_names_the_trimmed_value_where_jira_names_the_raw_one(client,
         # 404, and `label` its conversion and its `prefix`
         ("content/999999999/child/attachment", "limit=abc", 'For input string: "abc"'),
         ("content/999999999/child/attachment", "limit=-1", "limit cannot be less than zero"),
+        (
+            "content/999999999/child/attachment",
+            "start=2147483647",
+            "limit cannot be less than zero",
+        ),
         *[
             (f"content/999999999/{route}", query, want)
             for route in ("child/page", "child/comment")
@@ -9363,39 +9382,41 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
     assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}
 
 
-def test_confluence_child_listings_refuse_start_plus_limit_past_int32_max(client, admin_h):
-    """Measured on a live Confluence Cloud site, 2026-11-04 (UTC): on child/comment, child/page and
-    child/attachment, start plus limit summing past 2147483647 is refused with the message real
-    answers for a negative limit, and a sum of exactly 2147483647 is served."""
+def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, admin_h):
+    """What real answered each row, a 200 as the `limit` it echoes and a refusal as its body
+    (:func:`backlot.routers.atlassian._refuse_a_start_past_java_int`). `label` and `space` are
+    listings that refusal is not on."""
     api = "/atlassian/wiki/rest/api"
     cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
-    want_err = "java.lang.IllegalArgumentException: limit cannot be less than zero"
-
-    cases = [
-        ("child/comment", "start=2147483622", 200),
-        ("child/comment", "start=2147483623", 400),
-        ("child/comment", "start=2147483637&limit=10", 200),
-        ("child/comment", "start=2147483638&limit=10", 400),
-        ("child/comment", "start=2147483547&limit=100", 200),
-        ("child/comment", "start=2147483548&limit=100", 400),
-        ("child/comment", "start=2147483646&limit=1", 200),
-        ("child/comment", "start=2147483647&limit=1", 400),
-        ("child/comment", "start=2147483647&limit=0", 200),
-        ("child/page", "start=2147483647", 400),
-        ("child/attachment", "start=2147483647", 400),
-        ("space", "start=2147483647", 200),
+    rows = [
+        ("content/{id}/child/comment?start=2147483622", (200, 25)),
+        ("content/{id}/child/comment?start=2147483623", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483637&limit=10", (200, 10)),
+        ("content/{id}/child/comment?start=2147483638&limit=10", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483547&limit=100", (200, 100)),
+        ("content/{id}/child/comment?start=2147483548&limit=100", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483646&limit=1", (200, 1)),
+        ("content/{id}/child/comment?start=2147483647&limit=1", _NEGATIVE_LIMIT),
+        ("content/{id}/child/comment?start=2147483647&limit=0", (200, 0)),
+        ("content/{id}/child/comment?start=2147482647&limit=2147483647", (200, 1000)),
+        ("content/{id}/child/comment?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=2147483622", (200, 25)),
+        ("content/{id}/child/page?start=2147483623", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=2147483647", _NEGATIVE_LIMIT),
+        ("content/{id}/child/page?start=1&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/page?start=2147482647&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/page?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147483597", (200, 50)),
+        ("content/{id}/child/attachment?start=2147483598", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147483647", _NEGATIVE_LIMIT),
+        ("content/{id}/child/attachment?start=2147482647&limit=2147483647", (200, 2147483647)),
+        ("content/{id}/child/attachment?start=2147482648&limit=1001", _NEGATIVE_LIMIT),
+        ("content/{id}/label?start=2147483447&limit=201", (200, 200)),
+        ("space?start=2147483647", (200, 25)),
     ]
-
-    results = []
-    for route, query, _ in cases:
-        if route == "space":
-            url = f"{api}/space?{query}"
-        else:
-            url = f"{api}/content/{cid}/{route}?{query}"
-        results.append(client.get(url, headers=admin_h))
-
-    for r, (route, query, want_status) in zip(results, cases):
-        assert r.status_code == want_status, f"{route}?{query} got {r.status_code}: {r.text}"
-        if want_status == 400:
-            assert r.json()["statusCode"] == 400
-            assert r.json()["message"] == want_err
+    answered = {}
+    for path, _ in rows:
+        r = client.get(f"{api}/{path.format(id=cid)}", headers=admin_h)
+        answered[path] = (r.status_code, r.json()["limit"] if r.status_code == 200 else r.json())
+    assert len(answered) == len(rows)
+    assert answered == dict(rows)

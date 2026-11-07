@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-11-06",
+  "measured": "2026-11-07",
   "operations": [
     {
       "operation": "DELETE /agents/repos/{}/{}/automations/{}",
@@ -1677,6 +1677,14 @@
       "severity": "gap"
     },
     {
+      "operation": "GET /enterprises/{}/copilot/policies/code-review",
+      "id": "copilot/get-enterprise-code-review-policy",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
+    },
+    {
       "operation": "GET /enterprises/{}/dependabot/alerts",
       "id": "dependabot/list-alerts-for-enterprise",
       "status": "missing",
@@ -2510,6 +2518,22 @@
       "severity": "gap"
     },
     {
+      "operation": "GET /orgs/{}/copilot/code-review/runner",
+      "id": "copilot/get-organization-code-review-runner",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
+    },
+    {
+      "operation": "GET /orgs/{}/copilot/code-review/settings",
+      "id": "copilot/get-organization-code-review-settings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
+    },
+    {
       "operation": "GET /orgs/{}/copilot/coding-agent/permissions",
       "id": "copilot/get-copilot-coding-agent-permissions-organization",
       "status": "missing",
@@ -2571,6 +2595,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /orgs/{}/copilot/policies/code-review",
+      "id": "copilot/get-organization-code-review-policy",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
     },
     {
       "operation": "GET /orgs/{}/dependabot/alerts",
@@ -4163,6 +4195,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /repos/{}/{}/copilot/code-review/settings",
+      "id": "copilot/get-repository-code-review-settings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states a repository's Copilot code review settings, so nothing is served for these two (`GET` and `PATCH`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each on a public repository with 401 \"Requires authentication\" with no credential, \"Bad credentials\" for `Bearer nope` and 404 `Not Found` for a token, and a `GET` on a repository the token can push to with 404 too, so the shape of an answer is not known."
     },
     {
       "operation": "GET /repos/{}/{}/dependabot/alerts",
@@ -6183,6 +6223,14 @@
       "severity": "gap"
     },
     {
+      "operation": "PATCH /orgs/{}/copilot/code-review/settings",
+      "id": "copilot/update-organization-code-review-settings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
+    },
+    {
       "operation": "PATCH /orgs/{}/dependabot/repository-access",
       "id": "dependabot/update-repository-access-for-org",
       "status": "missing",
@@ -6371,6 +6419,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "PATCH /repos/{}/{}/copilot/code-review/settings",
+      "id": "copilot/update-repository-code-review-settings",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states a repository's Copilot code review settings, so nothing is served for these two (`GET` and `PATCH`). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each on a public repository with 401 \"Requires authentication\" with no credential, \"Bad credentials\" for `Bearer nope` and 404 `Not Found` for a token, and a `GET` on a repository the token can push to with 404 too, so the shape of an answer is not known."
     },
     {
       "operation": "PATCH /repos/{}/{}/dependabot/alerts/{}",
@@ -7654,6 +7710,14 @@
       "severity": "gap"
     },
     {
+      "operation": "POST /repos/{}/{}/pulls/{}/copilot-code-review",
+      "id": "pulls/request-copilot-code-review",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Requesting a Copilot code review asks GitHub to run Copilot on a pull request, which Backlot cannot do, so nothing is served. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered it on a public repository with 401 \"Requires authentication\" with no credential, \"Bad credentials\" for `Bearer nope`, and 404 `Not Found` for a token on a pull request number the repository does not have."
+    },
+    {
       "operation": "POST /repos/{}/{}/pulls/{}/requested_reviewers",
       "id": "pulls/request-reviewers",
       "status": "missing",
@@ -8012,6 +8076,14 @@
       "severity": "gap"
     },
     {
+      "operation": "PUT /enterprises/{}/copilot/policies/code-review",
+      "id": "copilot/set-enterprise-code-review-policy",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
+    },
+    {
       "operation": "PUT /enterprises/{}/copilot/policies/coding_agent",
       "id": "copilot/set-enterprise-coding-agent-policy",
       "status": "missing",
@@ -8320,6 +8392,14 @@
       "severity": "gap"
     },
     {
+      "operation": "PUT /orgs/{}/copilot/code-review/runner",
+      "id": "copilot/set-organization-code-review-runner",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
+    },
+    {
       "operation": "PUT /orgs/{}/copilot/coding-agent/permissions",
       "id": "copilot/set-copilot-coding-agent-permissions-organization",
       "status": "missing",
@@ -8346,6 +8426,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "PUT /orgs/{}/copilot/policies/code-review",
+      "id": "copilot/set-organization-code-review-policy",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No corpus record states an enterprise's or an organization's Copilot code review policy, its settings or its runner, so nothing is served for these eight (`GET` and `PUT` of the enterprise's and the organization's policy, `GET` and `PATCH` of the organization's settings, `GET` and `PUT` of its runner). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-07. On 2026-11-07 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`, and with 403 for a token that does not administer the organization or the enterprise, so the shape of an answer is not known."
     },
     {
       "operation": "PUT /orgs/{}/dependabot/repository-access/default-level",

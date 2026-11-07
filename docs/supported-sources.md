@@ -235,7 +235,14 @@ the five and count nowhere, as real's do not: a credential that does not resolve
 its header apart or it is one of the two `Basic` shapes the paragraph above counts, a path real does
 not route asked by a caller that sent one, and, on an operation Backlot does not serve, the 401 for
 an `Authorization` that carries no credential and the 401 for none at all on a `PATCH`, `PUT` or
-`DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and 2026-10-16).
+`DELETE` (measured 2026-09-10, 2026-09-21, 2026-10-14 and 2026-10-16). A `%00` in a name a route
+reads, an owner, a repository, a login, a number, a ref or a contents path, is an empty 400 that
+carries the five and counts, ahead of the API version, of the 401 for no credential and of the 404
+for a name nothing holds; a credential that does not resolve and a route that asks a caller for a
+credential first keep their own 401, a `%00` in a segment a route spells out is the 404 of a path
+no route matches, and a `Basic` value naming no token gets the 400 with none of the five (measured
+2026-11-07). Of the operations Backlot does not serve, `GET /users/{username}` and its `repos` are
+answered so; the rest keep the 401 that asks for a credential first.
 
 **Every response carries an `x-github-request-id`**, as real's do, code search's and the refusals
 answered before a route runs included: five uppercase hex fields joined by colons, the last being

@@ -3275,13 +3275,15 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 # those in `DROPPED` are left out as a space is: `title ~ probe*` is `title ~ probe`, `title~a#b`
 # reads `a` and then `b`, and on 2026-10-26 `title~` and U+0663 (an Arabic-Indic three) or U+FF11 (a
 # fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
-# `title~a:b` cannot be parsed.
+# `title~a:b` cannot be parsed. On 2026-11-06 a number ended at a letter or `_`: `5b16` was `5` and
+# then `b16`, and `12_a` was `12` and then `_a`. Digits before a `.` are read here as a word, and
+# real served `label = 12.5`.
 _CQL_TOKEN = re.compile(
     r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"[^"]*"|'[^']*')"""
     r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
     r"|(?P<PUNCT>[(),])"
     r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
-    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![A-Za-z_.]))"
+    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![0-9.]))"
     r"|(?P<WORD>[A-Za-z0-9_]+(?:[.][A-Za-z0-9_]+)*)"
     r"|(?P<DROPPED>[\s#$%&*+;?@^`{|}\x00-\x1f\x7f]|[^\x00-\x7f])"
     r"|(?P<OTHER>.)",

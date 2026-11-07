@@ -5145,6 +5145,7 @@ LINEAR_TYPES = {
     "User.createdIssueCount": "Int!",
     # filter and sort inputs at the vendor's comparator type
     "AttachmentFilter.sourceType": "SourceTypeComparator",
+    "DocumentFilter.personalUser": "NullableUserFilter",
     "IssueFilter.creator": "NullableUserFilter",
     "IssueFilter.dueDate": "NullableTimelessDateComparator",
     "IssueFilter.estimate": "EstimateComparator",

@@ -386,6 +386,7 @@ input DocumentFilter {
   issue: IssueFilter
   team: NullableTeamFilter
   release: ReleaseFilter
+  personalUser: NullableUserFilter
   and: [DocumentFilter!]
   or: [DocumentFilter!]
 }

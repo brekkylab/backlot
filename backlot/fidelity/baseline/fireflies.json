@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.fireflies.ai/graphql"
   ],
-  "measured": "2026-10-14",
+  "measured": "2026-11-07",
   "root": {
     "query": "Query"
   },
@@ -339,6 +339,13 @@
               "status": "implemented"
             }
           }
+        },
+        "transcript_import": {
+          "status": "missing",
+          "type": "TranscriptImport!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "The state of an import a client starts with the `createTranscriptImport` mutation and feeds with `addTranscriptImportPart`, a write product. Backlot's data enters through `backlot import`, so there is no import to report. Measured against api.fireflies.ai on 2026-11-07: introspection gives `transcript_import(meeting_id: String!): TranscriptImport!` with no description, and the root answered the id of a transcript of the workspace and `nope` each with a 200 whose one error is `TranscriptImport not found`, code `object_not_found` and `extensions.status` 404."
         },
         "transcripts": {
           "status": "implemented",

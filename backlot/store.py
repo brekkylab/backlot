@@ -2455,6 +2455,12 @@ _LINEAR_SEARCH_TRIMMED = "\t\n\x0b\x0c\r \xa0\u1680\u2028\u2029\u202f\u205f\u300
 )
 # The number alone, with at most one space and that on one side.
 _LINEAR_SEARCH_BARE = re.compile(rf" ?({_LINEAR_SEARCH_NUM})|({_LINEAR_SEARCH_NUM}) ")
+# Two numbers or more and spaces, nothing else: each number names its issue. Measured on
+# api.linear.app on 2026-10-25 and 2026-11-06: `19 2` answered KEY-2 and KEY-19 at score 1 ahead of
+# the word matches, `19 19` and `21 21` their one issue once, and `19   2`, `  19 2`, `19 2  ` and
+# ` 19  2 ` as `19 2` did, where `19 probe`, `19,2`, `2 019`, and `19 2` with a tab or a U+00A0 for
+# the space, were read as words.
+_LINEAR_SEARCH_NUMBERS = re.compile(rf" *{_LINEAR_SEARCH_NUM}(?: +{_LINEAR_SEARCH_NUM})+ *")
 
 
 def _linear_search_identifier(term: str) -> tuple[str | None, str] | None:
@@ -2482,6 +2488,20 @@ def _linear_search_identifier(term: str) -> tuple[str | None, str] | None:
     if bare:
         return None, bare.group(1) or bare.group(2)
     return None
+
+
+def _linear_search_words(term: str) -> str:
+    """The text whose words ``searchIssues`` matches: ``term``, with what follows an identifier at
+    its start parted from it by a space, so punctuation does not join them into one word.
+    Measured on api.linear.app on 2026-10-25 and 2026-11-06: `KEY-19.probe` and `KEY-19,probe`,
+    and `KEY-2` followed by `-`, `_`, `;`, `/` or `:` and `probe`, answered the issue at score 1
+    and then the issues `probe` matches, as `KEY-2 probe` did. `"KEY-2.probe"` in quotes answered
+    KEY-2 alone, so the quotes `_linear_search_identifier` takes off stay on here."""
+    text = term.strip(_LINEAR_SEARCH_TRIMMED)
+    named = _LINEAR_SEARCH_OPENING.match(text)
+    if named is None:
+        return term
+    return f"{text[: named.end()]} {text[named.end() :]}"
 
 
 def _linear_identifier_ids(conn, key: str | None, number: str) -> list[str]:
@@ -2518,22 +2538,24 @@ def search_linear_issues(
     """``searchIssues``: every matching issue as ``(id, score)`` in the order served, and the count
     ``totalCount`` reports.
 
-    An issue matches when the term names its identifier (see :func:`_linear_search_identifier`),
-    when a space-separated word of ``term`` starts a word of its title or description, read
-    through the porter-stemmed index with a hyphenated word as the phrase it spells (measured
-    2026-10-22: `prob`, `pro` and `chil` matched where `robe` did not, and `BRE-2` did not match
-    a title holding `(child 2)`), or, with ``include_comments``, when one of its comments
-    contains a word. That count leaves ``prefilter`` out, as api.linear.app's did on 2026-10-22:
-    a `filter` narrowed the nodes and left `totalCount` at the unfiltered total.
+    An issue matches when the term names its identifier (see :func:`_linear_search_identifier`,
+    and :data:`_LINEAR_SEARCH_NUMBERS` for a run of numbers), when a space-separated word of the
+    text :func:`_linear_search_words` gives starts a word of its title or description, read through
+    the porter-stemmed index with a hyphenated word as the phrase it spells (measured 2026-10-22:
+    `prob`, `pro` and `chil` matched where `robe` did not, and `BRE-2` did not match a title holding
+    `(child 2)`), or, with ``include_comments``, when one of its comments contains a word. That
+    count leaves ``prefilter`` out, as api.linear.app's did on 2026-10-22: a `filter` narrowed the
+    nodes and left `totalCount` at the unfiltered total.
 
-    ``score`` is 1 for the identifier, as real's was, and ``|bm25| / (1 + |bm25|)`` for an index
-    match, so it falls between 0 and 1 and orders as the rank does; a comment-only match scores 0.
-    Real's own word scores are not reproducible."""
-    words = re.findall(r"\w+", term.lower())
+    ``score`` is 1 for an issue the term names, as real's was, and ``|bm25| / (1 + |bm25|)`` for an
+    index match, so it falls between 0 and 1 and orders as the rank does; a comment-only match
+    scores 0. Real's own word scores are not reproducible."""
+    text = _linear_search_words(term)
+    words = re.findall(r"\w+", text.lower())
     # Each kind of match is collected on its own and the candidates are scoped afterwards: an FTS
     # MATCH joined into a scan of the issues is re-run per issue.
     ranks: dict[str, float | None] = {}
-    phrases = [w.replace('"', '""') for w in term.lower().split() if re.search(r"\w", w)]
+    phrases = [w.replace('"', '""') for w in text.lower().split() if re.search(r"\w", w)]
     if phrases and _has_fts(conn, "linear"):
         match = " OR ".join(f'"{w}"*' for w in phrases)
         for row in conn.execute(
@@ -2552,6 +2574,9 @@ def search_linear_issues(
             ranks.setdefault(row[0], None)
     named = _linear_search_identifier(term)
     exact = set(_linear_identifier_ids(conn, *named)) if named is not None else set()
+    if named is None and _LINEAR_SEARCH_NUMBERS.fullmatch(term):
+        for number in term.split():
+            exact.update(_linear_identifier_ids(conn, None, number))
     for issue_id in exact:
         ranks.setdefault(issue_id, None)
     where = " WHERE id IN (SELECT value FROM json_each(?))"
@@ -2569,12 +2594,25 @@ def search_linear_issues(
         where += f" AND {frag}"
         params += fparams
     sort = LINEAR_ORDER_COLUMNS[order_by] if order_by else "created_ts"
-    rows = conn.execute(f"SELECT id, {sort} AS at FROM linear_issues{where}", params).fetchall()
+    rows = conn.execute(
+        f"SELECT id, {sort} AS at, {LINEAR_UPDATED_EXPR} AS updated FROM linear_issues{where}",
+        params,
+    ).fetchall()
     # Newest first and then by id, as `_linear_order` sorts; without `order_by`, relevance first.
     rows.sort(key=lambda r: r["id"])
     rows.sort(key=lambda r: r["at"], reverse=True)
     if not order_by:
-        rows.sort(key=lambda r: (r["id"] not in exact, ranks[r["id"]] is None, ranks[r["id"]] or 0))
+        # The issues the term names come first, the last updated first. Measured on api.linear.app
+        # on 2026-11-06 over ten runs of numbers: `19 2` and `2 19` both answered KEY-2 ahead of
+        # KEY-19, `22 3` KEY-22 ahead of KEY-3 and `1 22` KEY-1 ahead of KEY-22, whatever the
+        # issues' numbers, creation or `sortOrder`.
+        rows.sort(
+            key=lambda r: (
+                (0, -r["updated"]) if r["id"] in exact else (1, 0),
+                ranks[r["id"]] is None,
+                ranks[r["id"]] or 0,
+            )
+        )
     out = []
     for row in rows:
         rank = ranks[row["id"]]

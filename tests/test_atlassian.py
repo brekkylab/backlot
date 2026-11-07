@@ -9536,6 +9536,11 @@ _CQL_PARSE_ROWS = [
         (cql, 200, written)
         for cql, written in [
             ("type=page", "type = page"),
+            (
+                'type=page and creator = "5b16419b694e5112009efb54"',
+                'type = page and creator = "5b16419b694e5112009efb54"',
+            ),
+            ("type=page and label = 12.5", "type = page and label = 12.5"),
             ("type=page  and  space=handbook", "type = page and space = handbook"),
             ("TYPE=page", "TYPE = page"),
             ("type=page AND space=handbook", "type = page AND space = handbook"),
@@ -9706,6 +9711,16 @@ _CQL_PARSE_ROWS = [
             ("type=page order by", _CQL_NOT_PARSED),
             ("type=page order by created b", _CQL_NOT_PARSED),
             ("type=page b and type=page", _CQL_NOT_PARSED),
+            ("type=page and label = 5b16", "Unrecognised clause at : b16"),
+            ("type=page and title = 5b16", "Unrecognised clause at : b16"),
+            (
+                "type=page and creator = 5b16419b694e5112009efb54",
+                "Unrecognised clause at : b16419b694e5112009efb54",
+            ),
+            ("type=page and label = 5b16 and type = page", _CQL_NOT_PARSED),
+            ("type=page and label = 55b16", "Unrecognised clause at : b16"),
+            ("type=page and label = 5_a", "Unrecognised clause at : _a"),
+            ("type=page and label = 12_a", "Unrecognised clause at : _a"),
             ("type=page 5", _CQL_NOT_PARSED),
             ("id = -1", _CQL_NOT_PARSED),
             ("created > -1d", _CQL_NOT_PARSED),

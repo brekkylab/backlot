@@ -8460,3 +8460,68 @@ def test_linear_answers_a_path_sent_as_written_as_linear_does(
     request = raw_request(method, f"/linear{path}", settings.admin_token, body=sent)
     answer, headers, content = raw_exchange(base_url, request)
     assert (answer, content, {name: headers.get(name) for name in named}) == (status, body, named)
+
+
+def test_linear_search_reads_a_run_of_numbers_and_the_words_after_an_identifier(tmp_path):
+    """Each row: a term, the issues it names at score 1 in the order served, and the issues its
+    words match after them, as `_LINEAR_SEARCH_NUMBERS`, `_linear_search_words` and the order in
+    `search_linear_issues` record."""
+    issues = {
+        2: ("Connect your tools", "2026-10-22T05:14:13Z"),
+        19: ("Probe children order (parent)", "2026-10-04T05:44:25Z"),
+        21: ("Probe children order (child 2)", "2026-10-22T05:17:24Z"),
+    }
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"lin-{number}",
+            "team": "engineering",
+            "title": title,
+            "content": "x",
+            "author_email": "amaya.chen@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+            "identifier": f"ENG-{number}",
+            "state": "Todo",
+            "created": f"2026-09-{number:02d}T00:00:00Z",
+            "updated": updated,
+        }
+        for number, (title, updated) in issues.items()
+    ]
+    probe = {"ENG-19", "ENG-21"}
+    rows = [
+        ("19 2", ["ENG-2", "ENG-19"], {"ENG-21"}),
+        ("2 19", ["ENG-2", "ENG-19"], {"ENG-21"}),
+        ("19   2", ["ENG-2", "ENG-19"], {"ENG-21"}),
+        ("  19 2", ["ENG-2", "ENG-19"], {"ENG-21"}),
+        ("19 2  ", ["ENG-2", "ENG-19"], {"ENG-21"}),
+        (" 19  2 ", ["ENG-2", "ENG-19"], {"ENG-21"}),
+        ("19\t2", [], {"ENG-21"}),
+        ("2 019", [], {"ENG-21"}),
+        ("19\u00a02", [], {"ENG-21"}),
+        ("2 21", ["ENG-21", "ENG-2"], set()),
+        ("19 19", ["ENG-19"], set()),
+        ("21 21", ["ENG-21"], set()),
+        ("19 probe", [], probe),
+        ("ENG-19.probe", ["ENG-19"], {"ENG-21"}),
+        ("ENG-19,probe", ["ENG-19"], {"ENG-21"}),
+        ("ENG-2 probe", ["ENG-2"], probe),
+        *[(f"ENG-2{mark}probe", ["ENG-2"], probe) for mark in "-_;/:"],
+        ("ENG-2\u00e9probe", ["ENG-2"], set()),
+        ('"ENG-2.probe"', ["ENG-2"], set()),
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+
+        def search(term):
+            body = gql(client, _SEARCH, headers, term=term).json()
+            assert "errors" not in body, body.get("errors")
+            scores = [
+                (node["identifier"], node["metadata"]["score"])
+                for node in body["data"]["searchIssues"]["nodes"]
+            ]
+            named = [identifier for identifier, score in scores if score == 1]
+            assert all(score == 1 for _, score in scores[: len(named)]), term
+            return term, named, {identifier for identifier, _ in scores[len(named) :]}
+
+        assert [search(term) for term, _, _ in rows] == rows

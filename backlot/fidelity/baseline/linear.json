@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-06",
+  "measured": "2026-11-07",
   "root": {
     "query": "Query"
   },
@@ -1196,6 +1196,16 @@
           "status": "implemented"
         },
         "owner": {
+          "status": "implemented"
+        },
+        "parentDocument": {
+          "status": "missing",
+          "type": "NullableDocumentFilter",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "`NullableDocumentFilter` is not declared. `documents` answers an empty connection, so no filter key narrows anything. Measured against api.linear.app on 2026-11-07: `documents(first: 2)` answers an empty list, and so does each of `filter: {parentDocument: {null: true}}` and `filter: {parentDocument: {title: {eq: \"x\"}}}`."
+        },
+        "personalUser": {
           "status": "implemented"
         },
         "project": {

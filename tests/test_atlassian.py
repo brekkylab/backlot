@@ -1866,6 +1866,11 @@ def test_confluence_cql_search_with_no_tilde_selects_by_its_clauses(tmp_path):
         ("type != blogpost", {"Guide", "Shut"}, {"Guide"}),
         (f'space != "{eng}"', {"Shut"}, set()),
         (["type=page", f"space={eng}"], {"Guide", "Shut"}, {"Guide"}),
+        ("(" * 1000 + "type=page" + ")" * 1000, {"Guide", "Shut"}, {"Guide"}),
+        ("(type=page and " * 350 + "type=page" + ")" * 350, {"Guide", "Shut"}, {"Guide"}),
+        ("(id=1 or " * 500 + "type=page" + ")" * 500, {"Guide", "Shut"}, {"Guide"}),
+        ("type=page" + " and not (id=1" * 380 + ")" * 380, {"Guide", "Shut"}, {"Guide"}),
+        ("type=page" + " or id=1" * 800, {"Guide", "Shut"}, {"Guide"}),
     ]
     with client_for(settings, reload=True) as c:
         written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
@@ -9542,6 +9547,20 @@ _CQL_PARSE_ROWS = [
             ("type NOT IN (page,blogpost)", "type NOT IN ( page , blogpost )"),
             ("type=page and (space=A or space=B)", "type = page and ( space = A or space = B )"),
             ("((type=page))", "( ( type = page ) )"),
+            ("(" * 1000 + "type=page" + ")" * 1000, "( " * 1000 + "type = page" + " )" * 1000),
+            (
+                "(type=page and " * 350 + "type=page" + ")" * 350,
+                "( type = page and " * 350 + "type = page" + " )" * 350,
+            ),
+            (
+                "(id=1 or " * 500 + "type=page" + ")" * 500,
+                "( id = 1 or " * 500 + "type = page" + " )" * 500,
+            ),
+            (
+                "type=page" + " and not (id=1" * 380 + ")" * 380,
+                "type = page" + " and not ( id = 1" * 380 + " )" * 380,
+            ),
+            ("type=page" + " or id=1" * 800, "type = page" + " or id = 1" * 800),
             ("type!=page", "type != page"),
             ("title!~x", "title !~ x"),
             ("text~probe", "text ~ probe"),
@@ -9590,6 +9609,8 @@ _CQL_PARSE_ROWS = [
             ("creator = currentUser()", "creator = currentUser ( )"),
             ("ancestor = currentContent()", "ancestor = currentContent ( )"),
             ("parent = currentContent()", "parent = currentContent ( )"),
+            ("mention = currentUser()", "mention = currentUser ( )"),
+            ("macro = toc", "macro = toc"),
             ("created > now()", "created > now ( )"),
             ('label = now("-1d")', 'label = now ( "-1d" )'),
             ("label = currentSpace", "label = currentSpace"),
@@ -9677,6 +9698,8 @@ _CQL_PARSE_ROWS = [
             ("type=page and", _CQL_NOT_PARSED),
             ("type=page or", _CQL_NOT_PARSED),
             ("type=page)", _CQL_NOT_PARSED),
+            ("(" * 1000 + "type=page" + ")" * 1001, _CQL_NOT_PARSED),
+            ("(" * 1000 + "type=page and" + ")" * 1000, _CQL_NOT_PARSED),
             ("order by created", _CQL_NOT_PARSED),
             ("not type=page", _CQL_NOT_PARSED),
             ("type=page OR NOT type=blogpost", _CQL_NOT_PARSED),
@@ -9754,6 +9777,7 @@ _CQL_PARSE_ROWS = [
             ('title~a "b"', 'Unrecognised clause at : "b"'),
             ("title ~ 'it''s'", "Unrecognised clause at : 's'"),
             ("type in (page) b", "Unrecognised clause at : b"),
+            ("(" * 1000 + "type=page" + ")" * 1000 + " page", "Unrecognised clause at : page"),
             ("type=", "Expecting a value for operator '=' after field 'type'"),
             ("title~", "Expecting a value for operator '~' after field 'title'"),
             ("text~*", "Expecting a value for operator '~' after field 'text'"),
@@ -9777,6 +9801,11 @@ _CQL_PARSE_ROWS = [
                 "Expecting a value for operator 'NOTIN' after field 'type' but got '('",
             ),
             ("(type=page", "Missing closing parenthesis near field (()"),
+            ("(" * 1000 + "type=page", "Missing closing parenthesis near field (()"),
+            (
+                "type=page and " + "(" * 1000 + "type=page",
+                "Missing closing parenthesis near field (()",
+            ),
             ("created>foo()", "Unable to find query function 'foo()'"),
             ("label = foo()", "Unable to find query function 'foo()'"),
             ("label = Foo()", "Unable to find query function 'Foo()'"),
@@ -10041,6 +10070,7 @@ _CQL_PARSE_ROWS = [
             ("label = select and (type =", _cql_reserved("select")),
             ("(label = select) and (type = page", _cql_reserved("select")),
             ("(label = select) and type =", _cql_reserved("select")),
+            ("(" * 1000 + "label=select" + ")" * 1000 + " and type=", _cql_reserved("select")),
             ("(label = select) type", _cql_reserved("select")),
         ]
     ],

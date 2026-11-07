@@ -2212,12 +2212,17 @@ async def confluence_cql_search(request: Request):
         expr = _cql_parse(tokens, account)
         term_sets: dict[str, set[str]] = {}
 
+        # `expr` nests a level per operator on its deepest path, as deep as Python's recursion
+        # limit in queries real answers (`_cql_parse`), so each walk over it below keeps a stack
+        # rather than recursing.
         def _needed_term(node) -> str | None:
-            if node[0] == "and":
-                left = _needed_term(node[1])
-                return left if left is not None else _needed_term(node[2])
-            if node[0] == "atom" and node[2] == "~" and node[5] and not node[4]:
-                return node[3][0]
+            pending = [node]
+            while pending:
+                node = pending.pop()
+                if node[0] == "and":
+                    pending += (node[2], node[1])
+                elif node[0] == "atom" and node[2] == "~" and node[5] and not node[4]:
+                    return node[3][0]
             return None
 
         needed = _needed_term(expr)
@@ -2243,16 +2248,29 @@ async def confluence_cql_search(request: Request):
             return term_sets[term]
 
         def _eval(node, r) -> bool:
-            kind = node[0]
-            if kind == "and":
-                return _eval(node[1], r) and _eval(node[2], r)
-            if kind == "or":
-                return _eval(node[1], r) or _eval(node[2], r)
-            if kind == "not":
-                child = node[1]
-                if child[0] == "atom" and not child[5]:
-                    return True
-                return not _eval(child, r)
+            # `and` and `or` read their right side only where the left leaves the answer open.
+            waiting = []  # (node, right): an operator waiting on a side's answer
+            while True:
+                kind = node[0]
+                if kind in ("and", "or") or (
+                    kind == "not" and (node[1][0] != "atom" or node[1][5])
+                ):
+                    waiting.append((node, False))
+                    node = node[1]
+                    continue
+                answer = True if kind == "not" else _holds(node, r)
+                while waiting:
+                    above, right = waiting.pop()
+                    if above[0] == "not":
+                        answer = not answer
+                    elif not right and answer == (above[0] == "and"):
+                        waiting.append((above, True))
+                        node = above[2]
+                        break
+                else:
+                    return answer
+
+        def _holds(node, r) -> bool:
             _, field, op, values, negated, readable = node
             if not readable:
                 return True
@@ -2291,9 +2309,14 @@ async def confluence_cql_search(request: Request):
             return (not hit) if negated else hit
 
         def _reads(node) -> bool:
-            if node[0] == "atom":
-                return node[5]
-            return any(_reads(child) for child in node[1:])
+            pending = [node]
+            while pending:
+                node = pending.pop()
+                if node[0] != "atom":
+                    pending += node[1:]
+                elif node[5]:
+                    return True
+            return False
 
         matched = [r for r in eval_rows if _eval(expr, r)] if _reads(expr) else []
     except _CQLRefusal as refuse:
@@ -3661,16 +3684,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             at = after
 
     def clause():
+        """A clause that is not a group: :func:`sequence` reads the groups."""
         nonlocal at
-        if peek() == ("PUNCT", "("):
-            groups.append(at)
-            at += 1
-            sequence()
-            if peek() != ("PUNCT", ")"):
-                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
-            groups.pop()
-            at += 1
-            return
         kind, field = peek()
         if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
             raise not_parsed()
@@ -3709,16 +3724,27 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         value(operator, field)
 
     def sequence():
+        """Clauses joined by `and` and `or`, any of them inside groups, read in one loop (the depths
+        real reads: :func:`_cql_parse`)."""
         nonlocal at
-        clause()
-        while keyword("and") or keyword("or"):
+        while True:
+            while peek() == ("PUNCT", "("):
+                groups.append(at)
+                at += 1
+            clause()
+            while not (keyword("and") or keyword("or")):
+                if not groups:
+                    return
+                if peek() != ("PUNCT", ")"):
+                    raise _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
+                groups.pop()
+                at += 1
             conjunction = peek()[1].lower()
             at += 1
             if conjunction == "and" and keyword("not"):
                 at += 1
             if peek()[0] is None:
                 raise not_parsed()
-            clause()
 
     try:
         if not tokens:
@@ -3991,7 +4017,12 @@ def _cql_parse(
     answers first: real answered `created > 20260910 and created > "x"` and
     `created in ("2026-09-15") and created > "x"` with `Could not parse cql : `, `created in ("x")`
     with the operator refusal, and `created > 20260910 and created in ("2026-09-15")` with the one
-    for `>` (Confluence Cloud, 2026-11-06)."""
+    for `>` (Confluence Cloud, 2026-11-06).
+
+    Read without recursion, with a stack of the levels the groups open, so no depth of groups
+    reaches Python's recursion limit. Real answered `type=page` in 1000 pairs of parentheses, and
+    `type=page` followed by 800 `or id=1`, each sent percent-encoded, with the pages `type=page`
+    alone answered (Confluence Cloud, 2026-11-06)."""
     at = 0
     if now is None:
         now = datetime.now(timezone.utc)
@@ -4166,41 +4197,48 @@ def _cql_parse(
             "in" in _CQL_READABLE.get(field, set()),
         )
 
-    def primary():
+    def expression():
+        # Each level, the whole query or a group, holds the `or` read so far, the `and` read so
+        # far after its last `or`, and whether a `not` came before the operand being read; a `(`
+        # pushes the level it opens in onto `outer`, and its `)` pops it, the group read as one
+        # operand of that level.
         nonlocal at
-        if peek() == ("PUNCT", "("):
-            at += 1
-            node = parse_or()
-            if peek() != ("PUNCT", ")"):
-                raise _CQLParseError()
-            at += 1
-            return node
-        return atom()
-
-    def parse_and():
-        nonlocal at
-        node = primary()
-        while keyword("and"):
-            at += 1
-            negated = keyword("not")
-            if negated:
+        outer = []
+        either = both = None
+        negated = False
+        while True:
+            while peek() == ("PUNCT", "("):
                 at += 1
-            right = primary()
-            if negated:
-                right = ("not", right)
-            node = ("and", node, right)
-        return node
-
-    def parse_or():
-        nonlocal at
-        node = parse_and()
-        while keyword("or"):
-            at += 1
-            node = ("or", node, parse_and())
-        return node
+                outer.append((either, both, negated))
+                either = both = None
+                negated = False
+            node = atom()
+            while True:
+                if negated:
+                    node = ("not", node)
+                both = node if both is None else ("and", both, node)
+                if keyword("and"):
+                    at += 1
+                    negated = keyword("not")
+                    if negated:
+                        at += 1
+                    break
+                either = both if either is None else ("or", either, both)
+                both = None
+                negated = False
+                if keyword("or"):
+                    at += 1
+                    break
+                if not outer:
+                    return either
+                if peek() != ("PUNCT", ")"):
+                    raise _CQLParseError()
+                at += 1
+                node = either
+                either, both, negated = outer.pop()
 
     try:
-        node = parse_or()
+        node = expression()
         if tokens[at:] and not (keyword("order") and keyword("by", 1)):
             raise _CQLParseError()
     except _CQLParseError:

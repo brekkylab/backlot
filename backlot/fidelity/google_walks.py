@@ -197,6 +197,7 @@ def gdocs(timeout: float) -> list[tuple[Any, ...]]:
             ]
             written += _gdocs_structure(client, doc)
             written += _gdocs_styles(client, doc)
+            written += _gdocs_tables(client, doc)
             return [*walked, ("docs.documents.create", created), *written]
 
 
@@ -378,6 +379,46 @@ def _gdocs_styles(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
             "docs.documents.batchUpdate",
             _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=removed)),
             removed,
+        ),
+    ]
+
+
+def _gdocs_tables(client: httpx.Client, doc: str) -> list[tuple[Any, ...]]:
+    """The table requests, each field they read sent: two tables made, the Doc read with them, and
+    then a row and a column of the first made and taken away again."""
+    here = {"tabId": "t.0", "segmentId": ""}
+    made = {
+        "requests": [
+            {"insertTable": {"rows": 2, "columns": 2, "location": {"index": 1, **here}}},
+            {"insertTable": {"rows": 1, "columns": 1, "endOfSegmentLocation": here}},
+        ]
+    }
+    replies = _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=made))["replies"]
+    read = _ok(client.get(f"/docs/v1/documents/{doc}"))
+    start = next(el["startIndex"] for el in read["body"]["content"] if "table" in el)
+
+    def cell(row: int, column: int) -> dict:
+        return {
+            "tableStartLocation": {"index": start, **here},
+            "rowIndex": row,
+            "columnIndex": column,
+        }
+
+    changed = {
+        "requests": [
+            {"insertTableRow": {"tableCellLocation": cell(0, 0), "insertBelow": True}},
+            {"insertTableColumn": {"tableCellLocation": cell(0, 0), "insertRight": False}},
+            {"deleteTableRow": {"tableCellLocation": cell(1, 1)}},
+            {"deleteTableColumn": {"tableCellLocation": cell(0, 0)}},
+        ]
+    }
+    return [
+        ("docs.documents.batchUpdate", {"replies": replies}, made),
+        ("docs.documents.get", read),
+        (
+            "docs.documents.batchUpdate",
+            _ok(client.post(f"/docs/v1/documents/{doc}:batchUpdate", json=changed)),
+            changed,
         ),
     ]
 

@@ -634,6 +634,64 @@ def test_linear_search_finds_an_issue_by_the_spellings_real_reads(tmp_path):
         assert numbered[1][0] == "ENG-21" and numbered[1][1] < 1
 
 
+def test_linear_search_parts_two_words_a_punctuation_mark_joins(tmp_path):
+    """Two words a punctuation mark joins are matched each on its own, as
+    `store._LINEAR_SEARCH_PARTED` records: each joined `your` term answers the issues
+    `your tools` answers, and each joined pair of numbers the issue holding the word `2`.
+    `19-2` was not measured, so no row sends it."""
+    titles = {
+        2: "Connect your tools",
+        3: "Import your data",
+        21: "Probe children order (child 2)",
+    }
+    records = [
+        {
+            "source_type": "linear",
+            "doc_id": f"lin-{number}",
+            "team": "engineering",
+            "group": "engineering",
+            "title": title,
+            "content": "x",
+            "author_email": "amaya.chen@acme.com",
+            "author_groups": ["engineering"],
+            "visibility": "public",
+            "identifier": f"ENG-{number}",
+            "state": "Todo",
+            "created": f"2026-09-{number:02d}T00:00:00Z",
+        }
+        for number, title in titles.items()
+    ]
+    with corpus_client(tmp_path, records) as (client, settings):
+        headers = {"Authorization": settings.admin_token}
+
+        def search(term):
+            body = gql(client, _SEARCH, headers, term=term).json()
+            assert "errors" not in body, body.get("errors")
+            found = body["data"]["searchIssues"]
+            return found["totalCount"], [
+                (node["identifier"], node["metadata"]["score"]) for node in found["nodes"]
+            ]
+
+        for term in (
+            "your tools",
+            "your,tools",
+            "your.tools",
+            "your;tools",
+            "your/tools",
+            "your:tools",
+            "your_tools",
+            "your-tools",
+        ):
+            total, found = search(term)
+            assert total == 2, term
+            assert sorted(identifier for identifier, _ in found) == ["ENG-2", "ENG-3"], term
+            assert all(score < 1 for _, score in found), term
+        for term in ("19,2", "19.2", "19;2", "19/2", "19:2", "19_2"):
+            total, found = search(term)
+            assert (total, [identifier for identifier, _ in found]) == (1, ["ENG-21"]), term
+            assert all(score < 1 for _, score in found), term
+
+
 # The read documents mirage 0.0.7's and 0.0.8's `LinearVFS` send (`mirage.core.linear.queries`),
 # trimmed to what each selects past what other tests cover. 0.0.8's `TeamIssues` passes its issue
 # filter as an `$filter: IssueFilter` variable, null or `list_team_issues`'s project filter.

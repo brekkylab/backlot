@@ -543,6 +543,57 @@ async def echo_github_api_version(request: Request, call_next):
     return response
 
 
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/github",))
+        and b"%00" in scope["raw_path"]
+        and (
+            _a_github_route_serves(scope)
+            or github.is_an_unserved_operation(scope["method"], scope["path"])
+        )
+    )
+)
+async def refuse_a_nul_in_a_name_a_github_route_reads(request: Request, call_next):
+    """Answer a `/github` request whose path holds a `%00` where a route reads a name, on a route
+    Backlot serves or an operation it does not
+    (``backlot.routers.github.is_an_unserved_operation``), with real's empty 400, ahead of the API
+    version, the 401 a served route gives no credential and the owner, repository or number the path
+    names. A `%00` in a segment a route spells out is a path no route matches, so it never reaches
+    here. Three are read on, to the answer they get without it: a credential that does not resolve
+    (``backlot.routers.github.refused_a_credential``), the 401 "Bad credentials"; a caller a route
+    refuses as anonymous ahead of everything
+    (``backlot.routers.github.refuses_an_anonymous_caller_first``), the 401 "Requires
+    authentication"; and a caller with no credential on an operation Backlot does not serve
+    (``backlot.routers.github.asks_for_a_credential_before_a_name``), the 401 that asks for one.
+
+    Measured on api.github.com on 2026-11-07 (UTC), each request on a URL of its own, with no
+    `Authorization`: a `%00` in an owner, a repository, a login, an organization, a number, a ref,
+    a blob's sha and a contents path, alone and with a segment after it, the 400 had
+    `Content-Length: 0`, no `Content-Type` and no `Vary`, carried the five `x-ratelimit-*` and a
+    request id and moved `used` by one, and a second request on the same connection was answered.
+    It was the same on a `HEAD`, with `X-GitHub-Api-Version: 1999-01-01` and with an
+    `Authorization` of `nope` or `Digest x`; a `Basic` value naming no token drew it with none of
+    the five. `Bearer nope` was the 401 "Bad credentials", and `/orgs/{org}/teams` and a
+    repository's collaborators with no credential the 401 "Requires authentication". A `%00` in a
+    name with another in a segment the route spells out was the 404 of a path no route matches.
+
+    Registered after :func:`echo_github_api_version`, which makes it the outer of the two, so the
+    400 carries no version echo, and before :func:`report_github_rate_limit`, which makes it the
+    inner, so the 400 carries the five and is counted."""
+    route = next(
+        (r for r in github.router.routes if r.matches(request.scope)[0] is Match.FULL), None
+    )
+    if (
+        github.refused_a_credential(request)
+        or (route is not None and github.refuses_an_anonymous_caller_first(request, route.path))
+        or (route is None and github.asks_for_a_credential_before_a_name(request))
+    ):
+        return await call_next(request)
+    if auth.github_scheme(request)[0] == "basic" and auth.github_credential(request) is None:
+        request.state.github_unserved_refusal = "uncounted"
+    return Response(b"", status_code=400)
+
+
 @_middleware(lambda scope: errors.s3.owns(_url_path(scope)))
 async def refuse_an_s3_path_real_cannot_read(request: Request, call_next):
     """Answer an `/s3` path whose escapes do not decode, or whose bucket holds a character no bucket

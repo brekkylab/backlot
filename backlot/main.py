@@ -549,20 +549,22 @@ async def echo_github_api_version(request: Request, call_next):
         and b"%00" in scope["raw_path"]
         and (
             _a_github_route_serves(scope)
-            or github.reads_a_name_before_a_credential(scope["method"], scope["path"])
+            or github.is_an_unserved_operation(scope["method"], scope["path"])
         )
     )
 )
 async def refuse_a_nul_in_a_name_a_github_route_reads(request: Request, call_next):
-    """Answer a `/github` request whose path holds a `%00` where a route reads a name, one a route
-    serves or one of ``backlot.routers.github.reads_a_name_before_a_credential``, with real's empty
-    400, ahead of the API version, the 401 for no credential and the owner, repository or number
-    the path names. A `%00` in a segment a route spells out is a path no route matches, so it never
-    reaches here. Two are read on, to the answer they get without it: a credential that does not
-    resolve (``backlot.routers.github.refused_a_credential``), the 401 "Bad credentials", and a
-    caller a route refuses as anonymous ahead of everything
+    """Answer a `/github` request whose path holds a `%00` where a route reads a name, on a route
+    Backlot serves or an operation it does not
+    (``backlot.routers.github.is_an_unserved_operation``), with real's empty 400, ahead of the API
+    version, the 401 a served route gives no credential and the owner, repository or number the path
+    names. A `%00` in a segment a route spells out is a path no route matches, so it never reaches
+    here. Three are read on, to the answer they get without it: a credential that does not resolve
+    (``backlot.routers.github.refused_a_credential``), the 401 "Bad credentials"; a caller a route
+    refuses as anonymous ahead of everything
     (``backlot.routers.github.refuses_an_anonymous_caller_first``), the 401 "Requires
-    authentication".
+    authentication"; and a caller with no credential on an operation Backlot does not serve
+    (``backlot.routers.github.asks_for_a_credential_before_a_name``), the 401 that asks for one.
 
     Measured on api.github.com on 2026-11-07 (UTC), each request on a URL of its own, with no
     `Authorization`: a `%00` in an owner, a repository, a login, an organization, a number, a ref,
@@ -581,8 +583,10 @@ async def refuse_a_nul_in_a_name_a_github_route_reads(request: Request, call_nex
     route = next(
         (r for r in github.router.routes if r.matches(request.scope)[0] is Match.FULL), None
     )
-    if github.refused_a_credential(request) or (
-        route is not None and github.refuses_an_anonymous_caller_first(request, route.path)
+    if (
+        github.refused_a_credential(request)
+        or (route is not None and github.refuses_an_anonymous_caller_first(request, route.path))
+        or (route is None and github.asks_for_a_credential_before_a_name(request))
     ):
         return await call_next(request)
     if auth.github_scheme(request)[0] == "basic" and auth.github_credential(request) is None:

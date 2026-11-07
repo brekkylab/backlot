@@ -264,6 +264,7 @@ _ESCAPES = [
             *(b"repos/acme/pipeline/issues/1%00", b"repos/acme/pipeline/pulls/1%00"),
             *(b"repos/acme/pipeline/git/ref/heads/main%00", b"repos/acme/pipeline/git/blobs/a1%00"),
             *(b"repos/acme/pipeline/contents/README.md%00", b"repos/acme/pipeline/contents/a%00/b"),
+            b"repos/acme/pipeline/dependabot/alerts/1%00",
         )
     ),
     ("/github/", b"repos/acme/pipeline/issues%00", 404),
@@ -1018,6 +1019,19 @@ def _rows():
         ("/github/", b"users/nope%00", 401, b"Authorization: Bearer nope\r\n"),
         ("/github/", b"orgs/acme%00/teams", 401, b""),
         ("/github/", b"repos/acme%00/pipeline/collaborators", 401, b""),
+        ("/github/", b"repos/acme/pipeline/dependabot/alerts/1%00", 401, b""),
+        (
+            "/github/",
+            b"repos/acme/pipeline/dependabot/alerts/1%00",
+            401,
+            b"Authorization: nope\r\n",
+        ),
+        (
+            "/github/",
+            b"repos/acme/pipeline/dependabot/alerts/1%00",
+            "github nul uncounted",
+            b"Authorization: Basic eDp5\r\n",
+        ),
         # a charset Java cannot name, on a path Confluence's front door reads a `\` in as a `/`
         *(
             ("/atlassian/wiki", rest, 500, b"Content-Type: text/plain;charset=\r\n")
@@ -1229,7 +1243,8 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
             want_extra = (want_extra, "Accept-Encoding, Accept, X-Requested-With", True)
         if answer.startswith("github nul"):
             # no `Vary` and no version echo, and the request id; the five of the window the caller
-            # counts in, which a second request moves by one, but for a `Basic` value naming no token
+            # counts in, which a second request moves by one, but for a `Basic` value naming no
+            # token
             counted = None
             if authorizations and "x-ratelimit-used" in headers:
                 again = _send(base_url, method, target, admin, authorizations, header, host)[1]

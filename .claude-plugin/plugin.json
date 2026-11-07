@@ -1,5 +1,6 @@
 {
   "name": "backlot",
+  "displayName": "Backlot",
   "version": "0.1.0",
   "description": "Emulate an enterprise SaaS knowledge source over a corpus you supply, then wire a real client to it.",
   "author": {

@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import re
 import struct
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -208,6 +210,80 @@ def test_every_icon_a_manifest_names_is_a_square_image_this_repo_holds():
         assert entry["sizes"] == (["any"] if path.suffix == ".svg" else [f"{side}x{side}"])
         assert entry["mimeType"] == {".png": "image/png", ".svg": "image/svg+xml"}[path.suffix]
     assert server["icons"] == list(ICONS)
+
+
+def test_every_skills_sh_command_names_the_published_skill():
+    """`npx skills add brekkylab/backlot --list` (skills CLI, 2026-10-27) finds three skills: this
+    one and `.claude/skills/backlot-loop` and `backlot-debloat`, which drive this repo's own
+    routines. A command without `--skill` offers all three to whoever runs it."""
+    for readme in ("README.md", "README.pypi.md"):
+        commands = re.findall(
+            r"npx skills add brekkylab/backlot\b(.*)", (REPO / readme).read_text(encoding="utf-8")
+        )
+        assert commands, f"{readme} gives no skills.sh install command"
+        for rest in commands:
+            named = re.search(r"--skill (\S+)", rest)
+            assert named and (REPO / "skills" / named[1] / "SKILL.md").exists(), (readme, rest)
+
+
+def _named(value) -> list[str]:
+    if isinstance(value, dict):
+        return [p for v in value.values() for p in _named(v)]
+    if isinstance(value, list):
+        return [p for v in value for p in _named(v)]
+    return [value[2:].rstrip("/")] if isinstance(value, str) and value.startswith("./") else []
+
+
+def test_the_plugin_branch_carries_the_skill_at_one_release_and_nothing_else(tmp_path):
+    """The tree ``scripts/plugin_branch.py`` builds for the ``plugin`` branch. It holds what either
+    manifest names, both manifests at the release's version and otherwise as committed, a README
+    of at least 40 words outside code blocks that Anthropic's directory requires (pre-submission
+    checklist, 2026-10-27), and the LICENSE and NOTICE.md that Apache-2.0 section 4 asks a
+    redistribution to carry. A relative link stays only where it reaches the same file on the
+    branch as in the repository; the rest point at their file on GitHub at the release's ref."""
+    out = tmp_path / "plugin"
+    subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "plugin_branch.py")]
+        + ["--version", "9.8.7", "--ref", "v9.8.7", str(out)],
+        check=True,
+    )
+    built = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
+
+    named = set()
+    for manifest in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
+        committed = json.loads((REPO / manifest).read_text(encoding="utf-8"))
+        shipped = json.loads((out / manifest).read_text(encoding="utf-8"))
+        assert shipped == {**committed, "version": "9.8.7"}
+        named |= set(_named(committed))
+    for path in named:
+        assert path in built or any(f.startswith(f"{path}/") for f in built), path
+    carried = {"README.md", "LICENSE", "NOTICE.md"}
+    assert carried <= built
+    extra = built - {".claude-plugin/plugin.json", ".codex-plugin/plugin.json"} - carried
+    assert not {f for f in extra if not any(f == n or f.startswith(f"{n}/") for n in named)}
+
+    readme = re.sub(r"```.*?```", "", (out / "README.md").read_text(encoding="utf-8"), flags=re.S)
+    assert len(readme.split()) >= 40
+
+    # The branch's README.md is plugin/README.md, so a link reaching it means another file there.
+    root = out.resolve()
+    pages = {
+        p.relative_to(root).as_posix(): p.read_text(encoding="utf-8") for p in root.rglob("*.md")
+    }
+    for page, text in pages.items():
+        for link in re.findall(r"\]\((?!https?://|mailto:|#)([^)\s#]+)", text):
+            target = ((root / page).parent / link).resolve()
+            assert target.exists() and target.is_relative_to(root), (page, link)
+            assert target.relative_to(root).as_posix() != "README.md", (page, link)
+    pinned = []
+    for page in ("README.md", "skills/backlot/SKILL.md"):
+        at_ref = re.findall(
+            r"github\.com/brekkylab/backlot/(blob|tree)/([^/\s]+)/([^)#\s]+)", pages[page]
+        )
+        assert at_ref and {ref for _, ref, _ in at_ref} == {"v9.8.7"}, page
+        pinned += [(kind, path) for kind, _, path in at_ref]
+    for kind, path in pinned:
+        assert (REPO / path).is_dir() if kind == "tree" else (REPO / path).is_file(), path
 
 
 # Backlot's own endpoints, as opposed to the vendor prefixes gen_docs.py already checks. Matched by

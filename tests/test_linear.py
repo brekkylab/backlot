@@ -636,9 +636,8 @@ def test_linear_search_finds_an_issue_by_the_spellings_real_reads(tmp_path):
 
 def test_linear_search_parts_two_words_a_punctuation_mark_joins(tmp_path):
     """Two words a punctuation mark joins are matched each on its own, as
-    `store._LINEAR_SEARCH_PARTED` records: each joined `your` term answers the issues
-    `your tools` answers, and each joined pair of numbers the issue holding the word `2`.
-    `19-2` was not measured, so no row sends it."""
+    `store._LINEAR_SEARCH_PARTED` records: each joined `your` term answers the issues `your tools`
+    answers, in the order served, and each joined pair of numbers the issue holding the word `2`."""
     titles = {
         2: "Connect your tools",
         3: "Import your data",
@@ -683,10 +682,9 @@ def test_linear_search_parts_two_words_a_punctuation_mark_joins(tmp_path):
             "your-tools",
         ):
             total, found = search(term)
-            assert total == 2, term
-            assert sorted(identifier for identifier, _ in found) == ["ENG-2", "ENG-3"], term
+            assert (total, [identifier for identifier, _ in found]) == (2, ["ENG-2", "ENG-3"]), term
             assert all(score < 1 for _, score in found), term
-        for term in ("19,2", "19.2", "19;2", "19/2", "19:2", "19_2"):
+        for term in ("19,2", "19.2", "19;2", "19/2", "19:2", "19_2", "19-2"):
             total, found = search(term)
             assert (total, [identifier for identifier, _ in found]) == (1, ["ENG-21"]), term
             assert all(score < 1 for _, score in found), term

@@ -1134,6 +1134,20 @@ async def refuse_an_illegal_confluence_charset(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: errors.atlassian.is_confluence(_url_path(scope)))
+async def refuse_an_unreadable_confluence_basic(request: Request, call_next):
+    """Answer a Confluence request carrying a Basic value Tomcat cannot read with Tomcat's 401
+    page (``atlassian.refuse_an_unreadable_confluence_basic``), ahead of routing and of the
+    charset refusal. Registered between that refusal and the slash rewrite, so it reads the path
+    the rewrite leaves, as that refusal does, and runs before it; the front door stays outside
+    both, so the gateway's `PATCH` 405 still comes first.
+    """
+    refused = atlassian.refuse_an_unreadable_confluence_basic(request)
+    if refused is not None:
+        return refused
+    return await call_next(request)
+
+
 @_middleware(lambda scope: scope["path"].startswith(f"{errors.atlassian.PREFIX}/"))
 async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next):
     """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a

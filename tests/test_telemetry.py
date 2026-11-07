@@ -599,6 +599,19 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             {"headers": JSON, "content": b"x" * (1024 * 1024 + 1)},
             ("fireflies", "unparsed", "unknown", 413, "http", "client"),
         ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"json": {"query": '{ transcript_import(meeting_id: "x") { status } }'}},
+            (
+                "fireflies",
+                "query.transcript_import",
+                "missing",
+                400,
+                "GRAPHQL_VALIDATION_FAILED",
+                "unsupported",
+            ),
+        ),
         # Fireflies' refusal of a subscription, a 200, and its 500 for a fragment it does not
         # define, are its answers, not Backlot bugs.
         (

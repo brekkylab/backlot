@@ -2032,12 +2032,13 @@ async def confluence_cql_search(request: Request):
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
 
-    # honor the common structured CQL clauses: space / type / label / id / ancestor / parent
-    # the position each `not` in the query reaches to, over the whitespace and the one
-    # parenthesis that may stand between it and a clause: a clause starting there is the one
-    # that `not` negates. Read once for every clause reader below, so a reader's time stays
-    # in line with the query's length however many clauses a `not` rides on.
+    # the position each `not` in the query reaches to, over the whitespace and the one parenthesis
+    # that may stand between it and a clause: a clause starting there is the one that `not` negates.
+    # Read once for the clause readers below, so telling whether a `not` negates a match is one
+    # lookup.
     not_reaches = {m.end() for m in re.finditer(r"\bnot\s*\(?\s*", cql, re.IGNORECASE)}
+
+    # honor the common structured CQL clauses: space / type / label / id / ancestor / parent
 
     def _first_unnegated(pattern: str, flags: int = 0):
         # the first match of `pattern` no `not` straight before it negates, the clause in

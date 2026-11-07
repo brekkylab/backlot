@@ -2032,13 +2032,20 @@ async def confluence_cql_search(request: Request):
     m = re.search(r'(?:text|title)\s*~\s*"?([^"~]+)"?', cql) or re.search(r'~\s*"?([^"~]+)"?', cql)
     term = m.group(1).strip() if m else ""
 
+    # the position each `not` in the query reaches to, over the whitespace and the one parenthesis
+    # that may stand between it and a clause: a clause starting there is the one that `not` negates.
+    # Read once for the clause readers below, so telling whether a `not` negates a match is one
+    # lookup.
+    not_reaches = {m.end() for m in re.finditer(r"\bnot\s*\(?\s*", cql, re.IGNORECASE)}
+
     # honor the common structured CQL clauses: space / type / label / id / ancestor / parent
+
     def _first_unnegated(pattern: str, flags: int = 0):
         # the first match of `pattern` no `not` straight before it negates, the clause in
         # parentheses or not: a clause a `not` rides on is read by `_negated` below, not as the
         # clause it negates.
         for m in re.finditer(pattern, cql, flags):
-            if not re.search(r"\bnot\s*\(?\s*$", cql[: m.start()], re.IGNORECASE):
+            if m.start() not in not_reaches:
                 return m
         return None
 
@@ -3276,14 +3283,16 @@ _JAVA_TRIMMED = "".join(map(chr, range(0x21)))
 # reads `a` and then `b`, and on 2026-10-26 `title~` and U+0663 (an Arabic-Indic three) or U+FF11 (a
 # fullwidth one) had no value. Each other character is a token no clause takes, so `label=a-b` and
 # `title~a:b` cannot be parsed. On 2026-11-06 a number ended at a letter or `_`: `5b16` was `5` and
-# then `b16`, and `12_a` was `12` and then `_a`. Digits before a `.` are read here as a word, and
-# real served `label = 12.5`.
+# then `b16`, and `12_a` was `12` and then `_a`. A number takes one `.` before, among or after its
+# digits, so `12.5`, `5.` and `.5` are each one number and real served each as a `label` value
+# (2026-11-06 and 2026-11-07); what follows the number is read on its own, so `12.5a` is `12.5` and
+# then `a`, `1.2.3` is `1.2` and then `.3`, and `5..a` is `5.`, a `.` no clause takes, and `a`.
 _CQL_TOKEN = re.compile(
     r"""(?P<QUOTED>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|"[^"]*"|'[^']*')"""
     r"|(?P<OP>!=|!~|>=|<=|=|~|>|<)"
     r"|(?P<PUNCT>[(),])"
     r"|(?P<DATE>[0-9]{4}-[0-9]{2}-[0-9]{2})"
-    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?![0-9.]))"
+    r"|(?P<NUMBER>-[0-9]+|[0-9]+(?:[.][0-9]*)?|[.][0-9]+)"
     r"|(?P<WORD>[A-Za-z0-9_]+(?:[.][A-Za-z0-9_]+)*)"
     r"|(?P<DROPPED>[\s#$%&*+;?@^`{|}\x00-\x1f\x7f]|[^\x00-\x7f])"
     r"|(?P<OTHER>.)",
@@ -3652,6 +3661,11 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
         if kind == "NUMBER" and text.startswith("-"):  # `id = -1`, `created > -1d`
             raise not_parsed()
+        if kind == "NUMBER" and operator in ("~", "!~"):
+            # A number is no value for `~` or `!~`: real answered `title ~ 10.5`, `title ~ 5.`,
+            # `title ~ .5`, `title ~ 10`, `title !~ 10` and `title !~ 10.5` with this refusal naming
+            # the number (Confluence Cloud, 2026-11-06 and 2026-11-07).
+            raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
         if kind not in _CQL_VALUES:
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
         if kind == "WORD" and text.lower() in _CQL_KEYWORDS:

@@ -820,6 +820,35 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
     )
 
 
+#: The operations of :data:`_PUBLISHED_NOT_SERVED` that real reads the name of before it asks for a
+#: credential: a `%00` in the login is its empty 400 for a caller with no credential
+#: (:func:`asks_for_a_credential_before_a_name`), where the others it asked a credential of first.
+_NAME_READ_BEFORE_A_CREDENTIAL = published.operations(("GET /users/{}", "GET /users/{}/repos"))
+
+
+def asks_for_a_credential_before_a_name(request: Request) -> bool:
+    """Whether an operation of :func:`is_an_unserved_operation` refuses this request for its
+    credential ahead of a `%00` in a name: it carries no `Authorization` header, or one that carries
+    no credential (:func:`_a_header_without_a_credential`), and the operation is not one of
+    :data:`_NAME_READ_BEFORE_A_CREDENTIAL`. A token that resolves and a `Basic` value that names no
+    token are read on to the name.
+
+    Measured against api.github.com on 2026-11-07 (UTC), each request on a URL of its own. With no
+    credential, `GET /users/octocat%00` and `GET /users/octocat%00/repos` were the empty 400, where
+    `DELETE /repos/octocat/Hello-World%00` and a Dependabot alert,
+    `GET /repos/octocat/Hello-World/dependabot/alerts/1%00`, were the 401
+    :func:`refuse_an_unserved_operation` gives them, and so was the alert with an `Authorization` of
+    `nope` or `Digest x`. With a token the alert was the empty 400 counted in the token's window,
+    pinned to `1999-01-01` or not, and so were a workflow run, a deployment and an organization's
+    billing usage summary; with `Basic eDp5` the alert was the 400 with none of the five.
+    `Bearer nope` on `GET /users/octocat%00` and on the alert was the 401 "Bad credentials". The
+    path is the scope's, as :func:`is_an_unserved_operation` reads it."""
+    path = request.scope["path"].removeprefix("/github")
+    if published.includes(_NAME_READ_BEFORE_A_CREDENTIAL, request.method, path):
+        return False
+    return "authorization" not in request.headers or _a_header_without_a_credential(request)
+
+
 def _an_agent_path(path: str) -> bool:
     """Whether the path is an `/agents` one, the `/github` prefix aside and `agents` compared
     ignoring ASCII case, as :func:`under_an_agent_family` compares it: the prefix the agent

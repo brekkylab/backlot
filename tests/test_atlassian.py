@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
@@ -1558,6 +1559,33 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     assert answered == {template: (want, len(want)) for template, want in rows}
     # read as `text ~` is, which over this chain is not real's answer: see `_CQL_READABLE`
     assert {x["title"] for x in site["results"]} == {"Grand"}
+
+
+def test_confluence_cql_search_time_grows_in_line_with_the_negated_matches(tmp_path):
+    """The search's time beside a `text ~` value holding `not id=1` over and over, against the
+    same value holding `nix id=1`: the clause readers read the matches inside the value as they
+    read clauses, and every one a `not` rides on, so the count of negated matches is the count
+    that used to be squared. Each time is the least of three, and quadrupling the count is
+    allowed six times the time plus half a second of slack, where the square allows sixteen."""
+    settings = tiny_corpus(tmp_path, [])
+    with client_for(settings) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        url = "/atlassian/wiki/rest/api/search"
+        times = {}
+        answers = {}
+        for n in (1000, 4000):
+            for word in ("not id=1 ", "nix id=1 "):
+                cql = 'type=page and text ~ "' + word * n + '"'
+                best = None
+                for _ in range(3):
+                    t0 = time.perf_counter()
+                    r = c.get(url, headers=h, params={"cql": cql})
+                    best = min(best or 1e9, time.perf_counter() - t0)
+                times[n, word] = best
+                answers[n, word] = (r.status_code, r.json()["totalSize"])
+    assert answers == {(n, w): (200, 0) for n in (1000, 4000) for w in ("not id=1 ", "nix id=1 ")}
+    assert times[4000, "not id=1 "] < 6 * times[1000, "not id=1 "] + 0.5
 
 
 def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):

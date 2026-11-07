@@ -396,6 +396,22 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
                 "unsupported",
             ),
         ),
+        # A `%00` in a name is the 400 of `refuse_a_nul_in_a_name_a_github_route_reads` in
+        # `backlot.main`, named by the operation its path matches, served or not.
+        ("GET", f"{GITHUB}%00", {}, ("github", "repos/get", "implemented", 400, None, "client")),
+        (
+            "GET",
+            f"{GITHUB}%00/copilot/code-review/settings",
+            {},
+            (
+                "github",
+                "copilot/get-repository-code-review-settings",
+                "missing",
+                400,
+                None,
+                "unsupported",
+            ),
+        ),
         (
             "POST",
             f"{GITHUB}/issues",

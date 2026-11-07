@@ -253,6 +253,23 @@ _ESCAPES = [
     ("/msgraph/v1.0/", b"me?b=%81x", 401),
     ("/msgraph/v1.0/", b"me?b=%F4%90%80%80x", 401),
     ("/github/", b"nope%00x", 404),
+    # GitHub: a `%00` in a name a route reads, which includes a login, is an empty 400 that carries
+    # the rate limit, and one in a segment a route spells out the 404 of a path no route matches
+    # (``backlot.main.refuse_a_nul_in_a_name_a_github_route_reads``)
+    *(
+        ("/github/", rest, "github nul")
+        for rest in (
+            *(b"repos/acme%00/pipeline", b"repos/acme/pipeline%00", b"repos/acme/pipe%00line"),
+            *(b"orgs/acme%00", b"users/nope%00", b"users/nope%00/repos"),
+            *(b"repos/acme/pipeline/issues/1%00", b"repos/acme/pipeline/pulls/1%00"),
+            *(b"repos/acme/pipeline/git/ref/heads/main%00", b"repos/acme/pipeline/git/blobs/a1%00"),
+            *(b"repos/acme/pipeline/contents/README.md%00", b"repos/acme/pipeline/contents/a%00/b"),
+            b"repos/acme/pipeline/dependabot/alerts/1%00",
+            b"repos/acme/pipeline%00/copilot/code-review/settings",
+        )
+    ),
+    ("/github/", b"repos/acme/pipeline/issues%00", 404),
+    ("/github/", b"repos/acme%00/pipeline/issues%00", 404),
 ]
 #: The hosts real was measured on with no credential, whose rows here send none.
 _UNCREDENTIALED = ("/gmail/", "/sheets/", "/docs/", "/slides/", "/s3/", "/msgraph/")
@@ -921,6 +938,10 @@ def _rows():
         yield pytest.param(
             b"GET", base, rest, answer, authorizations, b"", b"x", id=f"{base} {rest!r}"
         )
+    # GitHub's `%00` 400 on a `HEAD`, which real answers as the `GET` with no body
+    yield pytest.param(
+        b"HEAD", "/github/", b"repos/acme/pipeline%00", "github nul", 1, b"", b"x", id="HEAD nul"
+    )
     for host, method, base, rest, answer, *header in _HOSTS:
         authorizations = 0 if base.startswith(_UNCREDENTIALED) else 1
         name = (host or b"(in the lines)").decode()
@@ -976,6 +997,43 @@ def _rows():
             b"Authorization: Basic eDp5\r\n",
         ),
         ("/github/", b"search/code?q=x&b=%x", 401, b""),
+        # a `%00` in a name a route reads: the 400 ahead of the version and of the 401 for no
+        # credential, behind the 401 for a bearer that does not resolve and the one a route that
+        # asks for a credential first gives a caller without one
+        ("/github/", b"repos/acme/pipeline%00", "github nul", b""),
+        ("/github/", b"users/nope%00", "github nul", b""),
+        (
+            "/github/",
+            b"repos/acme/pipeline%00",
+            "github nul",
+            b"X-GitHub-Api-Version: 1999-01-01\r\n",
+        ),
+        ("/github/", b"repos/acme/pipeline%00", "github nul", b"Authorization: nope\r\n"),
+        ("/github/", b"repos/acme/pipeline%00", "github nul", b"Authorization: Digest x\r\n"),
+        (
+            "/github/",
+            b"repos/acme/pipeline%00",
+            "github nul uncounted",
+            b"Authorization: Basic eDp5\r\n",
+        ),
+        ("/github/", b"repos/acme/pipeline%00", 401, b"Authorization: Bearer nope\r\n"),
+        ("/github/", b"users/nope%00", 401, b"Authorization: Bearer nope\r\n"),
+        ("/github/", b"orgs/acme%00/teams", 401, b""),
+        ("/github/", b"repos/acme%00/pipeline/collaborators", 401, b""),
+        ("/github/", b"repos/acme/pipeline/dependabot/alerts/1%00", 401, b""),
+        ("/github/", b"repos/acme/pipeline%00/copilot/code-review/settings", 401, b""),
+        (
+            "/github/",
+            b"repos/acme/pipeline/dependabot/alerts/1%00",
+            401,
+            b"Authorization: nope\r\n",
+        ),
+        (
+            "/github/",
+            b"repos/acme/pipeline/dependabot/alerts/1%00",
+            "github nul uncounted",
+            b"Authorization: Basic eDp5\r\n",
+        ),
         # a charset Java cannot name, on a path Confluence's front door reads a `\` in as a `/`
         *(
             ("/atlassian/wiki", rest, 500, b"Content-Type: text/plain;charset=\r\n")
@@ -1036,6 +1094,8 @@ _KEEPS_THE_CONNECTION = {
     "hubspot jetty",
     "hubspot error page",
     "github empty",
+    "github nul",
+    "github nul uncounted",
     "tomcat",
 }
 
@@ -1080,6 +1140,8 @@ _PAGES = {
     "hubspot jetty": (400, "text/html;charset=iso-8859-1", request_target.HUBSPOT_JETTY_PAGE),
     "hubspot error page": (400, "text/html; charset=utf-8", request_target.HUBSPOT_ERROR_PAGE),
     "github empty": (400, None, b""),
+    "github nul": (400, None, b""),
+    "github nul uncounted": (400, None, b""),
     "tomcat": (
         400,
         errors.atlassian.TOMCAT_MEDIA_TYPE,
@@ -1181,6 +1243,29 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
         if answer == "github empty":
             extra = (extra, headers.get("vary"), "x-github-request-id" in headers)
             want_extra = (want_extra, "Accept-Encoding, Accept, X-Requested-With", True)
+        if answer.startswith("github nul"):
+            # no `Vary` and no version echo, and the request id; the five of the window the caller
+            # counts in, which a second request moves by one, but for a `Basic` value naming no
+            # token
+            counted = None
+            if authorizations and "x-ratelimit-used" in headers:
+                again = _send(base_url, method, target, admin, authorizations, header, host)[1]
+                counted = int(again["x-ratelimit-used"]) - int(headers["x-ratelimit-used"])
+            extra = (
+                headers.get("vary"),
+                "x-github-request-id" in headers,
+                headers.get("x-ratelimit-resource"),
+                "x-github-api-version-selected" in headers,
+                counted,
+            )
+            counts = answer == "github nul"
+            want_extra = (
+                None,
+                True,
+                "core" if counts else None,
+                False,
+                1 if authorizations else None,
+            )
         got[row.id] = (headers.get("connection"), status, headers.get("content-type"), body, extra)
         status, media_type, page = _page(reading, method, target)
         if method == b"HEAD":

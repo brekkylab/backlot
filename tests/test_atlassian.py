@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
@@ -1558,6 +1559,32 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     assert answered == {template: (want, len(want)) for template, want in rows}
     # read as `text ~` is, which over this chain is not real's answer: see `_CQL_READABLE`
     assert {x["title"] for x in site["results"]} == {"Grand"}
+
+
+def test_confluence_cql_search_takes_about_as_long_over_negated_matches(tmp_path):
+    """The search's time over a `text ~` value holding `not id=1` 4000 times, against the same
+    value holding `nix id=1`: the clause readers read the matches inside the value as they read
+    clauses, and a `not` rides on each one in the first. Both pay a `~` search over a value of the
+    same length, and that search's time grows faster than the length, so the negated value is held
+    to three times the other's time at one size; the two measured within a tenth of each other
+    (2026-11-07, Python 3.14, macOS). Each time is the least of three, the two values taken in
+    turn."""
+    settings = tiny_corpus(tmp_path, [])
+    with client_for(settings) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        url = "/atlassian/wiki/rest/api/search"
+        times = {"not": [], "nix": []}
+        answers = {}
+        for _ in range(3):
+            for word in times:
+                cql = 'type=page and text ~ "' + f"{word} id=1 " * 4000 + '"'
+                t0 = time.perf_counter()
+                r = c.get(url, headers=h, params={"cql": cql})
+                times[word].append(time.perf_counter() - t0)
+                answers[word] = (r.status_code, r.json()["totalSize"])
+    assert answers == {"not": (200, 0), "nix": (200, 0)}
+    assert min(times["not"]) < 3 * min(times["nix"])
 
 
 def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):

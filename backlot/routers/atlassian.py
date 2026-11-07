@@ -2344,7 +2344,7 @@ async def confluence_cql_search(request: Request):
         raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "")
+        page = _confluence_page(conn, request, r, "", search=True)
         results.append(
             {
                 "content": page,
@@ -2772,7 +2772,7 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
-def _confluence_page(conn, request: Request, row, expand: str) -> dict:
+def _confluence_page(conn, request: Request, row, expand: str, search: bool = False) -> dict:
     created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
     cid = row["id"]
@@ -2841,19 +2841,43 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         "editor2",
         "anonymous_export_view",
     )
-    expandable = {
-        "childTypes": "",
-        "container": f"/rest/api/space/{key}",
-        "metadata": "",
-        "operations": "",
-        "restrictions": "",
-        "history": f"/rest/api/content/{cid}/history",
-        "ancestors": "",
-        "body": "",
-        "version": "",
-        "descendants": "",
-        "space": f"/rest/api/space/{key}",
-    }
+    # The names real lists under `_expandable` on a content read, in real's order, measured on
+    # Confluence Cloud on 2026-11-03: `children`, `restrictions` and `descendants` carry links,
+    # `schedulePublishInfo`, `schedulePublishDate` and `draftVersion` are empty. A search row
+    # lists a different set — no `childTypes` or `restrictions`, `container`, `children` and
+    # `descendants` empty, `extensions` present — so `search` gets its own dict.
+    if search:
+        expandable = {
+            "container": "",
+            "metadata": "",
+            "extensions": "",
+            "operations": "",
+            "children": "",
+            "history": f"/rest/api/content/{cid}/history",
+            "ancestors": "",
+            "body": "",
+            "version": "",
+            "descendants": "",
+            "space": f"/rest/api/space/{key}",
+        }
+    else:
+        expandable = {
+            "childTypes": "",
+            "container": f"/rest/api/space/{key}",
+            "schedulePublishInfo": "",
+            "metadata": "",
+            "operations": "",
+            "schedulePublishDate": "",
+            "children": f"/rest/api/content/{cid}/child",
+            "restrictions": f"/rest/api/content/{cid}/restriction/byOperation",
+            "history": f"/rest/api/content/{cid}/history",
+            "ancestors": "",
+            "body": "",
+            "draftVersion": "",
+            "version": "",
+            "descendants": f"/rest/api/content/{cid}/descendant",
+            "space": f"/rest/api/space/{key}",
+        }
     # `space` was served above, before this dict existed, so it leaves `_expandable` here.
     if "space" in wanted:
         expandable.pop("space")
@@ -2884,7 +2908,22 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         expandable.pop("body")
         body = {}
         for name in body_named:
-            body[name] = {"value": body_writers[name](), "representation": name}
+            # A representation real serves carries more than `value` and `representation`:
+            # `storage` adds `embeddedContent: []` and its own `_expandable`, and `export_view`
+            # adds an `_expandable` of its own, both measured on Confluence Cloud on 2026-11-03.
+            # The other representations were not measured, so they keep the two keys.
+            rep = {"value": body_writers[name](), "representation": name}
+            if name == "storage":
+                rep["embeddedContent"] = []
+                rep["_expandable"] = {"content": f"/rest/api/content/{cid}"}
+            elif name == "export_view":
+                rep["_expandable"] = {
+                    "webresource": "",
+                    "embeddedContent": "",
+                    "mediaToken": "",
+                    "content": f"/rest/api/content/{cid}",
+                }
+            body[name] = rep
         unexpanded = [name for name in body_representations if name not in body_named]
         body["_expandable"] = dict.fromkeys(unexpanded, "")
         page["body"] = body

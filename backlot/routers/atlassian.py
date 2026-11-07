@@ -4939,6 +4939,41 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
     return _jaxrs_media_refusal(request, checks_type=checks_type)
 
 
+def refuse_an_unreadable_confluence_basic(request: Request) -> Response | None:
+    """Tomcat's 401 page for a Basic value it cannot read, on a Confluence request no operation
+    answers, or None.
+
+    Under `/wiki/rest/` and `/wiki/api/v2/`, real answers an unreadable Basic value with Tomcat's
+    401 page before routing, ahead of the charset refusal: at a path no operation serves, at a
+    method none publishes, and at the v2 API, whose caller is otherwise sent to log in. A request
+    a served route takes, or a published operation covers, is left alone: the route answers the
+    401 itself, its JSON one with the OAuth realm. Paths outside the two mounts stay as they are.
+
+    Measured on Confluence Cloud on 2026-10-31, each request on its own cache-busted URL, with
+    `Authorization: Basic !!!` and a `Content-Type` of `text/plain;charset=nope` and of
+    `text/plain;charset=`: `OPTIONS` and `DELETE` at `space` and at `user/current`, and `GET` at
+    `space/{key}/nope`, `/wiki/rest/api`, `/wiki/rest/api/nosuch` and `/wiki/api/v2/spaces`
+    answered the 401 page under both.
+    """
+    vendor_path = _vendor_path(request.scope["path"])
+    if not (vendor_path.startswith("/wiki/rest/") or vendor_path.startswith("/wiki/api/v2/")):
+        return None
+    if auth.basic_credential_kind(request) != auth.BASIC_UNPARSEABLE:
+        return None
+    if _a_route_answers(request):
+        return None
+    if _is(_CONFLUENCE_PUBLISHED, request.method, vendor_path) or _is(
+        _CONFLUENCE_OUTSIDE_THE_DOCUMENT, request.method, vendor_path
+    ):
+        return None
+    return Response(
+        errors_atlassian.tomcat_page(401),
+        status_code=401,
+        media_type=errors_atlassian.TOMCAT_MEDIA_TYPE,
+        headers={"Content-Language": "en"},
+    )
+
+
 def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     """The empty 500 Confluence answers a charset Java cannot name
     (``errors.atlassian.refuse_a_confluence_charset``) wherever its Spring application answers the

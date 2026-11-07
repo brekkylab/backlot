@@ -384,6 +384,19 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             ("github", "repos/list-commits", "missing", 404, "not_found", "unsupported"),
         ),
         (
+            "GET",
+            f"{GITHUB}/copilot/code-review/settings",
+            {},
+            (
+                "github",
+                "copilot/get-repository-code-review-settings",
+                "missing",
+                404,
+                "not_found",
+                "unsupported",
+            ),
+        ),
+        (
             "POST",
             f"{GITHUB}/issues",
             {"json": {"title": "t"}},

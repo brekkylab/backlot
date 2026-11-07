@@ -2461,6 +2461,7 @@ _LINEAR_SEARCH_BARE = re.compile(rf" ?({_LINEAR_SEARCH_NUM})|({_LINEAR_SEARCH_NU
 # ` 19  2 ` as `19 2` did, where `19 probe`, `19,2`, `2 019`, and `19 2` with a tab or a U+00A0 for
 # the space, were read as words.
 _LINEAR_SEARCH_NUMBERS = re.compile(rf" *{_LINEAR_SEARCH_NUM}(?: +{_LINEAR_SEARCH_NUM})+ *")
+# The marks that part two words a term joins into two words read on their own, measured on
 # api.linear.app on 2026-11-06 and 2026-11-07: `,`, `.`, `;`, `/`, `:`, `_` and `-` each parted two
 # words of letters and two numbers (`your,tools` and `19,2`, and the same with each mark in the
 # comma's place). An identifier spells its number with a `-` after its key's letters, so a `-` parts

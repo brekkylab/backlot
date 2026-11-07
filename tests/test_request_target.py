@@ -265,6 +265,7 @@ _ESCAPES = [
             *(b"repos/acme/pipeline/git/ref/heads/main%00", b"repos/acme/pipeline/git/blobs/a1%00"),
             *(b"repos/acme/pipeline/contents/README.md%00", b"repos/acme/pipeline/contents/a%00/b"),
             b"repos/acme/pipeline/dependabot/alerts/1%00",
+            b"repos/acme/pipeline%00/copilot/code-review/settings",
         )
     ),
     ("/github/", b"repos/acme/pipeline/issues%00", 404),
@@ -1020,6 +1021,7 @@ def _rows():
         ("/github/", b"orgs/acme%00/teams", 401, b""),
         ("/github/", b"repos/acme%00/pipeline/collaborators", 401, b""),
         ("/github/", b"repos/acme/pipeline/dependabot/alerts/1%00", 401, b""),
+        ("/github/", b"repos/acme/pipeline%00/copilot/code-review/settings", 401, b""),
         (
             "/github/",
             b"repos/acme/pipeline/dependabot/alerts/1%00",

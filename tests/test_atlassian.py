@@ -9548,6 +9548,10 @@ _CQL_PARSE_ROWS = [
                 "type=page and label = 5. and type = page",
                 "type = page and label = 5. and type = page",
             ),
+            (
+                "type=page and label = 5.and type = page",
+                "type = page and label = 5. and type = page",
+            ),
             ("type=page  and  space=handbook", "type = page and space = handbook"),
             ("TYPE=page", "TYPE = page"),
             ("type=page AND space=handbook", "type = page AND space = handbook"),
@@ -9732,6 +9736,7 @@ _CQL_PARSE_ROWS = [
             ("type=page and label = 12.5a", "Unrecognised clause at : a"),
             ("type=page and label = 1.2.3", _CQL_NOT_PARSED),
             ("type=page and label = 5..a", _CQL_NOT_PARSED),
+            ("type=page and label = 5.a and type = page", _CQL_NOT_PARSED),
             (
                 "type=page and title ~ 10.5",
                 "Expecting a value for operator '~' after field 'title' but got '10.5'",
@@ -9752,6 +9757,14 @@ _CQL_PARSE_ROWS = [
                 "type=page and title ~ 10",
                 "Expecting a value for operator '~' after field 'title' but got '10'",
             ),
+            (
+                "type=page and title !~ 10",
+                "Expecting a value for operator '!~' after field 'title' but got '10'",
+            ),
+            (
+                "type=page and title !~ 10.5",
+                "Expecting a value for operator '!~' after field 'title' but got '10.5'",
+            ),
             ("type=page 5", _CQL_NOT_PARSED),
             ("id = -1", _CQL_NOT_PARSED),
             ("created > -1d", _CQL_NOT_PARSED),
@@ -9763,6 +9776,10 @@ _CQL_PARSE_ROWS = [
             ('created > "2026-02-30"', _CQL_NOT_PARSED),
             (
                 "created > 20260910",
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "created > 2026.1",
                 "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
             ),
             (

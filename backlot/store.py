@@ -1087,7 +1087,12 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    conn.executescript(SCHEMA)
+    # The whole script as one transaction. Outside one, each CREATE commits by itself, and on a
+    # fresh file a commit is a durable write the disk has to acknowledge: measured on
+    # windows-latest, 2026-11-06, over 108 starts, the bundled corpus imports in 5 s at the median
+    # and 43 s at the worst, the slow ones sampled in this script and in `build_fts`, which is the
+    # start `serve()` waits for.
+    conn.executescript(f"BEGIN;\n{SCHEMA}\nCOMMIT;")
     return conn
 
 
@@ -3198,9 +3203,11 @@ def fireflies_sentences(conn, transcript_id) -> list[sqlite3.Row]:
 
 
 def _fts5_ok(conn) -> bool:
+    # A savepoint, rolled back rather than dropped: the probe table is not committed, and a
+    # transaction the caller holds open stays open.
+    conn.execute("SAVEPOINT fts_probe")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts_probe USING fts5(x)")
-        conn.execute("DROP TABLE IF EXISTS _fts_probe")
         return True
     except sqlite3.OperationalError as e:
         # Only "FTS5 not compiled in" means genuinely-unsupported → LIKE fallback. A different
@@ -3209,6 +3216,9 @@ def _fts5_ok(conn) -> bool:
         if "no such module" in str(e).lower() or "fts5" in str(e).lower():
             return False
         raise
+    finally:
+        conn.execute("ROLLBACK TO fts_probe")
+        conn.execute("RELEASE fts_probe")
 
 
 def _has_fts(conn, source_type: str) -> bool:
@@ -3289,6 +3299,8 @@ def build_fts(conn) -> bool:
         key = ", ".join(id_columns(src))
         decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
         cols = ", ".join(_fts_text_columns(src))
+        if not conn.in_transaction:  # the DROP, the CREATE and the INSERT as one commit, not three
+            conn.execute("BEGIN")
         conn.execute(f"DROP TABLE IF EXISTS {fts}")
         conn.execute(
             f"CREATE VIRTUAL TABLE {fts} USING fts5({decl}, {cols}, tokenize='porter unicode61')"

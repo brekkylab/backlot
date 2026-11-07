@@ -308,6 +308,28 @@ def readline_within(pipe, timeout: float) -> bytes | None:
     return line[0] if line else None
 
 
+def read_within(pipe, timeout: float) -> bytes:
+    """What a child's ``pipe`` carries until every process holding it has closed it, or what has
+    arrived when ``timeout`` seconds pass. The read runs on a thread in chunks, so the bytes that
+    arrived are returned even when a process keeps the pipe open past ``timeout``. The thread reads
+    a duplicate of the pipe's descriptor and closes it when the pipe ends, so ``pipe`` can be closed
+    while that read still waits."""
+    chunks: list[bytes] = []
+    fd = os.dup(pipe.fileno())
+
+    def drain() -> None:
+        try:
+            while chunk := os.read(fd, 65536):
+                chunks.append(chunk)
+        finally:
+            os.close(fd)
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    return b"".join(chunks)
+
+
 def gql(client, path: str, query: str, token: str | None = None, **variables):
     """POST a GraphQL document and return the raw response.
 

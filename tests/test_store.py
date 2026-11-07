@@ -14,6 +14,7 @@ covered by test_overlay.py.
 """
 
 import json
+import re
 import sqlite3
 
 import pytest
@@ -1669,6 +1670,52 @@ def test_connect_ro_tuning(sample_settings):
         assert d.execute("PRAGMA mmap_size").fetchone()[0] == 0
     finally:
         d.close()
+
+
+def _outside_a_transaction(statements: list[str]) -> list[str]:
+    """The statements of a trace that ran outside any transaction or savepoint, other than reads
+    and pragmas: each of those was a transaction, and a durable write, of its own."""
+    loose = []
+    depth = 0
+    for text in statements:
+        words = re.sub(r"(--[^\n]*\n?)+", "", text).strip().rstrip(";").split()
+        if not words:
+            continue
+        head = words[0].upper()
+        if head in ("BEGIN", "SAVEPOINT"):
+            depth += 1
+        elif head in ("COMMIT", "END") or (head == "ROLLBACK" and len(words) == 1):
+            depth = 0
+        elif head == "RELEASE":
+            depth -= 1
+        elif head == "ROLLBACK":
+            pass  # ROLLBACK TO a savepoint keeps the transaction open
+        elif depth == 0 and head not in ("SELECT", "PRAGMA"):
+            loose.append(" ".join(words))
+    return loose
+
+
+def test_a_fresh_database_is_built_in_one_transaction_per_step(tmp_path, monkeypatch):
+    """`connect_rw` runs the schema, and `build_fts` each source's index, inside one transaction
+    each: a statement outside one commits by itself, and the comment in `connect_rw` says what
+    that costs on a fresh file. The FTS5 probe `build_fts` starts with leaves no table behind."""
+    statements: list[str] = []
+    connect = sqlite3.connect
+
+    def traced(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced)
+    conn = store.connect_rw(tmp_path / "fresh.sqlite")
+    assert not conn.in_transaction
+    assert _outside_a_transaction(statements) == []
+    statements.clear()
+    assert store.build_fts(conn)
+    assert not conn.in_transaction
+    assert _outside_a_transaction(statements) == []
+    assert not conn.execute("SELECT name FROM sqlite_master WHERE name = '_fts_probe'").fetchall()
 
 
 # --- incremental FTS indexing --------------------------------------------------

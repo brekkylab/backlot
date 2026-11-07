@@ -3415,22 +3415,24 @@ def _cql_function_call(tokens: list[tuple[str, str]], at: int):
 
 
 def _cql_function_arity(name: str, args: list[tuple[str, str]]) -> bool:
-    """Whether a call of ``name`` with ``args`` has the wrong arguments: too many or too few
-    for what :data:`_CQL_FUNCTIONS` records, for `recentlyViewedContent` a negative count or a
-    quoted count that is no integer, and for a date function an unquoted number. A word or a
-    decimal for the count is no wrong argument count: it is an invalid size limit (see
-    :func:`_cql_function_size_limit`). A reserved word for the count is left to
-    :func:`_cql_refusal`, which refuses it. Real answered `startOfMonth(-1)` with
+    """Whether a call of ``name`` with ``args`` has the wrong arguments: too many or too few for
+    what :data:`_CQL_FUNCTIONS` records, for `recentlyViewedContent` a quoted count that is no
+    integer, and for a date function an unquoted number. A `recentlyViewedContent` count that is a
+    word takes any argument count: real answered `recentlyViewedContent(x, 6)` as it answered
+    `recentlyViewedContent(x)`, the invalid size limit of :func:`_cql_function_cannot_run`, where
+    `recentlyViewedContent(5, 6)` was ``cql_not_parsed`` (Confluence Cloud, 2026-10-31 and
+    2026-11-07). A negative number among a call's arguments is :func:`_cql_grammar_refusal`'s, and a
+    reserved word for the count :func:`_cql_refusal`'s. Real answered `startOfMonth(-1)` with
     ``cql_not_parsed`` where it read `startOfMonth("-1")` as a relative date (Confluence Cloud,
-    2026-10-31), and `recentlyViewedContent(-1)` the same (Confluence Cloud, 2026-11-05)."""
+    2026-10-31)."""
+    if name == "recentlyViewedContent" and args and args[0][0] == "WORD":
+        return False
     low, high = _CQL_FUNCTIONS[name]
     if not low <= len(args) <= high:
         return True
     if name == "recentlyViewedContent":
         kind, text = args[0]
         if kind == "NUMBER":
-            return text.startswith("-")
-        if kind == "WORD":
             return False
         return kind != "QUOTED" or not re.fullmatch(r"[+-]?[0-9]+", _cql_unquote(kind, text))
     if name in _CQL_DATE_FUNCTIONS and args:
@@ -3438,27 +3440,14 @@ def _cql_function_arity(name: str, args: list[tuple[str, str]]) -> bool:
     return False
 
 
-def _cql_function_size_limit(name: str, args: list[tuple[str, str]]) -> str | None:
-    """The count of a `recentlyViewedContent` call real refuses as an invalid size limit, as
-    sent, or None for a count it reads: a word or a decimal number for the count. A negative
-    count is no count at all (see :func:`_cql_function_arity`), a quoted integer reads as one,
-    and a reserved word is left to :func:`_cql_refusal`. `id in recentlyViewedContent(x)`
-    answered `Invalid size limit : x` and `id in recentlyViewedContent(1.5)` the same with
-    `1.5` (Confluence Cloud, 2026-11-05)."""
-    if name != "recentlyViewedContent" or not args:
-        return None
-    kind, text = args[0]
-    if kind == "WORD" and text.lower() not in _CQL_KEYWORDS:
-        return text
-    if kind == "NUMBER" and "." in text:
-        return text
-    return None
-
-
 def _cql_function_cannot_run(name: str, args: list[tuple[str, str]]):
-    """The refusal a call of ``name`` with ``args`` is answered with where it cannot run, or
-    None for one that runs: `currentSpace()` for want of a space, and a date function whose
-    argument real cannot read as a relative date. `currentContent()` runs on this route, and
+    """The refusal a call of ``name`` with ``args`` is answered with where it cannot run, or None
+    for one that runs: `currentSpace()` for want of a space, a date function whose argument real
+    cannot read as a relative date, and `recentlyViewedContent` with a word or a decimal for its
+    count, which real cannot read as a size limit: `id in recentlyViewedContent(x)` answered
+    `Invalid size limit : x`, and `1.5`, `a.b` and `x, 6` for the `x` the same naming `1.5`, `a.b`
+    and `x` (Confluence Cloud, 2026-11-05 and 2026-11-07); a reserved word for the count is
+    :func:`_cql_refusal`'s, read before this. `currentContent()` runs on this route, and
     `currentUser()`, `now()` and `recentlyViewedContent()` run with what the route has."""
     if name == "currentSpace":
         return errors_atlassian.cql_function_needs_context(name, "space")
@@ -3467,15 +3456,11 @@ def _cql_function_cannot_run(name: str, args: list[tuple[str, str]]):
         value = _cql_unquote(kind, text) if kind == "QUOTED" else text
         if not _CQL_RELATIVE_DATE.fullmatch(value):
             return errors_atlassian.cql_invalid_relative_date(value)
+    if name == "recentlyViewedContent" and args:
+        kind, text = args[0]
+        if kind == "WORD" or kind == "NUMBER" and "." in text:
+            return errors_atlassian.cql_invalid_size_limit(text)
     return None
-
-
-def _cql_function_fault(name: str, args: list[tuple[str, str]]) -> bool:
-    """Whether a call of ``name`` with ``args`` is one real refuses: a name it does not have, an
-    argument count or shape it does not take, or one that cannot run where it is called."""
-    if name not in _CQL_FUNCTIONS:
-        return True
-    return _cql_function_arity(name, args) or _cql_function_cannot_run(name, args) is not None
 
 
 def _cql_tokens(cql: str) -> list[tuple[str, str]]:
@@ -3573,20 +3558,25 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
 def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
     """The 400 real answers a CQL the grammar cannot read with, or None for one it can, before
     :func:`_cql_refusal` reads the faults it walks from the left: a function call with the wrong
-    arguments, a second argument or an empty `recentlyViewedContent()`, a function other than
-    `recentlyViewedContent` in place of an `in` list, and an unclosed parenthesis before a call
-    real refuses. A word or a decimal for `recentlyViewedContent`'s count is the invalid size
-    limit (Confluence Cloud, 2026-11-05). Measured on Confluence Cloud on 2026-10-31: a second
-    argument or an empty `recentlyViewedContent()` was answered `Could not parse cql : ` beside
-    any other wrong in the CQL, even a missing value or an unknown field earlier in it, and
-    `(label = foo()`, `(space = currentSpace()` and `(created > now("x")` the same, where an
-    unclosed parenthesis with no call real refuses after it, `(type=page`, is the missing
-    parenthesis refusal. On 2026-11-04 `id in now("-1d")`, `label in currentUser()`,
-    `id in currentContent()`, `id in currentSpace()`, `id in foo()`,
-    `id in recentlyviewedcontent(5)` and `space.key in now("-1d")` were answered
-    `Could not parse cql : ` as well, and `id in now("-1d")` the same after `type =` with no
-    value, after `foo = x`, and before `and type =`."""
-    opens, failing = [], []
+    arguments, a second argument or an empty `recentlyViewedContent()`, a negative number among a
+    call's arguments, a function other than `recentlyViewedContent` in place of an `in` list, and a
+    `(` never closed with a `)` anywhere after it, a list's or a call's `)` included; a `(` never
+    closed with no `)` after it is the missing parenthesis of :func:`_cql_refusal`. Measured on
+    Confluence Cloud on 2026-10-31: a second argument or an empty `recentlyViewedContent()` was
+    answered `Could not parse cql : ` beside any other wrong in the CQL, even a missing value or an
+    unknown field earlier in it, and `(label = foo()`, `(space = currentSpace()` and
+    `(created > now("x")` the same, where `(type=page` is the missing parenthesis refusal. On
+    2026-11-04 `id in now("-1d")`, `label in currentUser()`, `id in currentContent()`,
+    `id in currentSpace()`, `id in foo()`, `id in recentlyviewedcontent(5)` and
+    `space.key in now("-1d")` were answered `Could not parse cql : ` as well, and `id in now("-1d")`
+    the same after `type =` with no value, after `foo = x`, and before `and type =`. On 2026-11-05
+    and 2026-11-07 `((type = page)`, `(type = page and (type = page)`, `((type = page) and type =`,
+    `((type = and type = page)`, `(type in (page)`, `(created > now("-1d")`,
+    `(id in recentlyViewedContent(5)` and `(label = foo(x)` were `Could not parse cql : `, where
+    `((type = page) and type = page) and (type = page`, `(type = page) and (type = page` and
+    `(type in (page` were the missing parenthesis, and `label = foo(-1)` and
+    `type = and created > startOfMonth(-1)` were `Could not parse cql : `."""
+    opens = []
     for at, (kind, text) in enumerate(tokens):
         if (kind, text) == ("PUNCT", "("):
             opens.append(at)
@@ -3603,16 +3593,13 @@ def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
                 name, args, _ = _cql_function_call(tokens, at)
             except _CQLFunctionError:
                 return errors_atlassian.cql_not_parsed()
-            size_limit = _cql_function_size_limit(name, args)
-            if size_limit is not None:
-                return errors_atlassian.cql_invalid_size_limit(size_limit)
+            if any(k == "NUMBER" and t.startswith("-") for k, t in args):
+                return errors_atlassian.cql_not_parsed()
             if name in _CQL_FUNCTIONS and _cql_function_arity(name, args):
                 return errors_atlassian.cql_not_parsed()
             if name != "recentlyViewedContent" and at and tokens[at - 1][1].lower() == "in":
                 return errors_atlassian.cql_not_parsed()
-            if _cql_function_fault(name, args):
-                failing.append(at)
-    if opens and failing and opens[0] < max(failing):
+    if opens and ("PUNCT", ")") in tokens[opens[0] :]:
         return errors_atlassian.cql_not_parsed()
     return None
 
@@ -3621,17 +3608,17 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     """The 400 real answers a CQL it cannot read with, or None for one this server reads, by where
     the reading stops: ``errors.atlassian.cql_not_parsed`` at no clause at all, a token no clause
     takes, a `not` anywhere but straight after `and`, `order by` with no clause before it, a list
-    that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value``
-    at an operator followed by nothing or by a token that is no value, and at an `in` list never
-    closed; ``cql_missing_closing_parenthesis`` at a `(` never closed, and at a value missing
-    at the end of a query inside a group that never closes; a group closed inside one that
-    never closes is ``cql_not_parsed`` instead. A group that closes on a missing value is
-    ``cql_expecting_value`` without ` but got ')'`, where no `(` before the `)` keeps it; and
-    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A function
-    call real does not have is ``cql_unknown_function`` at its place among those faults, read
-    from the left and named with its arguments as sent, and `recentlyViewedContent`, the one
-    function real takes in place of an `in` list, is read as the list. Each one's docstring gives the queries that answered it. A reserved
-    word where a value goes, a function's argument included, is
+    that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value`` at
+    an operator followed by nothing or by a token that is no value, and at an `in` list never
+    closed; ``cql_missing_closing_parenthesis`` at a `(` never closed, a value or an `in` list
+    missing inside it included (a `(` never closed with a `)` after it is
+    :func:`_cql_grammar_refusal`'s); a `)` where a value goes is ``cql_expecting_value`` without
+    ` but got ')'` where it closes a group, and with it where it closes none; and
+    ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A function call
+    real does not have is ``cql_unknown_function`` at its place among those faults, read from the
+    left and named with its arguments as sent, and `recentlyViewedContent`, the one function real
+    takes in place of an `in` list, is read as the list. Each one's docstring gives the queries that
+    answered it. A reserved word where a value goes, a function's argument included, is
     ``errors.atlassian.cql_reserved_keyword`` at its place among those faults: it answers any fault
     read after it but ``cql_not_parsed``, and a `(` before it that is never closed is the missing
     parenthesis. Where a reserved word is a clause's whole value outside an `in` list, what follows
@@ -3645,7 +3632,6 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     at = 0
     reserved = None  # the place and the text, as sent, of the first reserved word read as a value
     groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
-    closed_inner = False  # whether a group closed inside one that never closes
 
     def peek(offset=0):
         return tokens[at + offset] if at + offset < len(tokens) else (None, None)
@@ -3679,6 +3665,9 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     def not_parsed():
         return _Stop(errors_atlassian.cql_not_parsed(), final=True)
 
+    def missing_parenthesis():
+        return _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
+
     def reserve(place, text):
         nonlocal reserved
         if reserved is None:
@@ -3689,9 +3678,10 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         kind, text = peek()
         if kind is None:
             # A value missing at the end of the query inside a group that never closes is the
-            # missing parenthesis, not the missing value (Confluence Cloud, 2026-11-05).
+            # missing parenthesis, not the missing value: `(type = page and type =`, `(type = and
+            # type = page` and `(type = page and title ~` (Confluence Cloud, 2026-11-05).
             if groups:
-                raise _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
+                raise missing_parenthesis()
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
         if kind == "NUMBER" and text.startswith("-"):  # `id = -1`, `created > -1d`
             raise not_parsed()
@@ -3701,8 +3691,9 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             # the number (Confluence Cloud, 2026-11-06 and 2026-11-07).
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
         if kind not in _CQL_VALUES:
-            # A group that closes on a missing value is refused without ` but got ')'`: real
-            # keeps it only where no `(` comes before the `)` (Confluence Cloud, 2026-11-05).
+            # A `)` closing a group on a missing value is refused without ` but got ')'`; one
+            # closing no group, `type = )` and `(type = page) and type = )`, keeps it (Confluence
+            # Cloud, 2026-11-05 and 2026-11-07).
             got = None if text == ")" and groups else text
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field, got))
         if kind == "WORD" and text.lower() in _CQL_KEYWORDS:
@@ -3716,10 +3707,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 clause_at = at + 2 if text.lower() == "and" and keyword("not", 1) else at + 1
                 if text.lower() in ("and", "or") and clause_starts(clause_at):
                     if groups:
-                        raise _Stop(
-                            errors_atlassian.cql_missing_closing_parenthesis(),
-                            place=groups[0],
-                        )
+                        raise missing_parenthesis()
                     raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
                 if text.lower() == "order" and keyword("by", 1):
                     raise _Stop(errors_atlassian.cql_expecting_value(operator, field))
@@ -3759,13 +3747,19 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 value(operator, field)
                 return
             if peek() != ("PUNCT", "("):
-                got = peek()[1]
+                after, got = peek()
+                if after is None and groups:
+                    raise missing_parenthesis()
                 if got == ")" and groups:
                     got = None
                 raise _Stop(errors_atlassian.cql_expecting_value(operator, field, got))
             at += 1
+            # An `in` list never closed inside a group never closed is the missing parenthesis too:
+            # `(type in (page`, `(type in (` and `(type in (page,` (Confluence Cloud, 2026-11-07).
             while True:
                 if peek()[0] is None:
+                    if groups:
+                        raise missing_parenthesis()
                     raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
                 if peek()[0] not in _CQL_VALUES:
                     raise not_parsed()
@@ -3774,6 +3768,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                     break
                 at += 1
             if peek()[0] is None:
+                if groups:
+                    raise missing_parenthesis()
                 raise _Stop(errors_atlassian.cql_expecting_value(operator, field, "("))
             if peek() != ("PUNCT", ")"):
                 raise not_parsed()
@@ -3789,7 +3785,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     def sequence():
         """Clauses joined by `and` and `or`, any of them inside groups, read in one loop (the depths
         real reads: :func:`_cql_parse`)."""
-        nonlocal at, closed_inner
+        nonlocal at
         while True:
             while peek() == ("PUNCT", "("):
                 groups.append(at)
@@ -3799,14 +3795,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 if not groups:
                     return
                 if peek() != ("PUNCT", ")"):
-                    # A group closed inside one that never closes is a CQL the grammar cannot
-                    # read, where an unclosed group on its own is the missing parenthesis
-                    # (Confluence Cloud, 2026-11-05).
-                    if closed_inner:
-                        raise not_parsed()
-                    raise _Stop(errors_atlassian.cql_missing_closing_parenthesis(), place=groups[0])
-                if len(groups) > 1:
-                    closed_inner = True
+                    raise missing_parenthesis()
                 groups.pop()
                 at += 1
             conjunction = peek()[1].lower()

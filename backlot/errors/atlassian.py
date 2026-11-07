@@ -518,11 +518,10 @@ def cql_invalid_relative_date(value: str) -> AtlassianError:
 
 
 def cql_invalid_size_limit(value: str) -> AtlassianError:
-    """The CQL search's refusal of a `recentlyViewedContent` count real cannot read as a size
-    limit, the count as sent: `id in recentlyViewedContent(x)` answered
-    `Invalid size limit : x`, and `id in recentlyViewedContent(1.5)` the same with `1.5`
-    (Confluence Cloud, 2026-11-05). Where it falls among the search's other refusals is
-    ``routers.atlassian._cql_grammar_refusal``'s."""
+    """The CQL search's refusal of a `recentlyViewedContent` count real cannot read as a size limit,
+    the count as sent: `id in recentlyViewedContent(x)` answered `Invalid size limit : x`, and
+    `id in recentlyViewedContent(1.5)` the same with `1.5` (Confluence Cloud, 2026-11-05). Where it
+    falls among the search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
     return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
 
 

@@ -1143,9 +1143,13 @@ def _stated_tabs(tabs: list, path: str):
             yield from _stated_tabs(tab["tabs"], f"{here}.tabs")
 
 
-def _paragraph_errors(paragraphs, path: str, body: bool) -> list[str]:
-    """What a stated body, header, footer or footnote's paragraphs may not say. Only a body holds a
-    footnote or a page break: real refuses `createFootnote` and `insertPageBreak` anywhere else."""
+def _paragraph_errors(
+    paragraphs, path: str, body: bool, note: bool = False, cell: bool = False
+) -> list[str]:
+    """What a stated body, header, footer, footnote or cell's paragraphs may not say. Only a body
+    holds a footnote or a page break, a cell of one a footnote alone, and a footnote no table: real
+    refuses `createFootnote` and `insertPageBreak` anywhere else, `insertPageBreak` in a table and
+    `insertTable` in a footnote."""
     if not isinstance(paragraphs, list):
         return []
     msgs = []
@@ -1153,6 +1157,9 @@ def _paragraph_errors(paragraphs, path: str, body: bool) -> list[str]:
         if not isinstance(para, dict):
             continue
         at = f"{path}[{i}]"
+        if "table" in para:
+            msgs += _table_errors(para, at, body, note)
+            continue
         if ("text" in para) == ("runs" in para):
             msgs.append(f"{at}: state its text as one of 'text' or 'runs'")
         runs = [r for r in para.get("runs") or [] if isinstance(r, dict)]
@@ -1167,8 +1174,15 @@ def _paragraph_errors(paragraphs, path: str, body: bool) -> list[str]:
                     f"{at}.runs[{j}]: a footnote or a page break stands in a body alone, as real's "
                     "`createFootnote` and `insertPageBreak` refuse one in a header, footer or footnote"
                 )
+            if "pageBreak" in run and body and cell:
+                msgs.append(
+                    f"{at}.runs[{j}]: a page break stands outside a table, as real's "
+                    "`insertPageBreak` refuses one in a table"
+                )
             if "footnote" in run and body:
-                msgs += _paragraph_errors(run["footnote"], f"{at}.runs[{j}].footnote", False)
+                msgs += _paragraph_errors(
+                    run["footnote"], f"{at}.runs[{j}].footnote", False, note=True
+                )
         texts = [para.get("text")] + [r.get("text") for r in runs]
         if any(isinstance(t, str) and "\n" in t for t in texts):
             msgs.append(
@@ -1182,6 +1196,24 @@ def _paragraph_errors(paragraphs, path: str, body: bool) -> list[str]:
             )
         if any(isinstance(t, str) and gdocs.UNWRITABLE.search(t) for t in texts):
             msgs.append(f"{at}: {_UNWRITABLE}")
+    return msgs
+
+
+def _table_errors(para: dict, at: str, body: bool, note: bool) -> list[str]:
+    """What a stated table may not say: anything beside it, a row of another width than the first,
+    a place in a footnote, and what its cells' paragraphs may not."""
+    msgs = []
+    if len(para) > 1:
+        msgs.append(f"{at}: a table is stated alone, with no 'text', 'runs', 'style' or 'list'")
+    if note:
+        msgs.append(f"{at}: a footnote holds no table, as real's `insertTable` refuses one there")
+    rows = para["table"] if isinstance(para["table"], list) else []
+    widths = {len(row) for row in rows if isinstance(row, list)}
+    if len(widths) > 1:
+        msgs.append(f"{at}.table: state every row with the same number of cells")
+    for r, row in enumerate(rows):
+        for c, cell in enumerate(row if isinstance(row, list) else []):
+            msgs += _paragraph_errors(cell, f"{at}.table[{r}][{c}]", body, cell=True)
     return msgs
 
 

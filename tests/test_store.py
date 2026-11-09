@@ -1725,8 +1725,8 @@ def test_build_fts_builds_each_source_in_one_transaction(tmp_path):
 
 
 class _WithoutFts5:
-    """A connection whose `CREATE VIRTUAL TABLE` answers as a SQLite built without FTS5 does; an
-    interpreter whose SQLite has FTS5 gets that answer from no file of its own."""
+    """A connection whose `CREATE VIRTUAL TABLE` raises `no such module: fts5`, the answer of a
+    SQLite built without FTS5; the SQLite this suite runs on has FTS5 and never gives it."""
 
     def __init__(self, conn):
         self._conn = conn

@@ -44,12 +44,12 @@ def test_tally(commits, logins):
     ("count", "width", "height", "last"),
     [
         (1, 32, 32, ("0", "0")),
-        (25, 896, 32, ("864", "0")),
-        (26, 896, 68, ("0", "36")),
-        (51, 896, 104, ("0", "72")),
+        (23, 824, 32, ("792", "0")),
+        (24, 824, 68, ("0", "36")),
+        (47, 824, 104, ("0", "72")),
     ],
 )
-def test_render_lays_the_faces_out_twenty_five_to_a_row(count, width, height, last):
+def test_render_lays_the_faces_out_twenty_three_to_a_row(count, width, height, last):
     faces = [(f"user{i}", f"data:image/png;base64,{i}") for i in range(count)]
     svg = wall.render(faces)
     assert re.search(rf'width="{width}" height="{height}" viewBox="0 0 {width} {height}"', svg)

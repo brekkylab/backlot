@@ -1756,8 +1756,9 @@ def _unable_to_grow(conn):
     return conn
 
 
-# (file, the connection `build_fts` gets, what it answers: the SQLite result code of the error it
-# raises, or the value it returns)
+# (name, also the database file's stem; what turns a fresh connection into the one `build_fts`
+# gets; what `build_fts` answers: the SQLite result code of the error it raises, or the value it
+# returns)
 _FTS5_PROBE_ROWS = [
     ("interrupted", _interrupting_the_probe, ("raised", "SQLITE_INTERRUPT")),
     ("full", _unable_to_grow, ("raised", "SQLITE_FULL")),

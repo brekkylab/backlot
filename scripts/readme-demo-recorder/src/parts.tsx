@@ -284,18 +284,6 @@ export type Served = {
 
 export const SERVED: Served[] = [
   {
-    subject: "Microsoft Teams",
-    prefix: "/msgraph/v1.0/",
-    request: "GET /msgraph/v1.0/teams/{t}/channels/{c}/messages",
-    fields: [
-      ['"id"', '"1788523200811"'],
-      ['"messageType"', '"message"'],
-      ['"createdDateTime"', '"2026-09-04T12:00:00.811Z"'],
-      ['"from"', '{ "user": { "displayName": "Dana Whitfield", … } }'],
-      ['"body"', '{ "content": "<p>Quarterly numbers are in.</p>", … }'],
-    ],
-  },
-  {
     subject: "Gmail",
     prefix: "/gmail/v1/",
     request: "GET /gmail/v1/users/{u}/messages/{id}",
@@ -389,6 +377,18 @@ export const SERVED: Served[] = [
       ['"ETag"', '"fb7eb5c32fbcc41f873658f2e9b2ab99"'],
       ['"Size"', "75"],
       ['"StorageClass"', '"STANDARD"'],
+    ],
+  },
+  {
+    subject: "Microsoft Teams",
+    prefix: "/msgraph/v1.0/",
+    request: "GET /msgraph/v1.0/teams/{t}/channels/{c}/messages",
+    fields: [
+      ['"id"', '"1788523200811"'],
+      ['"messageType"', '"message"'],
+      ['"createdDateTime"', '"2026-09-04T12:00:00.811Z"'],
+      ['"from"', '{ "user": { "displayName": "Dana Whitfield", … } }'],
+      ['"body"', '{ "content": "<p>Quarterly numbers are in.</p>", … }'],
     ],
   },
 ];

@@ -2427,10 +2427,9 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         child_j = c.get(f"{api}/content/{cid}", headers=h, params={"expand": "ancestors"}).json()
         assert [a["title"] for a in child_j["ancestors"]] == ["probe"]
         assert "ancestors" not in child_j["_expandable"]
-        # `_expandable` names and links, as `_confluence_page` records them: the bare read
-        # lists twelve names in real's order, the listing row the same twelve plus
-        # `history`, `version` and `space`, and a search row a different set with
-        # `extensions` and empty `container`, `children` and `descendants`.
+        # `_expandable`'s names, links and order: the bare read's twelve, a listing row's fifteen
+        # in the order real gives thirteen or more, and a search row's set, with `extensions` and
+        # empty `container`, `children` and `descendants`.
         bare = c.get(f"{api}/content/{pid}", headers=h).json()
         assert list(bare["_expandable"]) == [
             "childTypes",
@@ -2454,21 +2453,58 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         listed = c.get(api + "/content", headers=h).json()["results"]
         listed_row = next(r for r in listed if str(r.get("id")) == str(pid))
         assert list(listed_row["_expandable"]) == [
+            "container",
+            "metadata",
+            "restrictions",
+            "history",
+            "body",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        ]
+        # Twelve left after an `expand` keep the bare read's order, and thirteen take the listing
+        # row's.
+        twelve = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body,metadata,ancestors"}
+        ).json()
+        assert list(twelve["_expandable"]) == [
             "childTypes",
             "container",
             "schedulePublishInfo",
-            "metadata",
             "operations",
             "schedulePublishDate",
             "children",
             "restrictions",
             "history",
-            "ancestors",
-            "body",
+            "version",
             "draftVersion",
+            "descendants",
+            "space",
+        ]
+        thirteen = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body,metadata"}
+        ).json()
+        assert list(thirteen["_expandable"]) == [
+            "container",
+            "restrictions",
+            "history",
             "version",
             "descendants",
             "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
         ]
         hit = c.get(api + "/search", headers=h, params={"cql": f"id={pid}"}).json()["results"][0][
             "content"
@@ -2491,24 +2527,24 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         assert hit["_expandable"]["descendants"] == ""
         assert hit["_expandable"]["history"] == f"/rest/api/content/{pid}/history"
         assert hit["_expandable"]["space"] == bare["_expandable"]["container"]
-        # A served body representation carries its own members: `storage` adds
-        # `embeddedContent` and an `_expandable`, `export_view` an `_expandable`.
+        # The members each served body representation carries.
         storage = c.get(
             f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}
         ).json()["body"]["storage"]
         assert list(storage) == ["value", "representation", "embeddedContent", "_expandable"]
         assert storage["embeddedContent"] == []
         assert storage["_expandable"] == {"content": f"/rest/api/content/{pid}"}
-        export_view = c.get(
-            f"{api}/content/{pid}", headers=h, params={"expand": "body.export_view"}
-        ).json()["body"]["export_view"]
-        assert list(export_view) == ["value", "representation", "_expandable"]
-        assert export_view["_expandable"] == {
-            "webresource": "",
-            "embeddedContent": "",
-            "mediaToken": "",
-            "content": f"/rest/api/content/{pid}",
-        }
+        for name in ("view", "export_view", "atlas_doc_format"):
+            rep = c.get(
+                f"{api}/content/{pid}", headers=h, params={"expand": f"body.{name}"}
+            ).json()["body"][name]
+            assert list(rep) == ["value", "representation", "_expandable"], name
+            assert rep["_expandable"] == {
+                "webresource": "",
+                "embeddedContent": "",
+                "mediaToken": "",
+                "content": f"/rest/api/content/{pid}",
+            }, name
 
 
 # --- Jira ------------------------------------------------------------------------

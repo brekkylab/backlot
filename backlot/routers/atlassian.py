@@ -2841,11 +2841,11 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         "editor2",
         "anonymous_export_view",
     )
-    # The names real lists under `_expandable` on a content read, in real's order, measured on
-    # Confluence Cloud on 2026-11-03: `children`, `restrictions` and `descendants` carry links,
-    # `schedulePublishInfo`, `schedulePublishDate` and `draftVersion` are empty. A search row
-    # lists a different set — no `childTypes` or `restrictions`, `container`, `children` and
-    # `descendants` empty, `extensions` present — so `search` gets its own dict.
+    # The names real lists under `_expandable`, with their values, measured on Confluence Cloud on
+    # 2026-11-03: a search row's eleven, and a content read's fifteen less those an `expand`
+    # serves. Real orders a content read's by how many are left: twelve or fewer in `few`'s order,
+    # as on the bare read and after `expand=body,metadata,ancestors`, and thirteen or more in
+    # `many`'s, as on a listing row and after `expand=body,metadata` (2026-11-03 and 2026-11-09).
     if search:
         expandable = {
             "container": "",
@@ -2861,23 +2861,52 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             "space": f"/rest/api/space/{key}",
         }
     else:
-        expandable = {
-            "childTypes": "",
+        links = {
             "container": f"/rest/api/space/{key}",
-            "schedulePublishInfo": "",
-            "metadata": "",
-            "operations": "",
-            "schedulePublishDate": "",
             "children": f"/rest/api/content/{cid}/child",
             "restrictions": f"/rest/api/content/{cid}/restriction/byOperation",
             "history": f"/rest/api/content/{cid}/history",
-            "ancestors": "",
-            "body": "",
-            "draftVersion": "",
-            "version": "",
             "descendants": f"/rest/api/content/{cid}/descendant",
             "space": f"/rest/api/space/{key}",
         }
+        few = (
+            "childTypes",
+            "container",
+            "schedulePublishInfo",
+            "metadata",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "restrictions",
+            "history",
+            "ancestors",
+            "body",
+            "version",
+            "draftVersion",
+            "descendants",
+            "space",
+        )
+        many = (
+            "container",
+            "metadata",
+            "restrictions",
+            "history",
+            "body",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        )
+        # The six an `expand` serves, each of which leaves `_expandable` below.
+        served = wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}
+        order = few if len(few) - len(served) <= 12 else many
+        expandable = {name: links.get(name, "") for name in order}
     # `space` was served above, before this dict existed, so it leaves `_expandable` here.
     if "space" in wanted:
         expandable.pop("space")
@@ -2908,15 +2937,15 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         expandable.pop("body")
         body = {}
         for name in body_named:
-            # A representation real serves carries more than `value` and `representation`:
-            # `storage` adds `embeddedContent: []` and its own `_expandable`, and `export_view`
-            # adds an `_expandable` of its own, both measured on Confluence Cloud on 2026-11-03.
-            # The other representations were not measured, so they keep the two keys.
+            # `storage` adds `embeddedContent: []` and an `_expandable` naming the content, and
+            # the other three this server renders add an `_expandable` of four names (Confluence
+            # Cloud: `storage` and `export_view` on 2026-11-03, `view` and `atlas_doc_format` on
+            # 2026-11-04).
             rep = {"value": body_writers[name](), "representation": name}
             if name == "storage":
                 rep["embeddedContent"] = []
                 rep["_expandable"] = {"content": f"/rest/api/content/{cid}"}
-            elif name == "export_view":
+            else:
                 rep["_expandable"] = {
                     "webresource": "",
                     "embeddedContent": "",

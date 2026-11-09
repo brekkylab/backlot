@@ -23,8 +23,8 @@ import sys
 import urllib.request
 
 API = "https://api.github.com/graphql"
-COLUMNS = 18
-SIZE = 40
+COLUMNS = 25
+SIZE = 32
 GAP = 4
 
 QUERY = """

@@ -31,7 +31,7 @@ export const F = {
 
 /** 30fps: the timeline below is written in frames, so keep these in sync with Root.tsx. */
 export const FPS = 30;
-export const DURATION = 600;
+export const DURATION = 716;
 
 /** Named beats, so the composition reads as a storyboard rather than a pile of magic numbers. */
 export const T = {
@@ -69,10 +69,19 @@ export const T = {
   // place — and then the surviving column repeats itself for one source after another. Showing it
   // beats asserting it: every card below is a real response this server returned.
   slide: 336,
-  // 24 frames each: short enough to fit eight sources, and the frame around them never moves,
+  // 22 frames each: short enough to fit nine sources, and the frame around them never moves,
   // so the eye only has to track the strings that changed.
-  cycle: [356, 378, 400, 422, 444, 466, 488, 510],
-  // The closing card waits: the last tick lands at 560 and the checklist is only complete then, so
+  cycle: [356, 378, 400, 422, 444, 466, 488, 510, 532],
+  // The third act. The source list leaves six frames before the first write card lands, so the
+  // writes list arrives into an empty column rather than over a fading one.
+  tallyOut: 556,
+  // The post, then the overlay report. The second waits 40 frames, not 22: its rows are the
+  // evidence for the first, and the `ts` has to be seen on both.
+  writes: [562, 602],
+  // The right-hand ticks: the post with its card, the read-back once that card has settled, the
+  // report with its card, the reset after.
+  writeRows: [568, 584, 608, 624],
+  // The closing card waits: the last tick lands at 633 and the checklist is only complete then, so
   // cutting away 30 frames later gave the finished list no time to be read as finished.
-  endcard: 556,
+  endcard: 672,
 } as const;

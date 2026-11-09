@@ -13,7 +13,7 @@
 
 Backlot is a local emulator for Slack, Microsoft Teams, Gmail, Google Drive, GitHub, Jira, Notion, S3 and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with **no vendor account**, **no OAuth approval**, **no secrets in CI** and **no network**.
 
-![Connecting Slack to an app, two ways, side by side. On the left, the real Slack API: create a workspace, register an app, add a bot user, pick OAuth scopes, register a redirect URL, install to the workspace — then wait on an admin to approve it, with still zero API calls made. On the right, Backlot: pip install, backlot serve, and one changed base URL, after which a conversations.history response comes back with the same fields, pagination and per-document ACLs. A day gone, against seconds.](assets/demo.gif)
+![Connecting Slack to an app, two ways, side by side. On the left, the real Slack API: create a workspace, register an app, add a bot user, pick OAuth scopes, register a redirect URL, install to the workspace — then wait on an admin to approve it, with still zero API calls made. On the right, Backlot: pip install, backlot serve, and one changed base URL, after which a conversations.history response comes back with the same fields, pagination and per-document ACLs. A day gone, against seconds. Then the same three commands for one source after another, Microsoft Teams, Gmail, Google Drive, GitHub and the rest, each answering a real request, and last a write: chat.postMessage posts a message, and Backlot's own /_meta/overlay reports what was written.](assets/demo.gif)
 
 ## Try it in 60 seconds
 

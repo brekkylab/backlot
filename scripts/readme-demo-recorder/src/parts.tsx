@@ -1,6 +1,6 @@
 import React from "react";
 import { C, F } from "./theme";
-import { appear, rise, IN_FRAMES } from "./anim";
+import { appear, vanish, rise, IN_FRAMES } from "./anim";
 import { AbsoluteFill, interpolate, Easing } from "./runtime";
 
 /** A lane's heading: a dot in the lane's accent, a label, and an optional aside on the same line. */
@@ -284,6 +284,18 @@ export type Served = {
 
 export const SERVED: Served[] = [
   {
+    subject: "Microsoft Teams",
+    prefix: "/msgraph/v1.0/",
+    request: "GET /msgraph/v1.0/teams/{t}/channels/{c}/messages",
+    fields: [
+      ['"id"', '"1788523200811"'],
+      ['"messageType"', '"message"'],
+      ['"createdDateTime"', '"2026-09-04T12:00:00.811Z"'],
+      ['"from"', '{ "user": { "displayName": "Dana Whitfield", … } }'],
+      ['"body"', '{ "content": "<p>Quarterly numbers are in.</p>", … }'],
+    ],
+  },
+  {
     subject: "Gmail",
     prefix: "/gmail/v1/",
     request: "GET /gmail/v1/users/{u}/messages/{id}",
@@ -381,6 +393,42 @@ export const SERVED: Served[] = [
   },
 ];
 
+/**
+ * The third act: the same server takes a write, and says what was written.
+ *
+ * Two cards on the Slack base URL. The first is `chat.postMessage` answered as real Slack answers
+ * it, the posted message echoed under `message`; the second is `GET /_meta/overlay`, Backlot's own
+ * report of the writes a server has taken — one row, the same `ts` — which is what a grader reads
+ * after an agent has acted. Both are this server's answers to the admin token on 2026-11-09, so
+ * the `ts` is that run's clock. Five fields each, as above, for the same reason.
+ */
+export const WRITES: Served[] = [
+  {
+    subject: "Slack",
+    prefix: "/slack/api/",
+    request: "POST /slack/api/chat.postMessage",
+    fields: [
+      ['"ok"', "true"],
+      ['"channel"', '"C9CB165E444"'],
+      ['"ts"', '"1794214615.321821"'],
+      ['"message.user"', '"USERVICE0"'],
+      ['"message.text"', '"Rolled back. Gateway is clean."'],
+    ],
+  },
+  {
+    subject: "Slack",
+    prefix: "/slack/api/",
+    request: "GET /_meta/overlay",
+    fields: [
+      ['"gdrive_files"', "[]"],
+      ['"slack_messages"', '[ { "ts": "1794214615.321821", … } ]'],
+      ['"slack_acl"', '[ { "principal_id": "engineering", … } ]'],
+      ['"slack_patch"', "[]"],
+      ['"slack_tombstone"', "[]"],
+    ],
+  },
+];
+
 export const activeServed = (frame: number, cycle: readonly number[]) => {
   let i = -1;
   for (let k = 0; k < cycle.length; k++) if (frame >= cycle[k]) i = k;
@@ -447,14 +495,18 @@ const fieldRow = ([k, v]: [string, string]) => (
 export const SourceCycle: React.FC<{
   frame: number;
   cycle: readonly number[];
+  entries: readonly Served[];
   left: number;
   width: number;
-}> = ({ frame, cycle, left, width }) => {
+}> = ({ frame, cycle, entries, left, width }) => {
   const i = activeServed(frame, cycle);
   if (i < 0) return null;
-  const cur = SERVED[i];
-  const prev = i > 0 ? SERVED[i - 1] : null;
+  const cur = entries[i];
+  const prev = i > 0 ? entries[i - 1] : null;
   const at = cycle[i];
+  // Two consecutive entries on one base URL hand over the card alone: a line swapped for an
+  // identical line is a blink.
+  const samePrefix = prev !== null && prev.prefix === cur.prefix;
 
   return (
     <div style={{ position: "absolute", left, top: 118, width }}>
@@ -474,7 +526,9 @@ export const SourceCycle: React.FC<{
         {tick}
         <div style={{ flex: 1 }}>
           <div style={{ height: 26 }}>
-            {swapRow(frame, at, 0, prev ? prefixLine(prev) : null, prefixLine(cur))}
+            {samePrefix
+              ? prefixLine(cur)
+              : swapRow(frame, at, 0, prev ? prefixLine(prev) : null, prefixLine(cur))}
           </div>
           <div style={{ font: `450 15px ${F.ui}`, color: C.inkFaint, marginTop: 4 }}>
             the only line that changes
@@ -533,21 +587,26 @@ export const SourceCycle: React.FC<{
  * is the same reason the README is tested for not stating one.
  */
 const TALLIED = ["Slack", ...SERVED.map((s) => s.subject)];
-const ROW = 40;
+// Eleven rows, "and more" included, have to end above the rule's foot at 558.
+const ROW = 36;
 
 export const SourceTally: React.FC<{
   frame: number;
   cycle: readonly number[];
   slide: number;
+  /** When the list leaves, making room for the writes beside the card that follows. */
+  out: number;
   left: number;
   rule: number;
-}> = ({ frame, cycle, slide, left, rule }) => {
+}> = ({ frame, cycle, slide, out, left, rule }) => {
   if (frame < slide) return null;
   const inT = interpolate(frame, [slide, slide + 20], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
     easing: Easing.out(Easing.cubic),
   });
+  // The list goes and the rule stays: the writes list takes the same side of it.
+  const stay = vanish(frame, out, 6);
   const tickedAt = (n: number) => (n === 0 ? slide : cycle[n - 1]);
   const current = activeServed(frame, cycle) + 1;
 
@@ -571,7 +630,7 @@ export const SourceTally: React.FC<{
           position: "absolute",
           left,
           top: 122,
-          opacity: inT,
+          opacity: inT * stay,
           transform: `translateX(${(1 - inT) * 90}px)`,
         }}
       >
@@ -632,5 +691,81 @@ export const SourceTally: React.FC<{
         </div>
       </div>
     </>
+  );
+};
+
+/**
+ * The checklist beside the writes, in the place the source tally just left.
+ *
+ * Each row is one thing the two cards show or the server did in that run: the post, the read that
+ * returns it, the overlay report, the reset.
+ */
+const WRITTEN: [string, string][] = [
+  ["chat.postMessage", "posted, as the app"],
+  ["conversations.history", "reads it back"],
+  ["/_meta/overlay", "what was written"],
+  ["/_meta/overlay/reset", "the corpus, back"],
+];
+
+export const WritesTally: React.FC<{
+  frame: number;
+  at: number;
+  rows: readonly number[];
+  left: number;
+}> = ({ frame, at, rows, left }) => {
+  if (frame < at) return null;
+  const inT = appear(frame, at);
+  return (
+    <div style={{ position: "absolute", left, top: 122, opacity: inT }}>
+      <div style={{ font: `700 17px ${F.ui}`, color: C.inkDim, letterSpacing: 1.4 }}>
+        AND WRITES
+      </div>
+      <div style={{ marginTop: 16 }}>
+        {WRITTEN.map(([name, note], n) => {
+          const on = frame >= rows[n];
+          const k = on ? appear(frame, rows[n]) : 0;
+          return (
+            <div
+              key={name}
+              style={{ height: 58, display: "flex", alignItems: "flex-start", gap: 11 }}
+            >
+              <div
+                style={{
+                  width: 19,
+                  height: 19,
+                  marginTop: 2,
+                  flexShrink: 0,
+                  borderRadius: 4,
+                  border: `1.5px solid ${on ? C.mint : C.inkFaint + "66"}`,
+                  background: on ? C.mint : "transparent",
+                  opacity: on ? k : 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {on ? (
+                  <div style={{ font: `900 13px ${F.ui}`, color: C.bg, lineHeight: 1 }}>✓</div>
+                ) : null}
+              </div>
+              <div>
+                <div
+                  style={{
+                    font: `500 17px ${F.mono}`,
+                    color: on ? C.ink : C.inkFaint,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {name}
+                </div>
+                <div style={{ font: `450 14px ${F.ui}`, color: C.inkFaint, marginTop: 3 }}>
+                  {note}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 };

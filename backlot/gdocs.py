@@ -2439,13 +2439,13 @@ class Body:
 
     def merge_cells(self, table: int, row: int, column: int, rows: int, columns: int) -> None:
         """The cells ``rows`` by ``columns`` from the one at ``row`` and ``column`` merged into it.
-        Measured 2026-11-09: the first cell spans them; the paragraphs of every other cell, unless it
-        holds only an empty paragraph, move into it, row by row, each keeping only the members its
-        named style does not give (`_left`), and the first cell's own empty paragraph
-        goes when another's come; a cell they left holds an empty paragraph of its last one's
-        style as normal text, its newline's style and its `headingId` kept; and a merged row of no
-        minimum height takes 10 PT over the largest font size in its cells, 21 PT for normal text
-        and 26 PT beside a HEADING_2."""
+        Measured 2026-11-09: the first cell spans them; the paragraphs of every other cell, unless
+        it holds only an empty paragraph, move into it, row by row, each keeping only the members
+        its named style does not give (`_left`), and the first cell's own empty paragraph goes when
+        another's come; a cell they left holds an empty paragraph of its last one's style as normal
+        text, its newline's style and its `headingId` kept; and a merged row of no minimum height
+        takes 10 PT over the largest font size in its cells, 21 PT for normal text and 26 PT beside
+        a HEADING_2."""
         grid = self.grid(table)
         region = [(r, c) for r in range(row, row + rows) for c in range(column, column + columns)]
         for r in range(row, row + rows):
@@ -2533,8 +2533,8 @@ class Body:
             style.update(ordered)
 
     def style_rows(self, table: int, rows: list[int], stated: dict) -> None:
-        """``stated``'s `TableRowStyle` members set on each of ``rows``, every row for none, each one
-        None taken off."""
+        """``stated``'s `TableRowStyle` members set on each of ``rows``, every row for none, each
+        one None taken off."""
         grid = self.grid(table)
         for r in rows or range(len(grid)):
             style = self.chars[grid[r][0]][1]["tableRowStyle"]

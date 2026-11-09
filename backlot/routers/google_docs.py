@@ -1292,14 +1292,14 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
 def _docs_update_document_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``updateDocumentStyle`` on the tab `tabId` names, the first for none, in real's order of
     refusals, measured 2026-11-09: the tab, the fields (the header and footer ids and
-    `useCustomHeaderFooterMargins` unallowed), then the values: the background, which must be
-    stated and not transparent, the top, bottom, left and right margins, the page's height and
-    width, then the header and footer margins, each stated and in points, in that order whatever
-    order `fields` names them in (`*` naming them all), then a page number start below zero. A margin below zero is kept, a page size named by one of its members
-    sets that one, and a document mode left unset changes nothing. Setting a margin takes the same
-    margin off every section of the tab. The tab's margins, then each section's, are fitted to the
-    page (`_docs_fit_margins`), and then a page near a paper size takes that size
-    (`_DOCS_PAPER`)."""
+    `useCustomHeaderFooterMargins` unallowed), then the values: the background, which must be stated
+    and not transparent, the top, bottom, left and right margins, the page's height and width, then
+    the header and footer margins, each stated and in points, in that order whatever order `fields`
+    names them in (`*` naming them all), then a page number start below zero. A margin below zero is
+    not refused, a page size named by one of its members sets that one, and a document mode left
+    unset changes nothing. Setting a margin takes the same margin off every section of the tab. The
+    tab's margins, then each section's, are fitted to the page (`_docs_fit_margins`), and then a
+    page near a paper size takes that size (`_DOCS_PAPER`)."""
     tab = _docs_tab(doc, req)
     unallowed = _DOCS_SEGMENT_IDS + ("useCustomHeaderFooterMargins",)
     fields = req.get("fields", "")
@@ -1377,8 +1377,9 @@ def _docs_fit_margins(style: dict, page: dict, named: set[str]) -> dict:
     """The margins ``style`` (a tab's `documentStyle` or a section's `sectionStyle`) states, fitted
     to the page of ``page``, its tab's `documentStyle`, as `gdocs.restate` takes them. Measured
     2026-11-09 on a 612 by 792 PT page:
-    - A left and right margin that leave less than `_DOCS_MIN_TEXT_WIDTH` between them, or less
-      than none on a narrower page, are cut. A margin a section does not state is its tab's. When
+    - A left and right margin are cut when together they are wider than the page less
+      `_DOCS_MIN_TEXT_WIDTH`, or wider than 0 on a page narrower than that (10 and 10 on a 36 PT
+      page were 0 and 0). A margin a section does not state is its tab's. When
       ``named`` holds one of the two, and the other fits in the room and is not a negative margin
       of the same style, the named one is cut to the room the other leaves (600 beside 72 was 504,
       beside 100.5 was 475.5, and on a section beside its tab's -10 was 586). Otherwise the left
@@ -2339,8 +2340,8 @@ def _docs_replace_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, boo
 # --- requests naming what a Doc here never holds --------------------------------------------------
 #
 # Nothing here makes a suggestion (`SUGGEST` is refused), a comment, a dropdown or an inline or
-# positioned object, and a corpus states none, so every id these requests name names nothing. Each is
-# checked as real checks it before its lookup, and then refused as real refuses an id naming
+# positioned object, and a corpus states none, so every id these requests name names nothing. Each
+# is checked as real checks it before its lookup, and then refused as real refuses an id naming
 # nothing.
 
 

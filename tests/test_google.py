@@ -21699,8 +21699,8 @@ _TABLE_WRITES = [
 ]
 
 
-# Merged cells and section breaks written on `wr-table`, as `_TABLE_WRITES` (`gdocs.Body.merge_cells`,
-# `gdocs.Body.insert_section_break`).
+# Merged cells and section breaks written on `wr-table`, as `_TABLE_WRITES`
+# (`gdocs.Body.merge_cells`, `gdocs.Body.insert_section_break`).
 _TABLE_LAYOUT_WRITES = [
     # merge 2x2
     ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 2}}}], ["Tab 1: ab//[c1/c2/c3/c4|;|]/cd"], [{}]),
@@ -21766,9 +21766,10 @@ _TABLE_LAYOUT_WRITES = [
 
 def test_a_tab_segment_or_table_write_changes_the_doc_as_real_does(write_settings, wh):
     """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`, and of `_TABLE_WRITES` and
-    `_TABLE_LAYOUT_WRITES` to a fresh `wr-table`: its replies, the tabs, segments and tables it leaves, whether the `revisionId`
-    moved (a batch after which real kept the revision keeps it here, so a write pinned to it is
-    taken), and the flat read being the first tab's, whatever its id."""
+    `_TABLE_LAYOUT_WRITES` to a fresh `wr-table`: its replies, the tabs, segments and tables it
+    leaves, whether the `revisionId` moved (a batch after which real kept the revision keeps it
+    here, so a write pinned to it is taken), and the flat read being the first tab's, whatever its
+    id."""
     from tests._helpers import client_for, served_id
 
     h = wh[_OWNER]

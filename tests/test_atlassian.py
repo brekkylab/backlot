@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
@@ -1558,6 +1559,32 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
     assert answered == {template: (want, len(want)) for template, want in rows}
     # read as `text ~` is, which over this chain is not real's answer: see `_CQL_READABLE`
     assert {x["title"] for x in site["results"]} == {"Grand"}
+
+
+def test_confluence_cql_search_takes_about_as_long_over_negated_matches(tmp_path):
+    """The search's time over a `text ~` value holding `not id=1` 4000 times, against the same
+    value holding `nix id=1`: the clause readers read the matches inside the value as they read
+    clauses, and a `not` rides on each one in the first. Both pay a `~` search over a value of the
+    same length, and that search's time grows faster than the length, so the negated value is held
+    to three times the other's time at one size; the two measured within a tenth of each other
+    (2026-11-07, Python 3.14, macOS). Each time is the least of three, the two values taken in
+    turn."""
+    settings = tiny_corpus(tmp_path, [])
+    with client_for(settings) as c:
+        written = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        h = {"Authorization": f"Bearer {written['admin_token']}"}
+        url = "/atlassian/wiki/rest/api/search"
+        times = {"not": [], "nix": []}
+        answers = {}
+        for _ in range(3):
+            for word in times:
+                cql = 'type=page and text ~ "' + f"{word} id=1 " * 4000 + '"'
+                t0 = time.perf_counter()
+                r = c.get(url, headers=h, params={"cql": cql})
+                times[word].append(time.perf_counter() - t0)
+                answers[word] = (r.status_code, r.json()["totalSize"])
+    assert answers == {"not": (200, 0), "nix": (200, 0)}
+    assert min(times["not"]) < 3 * min(times["nix"])
 
 
 def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
@@ -9541,6 +9568,17 @@ _CQL_PARSE_ROWS = [
                 'type = page and creator = "5b16419b694e5112009efb54"',
             ),
             ("type=page and label = 12.5", "type = page and label = 12.5"),
+            ("type=page and label = 1.2", "type = page and label = 1.2"),
+            ("type=page and label = 5.", "type = page and label = 5."),
+            ("type=page and label = .5", "type = page and label = .5"),
+            (
+                "type=page and label = 5. and type = page",
+                "type = page and label = 5. and type = page",
+            ),
+            (
+                "type=page and label = 5.and type = page",
+                "type = page and label = 5. and type = page",
+            ),
             ("type=page  and  space=handbook", "type = page and space = handbook"),
             ("TYPE=page", "TYPE = page"),
             ("type=page AND space=handbook", "type = page AND space = handbook"),
@@ -9721,6 +9759,39 @@ _CQL_PARSE_ROWS = [
             ("type=page and label = 55b16", "Unrecognised clause at : b16"),
             ("type=page and label = 5_a", "Unrecognised clause at : _a"),
             ("type=page and label = 12_a", "Unrecognised clause at : _a"),
+            ("type=page and label = 5.a", "Unrecognised clause at : a"),
+            ("type=page and label = 12.5a", "Unrecognised clause at : a"),
+            ("type=page and label = 1.2.3", _CQL_NOT_PARSED),
+            ("type=page and label = 5..a", _CQL_NOT_PARSED),
+            ("type=page and label = 5.a and type = page", _CQL_NOT_PARSED),
+            (
+                "type=page and title ~ 10.5",
+                "Expecting a value for operator '~' after field 'title' but got '10.5'",
+            ),
+            (
+                "type=page and title ~ 2026.1",
+                "Expecting a value for operator '~' after field 'title' but got '2026.1'",
+            ),
+            (
+                "type=page and title ~ 5.",
+                "Expecting a value for operator '~' after field 'title' but got '5.'",
+            ),
+            (
+                "type=page and title ~ .5",
+                "Expecting a value for operator '~' after field 'title' but got '.5'",
+            ),
+            (
+                "type=page and title ~ 10",
+                "Expecting a value for operator '~' after field 'title' but got '10'",
+            ),
+            (
+                "type=page and title !~ 10",
+                "Expecting a value for operator '!~' after field 'title' but got '10'",
+            ),
+            (
+                "type=page and title !~ 10.5",
+                "Expecting a value for operator '!~' after field 'title' but got '10.5'",
+            ),
             ("type=page 5", _CQL_NOT_PARSED),
             ("id = -1", _CQL_NOT_PARSED),
             ("created > -1d", _CQL_NOT_PARSED),
@@ -9732,6 +9803,10 @@ _CQL_PARSE_ROWS = [
             ('created > "2026-02-30"', _CQL_NOT_PARSED),
             (
                 "created > 20260910",
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "created > 2026.1",
                 "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
             ),
             (
@@ -9810,11 +9885,51 @@ _CQL_PARSE_ROWS = [
                 "type=page and " + "(" * 1000 + "type=page",
                 "Missing closing parenthesis near field (()",
             ),
+            ("(type = page and type =", "Missing closing parenthesis near field (()"),
+            ("(type = and type = page", "Missing closing parenthesis near field (()"),
+            ("(type = page) and (type =", "Missing closing parenthesis near field (()"),
+            ("(type = page and title ~", "Missing closing parenthesis near field (()"),
+            ("(type = page type", "Missing closing parenthesis near field (()"),
+            ("(type = page b", "Missing closing parenthesis near field (()"),
+            ("(type = page) and (type = page", "Missing closing parenthesis near field (()"),
+            (
+                "((type = page) and type = page) and (type = page",
+                "Missing closing parenthesis near field (()",
+            ),
+            ("(type = page and (type =", "Missing closing parenthesis near field (()"),
+            ("(type in", "Missing closing parenthesis near field (()"),
+            ("(type not in", "Missing closing parenthesis near field (()"),
+            ("(type in (page", "Missing closing parenthesis near field (()"),
+            ("(type in (", "Missing closing parenthesis near field (()"),
+            ("(type in (page,", "Missing closing parenthesis near field (()"),
+            (
+                "type = )",
+                "Expecting a value for operator '=' after field 'type' but got ')'",
+            ),
+            ("(type = )", "Expecting a value for operator '=' after field 'type'"),
+            ("((type = ))", "Expecting a value for operator '=' after field 'type'"),
+            (
+                "(type= ) and type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("(type in )", "Expecting a value for operator 'in' after field 'type'"),
+            ("(title ~ )", "Expecting a value for operator '~' after field 'title'"),
+            (
+                "(type = page) and type = )",
+                "Expecting a value for operator '=' after field 'type' but got ')'",
+            ),
             ("created>foo()", "Unable to find query function 'foo()'"),
             ("label = foo()", "Unable to find query function 'foo()'"),
             ("label = Foo()", "Unable to find query function 'Foo()'"),
             ("space.key = foo()", "Unable to find query function 'foo()'"),
             ("creator = foo()", "Unable to find query function 'foo()'"),
+            ("label = foo(x)", "Unable to find query function 'foo(x)'"),
+            ("label = foo(x, y)", "Unable to find query function 'foo(x,y)'"),
+            ('label = foo("a b")', "Unable to find query function 'foo(\"a b\")'"),
+            ("label = foo(select)", "Unable to find query function 'foo(select)'"),
+            ("label = foo(-1)", _CQL_NOT_PARSED),
+            ("type = and label = foo(-1)", _CQL_NOT_PARSED),
+            ("type = and created > startOfMonth(-1)", _CQL_NOT_PARSED),
             ("space = currentSpace()", _CQL_CURRENT_SPACE),
             ("label = currentSpace()", _CQL_CURRENT_SPACE),
             ("space.key = currentSpace()", _CQL_CURRENT_SPACE),
@@ -9834,10 +9949,55 @@ _CQL_PARSE_ROWS = [
             ("id in recentlyViewedContent(5, 6)", _CQL_NOT_PARSED),
             ('label = currentUser("x")', _CQL_NOT_PARSED),
             ('id in recentlyViewedContent("x")', _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(x)", "Invalid size limit : x"),
+            ("id in recentlyViewedContent(1.5)", "Invalid size limit : 1.5"),
+            ("id in recentlyViewedContent(-1)", _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(-1.5)", _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(a.b)", "Invalid size limit : a.b"),
+            ("id in recentlyViewedContent(x, 6)", "Invalid size limit : x"),
+            ("id in recentlyViewedContent(5.)", "Invalid size limit : 5."),
+            ("id in recentlyViewedContent(.5)", "Invalid size limit : .5"),
+            (
+                "type = and id in recentlyViewedContent(x)",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "id in recentlyViewedContent(x) and type =",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "id in recentlyViewedContent(x) and space = currentSpace()",
+                "Invalid size limit : x",
+            ),
+            (
+                "space = currentSpace() and id in recentlyViewedContent(x)",
+                _CQL_CURRENT_SPACE,
+            ),
+            (
+                'id in recentlyViewedContent(x) and created > now("x")',
+                "Invalid size limit : x",
+            ),
+            (
+                'created > now("x") and id in recentlyViewedContent(x)',
+                "Invalid relative date : x",
+            ),
             ("(label = foo()", _CQL_NOT_PARSED),
             ("(space = currentSpace()", _CQL_NOT_PARSED),
             ('(created > now("x")', _CQL_NOT_PARSED),
             ("(id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("((type = page)", _CQL_NOT_PARSED),
+            ("((type = page) and type = page", _CQL_NOT_PARSED),
+            ("(type = page and (type = page)", _CQL_NOT_PARSED),
+            ("(type = page) and ((type = page)", _CQL_NOT_PARSED),
+            ("((type = page) and type =", _CQL_NOT_PARSED),
+            ("((type = and type = page)", _CQL_NOT_PARSED),
+            ("((type = page) and (type =", _CQL_NOT_PARSED),
+            ("(type in (page)", _CQL_NOT_PARSED),
+            ("(type = page and type in (page)", _CQL_NOT_PARSED),
+            ('(created > now("-1d")', _CQL_NOT_PARSED),
+            ("(id in recentlyViewedContent(5)", _CQL_NOT_PARSED),
+            ("(id in recentlyViewedContent(x)", _CQL_NOT_PARSED),
+            ("(label = foo(x)", _CQL_NOT_PARSED),
             ('id in now("-1d")', _CQL_NOT_PARSED),
             ("label in currentUser()", _CQL_NOT_PARSED),
             ("id in currentContent()", _CQL_NOT_PARSED),

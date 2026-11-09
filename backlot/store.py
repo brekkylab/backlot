@@ -2466,6 +2466,12 @@ _LINEAR_SEARCH_BARE = re.compile(rf" ?({_LINEAR_SEARCH_NUM})|({_LINEAR_SEARCH_NU
 # ` 19  2 ` as `19 2` did, where `19 probe`, `19,2`, `2 019`, and `19 2` with a tab or a U+00A0 for
 # the space, were read as words.
 _LINEAR_SEARCH_NUMBERS = re.compile(rf" *{_LINEAR_SEARCH_NUM}(?: +{_LINEAR_SEARCH_NUM})+ *")
+# The marks that part two words a term joins into two words read on their own, measured on
+# api.linear.app on 2026-11-06 and 2026-11-07: `,`, `.`, `;`, `/`, `:`, `_` and `-` each parted two
+# words of letters and two numbers (`your,tools` and `19,2`, and the same with each mark in the
+# comma's place). An identifier spells its number with a `-` after its key's letters, so a `-` parts
+# only between two ASCII letters or two digits here.
+_LINEAR_SEARCH_PARTED = re.compile(r"[,.;/:_]+|(?<=[A-Za-z])-(?=[A-Za-z])|(?<=[0-9])-(?=[0-9])")
 
 
 def _linear_search_identifier(term: str) -> tuple[str | None, str] | None:
@@ -2544,23 +2550,33 @@ def search_linear_issues(
     ``totalCount`` reports.
 
     An issue matches when the term names its identifier (see :func:`_linear_search_identifier`,
-    and :data:`_LINEAR_SEARCH_NUMBERS` for a run of numbers), when a space-separated word of the
-    text :func:`_linear_search_words` gives starts a word of its title or description, read through
-    the porter-stemmed index with a hyphenated word as the phrase it spells (measured 2026-10-22:
-    `prob`, `pro` and `chil` matched where `robe` did not, and `BRE-2` did not match a title holding
-    `(child 2)`), or, with ``include_comments``, when one of its comments contains a word. That
-    count leaves ``prefilter`` out, as api.linear.app's did on 2026-10-22: a `filter` narrowed the
-    nodes and left `totalCount` at the unfiltered total.
+    and :data:`_LINEAR_SEARCH_NUMBERS` for a run of numbers), when a word of the text
+    :func:`_linear_search_words` gives starts a word of its title or description, read through
+    the porter-stemmed index (measured 2026-10-22: `prob`, `pro` and `chil` matched where
+    `robe` did not), each word a mark in :data:`_LINEAR_SEARCH_PARTED` joins to its neighbour
+    read on its own, or, with ``include_comments``, when one of its comments contains a word.
+    That count leaves ``prefilter`` out, as api.linear.app's did on 2026-10-22: a `filter`
+    narrowed the nodes and left `totalCount` at the unfiltered total.
 
     ``score`` is 1 for an issue the term names, as real's was, and ``|bm25| / (1 + |bm25|)`` for an
     index match, so it falls between 0 and 1 and orders as the rank does; a comment-only match
     scores 0. Real's own word scores are not reproducible."""
     text = _linear_search_words(term)
-    words = re.findall(r"\w+", text.lower())
+    # `\w` without `_`, which parts two words as the other marks in `_LINEAR_SEARCH_PARTED` do.
+    words = re.findall(r"[^\W_]+", text.lower())
     # Each kind of match is collected on its own and the candidates are scoped afterwards: an FTS
     # MATCH joined into a scan of the issues is re-run per issue.
     ranks: dict[str, float | None] = {}
-    phrases = [w.replace('"', '""') for w in text.lower().split() if re.search(r"\w", w)]
+    # A term in one pair of quotes is read as one word, as `_linear_search_words` records of an
+    # identifier in quotes, so the marks in it part nothing.
+    stripped = text.strip(_LINEAR_SEARCH_TRIMMED)
+    quoted = len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in "\"'"
+    phrases = [
+        part.replace('"', '""')
+        for chunk in text.lower().split()
+        for part in ([chunk] if quoted else _LINEAR_SEARCH_PARTED.split(chunk))
+        if re.search(r"\w", part)
+    ]
     if phrases and _has_fts(conn, "linear"):
         match = " OR ".join(f'"{w}"*' for w in phrases)
         for row in conn.execute(

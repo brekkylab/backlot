@@ -2769,8 +2769,8 @@ _SEARCH_BODY_ROWS = [
     _sb("query-null", '{"query": null}', ("{}", False)),
     _sb("group-without-filters", '{"filterGroups": [{}]}', ("{}", False)),
     _sb("filters-null", '{"filterGroups": [{"filters": null}]}', ("{}", False)),
-    # real refuses a number `propertyName` with the 400 it gives its text, a property the portal does
-    # not have, which this router does not send
+    # real refuses a number `propertyName` with the 400 it gives its text, a property the portal
+    # does not have, which this router does not send
     _sb("propertyName-integer", _WITH_PROPERTY_NAME % "5", (_WITH_PROPERTY_NAME % '"5"', True)),
     _sb("propertyName-float", _WITH_PROPERTY_NAME % "1.5", (_WITH_PROPERTY_NAME % '"1.5"', True)),
     _sb("operator-integer-9", _WITH_OPERATOR % "9", (_WITH_OPERATOR % '"HAS_PROPERTY"', False)),

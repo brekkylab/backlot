@@ -891,7 +891,7 @@ _LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 def _operator(f: dict):
     """The operator filter `f` reads as: an index (`_OPERATORS_BY_INDEX`) as the operator at that
-    position, a name trimmed (`_TRIM`), and EQ when it names none."""
+    position, a name trimmed (`_TRIM`), and EQ when the filter has none."""
     op = f.get("operator")
     if isinstance(op, int):
         return _OPERATORS_BY_INDEX[op]
@@ -1144,8 +1144,8 @@ def _past_int(raw: bytes, path: tuple) -> JSONResponse:
 
 def _unbuildable(raw: bytes, path: tuple, item) -> tuple[tuple[int, int], JSONResponse]:
     """Where the value at `path` starts, and real's 400 for it, for a list element that is not an
-    object or a string where real reads a list: a string that trims (`_TRIM`) to nothing is named
-    by its field (`_unreadable_field`), anything else where it starts (`_not_an_object`)."""
+    object, or for a string where real reads a list: a string that trims (`_TRIM`) to nothing is
+    named by its field (`_unreadable_field`), anything else where it starts (`_not_an_object`)."""
     position = _token_at(raw, path)
     if isinstance(item, str) and not item.strip(_TRIM):
         return position, _unreadable_field(path)
@@ -1235,20 +1235,20 @@ def _unreadable_member(
     """Where the first member of the filter `f` at `path`, in body order, that real cannot read
     starts, and real's 400 for it, or `(None, None)`.
 
-    Measured against api.hubapi.com on 2026-11-09. Real reads `propertyName`, `value` and
-    `highValue` as text, a number or boolean included, and refuses an array or object there
-    (`_mismatched`). It reads an integer `operator` from 0 to 12 as an index (`_operator`), refuses
-    any other integer in Java's int by its field (`_unreadable_field`) and one outside Java's int
-    just past it (`_past_int`), and refuses a boolean, float, array or object operator
-    (`_mismatched`); a string operator is `_refuse_an_operator`'s. It reads a list or a null
-    `values`, refuses a string there as `_unbuildable` does and any other value with `_not_a_list`,
-    and refuses an array or object element of the list (`_mismatched`), reading a number or boolean
-    element as text. A member real does not read, `"x": []` among them, is passed over.
+    Measured against api.hubapi.com on 2026-11-09. Real refuses an array or object in a member of
+    `_TEXT_MEMBERS` (`_mismatched`), and reads a number or boolean there (`_scalars_as_text`). It
+    reads an integer `operator` from 0 to 12 as an index (`_operator`), refuses any other integer in
+    Java's int by its field (`_unreadable_field`) and one outside Java's int just past it
+    (`_past_int`), and refuses a boolean, float, array or object operator (`_mismatched`); a string
+    operator is `_refuse_an_operator`'s. It reads a list or a null `values`, refuses a string there
+    as `_unbuildable` does and any other value with `_not_a_list`, and refuses an array or object
+    element of the list (`_mismatched`). A member real does not read, `"x": []` among them, is
+    passed over.
 
     Real also refuses, at the filter's closing brace, a filter with no `propertyName` or `operator`
-    or a null one, one whose operator needs a `value`, `values` or `highValue` it lacks, and one with
-    a `value` its operator takes none of, and it refuses a null element of `values` with a 400 of
-    its own. This router models none of those."""
+    or a null one, one whose operator needs a `value`, `values` or `highValue` it lacks, and one
+    with a `value` its operator takes none of, and it refuses a null element of `values` with a 400
+    of its own. This router models none of those."""
 
     def refused(at: tuple, text: str):
         position = _token_at(raw, at)
@@ -1348,8 +1348,8 @@ def _scalars_as_text(raw: bytes, body: dict) -> dict:
     against api.hubapi.com on 2026-11-09, each body against the same body with the text in its
     place: `5`, `1.5` and `true` in `query`, `value` and `values`, and `5` and `true` in
     `highValue`, answered the page their text does, and `5` and `1.5` in `propertyName` the 400
-    their text does, for a property the portal does not have. `body` is one
-    `_refuse_a_search_shape` has passed, so each of its groups and filters is an object or null."""
+    their text does, for a property the portal does not have. `body` is one `_refuse_a_search_shape`
+    has passed, so each of its groups and filters is an object or null."""
     if not body:
         # `json_body`'s answer for a body it could not read as an object: nothing to spell
         return body

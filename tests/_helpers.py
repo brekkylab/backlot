@@ -313,7 +313,8 @@ def read_within(pipe, timeout: float) -> bytes:
     arrived when ``timeout`` seconds pass. The read runs on a thread in chunks, so the bytes that
     arrived are returned even when a process keeps the pipe open past ``timeout``. The thread reads
     a duplicate of the pipe's descriptor and closes it when the pipe ends, so ``pipe`` can be closed
-    while that read still waits."""
+    while that read still waits: on Windows, closing the descriptor a read is waiting on waits for
+    that read to return (Python 3.14.0, 2026-11-09)."""
     chunks: list[bytes] = []
     fd = os.dup(pipe.fileno())
 

@@ -1434,7 +1434,8 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
     Middleware because what Spring would have answered decides what replaces it: this reads the
     answer the route or the refusal gave and replaces it. Registered before the `HEAD` rewrite
     below, so it reads a `HEAD`'s answer as its GET's, and the front door and the headers are put on
-    what it gives as on any answer.
+    what it gives as on any answer. A 500 it answers carries `answered_5xx` on the request's state,
+    which the telemetry middleware reads: the vendor's answer to a wrong request.
     """
     answer = _spring_failure(request.scope)
     response = await call_next(request)
@@ -1443,6 +1444,9 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
     if failed is None:
         failed = Response(body, status_code=response.status_code)
         failed.raw_headers = response.raw_headers
+    elif failed.status_code == 500:
+        # Spring's answer to an `Accept` it cannot sort or write under, the vendor's own
+        request.state.answered_5xx = True
     return failed
 
 

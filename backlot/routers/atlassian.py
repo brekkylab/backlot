@@ -85,6 +85,9 @@ def _refuse_the_accept(request: Request, refused: errors_atlassian.AtlassianErro
     the quota and `search`'s cache pair, on the 406 and on the JAX-RS 400 alike (2026-10-13)."""
     if refused is not None:
         request.scope["atlassian_accept_refused"] = True
+        if refused.status_code == 500:
+            # Jersey's 500 for an `Accept` it fails on is the vendor's own answer
+            request.state.answered_5xx = True
         raise refused
 
 
@@ -5021,6 +5024,8 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     refused = errors_atlassian.refuse_a_confluence_charset(request.headers)
     if refused is None:
         return None
+    # the vendor's answer to a wrong request, which the telemetry classes by this mark
+    request.state.answered_5xx = True
     return Response(refused.body, status_code=refused.status_code)
 
 
@@ -5284,6 +5289,7 @@ def _confluence_not_found(request: Request) -> Response:
         # Jersey fails to write its 404 under an `Accept` it cannot parse: an empty 500 with no
         # `content-type`, measured 2026-10-14 on `nopesuchroute` and `nope/deeper` with `q=2`, a
         # blank member and `;foo`, with a credential and without one, and 2026-10-16 with U+00A0
+        request.state.answered_5xx = True  # the vendor's own answer, not this server's
         return Response(b"", status_code=500)
     url = f"{_site(request)}{vendor_path}"
     # the query as it arrived, for the reason `normalise_the_slashes_in_an_atlassian_path` reads
@@ -5353,6 +5359,8 @@ def _search_options(request: Request) -> Response:
     # the decoded path picks the product only; the 400 echoes the header, not the path
     unparsed = errors_atlassian.not_acceptable(request.url.path, accept, jaxrs=True)
     if unparsed is not None and unparsed.status_code in (400, 500):
+        if unparsed.status_code == 500:
+            request.state.answered_5xx = True  # Jersey's, not this server's
         raise unparsed
     if accept is None:
         media_type = "application/vnd.sun.wadl+xml"

@@ -1454,11 +1454,12 @@ _DOCS_NAMED_UNALLOWED = (
 
 def _docs_update_named_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``updateNamedStyle`` on the tab `tabId` names, the first for none, in real's order of
-    refusals, measured 2026-11-09: the tab, the fields (`_docs_fields`, a link, a `headingId` or a
-    `namedStyleType` of its paragraph style unallowed), the named style's type, which `fields` must name and the request state, then the
-    values (`_docs_text_style`, `_docs_paragraph_style`). Each member named is set, or taken off
-    when left unset; `textStyle` or `paragraphStyle` named whole is replaced by what is stated, and
-    `*` replaces both (`gdocs.Document.set_named_style`)."""
+    refusals, measured 2026-11-09: the tab, the fields (`_docs_fields`, a text style's link or a
+    paragraph style's `headingId` or `namedStyleType` unallowed), the named style's type, which
+    `fields` must name and the request state, then the values (`_docs_text_style`,
+    `_docs_paragraph_style`). Each member named is set, or taken off when left unset; `textStyle` or
+    `paragraphStyle` named whole is replaced by what is stated, and `*` replaces both
+    (`gdocs.Document.set_named_style`)."""
     tab = _docs_tab(doc, req)
     fields = req.get("fields", "")
     every = ("namedStyleType", "textStyle", "paragraphStyle")
@@ -1714,10 +1715,10 @@ def _docs_fields(
     refused by the field's name and the rest so spelt: up to the name a message or a wrapper lacks
     (`icon_emoji.x` as `iconEmoji.x`, `link.nope.z` as `link.nope`, `bold.x.Y` as `bold.x`), and
     through every name after a string, number or enum (`title.x.Y` as `title.x.y`,
-    `fontSize.magnitude.x.y`). A path names its first field whole. Measured 2026-11-09 on the
-    table, section and document style requests, a field of ``unallowed`` is refused as it is
-    reached among the names (`tableHeader,nope` for `tableHeader`, `nope,tableHeader` for
-    `nope`), and one inside a field (`textStyle.link`) as its path is walked
+    `fontSize.magnitude.x.y`). A path names its first field whole. Measured 2026-11-09 on the table,
+    section, document and named style requests and `updateDropdownProperties`, a field of
+    ``unallowed`` is refused as it is reached among the names (`tableHeader,nope` for `tableHeader`,
+    `nope,tableHeader` for `nope`), and one inside a field (`textStyle.link`) as its path is walked
     (`textStyle.link,textStyle.nope` for the link, `textStyle.nope,textStyle.link` for `nope`), each
     named with the rest of its path as `_docs_snake` spells it (`rowSpan.foo_bar`,
     `textStyle.link.url`)."""
@@ -2466,13 +2467,13 @@ def _docs_insert_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
 
 def _docs_update_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """``updateDropdownProperties``, in real's order of refusals, measured 2026-11-09: the tab;
-    the first path of `fields` that is `*` exactly or names `displayValue` or
-    `dropdownDefinitionId`, ahead of any path naming nothing (`nope,*` and `nope,displayValue`
-    were refused for the `*` and the display value, and ` * ` as naming nothing); the fields
-    (`_docs_fields`), where a read-only one written otherwise is unallowed (` displayValue` and
-    `selectedOptionId, display_value` were refused as `Unallowed field: displayValue`); a dropdown named; a `selectedOptionId` named and left empty; then the
-    lookup."""
+    """``updateDropdownProperties``, in real's order of refusals, measured 2026-11-09: the tab; the
+    first path of `fields` that is `*` exactly or names `displayValue` or `dropdownDefinitionId`,
+    ahead of any path naming nothing (`nope,*` and `nope,displayValue` were refused for the `*` and
+    the display value, and ` * ` as naming nothing); the fields (`_docs_fields`), where a read-only
+    one written otherwise is unallowed (` displayValue` and `selectedOptionId, display_value` were
+    refused as `Unallowed field: displayValue`); a dropdown named; a `selectedOptionId` named and
+    left empty; then the lookup."""
     _docs_tab(doc, req)
     fields = req.get("fields", "")
     for path in fields.split(","):

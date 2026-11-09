@@ -1,4 +1,4 @@
-# Backlot
+# <img alt="" src="https://raw.githubusercontent.com/brekkylab/backlot/main/assets/icon/backlot-icon-dark.svg" height="32" align="absmiddle"> Backlot
 
 [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
 [![PyPI](https://img.shields.io/pypi/v/backlot)](https://pypi.org/project/backlot/)

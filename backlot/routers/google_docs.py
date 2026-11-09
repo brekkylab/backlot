@@ -1454,18 +1454,15 @@ _DOCS_NAMED_UNALLOWED = (
 
 def _docs_update_named_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``updateNamedStyle`` on the tab `tabId` names, the first for none, in real's order of
-    refusals, measured 2026-11-09: the tab, the fields (`_docs_fields`, then a link, a
-    `headingId` or a `namedStyleType` of its paragraph style unallowed, in the order they are
-    named), the named style's type, which `fields` must name and the request state, then the
+    refusals, measured 2026-11-09: the tab, the fields (`_docs_fields`, a link, a `headingId` or a
+    `namedStyleType` of its paragraph style unallowed), the named style's type, which `fields` must name and the request state, then the
     values (`_docs_text_style`, `_docs_paragraph_style`). Each member named is set, or taken off
     when left unset; `textStyle` or `paragraphStyle` named whole is replaced by what is stated, and
     `*` replaces both (`gdocs.Document.set_named_style`)."""
     tab = _docs_tab(doc, req)
     fields = req.get("fields", "")
-    if (
-        _docs_fields(fields, _PJ_NAMED_STYLE, ("namedStyleType", "textStyle", "paragraphStyle"))
-        is None
-    ):
+    every = ("namedStyleType", "textStyle", "paragraphStyle")
+    if _docs_fields(fields, _PJ_NAMED_STYLE, every, unallowed=_DOCS_NAMED_UNALLOWED) is None:
         raise gerr.internal_error()
     star = fields.strip(_DOCS_SPACE) == "*"
     paths = (
@@ -1473,9 +1470,6 @@ def _docs_update_named_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool
         if star
         else [_docs_camel(p) for p in fields.split(",") if p.strip(_DOCS_SPACE)]
     )
-    for path in paths:
-        if path in _DOCS_NAMED_UNALLOWED:
-            raise _EditorRefused(f"Unallowed field: {path}")
     read = req.get("named_style", {})
     if "namedStyleType" not in paths or not read.get("named_style_type"):
         raise _EditorRefused("Named style type is required.")
@@ -1723,7 +1717,10 @@ def _docs_fields(
     `fontSize.magnitude.x.y`). A path names its first field whole. Measured 2026-11-09 on the
     table, section and document style requests, a field of ``unallowed`` is refused as it is
     reached among the names (`tableHeader,nope` for `tableHeader`, `nope,tableHeader` for
-    `nope`)."""
+    `nope`), and one inside a field (`textStyle.link`) as its path is walked
+    (`textStyle.link,textStyle.nope` for the link, `textStyle.nope,textStyle.link` for `nope`), each
+    named with the rest of its path as `_docs_snake` spells it (`rowSpan.foo_bar`,
+    `textStyle.link.url`)."""
     if fields == "*":
         return list(every)
     parts = fields.split(",")
@@ -1744,7 +1741,9 @@ def _docs_fields(
         if path[0] not in known:
             raise _EditorRefused(f"Invalid field: {path[0]}")
         if known[path[0]].json_name in unallowed:
-            raise _EditorRefused(f"Unallowed field: {known[path[0]].json_name}")
+            raise _EditorRefused(
+                f"Unallowed field: {'.'.join([known[path[0]].json_name, *path[1:]])}"
+            )
         if len(path) > 1 and known[path[0]].json_name in whole:
             raise _EditorRefused(
                 f"Unallowed field: cannot request subfield of {known[path[0]].json_name}"
@@ -1760,6 +1759,8 @@ def _docs_fields(
                 raise _EditorRefused(f"Invalid field: {'.'.join([*spelt, name])}")
             field = inner[name]
             spelt.append(field.json_name)
+            if ".".join(spelt) in unallowed:
+                raise _EditorRefused(f"Unallowed field: {'.'.join([*spelt, *path[i + 1 :]])}")
     return [known[path[0]].json_name for path in read]
 
 
@@ -2469,7 +2470,8 @@ def _docs_update_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     the first path of `fields` that is `*` exactly or names `displayValue` or
     `dropdownDefinitionId`, ahead of any path naming nothing (`nope,*` and `nope,displayValue`
     were refused for the `*` and the display value, and ` * ` as naming nothing); the fields
-    (`_docs_fields`); a dropdown named; a `selectedOptionId` named and left empty; then the
+    (`_docs_fields`), where a read-only one written otherwise is unallowed (` displayValue` and
+    `selectedOptionId, display_value` were refused as `Unallowed field: displayValue`); a dropdown named; a `selectedOptionId` named and left empty; then the
     lookup."""
     _docs_tab(doc, req)
     fields = req.get("fields", "")
@@ -2478,7 +2480,8 @@ def _docs_update_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
             raise _EditorRefused("Invalid field mask: * includes read-only fields")
         if _docs_snake(path) in ("display_value", "dropdown_definition_id"):
             raise _EditorRefused(f"Invalid field mask: {_docs_snake(path)} cannot be updated")
-    if _docs_fields(fields, _PJ_DOCS("docs.DropdownProperties"), ()) is None:
+    unallowed = ("displayValue", "dropdownDefinitionId")
+    if _docs_fields(fields, _PJ_DOCS("docs.DropdownProperties"), (), unallowed=unallowed) is None:
         raise gerr.internal_error()
     paths = [_docs_snake(_docs_camel(p)) for p in fields.split(",")]
     if not req.get("dropdown_id"):

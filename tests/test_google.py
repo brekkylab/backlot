@@ -23961,6 +23961,84 @@ _LAYOUT_REFUSALS += [
     ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": ",*"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
     # updateDropdownProperties *.x
     ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "*.x"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field: *"),
+    # updateDropdownProperties ' displayValue'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": " displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue"),
+    # updateDropdownProperties 'displayValue '
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue "}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue"),
+    # updateDropdownProperties ' display_value'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": " display_value"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue"),
+    # updateDropdownProperties 'selectedOptionId, displayValue'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "selectedOptionId, displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue"),
+    # updateDropdownProperties 'displayValue ,selectedOptionId'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue ,selectedOptionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue"),
+    # updateDropdownProperties ' dropdownDefinitionId'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": " dropdownDefinitionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: dropdownDefinitionId"),
+    # updateDropdownProperties ' displayValue.x'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": " displayValue.x"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue.x"),
+    # updateDropdownProperties 'displayValue.x'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue.x"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue.x"),
+    # updateDropdownProperties 'nope, displayValue'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "nope, displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field: nope"),
+    # updateDropdownProperties ' displayValue,nope'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": " displayValue,nope"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue"),
+    # updateDropdownProperties 'selectedOptionId,displayValue '
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "selectedOptionId,displayValue "}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue"),
+    # updateDropdownProperties ' displayValue,*'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": " displayValue,*"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties '*, displayValue'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "*, displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties 'DisplayValue'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "DisplayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties 'display_Value'
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "display_Value"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties displayValue.fooBar
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue.fooBar"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue.foo_bar"),
+    # updateDropdownProperties displayValue.x.y
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue.x.y"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue.x.y"),
+    # updateDropdownProperties display_value.x
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "display_value.x"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: displayValue.x"),
+    # updateDropdownProperties dropdownDefinitionId.x
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "dropdownDefinitionId.x"}}], 400, "Invalid requests[0].updateDropdownProperties: Unallowed field: dropdownDefinitionId.x"),
+    # updateTableCellStyle rowSpan.x
+    ([{"updateTableCellStyle": {"tableStartLocation": {"index": 5}, "tableCellStyle": {}, "fields": "rowSpan.x"}}], 400, "Invalid requests[0].updateTableCellStyle: Unallowed field: rowSpan.x"),
+    # updateDocumentStyle defaultHeaderId.x
+    ([{"updateDocumentStyle": {"documentStyle": {}, "fields": "defaultHeaderId.x"}}], 400, "Invalid requests[0].updateDocumentStyle: Unallowed field: defaultHeaderId.x"),
+    # updateSectionStyle sectionType.x
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {}, "fields": "sectionType.x"}}], 400, "Invalid requests[0].updateSectionStyle: Unallowed field: sectionType.x"),
+    # updateTableRowStyle tableHeader.x
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "tableRowStyle": {}, "fields": "tableHeader.x"}}], 400, "Invalid requests[0].updateTableRowStyle: Unallowed field: tableHeader.x"),
+    # updateNamedStyle paragraphStyle.headingId.x
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,paragraphStyle.headingId.x"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: paragraphStyle.headingId.x"),
+    # updateNamedStyle namedStyleType,textStyle.link,nope
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.link,nope"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: nope"),
+    # updateNamedStyle namedStyleType,nope,textStyle.link
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,nope,textStyle.link"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: nope"),
+    # updateNamedStyle namedStyleType,textStyle.link,textStyle.nope
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.link,textStyle.nope"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link"),
+    # updateNamedStyle namedStyleType,textStyle.nope,textStyle.link
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.nope,textStyle.link"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: textStyle.nope"),
+    # updateNamedStyle namedStyleType,textStyle.link.url
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.link.url"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link.url"),
+    # updateNamedStyle namedStyleType,textStyle.link.nope
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.link.nope"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link.nope"),
+    # updateNamedStyle namedStyleType,text_style.link
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,text_style.link"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link"),
+    # updateNamedStyle namedStyleType,paragraphStyle.namedStyleType.x
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,paragraphStyle.namedStyleType.x"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: paragraphStyle.namedStyleType.x"),
+    # updateNamedStyle namedStyleType,textStyle.linkX
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.linkX"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: textStyle.link_x"),
+    # updateNamedStyle textStyle.link,namedStyleType
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "textStyle.link,namedStyleType"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link"),
+    # updateNamedStyle namedStyleType,textStyle.link.fooBar
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.link.fooBar"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link.foo_bar"),
+    # updateNamedStyle namedStyleType,paragraphStyle.heading_id
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,paragraphStyle.heading_id"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: paragraphStyle.headingId"),
+    # updateTableCellStyle rowSpan.x,nope
+    ([{"updateTableCellStyle": {"tableStartLocation": {"index": 5}, "tableCellStyle": {}, "fields": "rowSpan.x,nope"}}], 400, "Invalid requests[0].updateTableCellStyle: Unallowed field: rowSpan.x"),
+    # updateTableCellStyle nope,rowSpan.x
+    ([{"updateTableCellStyle": {"tableStartLocation": {"index": 5}, "tableCellStyle": {}, "fields": "nope,rowSpan.x"}}], 400, "Invalid requests[0].updateTableCellStyle: Invalid field: nope"),
+    # updateTableCellStyle row_span.fooBar
+    ([{"updateTableCellStyle": {"tableStartLocation": {"index": 5}, "tableCellStyle": {}, "fields": "row_span.fooBar"}}], 400, "Invalid requests[0].updateTableCellStyle: Unallowed field: rowSpan.foo_bar"),
 ]  # fmt: skip
 
 

@@ -3233,8 +3233,11 @@ def _fts5_ok(conn) -> bool:
             return False
         raise
     finally:
-        conn.execute("ROLLBACK TO fts_probe")
-        conn.execute("RELEASE fts_probe")
+        # An error SQLite answers by rolling the whole transaction back, an interrupt for one,
+        # takes the savepoint with it, leaving nothing to roll back to or release.
+        if conn.in_transaction:
+            conn.execute("ROLLBACK TO fts_probe")
+            conn.execute("RELEASE fts_probe")
 
 
 def _has_fts(conn, source_type: str) -> bool:

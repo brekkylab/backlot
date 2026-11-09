@@ -1724,6 +1724,22 @@ def test_build_fts_builds_each_source_in_one_transaction(tmp_path):
         conn.close()
 
 
+def test_the_fts5_probe_raises_the_error_that_rolled_its_transaction_back(tmp_path):
+    """SQLite answers an interrupted statement by rolling the whole transaction back, the probe's
+    savepoint with it, and the probe raises that interruption. The progress handler interrupts
+    whichever statement the trace callback last saw start, when that is the probe's CREATE."""
+    conn = store.connect_rw(tmp_path / "fresh.sqlite")
+    try:
+        creating = [False]
+        conn.set_trace_callback(lambda sql: creating.append(sql.startswith("CREATE VIRTUAL")))
+        conn.set_progress_handler(lambda: creating[-1], 1)
+        with pytest.raises(sqlite3.OperationalError, match="^interrupted$"):
+            store._fts5_ok(conn)
+        assert not conn.in_transaction
+    finally:
+        conn.close()
+
+
 # --- incremental FTS indexing --------------------------------------------------
 
 

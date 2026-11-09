@@ -5,7 +5,7 @@
 [![tests](https://github.com/brekkylab/backlot/actions/workflows/ci.yml/badge.svg)](https://github.com/brekkylab/backlot/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/brekkylab/backlot/blob/main/LICENSE)
 
-[![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/XCSsxYH6R)
+[![Discord](https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/UqmnMFzJtB)
 [![X](https://img.shields.io/badge/Tweet-000000?logo=x&logoColor=white)](https://x.com/brekkylab)
 
 **Run enterprise SaaS APIs locally.**
@@ -44,12 +44,13 @@ with backlot.serve() as s:  # no arguments: a tiny hello-world corpus
 
 ### Let your coding agent run Backlot instantly
 
-This repo is its own plugin marketplace, so the [agent skill](https://github.com/brekkylab/backlot/blob/main/skills/backlot/SKILL.md) installs with no clone and no `pip install` first:
+This repo is its own plugin marketplace, so the [agent skill](https://github.com/brekkylab/backlot/blob/main/skills/backlot/SKILL.md) installs with no clone and no `pip install` first. Or hand the agent every source as MCP tools: `backlot mcp` starts a server if none is running and serves them all over stdio, with `--user <email>` answering as that person.
 
 ```bash
 claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab
 codex plugin marketplace add brekkylab/backlot && codex plugin add backlot@brekkylab
 npx skills add brekkylab/backlot --skill backlot   # any agent skills.sh installs into
+pip install "backlot[mcp]" && claude mcp add backlot -- backlot mcp   # every source as MCP tools
 ```
 
 and prompt like this:
@@ -121,7 +122,7 @@ Every imported identity gets deterministic credentials, listed at `GET /_meta/us
 | Point this at it | Runnable |
 |---|---|
 | 📦 Official vendor SDKs, one script per service | [`examples/using-official-sdk/`](https://github.com/brekkylab/backlot/tree/main/examples/using-official-sdk/) |
-| 🔗 MCP servers, or Backlot's own OpenAPI→MCP and GraphQL→MCP bridges | [`examples/using-mcp-with-agents/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mcp-with-agents/) |
+| 🔗 MCP tools for an agent: `backlot mcp`, or a vendor's own MCP server pointed at Backlot | [`examples/using-mcp-with-agents/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mcp-with-agents/) |
 | 🦙 Load it as documents, with the official [LlamaIndex](https://docs.llamaindex.ai/en/stable/module_guides/loading/connector/) readers | [`examples/using-llamaindex-readers/`](https://github.com/brekkylab/backlot/tree/main/examples/using-llamaindex-readers/) |
 | 🐍 Read it with `pandas`, `pyarrow` or `dask`, over an [fsspec](https://filesystem-spec.readthedocs.io/) filesystem | [`examples/using-fsspec/`](https://github.com/brekkylab/backlot/tree/main/examples/using-fsspec/) |
 | 🗂️ Read it with `ls`, `cat` and `grep`, over [mirage](https://github.com/strukto-ai/mirage)'s virtual filesystem | [`examples/using-mirage/`](https://github.com/brekkylab/backlot/tree/main/examples/using-mirage/) |

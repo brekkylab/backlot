@@ -1366,7 +1366,9 @@ def _initialised_mcp(*args, env=None, timeout=120):
     When the handshake gets no result, or none within ``timeout`` seconds, the process is ended and
     the test fails with what it wrote to stderr, which ``PYTHONIOENCODING`` has it write in the
     UTF-8 it is read in. That read is bounded: the `backlot import` that `serve()` runs inherits the
-    same stderr, and may still be holding it once `backlot mcp` has ended."""
+    same stderr, and may still be holding it once `backlot mcp` has ended. Its stdin and stderr are
+    closed then; its stdout is not, since closing it waits for the `readline_within` read that may
+    still be pending on it."""
     proc = subprocess.Popen(
         [sys.executable, "-m", "backlot", "mcp", *args],
         stdin=subprocess.PIPE,
@@ -1392,6 +1394,8 @@ def _initialised_mcp(*args, env=None, timeout=120):
         proc.wait()
         got = f"no initialize response within {timeout}s" if line is None else f"got {line!r}"
         err = read_within(proc.stderr, 10).decode(errors="replace")
+        proc.stdin.close()
+        proc.stderr.close()
         pytest.fail(f"{got}; `backlot mcp` wrote to stderr:\n{err}")
     return proc
 
@@ -1413,7 +1417,8 @@ def test_a_failed_handshake_ends_backlot_mcp_and_fails_the_test_with_its_stderr(
     character cp1252 has none for, and the test runs under ``PYTHONIOENCODING=cp1252``, the encoding
     `serve()` notes for a redirected stream on a Western Windows: the refusal reaches the failure
     message as written only when `_initialised_mcp` sets the child's encoding. `Popen` is wrapped to
-    keep the process, which `_initialised_mcp` does not return when it fails."""
+    keep the process, which `_initialised_mcp` does not return when it fails, and whose stdout is
+    the test's to close."""
     started = []
     popen = subprocess.Popen
 
@@ -1430,10 +1435,13 @@ def test_a_failed_handshake_ends_backlot_mcp_and_fails_the_test_with_its_stderr(
         url = f"http://127.0.0.1:{sock.getsockname()[1]}#한"
         with pytest.raises(pytest.fail.Exception) as failed:
             _initialised_mcp("--source", "slack", "--url", url, timeout=timeout)
+    proc = started[0]
+    proc.stdout.close()
     first, err = failed.value.msg.split("\n", 1)
     assert first == f"{got}; `backlot mcp` wrote to stderr:"
     assert err.splitlines() == [line.format(url=url) for line in wrote]
-    assert started[0].poll() is not None
+    assert proc.poll() is not None
+    assert proc.stdin.closed and proc.stderr.closed
 
 
 # The exit code `Popen.terminate()` leaves `backlot mcp` with: 128 + SIGTERM from its handler on

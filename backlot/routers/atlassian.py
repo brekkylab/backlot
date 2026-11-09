@@ -4944,16 +4944,22 @@ def refuse_an_unreadable_confluence_basic(request: Request) -> Response | None:
     answers, or None.
 
     Under `/wiki/rest/` and `/wiki/api/v2/`, real answers an unreadable Basic value with Tomcat's
-    401 page before routing, ahead of the charset refusal: at a path no operation serves, at a
-    method none publishes, and at the v2 API, whose caller is otherwise sent to log in. A request
-    a served route takes, or a published operation covers, is left alone: the route answers the
-    401 itself, its JSON one with the OAuth realm. Paths outside the two mounts stay as they are.
+    401 page, naming the site's OAuth realm in `WWW-Authenticate`: before routing and ahead of the
+    charset refusal at a path no operation serves, at a method none publishes and at the v2 API,
+    and at each operation as well. A request a served route takes, or a published operation
+    covers, is left to :func:`_confluence_caller`'s JSON 401, which the comment above
+    ``errors.atlassian.CONFLUENCE_UNAUTHORIZED`` keeps JSON on purpose. Paths outside the two
+    mounts stay as they are.
 
     Measured on Confluence Cloud on 2026-10-31, each request on its own cache-busted URL, with
     `Authorization: Basic !!!` and a `Content-Type` of `text/plain;charset=nope` and of
     `text/plain;charset=`: `OPTIONS` and `DELETE` at `space` and at `user/current`, and `GET` at
     `space/{key}/nope`, `/wiki/rest/api`, `/wiki/rest/api/nosuch` and `/wiki/api/v2/spaces`
-    answered the 401 page under both.
+    answered the 401 page under both. On 2026-11-09, with no `Content-Type`, `OPTIONS space`,
+    `GET /wiki/rest/api/nosuch` and `GET /wiki/api/v2/spaces` answered it under an `Accept` of
+    none, `*/*`, `application/json` and `text/html`, each with `Content-Language: en` and the
+    realm, and answered it to a value with no colon, an empty user, an empty password or a second
+    colon as to `Basic !!!`.
     """
     vendor_path = _vendor_path(request.scope["path"])
     if not (vendor_path.startswith("/wiki/rest/") or vendor_path.startswith("/wiki/api/v2/")):
@@ -4966,11 +4972,12 @@ def refuse_an_unreadable_confluence_basic(request: Request) -> Response | None:
         _CONFLUENCE_OUTSIDE_THE_DOCUMENT, request.method, vendor_path
     ):
         return None
+    realm = quote(f"{_site(request)}/wiki", safe="")
     return Response(
         errors_atlassian.tomcat_page(401),
         status_code=401,
         media_type=errors_atlassian.TOMCAT_MEDIA_TYPE,
-        headers={"Content-Language": "en"},
+        headers={"Content-Language": "en", "WWW-Authenticate": f'OAuth realm="{realm}"'},
     )
 
 

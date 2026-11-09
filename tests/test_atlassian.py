@@ -8605,7 +8605,8 @@ _ACCEPT_ROWS = [
     + ({"deprecation": None, "warning": None},),
     ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
     + (None, {}),
-    # -- Confluence: a Basic value Tomcat cannot read is its 401 page where no operation answers
+    # -- Confluence: a Basic value Tomcat cannot read is its 401 page where no operation answers,
+    # under any `Accept`, and the gateway's `PATCH` 405 comes ahead of it
     (
         "GET",
         "/atlassian/wiki/rest/api/nosuch",
@@ -8616,9 +8617,20 @@ _ACCEPT_ROWS = [
         _TOMCAT,
         "page",
     )
-    + ({"content-language": "en"},),
+    + (
+        {
+            "content-language": "en",
+            "www-authenticate": 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"',
+        },
+    ),
     ("OPTIONS", _SPACES, "unparseable-basic", _HTML, None, 401, _TOMCAT, "page")
-    + ({"content-language": "en"},),
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("OPTIONS", _SPACES, "unparseable-basic", _JSON, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("GET", "/atlassian/wiki/api/v2/spaces", "unparseable-basic", None, None, 401, _TOMCAT)
+    + ("page", {"content-language": "en", "www-authenticate": _PRESENT}),
+    ("PATCH", "/atlassian/wiki/rest/api/nosuch", "unparseable-basic", None, None, 405)
+    + ("text/html", None, {"www-authenticate": None}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_LABELS}?prefix=bogus", "admin", _HTML, None, 406, _TOMCAT, "page", {}),

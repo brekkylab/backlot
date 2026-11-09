@@ -71,8 +71,9 @@ message and every message it holds, a map's entries included, and dropped.
 
 `documents.batchUpdate` applies the requests [the endpoint table](supported-sources.md) lists, to a
 Doc's text and its text and paragraph styles, its lists, its named ranges, its headers, footers,
-footnotes and page breaks, and its tabs, each request applied to the Doc the ones before it left,
-and all of them or none kept. A location or range names its tab and its header, footer or footnote
+footnotes and page breaks, its tables, their cells' styles and merged cells, its section breaks and
+section styles, each tab's document and named styles, and its tabs, each request applied to the
+Doc the ones before it left, and all of them or none kept. A location or range names its tab and its header, footer or footnote
 as real's do, the first tab when it names none, and `replaceAllText` replaces in every tab and every
 segment of each unless `tabsCriteria` lists the tabs. Inserted text takes the style of the text
 beside it as real gives it, a heading a newline splits gives the new part a `headingId` of its own,
@@ -98,6 +99,15 @@ the fewest any paragraph of the request opened with, at most 8, and a named rang
 text written around it, as real moves one, until a delete or a replacement leaves it empty.
 `files.export` writes each list item's marker and, in Markdown, an anchor on each heading a link
 goes to.
+
+A merge moves the text of the cells it covers into the first, which spans them, and gives a merged
+row of no height one 10 PT taller than its largest font; an unmerge splits it again and leaves the
+text where it is. A row or column added or deleted beside a merged cell grows, shrinks or takes it
+as real's does, a border set on a cell is set on the cell across that edge too, and `files.export`
+leaves out what a merged cell covers. A section break stands after the newline it inserts, and is
+deleted only with that newline. A section's columns are as wide as real's for the page and margins
+they sit between, and a named style a write changed is what Markdown marks that style's text
+with.
 
 A table is made as `insertTable` makes one, after a newline it inserts, and a row or a column takes
 the style of the cells it is made beside; the last row or column deleted takes the table with it.
@@ -173,11 +183,15 @@ field list, so the ordering divergence below has no entry to live in and is stat
   data sources, and every cell format but a number format are read and not kept.
 - **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
   `spreadsheets.create` and `sheets.copyTo`.
-- **Docs requests past text, styles, lists, named ranges, segments, tabs and tables.**
-  `documents.batchUpdate` applies the text, style, bullet, named-range, header, footer, footnote,
-  page-break, tab and table requests above. Every other request kind, a cell's, a row's and a
-  column's style and merging cells among them, and the `SUGGEST` write mode, is refused naming
-  itself, where real applies it.
+- **Suggestions, comments, dropdowns, smart chips and images in Docs.** Nothing here makes one,
+  so a request naming one (`acceptSuggestion`, `addCommentReply`, `deleteDropdownDefinition`,
+  `replaceImage` and the rest) is refused as real refuses an id naming nothing, and the requests
+  and write mode that make one (`insertComment`, `createDropdownDefinition`, `insertDate`,
+  `insertPerson`, `insertRichLink`, `insertInlineImage`, `SUGGEST`) are refused naming themselves,
+  where real applies them.
+- **A heading a merge empties.** A merge leaves a heading it moves out of a cell as an empty normal
+  paragraph of the heading's style, where real also states normal text's spacing and indents on
+  it, measured 2026-11-09.
 - **The order of a Doc's named ranges.** Real serves `namedRanges` in the order a Java `HashMap`
   iterates their names, and Backlot fills one in the order the ranges were made: of 28 reads
   measured, one served two names that share a bucket the other way round, and so did both of two

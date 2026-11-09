@@ -20773,6 +20773,18 @@ def _docs_served(wc, h, doc: str, part: str):
             [t["rows"], t["columns"], t["tableStyle"], [r["tableRowStyle"] for r in t["tableRows"]]]
             for t in (el["table"] for el in read["body"]["content"] if "table" in el)
         ]
+    if part == "cells":
+        return [
+            [c["tableCellStyle"] for r in el["table"]["tableRows"] for c in r["tableCells"]]
+            for el in read["body"]["content"]
+            if "table" in el
+        ]
+    if part == "sections":
+        content = read["body"]["content"]
+        return [el["sectionBreak"]["sectionStyle"] for el in content if "sectionBreak" in el]
+    if part.startswith("named:"):
+        styles = read["namedStyles"]["styles"]
+        return next(s for s in styles if s["namedStyleType"] == part.removeprefix("named:"))
     if part == "rangeIds":
         return {
             name: [r["namedRangeId"] for r in v["namedRanges"]]
@@ -20812,7 +20824,130 @@ def test_a_text_style_is_set_and_its_runs_split_and_join_as_real_does(wc, wh, re
     assert served == runs
 
 
-@pytest.mark.parametrize("doc,requests,part,expected", _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS)
+# Each a batch, or several, on a fresh `wr-table` and what real served after it on a Doc of its
+# shape (`routers.google_docs`' table, section and style requests): table, section, document and
+# named styles, merged cells, section breaks and what an export writes of them.
+_TABLE_LAYOUT_ROWS = [
+    # cell borderRight c1
+    ("wr-table", [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"borderRight": {"width": {"magnitude": 3, "unit": "PT"}, "color": {"color": {"rgbColor": {"blue": 1}}}, "dashStyle": "DASH"}}, "fields": "borderRight"}}], "cells", [[{"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderRight": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 3, "unit": "PT"}, "dashStyle": "DASH"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderLeft": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 3, "unit": "PT"}, "dashStyle": "DASH"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # all four borders whole table
+    ("wr-table", [{"updateTableCellStyle": {"tableStartLocation": {"index": 5}, "tableCellStyle": {"borderTop": {"width": {"magnitude": 2, "unit": "PT"}, "color": {"color": {"rgbColor": {"red": 1}}}, "dashStyle": "SOLID"}, "borderBottom": {"width": {"magnitude": 2, "unit": "PT"}, "color": {"color": {"rgbColor": {"green": 1}}}, "dashStyle": "SOLID"}, "borderLeft": {"width": {"magnitude": 2, "unit": "PT"}, "color": {"color": {"rgbColor": {"blue": 1}}}, "dashStyle": "SOLID"}, "borderRight": {"width": {"magnitude": 2, "unit": "PT"}, "color": {"color": {"rgbColor": {"red": 1, "green": 1}}}, "dashStyle": "SOLID"}}, "fields": "borderTop,borderBottom,borderLeft,borderRight"}}], "cells", [[{"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderLeft": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderRight": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderTop": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderBottom": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderLeft": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderRight": {"color": {"color": {"rgbColor": {"red": 1, "green": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderTop": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderBottom": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderLeft": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderRight": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderTop": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderBottom": {"color": {"color": {"rgbColor": {"green": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderLeft": {"color": {"color": {"rgbColor": {"blue": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderRight": {"color": {"color": {"rgbColor": {"red": 1, "green": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderTop": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "borderBottom": {"color": {"color": {"rgbColor": {"green": 1}}}, "width": {"magnitude": 2, "unit": "PT"}, "dashStyle": "SOLID"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # cell style * bg only
+    ("wr-table", [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "*"}}], "cells", [[{"rowSpan": 1, "columnSpan": 1, "backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # cell clear bg padding align
+    ("wr-table", [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {}, "fields": "backgroundColor,paddingLeft,contentAlignment"}}], "cells", [[{"rowSpan": 1, "columnSpan": 1, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # cell borderTop 0 c4
+    ("wr-table", [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 1}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"borderTop": {"width": {"magnitude": 0, "unit": "PT"}, "color": {"color": {"rgbColor": {"red": 1}}}, "dashStyle": "SOLID"}}, "fields": "borderTop"}}], "cells", [[{"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderBottom": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"unit": "PT"}, "dashStyle": "SOLID"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "borderTop": {"color": {"color": {"rgbColor": {"red": 1}}}, "width": {"unit": "PT"}, "dashStyle": "SOLID"}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # merged row, style covered only
+    ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 1}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingLeft": {"magnitude": 9, "unit": "PT"}}, "fields": "paddingLeft"}}], "cells", [[{"rowSpan": 1, "columnSpan": 2, "backgroundColor": {}, "paddingLeft": {"magnitude": 9, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 9, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # merge 2x2
+    ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 2}}}], "cells", [[{"rowSpan": 2, "columnSpan": 2, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # merge over a styled covered cell
+    ("wr-table", [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 1}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}, {"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], "cells", [[{"rowSpan": 1, "columnSpan": 2, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {"color": {"rgbColor": {"red": 1}}}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # cell style whole table
+    ("wr-table", [{"updateTableCellStyle": {"tableStartLocation": {"index": 5}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], "cells", [[{"rowSpan": 1, "columnSpan": 1, "backgroundColor": {"color": {"rgbColor": {"red": 1}}}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {"color": {"rgbColor": {"red": 1}}}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {"color": {"rgbColor": {"red": 1}}}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {"color": {"rgbColor": {"red": 1}}}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # applied cell padding -3
+    ("wr-table", [{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingLeft": {"magnitude": -3, "unit": "PT"}}, "fields": "paddingLeft"}}], "cells", [[{"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": -3, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # merged col, column right of head
+    ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"insertTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertRight": True}}], "cells", [[{"rowSpan": 2, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 2, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # merged row, row below head
+    ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertBelow": True}}], "cells", [[{"rowSpan": 1, "columnSpan": 2, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 2, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}, {"rowSpan": 1, "columnSpan": 1, "backgroundColor": {}, "paddingLeft": {"magnitude": 5, "unit": "PT"}, "paddingRight": {"magnitude": 5, "unit": "PT"}, "paddingTop": {"magnitude": 5, "unit": "PT"}, "paddingBottom": {"magnitude": 5, "unit": "PT"}, "contentAlignment": "TOP"}]]),
+    # pin 0
+    ("wr-table", [[{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 2}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 0}}]], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # delete row 0
+    ("wr-table", [[{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}], [{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertBelow": True}}], [{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertBelow": False}}], [{"deleteTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}}}]], "table", [[3, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # row style all rows
+    ("wr-table", [{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [], "tableRowStyle": {"minRowHeight": {"magnitude": 30, "unit": "PT"}, "preventOverflow": True}, "fields": "minRowHeight,preventOverflow"}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 30, "unit": "PT"}, "preventOverflow": True}, {"minRowHeight": {"magnitude": 30, "unit": "PT"}, "preventOverflow": True}]]]),
+    # row * height only
+    ("wr-table", [{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 30, "unit": "PT"}}, "fields": "*"}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 30, "unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # col all columns
+    ("wr-table", [{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "width,widthType"}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}]}, [{"minRowHeight": {"unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # evenly
+    ("wr-table", [[{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "width,widthType"}}], [{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "EVENLY_DISTRIBUTED"}, "fields": "widthType"}}]], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # col 1 width 5 *
+    ("wr-table", [{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [1], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 5, "unit": "PT"}}, "fields": "*"}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "FIXED_WIDTH", "width": {"magnitude": 5, "unit": "PT"}}]}, [{"minRowHeight": {"unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # merge row of height 40
+    ("wr-table", [{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}, "fields": "minRowHeight"}}, {"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 40, "unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # merge a styled heading cell
+    ("wr-table", [{"updateParagraphStyle": {"range": {"startIndex": 12, "endIndex": 13}, "paragraphStyle": {"namedStyleType": "HEADING_2", "alignment": "CENTER"}, "fields": "namedStyleType,alignment"}}, {"updateTextStyle": {"range": {"startIndex": 12, "endIndex": 14}, "textStyle": {"bold": True}, "fields": "bold"}}, {"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 26, "unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # applied row [0,0]
+    ("wr-table", [{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0, 0], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}, "fields": "minRowHeight"}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 40, "unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # insert column right of 0
+    ("wr-table", [[{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "width,widthType"}}], [{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "EVENLY_DISTRIBUTED"}, "fields": "widthType"}}], [{"insertTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertRight": True}}]], "table", [[2, 3, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"unit": "PT"}}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # row every member
+    ("wr-table", [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}, {"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 30, "unit": "PT"}, "preventOverflow": True}, "fields": "minRowHeight,preventOverflow"}}], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 30, "unit": "PT"}, "tableHeader": True, "preventOverflow": True}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # merged col, column right of head
+    ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"insertTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertRight": True}}], "table", [[2, 3, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 21, "unit": "PT"}}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}}]]]),
+    # ss two columns
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{"paddingEnd": {"magnitude": 10, "unit": "PT"}}, {"paddingEnd": {"magnitude": 0, "unit": "PT"}}]}, "fields": "columnProperties"}}], "sections", [{"columnProperties": [{"width": {"magnitude": 229, "unit": "PT"}, "paddingEnd": {"magnitude": 10, "unit": "PT"}}, {"width": {"magnitude": 229, "unit": "PT"}, "paddingEnd": {"unit": "PT"}}], "columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "CONTINUOUS"}]),
+    # applied ss columnProperties 3, first two padded
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{"paddingEnd": {"magnitude": 5, "unit": "PT"}}, {"paddingEnd": {"magnitude": 5, "unit": "PT"}}, {}]}, "fields": "columnProperties"}}], "sections", [{"columnProperties": [{"width": {"magnitude": 152.666, "unit": "PT"}, "paddingEnd": {"magnitude": 5, "unit": "PT"}}, {"width": {"magnitude": 152.666, "unit": "PT"}, "paddingEnd": {"magnitude": 5, "unit": "PT"}}, {"width": {"magnitude": 152.666, "unit": "PT"}, "paddingEnd": {"unit": "PT"}}], "columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "CONTINUOUS"}]),
+    # applied ss columnProperties 1 no padding
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{}]}, "fields": "columnProperties"}}], "sections", [{"columnProperties": [{"width": {"magnitude": 468, "unit": "PT"}, "paddingEnd": {"unit": "PT"}}], "columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "CONTINUOUS"}]),
+    # sb, style second section only
+    ("wr-table", [{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"updateSectionStyle": {"range": {"startIndex": 4, "endIndex": 5}, "sectionStyle": {"marginLeft": {"magnitude": 9, "unit": "PT"}}, "fields": "marginLeft"}}], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "CONTINUOUS"}, {"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 9, "unit": "PT"}, "sectionType": "NEXT_PAGE"}]),
+    # sb, style at the break
+    ("wr-table", [{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"updateSectionStyle": {"range": {"startIndex": 3, "endIndex": 4}, "sectionStyle": {"marginLeft": {"magnitude": 9, "unit": "PT"}}, "fields": "marginLeft"}}], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "CONTINUOUS"}, {"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 9, "unit": "PT"}, "sectionType": "NEXT_PAGE"}]),
+    # sb, style the newline before
+    ("wr-table", [{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"updateSectionStyle": {"range": {"startIndex": 2, "endIndex": 3}, "sectionStyle": {"marginLeft": {"magnitude": 9, "unit": "PT"}}, "fields": "marginLeft"}}], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 9, "unit": "PT"}, "sectionType": "CONTINUOUS"}, {"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "NEXT_PAGE"}]),
+    # style 2 sections
+    ("wr-table", [[{"insertSectionBreak": {"location": {"index": 3}, "sectionType": "CONTINUOUS"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 6}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}]], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 36, "unit": "PT"}, "sectionType": "CONTINUOUS"}, {"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 36, "unit": "PT"}, "sectionType": "CONTINUOUS"}]),
+    # ss every member
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}, "marginBottom": {"magnitude": 11, "unit": "PT"}, "marginRight": {"magnitude": 12, "unit": "PT"}, "marginLeft": {"magnitude": 13, "unit": "PT"}, "marginHeader": {"magnitude": 14, "unit": "PT"}, "marginFooter": {"magnitude": 15, "unit": "PT"}, "pageNumberStart": 2, "useFirstPageHeaderFooter": True, "flipPageOrientation": True, "contentDirection": "RIGHT_TO_LEFT", "columnSeparatorStyle": "BETWEEN_EACH_COLUMN"}, "fields": "marginTop,marginBottom,marginRight,marginLeft,marginHeader,marginFooter,pageNumberStart,useFirstPageHeaderFooter,flipPageOrientation,contentDirection,columnSeparatorStyle"}}], "sections", [{"columnSeparatorStyle": "BETWEEN_EACH_COLUMN", "contentDirection": "RIGHT_TO_LEFT", "marginTop": {"magnitude": 10, "unit": "PT"}, "marginBottom": {"magnitude": 11, "unit": "PT"}, "marginRight": {"magnitude": 12, "unit": "PT"}, "marginLeft": {"magnitude": 13, "unit": "PT"}, "marginHeader": {"magnitude": 14, "unit": "PT"}, "marginFooter": {"magnitude": 15, "unit": "PT"}, "sectionType": "CONTINUOUS", "flipPageOrientation": True}]),
+    # ds marginLeft after ss
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}, {"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 50, "unit": "PT"}}, "fields": "marginLeft"}}], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "CONTINUOUS"}]),
+    # applied ss empty range
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 2, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 36, "unit": "PT"}, "sectionType": "CONTINUOUS"}]),
+    # applied ss range in table
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 8, "endIndex": 9}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 36, "unit": "PT"}, "sectionType": "CONTINUOUS"}]),
+    # ss columns under a left margin of 100
+    ("wr-table", [[{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}], [{"updateSectionStyle": {"range": {"startIndex": 4, "endIndex": 5}, "sectionStyle": {"pageNumberStart": 5, "useFirstPageHeaderFooter": True, "marginTop": {"magnitude": 9, "unit": "PT"}}, "fields": "pageNumberStart,useFirstPageHeaderFooter,marginTop"}}], [{"updateDocumentStyle": {"documentStyle": {"marginTop": {"magnitude": 50, "unit": "PT"}}, "fields": "marginTop"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 5}, "sectionStyle": {"columnProperties": [{"paddingEnd": {"magnitude": 10, "unit": "PT"}}, {}], "marginLeft": {"magnitude": 100, "unit": "PT"}}, "fields": "columnProperties,marginLeft"}}]], "sections", [{"columnProperties": [{"width": {"magnitude": 215, "unit": "PT"}, "paddingEnd": {"magnitude": 10, "unit": "PT"}}, {"width": {"magnitude": 215, "unit": "PT"}, "paddingEnd": {"unit": "PT"}}], "columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 100, "unit": "PT"}, "sectionType": "CONTINUOUS"}, {"columnProperties": [{"width": {"magnitude": 215, "unit": "PT"}, "paddingEnd": {"magnitude": 10, "unit": "PT"}}, {"width": {"magnitude": 215, "unit": "PT"}, "paddingEnd": {"unit": "PT"}}], "columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "marginLeft": {"magnitude": 100, "unit": "PT"}, "sectionType": "NEXT_PAGE", "useFirstPageHeaderFooter": True, "pageNumberStart": 5}]),
+    # sb at paragraph start 1
+    ("wr-table", [{"insertSectionBreak": {"location": {"index": 1}, "sectionType": "NEXT_PAGE"}}], "sections", [{"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "CONTINUOUS"}, {"columnSeparatorStyle": "NONE", "contentDirection": "LEFT_TO_RIGHT", "sectionType": "NEXT_PAGE"}]),
+    # ds several
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 500, "unit": "PT"}, "height": {"magnitude": 700, "unit": "PT"}}, "background": {"color": {"color": {"rgbColor": {"green": 1}}}}, "pageNumberStart": 4, "useFirstPageHeaderFooter": True, "flipPageOrientation": True, "documentFormat": {"documentMode": "PAGELESS"}}, "fields": "pageSize,background,pageNumberStart,useFirstPageHeaderFooter,flipPageOrientation,documentFormat"}}], "documentStyle", {"background": {"color": {"color": {"rgbColor": {"green": 1}}}}, "useFirstPageHeaderFooter": True, "pageNumberStart": 4, "marginTop": {"magnitude": 72, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}, "marginLeft": {"magnitude": 72, "unit": "PT"}, "pageSize": {"height": {"magnitude": 700, "unit": "PT"}, "width": {"magnitude": 500, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "flipPageOrientation": True, "documentFormat": {"documentMode": "PAGELESS"}}),
+    # applied ds margins too big
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 400, "unit": "PT"}, "marginRight": {"magnitude": 400, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "documentStyle", {"background": {"color": {}}, "pageNumberStart": 1, "marginTop": {"magnitude": 72, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 288, "unit": "PT"}, "marginLeft": {"magnitude": 288, "unit": "PT"}, "pageSize": {"height": {"magnitude": 792, "unit": "PT"}, "width": {"magnitude": 612, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "documentFormat": {"documentMode": "PAGES"}}),
+    # applied ds margin -3
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginTop": {"magnitude": -3, "unit": "PT"}}, "fields": "marginTop"}}], "documentStyle", {"background": {"color": {}}, "pageNumberStart": 1, "marginTop": {"magnitude": -3, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}, "marginLeft": {"magnitude": 72, "unit": "PT"}, "pageSize": {"height": {"magnitude": 792, "unit": "PT"}, "width": {"magnitude": 612, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "documentFormat": {"documentMode": "PAGES"}}),
+    # ss every member
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}, "marginBottom": {"magnitude": 11, "unit": "PT"}, "marginRight": {"magnitude": 12, "unit": "PT"}, "marginLeft": {"magnitude": 13, "unit": "PT"}, "marginHeader": {"magnitude": 14, "unit": "PT"}, "marginFooter": {"magnitude": 15, "unit": "PT"}, "pageNumberStart": 2, "useFirstPageHeaderFooter": True, "flipPageOrientation": True, "contentDirection": "RIGHT_TO_LEFT", "columnSeparatorStyle": "BETWEEN_EACH_COLUMN"}, "fields": "marginTop,marginBottom,marginRight,marginLeft,marginHeader,marginFooter,pageNumberStart,useFirstPageHeaderFooter,flipPageOrientation,contentDirection,columnSeparatorStyle"}}], "documentStyle", {"background": {"color": {}}, "useFirstPageHeaderFooter": True, "pageNumberStart": 2, "marginTop": {"magnitude": 72, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}, "marginLeft": {"magnitude": 72, "unit": "PT"}, "pageSize": {"height": {"magnitude": 792, "unit": "PT"}, "width": {"magnitude": 612, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "documentFormat": {"documentMode": "PAGES"}}),
+    # applied ds pageSize.height subfield
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"height": {"magnitude": 700, "unit": "PT"}}}, "fields": "pageSize.height"}}], "documentStyle", {"background": {"color": {}}, "pageNumberStart": 1, "marginTop": {"magnitude": 72, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}, "marginLeft": {"magnitude": 72, "unit": "PT"}, "pageSize": {"height": {"magnitude": 700, "unit": "PT"}, "width": {"magnitude": 612, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "documentFormat": {"documentMode": "PAGES"}}),
+    # ds unspecified
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"documentFormat": {"documentMode": "PAGELESS"}}, "fields": "documentFormat"}}], [{"updateDocumentStyle": {"documentStyle": {"documentFormat": {}}, "fields": "documentFormat"}}]], "documentStyle", {"background": {"color": {}}, "pageNumberStart": 1, "marginTop": {"magnitude": 72, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}, "marginLeft": {"magnitude": 72, "unit": "PT"}, "pageSize": {"height": {"magnitude": 792, "unit": "PT"}, "width": {"magnitude": 612, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "documentFormat": {"documentMode": "PAGELESS"}}),
+    # applied ds fields pageNumberStart unset
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {}, "fields": "pageNumberStart"}}], "documentStyle", {"background": {"color": {}}, "marginTop": {"magnitude": 72, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}, "marginLeft": {"magnitude": 72, "unit": "PT"}, "pageSize": {"height": {"magnitude": 792, "unit": "PT"}, "width": {"magnitude": 612, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "documentFormat": {"documentMode": "PAGES"}}),
+    # ds marginTop over two sections
+    ("wr-table", [[{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}], [{"updateSectionStyle": {"range": {"startIndex": 4, "endIndex": 5}, "sectionStyle": {"pageNumberStart": 5, "useFirstPageHeaderFooter": True, "marginTop": {"magnitude": 9, "unit": "PT"}}, "fields": "pageNumberStart,useFirstPageHeaderFooter,marginTop"}}], [{"updateDocumentStyle": {"documentStyle": {"marginTop": {"magnitude": 50, "unit": "PT"}}, "fields": "marginTop"}}]], "documentStyle", {"background": {"color": {}}, "pageNumberStart": 1, "marginTop": {"magnitude": 50, "unit": "PT"}, "marginBottom": {"magnitude": 72, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}, "marginLeft": {"magnitude": 72, "unit": "PT"}, "pageSize": {"height": {"magnitude": 792, "unit": "PT"}, "width": {"magnitude": 612, "unit": "PT"}}, "marginHeader": {"magnitude": 36, "unit": "PT"}, "marginFooter": {"magnitude": 36, "unit": "PT"}, "useCustomHeaderFooterMargins": True, "documentFormat": {"documentMode": "PAGES"}}),
+    # ns H1 italic centre then H1 para
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"italic": True}, "paragraphStyle": {"alignment": "CENTER"}}, "fields": "namedStyleType,textStyle.italic,paragraphStyle.alignment"}}, {"updateParagraphStyle": {"range": {"startIndex": 1, "endIndex": 2}, "paragraphStyle": {"namedStyleType": "HEADING_1"}, "fields": "namedStyleType"}}], "named:HEADING_1", {"namedStyleType": "HEADING_1", "textStyle": {"italic": True, "fontSize": {"magnitude": 20, "unit": "PT"}}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "alignment": "CENTER", "direction": "LEFT_TO_RIGHT", "spaceAbove": {"magnitude": 20, "unit": "PT"}, "spaceBelow": {"magnitude": 6, "unit": "PT"}, "keepLinesTogether": True, "keepWithNext": True, "pageBreakBefore": False}}),
+    # ns H1 textStyle cleared
+    ("wr-table", [[{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"italic": True}, "paragraphStyle": {"alignment": "CENTER"}}, "fields": "namedStyleType,textStyle.italic,paragraphStyle.alignment"}}, {"updateParagraphStyle": {"range": {"startIndex": 1, "endIndex": 2}, "paragraphStyle": {"namedStyleType": "HEADING_1"}, "fields": "namedStyleType"}}], [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1"}, "fields": "namedStyleType,textStyle"}}]], "named:HEADING_1", {"namedStyleType": "HEADING_1", "textStyle": {}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "alignment": "CENTER", "direction": "LEFT_TO_RIGHT", "spaceAbove": {"magnitude": 20, "unit": "PT"}, "spaceBelow": {"magnitude": 6, "unit": "PT"}, "keepLinesTogether": True, "keepWithNext": True, "pageBreakBefore": False}}),
+    # ns H2 size 30
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_2", "textStyle": {"fontSize": {"magnitude": 30, "unit": "PT"}}}, "fields": "namedStyleType,textStyle.fontSize"}}], "named:HEADING_2", {"namedStyleType": "HEADING_2", "textStyle": {"bold": False, "fontSize": {"magnitude": 30, "unit": "PT"}}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", "spaceAbove": {"magnitude": 18, "unit": "PT"}, "spaceBelow": {"magnitude": 6, "unit": "PT"}, "keepLinesTogether": True, "keepWithNext": True, "pageBreakBefore": False}}),
+    # ns * H3 bold
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_3", "textStyle": {"bold": True}}, "fields": "*"}}], "named:HEADING_3", {"namedStyleType": "HEADING_3", "textStyle": {"bold": True}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT"}}),
+    # applied ns NORMAL clear bold
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT"}, "fields": "namedStyleType,textStyle.bold"}}], "named:NORMAL_TEXT", {"namedStyleType": "NORMAL_TEXT", "textStyle": {"italic": False, "underline": False, "strikethrough": False, "smallCaps": False, "backgroundColor": {}, "foregroundColor": {"color": {"rgbColor": {}}}, "fontSize": {"magnitude": 11, "unit": "PT"}, "weightedFontFamily": {"fontFamily": "Arial", "weight": 400}, "baselineOffset": "NONE"}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "alignment": "START", "lineSpacing": 115, "direction": "LEFT_TO_RIGHT", "spacingMode": "COLLAPSE_LISTS", "spaceAbove": {"unit": "PT"}, "spaceBelow": {"unit": "PT"}, "borderBetween": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderTop": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderBottom": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderLeft": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderRight": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "indentFirstLine": {"unit": "PT"}, "indentStart": {"unit": "PT"}, "indentEnd": {"unit": "PT"}, "keepLinesTogether": False, "keepWithNext": False, "avoidWidowAndOrphan": True, "shading": {"backgroundColor": {}}, "pageBreakBefore": False}}),
+    # applied ns H1 alignment center, pstyle
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "paragraphStyle": {"alignment": "CENTER", "lineSpacing": 200}}, "fields": "namedStyleType,paragraphStyle"}}], "named:HEADING_1", {"namedStyleType": "HEADING_1", "textStyle": {"fontSize": {"magnitude": 20, "unit": "PT"}}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "alignment": "CENTER", "lineSpacing": 200, "direction": "LEFT_TO_RIGHT"}}),
+    # applied ns H1 weight 700
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"weightedFontFamily": {"fontFamily": "Lora", "weight": 700}}}, "fields": "namedStyleType,textStyle.weightedFontFamily"}}], "named:HEADING_1", {"namedStyleType": "HEADING_1", "textStyle": {"fontSize": {"magnitude": 20, "unit": "PT"}, "weightedFontFamily": {"fontFamily": "Lora", "weight": 700}}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", "spaceAbove": {"magnitude": 20, "unit": "PT"}, "spaceBelow": {"magnitude": 6, "unit": "PT"}, "keepLinesTogether": True, "keepWithNext": True, "pageBreakBefore": False}}),
+    # ns NORMAL bold
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT", "textStyle": {"bold": True}}, "fields": "namedStyleType,textStyle.bold"}}], "named:NORMAL_TEXT", {"namedStyleType": "NORMAL_TEXT", "textStyle": {"bold": True, "italic": False, "underline": False, "strikethrough": False, "smallCaps": False, "backgroundColor": {}, "foregroundColor": {"color": {"rgbColor": {}}}, "fontSize": {"magnitude": 11, "unit": "PT"}, "weightedFontFamily": {"fontFamily": "Arial", "weight": 400}, "baselineOffset": "NONE"}, "paragraphStyle": {"namedStyleType": "NORMAL_TEXT", "alignment": "START", "lineSpacing": 115, "direction": "LEFT_TO_RIGHT", "spacingMode": "COLLAPSE_LISTS", "spaceAbove": {"unit": "PT"}, "spaceBelow": {"unit": "PT"}, "borderBetween": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderTop": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderBottom": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderLeft": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "borderRight": {"color": {}, "width": {"unit": "PT"}, "padding": {"unit": "PT"}, "dashStyle": "SOLID"}, "indentFirstLine": {"unit": "PT"}, "indentStart": {"unit": "PT"}, "indentEnd": {"unit": "PT"}, "keepLinesTogether": False, "keepWithNext": False, "avoidWidowAndOrphan": True, "shading": {"backgroundColor": {}}, "pageBreakBefore": False}}),
+    # export named styles
+    ("wr-table", [{"updateNamedStyle": {"namedStyle": {"namedStyleType": "NORMAL_TEXT", "textStyle": {"bold": True}}, "fields": "namedStyleType,textStyle.bold"}}, {"updateParagraphStyle": {"range": {"startIndex": 25, "endIndex": 26}, "paragraphStyle": {"namedStyleType": "HEADING_1"}, "fields": "namedStyleType"}}, {"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"italic": True}}, "fields": "namedStyleType,textStyle.italic"}}], "export", ["﻿ab\r\n\r\n\r\nc1\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd", "**ab**\n\n| c1 | c2 |\n| :---- | :---- |\n| **c3** | **c4** |\n\n# ***cd***"]),
+    # export merged and sb
+    ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}], "export", ["﻿a\r\nb\r\n\r\n\r\nc1\r\nc2\r\n\tc3\r\n\tc4\r\n\tcd", "a  \nb\n\n| c1 c2 |  |\n| :---- | :---- |\n| c3 | c4 |\n\ncd"]),
+    # export merged 2x2
+    ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 2}}}], "export", ["﻿ab\r\n\r\n\r\nc1\r\nc2\r\nc3\r\nc4\r\n\tcd", "ab\n\n| c1 c2 c3 c4 |  |\n| :---- | ----- |\n|  |  |\n\ncd"]),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "doc,requests,part,expected", _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS + _TABLE_LAYOUT_ROWS
+)
 def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
     wc, wh, doc, requests, part, expected
 ):
@@ -20834,7 +20969,8 @@ def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
 def _docs_outline(wc, h, doc) -> list[str]:
     """A Doc's tabs, depth first, each as `<indent><title>[ <icon>]: <body>` and its header
     `H:`, footer `F:` and footnotes `N<n>:`, a segment's paragraphs joined by `/`, a reference
-    written `[<n>]`, a page break `[PB]` and a table `[<cell>|<cell>;<row>]`."""
+    written `[<n>]`, a page break `[PB]`, a table `[<cell>|<cell>;<row>]` and a section break
+    after the first `[SB]`."""
     from tests._helpers import served_id
 
     did = served_id("google_drive", doc)
@@ -20848,7 +20984,9 @@ def _docs_outline(wc, h, doc) -> list[str]:
                 cells = [[text(c["content"]) for c in r["tableCells"]] for r in rows]
                 lines.append("[" + ";".join("|".join(row) for row in cells) + "]")
                 continue
-            if "paragraph" not in el:
+            if "sectionBreak" in el:
+                if el is not content[0]:
+                    lines.append("[SB]")
                 continue
             line = ""
             for pe in el["paragraph"]["elements"]:
@@ -21422,6 +21560,71 @@ _TABLE_WRITES = [
 ]
 
 
+# Merged cells and section breaks written on `wr-table`, as `_TABLE_WRITES` (`gdocs.Body.merge_cells`,
+# `gdocs.Body.insert_section_break`).
+_TABLE_LAYOUT_WRITES = [
+    # merge 2x2
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 2}}}], ["Tab 1: ab//[c1/c2/c3/c4|;|]/cd"], [{}]),
+    # merge with c2 empty
+    ([{"deleteContentRange": {"range": {"startIndex": 12, "endIndex": 14}}}, {"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 2}}}], ["Tab 1: ab//[c1/c3/c4|;|]/cd"], [{}, {}]),
+    # merge with c1 empty
+    ([{"deleteContentRange": {"range": {"startIndex": 8, "endIndex": 10}}}, {"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], ["Tab 1: ab//[c2|;c3|c4]/cd"], [{}, {}]),
+    # merge then insert in moved c2
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"insertText": {"location": {"index": 12}, "text": "W"}}], ["Tab 1: ab//[c1/cW2|;c3|c4]/cd"], [{}, {}]),
+    # merged col, delete row via head
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"deleteTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}}}], ["Tab 1: ab//cd"], [{}, {}]),
+    # merged col, delete row via covered
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"deleteTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}}}], ["Tab 1: ab//cd"], [{}, {}]),
+    # merged col, delete row 1
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"deleteTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 1}}}], ["Tab 1: ab//[c1/c3|c2]/cd"], [{}, {}]),
+    # merged col, row below row 0 via c2
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 1}, "insertBelow": True}}], ["Tab 1: ab//[c1/c3|c2;|;|c4]/cd"], [{}, {}]),
+    # merged col, row below via covered
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}, "insertBelow": True}}], ["Tab 1: ab//[c1/c3|c2;|c4;|]/cd"], [{}, {}]),
+    # merged col, row above head
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertBelow": False}}], ["Tab 1: ab//[|;c1/c3|c2;|c4]/cd"], [{}, {}]),
+    # merged row, column right via c3
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"insertTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}, "insertRight": True}}], ["Tab 1: ab//[c1/c2||;c3||c4]/cd"], [{}, {}]),
+    # merged row, column left via covered
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"insertTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 1}, "insertRight": False}}], ["Tab 1: ab//[|c1/c2|;|c3|c4]/cd"], [{}, {}]),
+    # merged row, column right of head
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"insertTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "insertRight": True}}], ["Tab 1: ab//[c1/c2||;c3|c4|]/cd"], [{}, {}]),
+    # merged row, delete column 1 via c4
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"deleteTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 1}}}], ["Tab 1: ab//[c1/c2;c3]/cd"], [{}, {}]),
+    # merged row, replace across moved paragraphs
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"replaceAllText": {"containsText": {"text": "c1\nc2"}, "replaceText": "X"}}], ["Tab 1: ab//[X|;c3|c4]/cd"], [{}, {"replaceAllText": {"occurrencesChanged": 1}}]),
+    # merged col, delete column 0
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"deleteTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}}}], ["Tab 1: ab//[c2;c4]/cd"], [{}, {}]),
+    # merge row 0 then column ops
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], ["Tab 1: ab//[c1/c2|;c3|c4]/cd"], [{}]),
+    # sb at paragraph start 1
+    ([{"insertSectionBreak": {"location": {"index": 1}, "sectionType": "NEXT_PAGE"}}], ["Tab 1: /[SB]/ab//[c1|c2;c3|c4]/cd"], [{}]),
+    # sb at paragraph end 3
+    ([{"insertSectionBreak": {"location": {"index": 3}, "sectionType": "CONTINUOUS"}}], ["Tab 1: ab/[SB]///[c1|c2;c3|c4]/cd"], [{}]),
+    # sb at end of body
+    ([{"insertSectionBreak": {"endOfSegmentLocation": {}, "sectionType": "NEXT_PAGE"}}], ["Tab 1: ab//[c1|c2;c3|c4]/cd/[SB]/"], [{}]),
+    # sb inside bold heading
+    ([{"updateParagraphStyle": {"range": {"startIndex": 1, "endIndex": 2}, "paragraphStyle": {"namedStyleType": "HEADING_1"}, "fields": "namedStyleType"}}, {"updateTextStyle": {"range": {"startIndex": 1, "endIndex": 3}, "textStyle": {"bold": True}, "fields": "bold"}}, {"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}], ["Tab 1: a/[SB]/b//[c1|c2;c3|c4]/cd"], [{}, {}, {}]),
+    # sb, delete a newline sb
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 4}}}], ["Tab 1: b//[c1|c2;c3|c4]/cd"], [{}, {}]),
+    # sb, delete newline sb b
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"deleteContentRange": {"range": {"startIndex": 2, "endIndex": 5}}}], ["Tab 1: a//[c1|c2;c3|c4]/cd"], [{}, {}]),
+    # sb, another at the same index
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"insertSectionBreak": {"location": {"index": 2}, "sectionType": "CONTINUOUS"}}], ["Tab 1: a/[SB]//[SB]/b//[c1|c2;c3|c4]/cd"], [{}, {}]),
+    # sb, table after it
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"insertTable": {"rows": 1, "columns": 1, "location": {"index": 4}}}], ["Tab 1: a/[SB]//[]/b//[c1|c2;c3|c4]/cd"], [{}, {}]),
+    # sb then insert past it
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"insertText": {"location": {"index": 5}, "text": "after"}}], ["Tab 1: a/[SB]/bafter//[c1|c2;c3|c4]/cd"], [{}, {}]),
+    # sb, replace across
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"replaceAllText": {"containsText": {"text": "a\nb"}, "replaceText": "X"}}], ["Tab 1: a/[SB]/b//[c1|c2;c3|c4]/cd"], [{}, {"replaceAllText": {}}]),
+    # sb, bold across
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}, {"updateTextStyle": {"range": {"startIndex": 1, "endIndex": 5}, "textStyle": {"bold": True}, "fields": "bold"}}], ["Tab 1: a/[SB]/b//[c1|c2;c3|c4]/cd"], [{}, {}]),
+    # a merge of one cell, and a named style's type named alone, keep the revision
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}}, "rowSpan": 1, "columnSpan": 1}}}], [_TABLE_START], None, False),
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1"}, "fields": "namedStyleType"}}], [_TABLE_START], None, False),
+]  # fmt: skip
+
+
 def test_a_tab_segment_or_table_write_changes_the_doc_as_real_does(write_settings, wh):
     """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`, and of `_TABLE_WRITES` to a fresh
     `wr-table`: its replies, the tabs, segments and tables it leaves, whether the `revisionId`
@@ -21430,7 +21633,9 @@ def test_a_tab_segment_or_table_write_changes_the_doc_as_real_does(write_setting
     from tests._helpers import client_for, served_id
 
     h = wh[_OWNER]
-    rows = [("wr-tabs", row) for row in _TAB_WRITES] + [("wr-table", row) for row in _TABLE_WRITES]
+    rows = [("wr-tabs", row) for row in _TAB_WRITES] + [
+        ("wr-table", row) for row in _TABLE_WRITES + _TABLE_LAYOUT_WRITES
+    ]
     got, want = [], []
     for doc, (requests, outline, replies, moves) in ((d, (*row, True)[:4]) for d, row in rows):
         did = served_id("google_drive", doc)
@@ -21691,9 +21896,9 @@ _DOCS_BATCH_REFUSALS = [
     ),
     # what is not served here names itself
     (
-        [{"mergeTableCells": {}}],
+        [{"insertInlineImage": {}}],
         400,
-        "Invalid requests[0].mergeTableCells: 'mergeTableCells' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
+        "Invalid requests[0].insertInlineImage: 'insertInlineImage' is not served by Backlot: real Docs applies it, and nothing here keeps what it changes.",
     ),
     (
         {"requests": [_ins(1, "x")], "writeControl": {"writeMode": "SUGGEST"}},
@@ -23080,11 +23285,458 @@ def _with_tab_ids(value, did: str):
     return any_of(json.loads(text))
 
 
+# Refused on `wr-table` as real refused them on a Doc of its shape (`routers.google_docs`): the
+# table, section, document and named style requests, merges and section breaks, and the requests
+# naming what a Doc here never holds, one row per refusal and one per pair of faults whose order
+# was measured.
+_LAYOUT_REFUSALS = [
+    # pin none
+    ([{"pinTableHeaderRows": {}}], 400, "Invalid requests[0].pinTableHeaderRows: Table start location must be specified in the request."),
+    # pin at 1
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 1}, "pinnedHeaderRowsCount": 1}}], 400, "Invalid requests[0].pinTableHeaderRows: The provided table start location is invalid."),
+    # pin at -1
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": -1}, "pinnedHeaderRowsCount": 1}}], 400, "Invalid requests[0].pinTableHeaderRows: Index must be greater than or equal to 0."),
+    # pin at 99
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 99}, "pinnedHeaderRowsCount": 1}}], 400, "Invalid requests[0].pinTableHeaderRows: Index 99 must be less than the end index of the referenced segment, 28."),
+    # pin tab nope
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 5, "tabId": "t.nope"}, "pinnedHeaderRowsCount": 1}}], 400, "Invalid requests[0].pinTableHeaderRows: Cannot apply request to an invalid tab ID."),
+    # pin segment nope
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 5, "segmentId": "kix.nope"}, "pinnedHeaderRowsCount": 1}}], 400, "Invalid requests[0].pinTableHeaderRows: Segment with ID kix.nope was not found. If a segment ID is provided, it must be a header, footer or footnote ID. Use an empty segment ID to reference the body."),
+    # pin -1
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": -1}}], 400, "Invalid requests[0].pinTableHeaderRows: The number of pinned header rows cannot be negative."),
+    # pin 3 of 2
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 3}}], 400, "Invalid requests[0].pinTableHeaderRows: The number of header rows to pin, 3, exceeds the number of table rows, 2"),
+    # pin at 1, -1
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 1}, "pinnedHeaderRowsCount": -1}}], 400, "Invalid requests[0].pinTableHeaderRows: The provided table start location is invalid."),
+    # pin tab nope, -1
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 5, "tabId": "t.nope"}, "pinnedHeaderRowsCount": -1}}], 400, "Invalid requests[0].pinTableHeaderRows: Cannot apply request to an invalid tab ID."),
+    # cell none
+    ([{"updateTableCellStyle": {"tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: No cells set."),
+    # cell no fields
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}}}], 400, "Invalid requests[0].updateTableCellStyle: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # cell fields nope
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableCellStyle: Invalid field: nope"),
+    # cell fields rowSpan
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"rowSpan": 2}, "fields": "rowSpan"}}], 400, "Invalid requests[0].updateTableCellStyle: Unallowed field: rowSpan"),
+    # cell fields columnSpan
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"columnSpan": 2}, "fields": "columnSpan"}}], 400, "Invalid requests[0].updateTableCellStyle: Unallowed field: columnSpan"),
+    # cell range no location
+    ([{"updateTableCellStyle": {"tableRange": {"rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: Table range must specify a table cell location."),
+    # cell range spans 0
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 0, "columnSpan": 0}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: The rowSpan must be strictly positive, was: 0"),
+    # cell range colSpan 0
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 0}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: The columnSpan must be strictly positive, was: 0"),
+    # cell range rowSpan 3
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 3, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: The table range extends outside the bounds of the table."),
+    # cell range row 5
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 5, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: The row index 5 should be less than the total number of rows 2."),
+    # cell range rowSpan -1
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": -1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: The rowSpan must be strictly positive, was: -1"),
+    # cell start at 1
+    ([{"updateTableCellStyle": {"tableStartLocation": {"index": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid requests[0].updateTableCellStyle: The provided table start location is invalid."),
+    # cell padding no unit
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingLeft": {"magnitude": 3}}, "fields": "paddingLeft"}}], 400, "Invalid requests[0].updateTableCellStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # cell bg red 2
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 2}}}}, "fields": "backgroundColor"}}], 500, "Internal error encountered."),
+    # cell align UNSUPPORTED
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"contentAlignment": "CONTENT_ALIGNMENT_UNSUPPORTED"}, "fields": "contentAlignment"}}], 400, "Invalid requests[0].updateTableCellStyle: The alignment type is invalid: CONTENT_ALIGNMENT_UNSUPPORTED"),
+    # cell border width only
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"borderTop": {"width": {"magnitude": 2, "unit": "PT"}}}, "fields": "borderTop"}}], 400, "Invalid requests[0].updateTableCellStyle: The dash style is invalid: DASH_STYLE_UNSPECIFIED"),
+    # cell border transparent
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"borderTop": {"width": {"magnitude": 2, "unit": "PT"}, "color": {}, "dashStyle": "SOLID"}}, "fields": "borderTop"}}], 400, "Invalid requests[0].updateTableCellStyle: Table cell borders cannot be transparent. To hide a table cell border, make its width 0."),
+    # cell border subfield
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"borderTop": {"width": {"magnitude": 2, "unit": "PT"}}}, "fields": "borderTop.width"}}], 400, "Invalid requests[0].updateTableCellStyle: Unallowed field: cannot request subfield of borderTop"),
+    # cell both range and start at 1
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableStartLocation": {"index": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "backgroundColor"}}], 400, "Invalid value at 'requests[0].update_table_cell_style' (oneof), oneof field 'cells' is already set. Cannot set 'tableStartLocation'"),
+    # cell fields nope, range row 5
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 5, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableCellStyle: Invalid field: nope"),
+    # cell no fields, no range
+    ([{"updateTableCellStyle": {"tableCellStyle": {"backgroundColor": {"color": {"rgbColor": {"red": 1}}}}}}], 400, "Invalid requests[0].updateTableCellStyle: No cells set."),
+    # row none
+    ([{"updateTableRowStyle": {"rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: Table start location must be specified in the request."),
+    # row at 1
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 1}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: The provided table start location is invalid."),
+    # row [5]
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [5], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: Invalid row index 5. Row index must be less than the total number of rows 2"),
+    # row [-1]
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [-1], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: Invalid row index -1. Row index must be non-negative."),
+    # row no fields
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}}}], 400, "Invalid requests[0].updateTableRowStyle: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # row fields nope
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 40, "unit": "PT"}}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableRowStyle: Invalid field: nope"),
+    # row fields tableHeader
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"tableHeader": True}, "fields": "tableHeader"}}], 400, "Invalid requests[0].updateTableRowStyle: Unallowed field: tableHeader"),
+    # row height no unit
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 40}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # row height -5
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": -5, "unit": "PT"}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: The minimum row height cannot be negative."),
+    # col none
+    ([{"updateTableColumnProperties": {"columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Table start location must be specified in the request."),
+    # col at 1
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 1}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: The provided table start location is invalid."),
+    # col [5]
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [5], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Invalid column index 5."),
+    # col [-1]
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [-1], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Invalid column index -1."),
+    # col no fields
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}}}], 400, "Invalid requests[0].updateTableColumnProperties: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # col fields nope
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100, "unit": "PT"}}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableColumnProperties: Invalid field: nope"),
+    # col fixed no width
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH"}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Width value must be provided when updating column width to fixed width."),
+    # col width 1
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 1, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Column width must not be less than minimum column width: 5."),
+    # col width no unit
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 100}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # col type unspecified
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "WIDTH_TYPE_UNSPECIFIED"}, "fields": "widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: The column width type is invalid: WIDTH_TYPE_UNSPECIFIED"),
+    # col width only
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"width": {"magnitude": 100, "unit": "PT"}}, "fields": "width"}}], 400, "Invalid requests[0].updateTableColumnProperties: Width type must be provided when updating column width."),
+    # mergeTableCells none
+    ([{"mergeTableCells": {}}], 400, "Invalid requests[0].mergeTableCells: Merge table cells request must specify a table range."),
+    # mergeTableCells no location
+    ([{"mergeTableCells": {"tableRange": {"rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: Table range must specify a table cell location."),
+    # mergeTableCells rowSpan 0
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 0, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: The rowSpan must be strictly positive, was: 0"),
+    # mergeTableCells colSpan 3
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 3}}}], 400, "Invalid requests[0].mergeTableCells: The table range extends outside the bounds of the table."),
+    # mergeTableCells at 1
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 1}}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: The provided table start location is invalid."),
+    # mergeTableCells row 5
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 5, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: The row index 5 should be less than the total number of rows 2."),
+    # unmergeTableCells none
+    ([{"unmergeTableCells": {}}], 400, "Invalid requests[0].unmergeTableCells: Unmerge table cells request must specify a table range."),
+    # unmergeTableCells no location
+    ([{"unmergeTableCells": {"tableRange": {"rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].unmergeTableCells: Table range must specify a table cell location."),
+    # unmergeTableCells rowSpan 0
+    ([{"unmergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 0, "columnSpan": 2}}}], 400, "Invalid requests[0].unmergeTableCells: The rowSpan must be strictly positive, was: 0"),
+    # unmergeTableCells colSpan 3
+    ([{"unmergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 3}}}], 400, "Invalid requests[0].unmergeTableCells: The table range extends outside the bounds of the table."),
+    # unmergeTableCells at 1
+    ([{"unmergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 1}}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].unmergeTableCells: The provided table start location is invalid."),
+    # unmergeTableCells row 5
+    ([{"unmergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 5, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].unmergeTableCells: The row index 5 should be less than the total number of rows 2."),
+    # sb none
+    ([{"insertSectionBreak": {"sectionType": "NEXT_PAGE"}}], 400, "Invalid requests[0].insertSectionBreak: No insertion location set."),
+    # sb at 0
+    ([{"insertSectionBreak": {"location": {"index": 0}, "sectionType": "NEXT_PAGE"}}], 400, "Invalid requests[0].insertSectionBreak: The insertion index must be inside the bounds of an existing paragraph."),
+    # sb at -1
+    ([{"insertSectionBreak": {"location": {"index": -1}, "sectionType": "NEXT_PAGE"}}], 400, "Invalid requests[0].insertSectionBreak: Index must be greater than or equal to 0."),
+    # sb at 99
+    ([{"insertSectionBreak": {"location": {"index": 99}, "sectionType": "NEXT_PAGE"}}], 400, "Invalid requests[0].insertSectionBreak: Index 99 must be less than the end index of the referenced segment, 28."),
+    # sb tab nope
+    ([{"insertSectionBreak": {"location": {"index": 2, "tabId": "t.nope"}, "sectionType": "NEXT_PAGE"}}], 400, "Invalid requests[0].insertSectionBreak: Cannot apply request to an invalid tab ID."),
+    # sb segment nope
+    ([{"insertSectionBreak": {"location": {"index": 2, "segmentId": "kix.nope"}, "sectionType": "NEXT_PAGE"}}], 400, "Invalid requests[0].insertSectionBreak: Segment with ID kix.nope was not found. If a segment ID is provided, it must be a header, footer or footnote ID. Use an empty segment ID to reference the body."),
+    # sb in cell 9
+    ([{"insertSectionBreak": {"location": {"index": 9}, "sectionType": "NEXT_PAGE"}}], 400, "Invalid requests[0].insertSectionBreak: Cannot insert section break in a table."),
+    # sb type unspecified
+    ([{"insertSectionBreak": {"location": {"index": 2}}}], 400, "Invalid requests[0].insertSectionBreak: The section type is invalid: SECTION_TYPE_UNSPECIFIED"),
+    # sb type 99
+    ([{"insertSectionBreak": {"location": {"index": 2}, "sectionType": 99}}], 400, "Invalid requests[0].insertSectionBreak: The section type is invalid: UNRECOGNIZED"),
+    # sb in cell, type unspecified
+    ([{"insertSectionBreak": {"location": {"index": 9}}}], 400, "Invalid requests[0].insertSectionBreak: The section type is invalid: SECTION_TYPE_UNSPECIFIED"),
+    # sb at 0, type unspecified
+    ([{"insertSectionBreak": {"location": {"index": 0}}}], 400, "Invalid requests[0].insertSectionBreak: The section type is invalid: SECTION_TYPE_UNSPECIFIED"),
+    # ss none
+    ([{"updateSectionStyle": {"sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}], 400, "Invalid requests[0].updateSectionStyle: Invalid range: must contain a start and end index"),
+    # ss no fields
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}}}], 400, "Invalid requests[0].updateSectionStyle: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # ss fields nope
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "nope"}}], 400, "Invalid requests[0].updateSectionStyle: Invalid field: nope"),
+    # ss range past end
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 99}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}], 400, "Invalid requests[0].updateSectionStyle: Index 98 must be less than the end index of the referenced segment, 28."),
+    # ss segment nope
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2, "segmentId": "kix.nope"}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}], 400, "Invalid requests[0].updateSectionStyle: Segment with ID kix.nope was not found. If a segment ID is provided, it must be a header, footer or footnote ID. Use an empty segment ID to reference the body."),
+    # ss fields sectionType
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"sectionType": "NEXT_PAGE"}, "fields": "sectionType"}}], 400, "Invalid requests[0].updateSectionStyle: Unallowed field: sectionType"),
+    # ss fields defaultHeaderId
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"defaultHeaderId": "kix.x"}, "fields": "defaultHeaderId"}}], 400, "Invalid requests[0].updateSectionStyle: Unallowed field: defaultHeaderId"),
+    # ss margin no unit
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 3}}, "fields": "marginLeft"}}], 400, "Invalid requests[0].updateSectionStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # ss margin -3
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": -3, "unit": "PT"}}, "fields": "marginLeft"}}], 500, "Internal error encountered."),
+    # ss end < start
+    ([{"updateSectionStyle": {"range": {"startIndex": 3, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 36, "unit": "PT"}}, "fields": "marginLeft"}}], 400, "Invalid requests[0].updateSectionStyle: Invalid range: end index cannot be less than start index"),
+    # ds no fields
+    ([{"updateDocumentStyle": {"documentStyle": {"marginTop": {"magnitude": 36, "unit": "PT"}}}}], 400, "Invalid requests[0].updateDocumentStyle: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # ds fields nope
+    ([{"updateDocumentStyle": {"documentStyle": {"marginTop": {"magnitude": 36, "unit": "PT"}}, "fields": "nope"}}], 400, "Invalid requests[0].updateDocumentStyle: Invalid field: nope"),
+    # ds tab nope
+    ([{"updateDocumentStyle": {"tabId": "t.nope", "documentStyle": {"marginTop": {"magnitude": 36, "unit": "PT"}}, "fields": "marginTop"}}], 400, "Invalid requests[0].updateDocumentStyle: Cannot apply request to an invalid tab ID."),
+    # ds fields defaultHeaderId
+    ([{"updateDocumentStyle": {"documentStyle": {"defaultHeaderId": "kix.x"}, "fields": "defaultHeaderId"}}], 400, "Invalid requests[0].updateDocumentStyle: Unallowed field: defaultHeaderId"),
+    # ds fields firstPageHeaderId
+    ([{"updateDocumentStyle": {"documentStyle": {"firstPageHeaderId": "kix.x"}, "fields": "firstPageHeaderId"}}], 400, "Invalid requests[0].updateDocumentStyle: Unallowed field: firstPageHeaderId"),
+    # ds margin no unit
+    ([{"updateDocumentStyle": {"documentStyle": {"marginTop": {"magnitude": 3}}, "fields": "marginTop"}}], 400, "Invalid requests[0].updateDocumentStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # ds background transparent
+    ([{"updateDocumentStyle": {"documentStyle": {"background": {"color": {}}}, "fields": "background"}}], 400, "Invalid requests[0].updateDocumentStyle: Cannot set a transparent background color for a document."),
+    # ds pageNumberStart -1
+    ([{"updateDocumentStyle": {"documentStyle": {"pageNumberStart": -1}, "fields": "pageNumberStart"}}], 400, "Invalid requests[0].updateDocumentStyle: Page number start index cannot be negative."),
+    # ds pageSize width only
+    ([{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 500, "unit": "PT"}}}, "fields": "pageSize"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for page height must be specified in order to update it."),
+    # ds tab nope, fields nope
+    ([{"updateDocumentStyle": {"tabId": "t.nope", "documentStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateDocumentStyle: Cannot apply request to an invalid tab ID."),
+    # ns none
+    ([{"updateNamedStyle": {"fields": "namedStyleType"}}], 400, "Invalid requests[0].updateNamedStyle: Named style type is required."),
+    # ns no fields
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"bold": True}}}}], 400, "Invalid requests[0].updateNamedStyle: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # ns fields nope
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1"}, "fields": "nope"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: nope"),
+    # ns tab nope
+    ([{"updateNamedStyle": {"tabId": "t.nope", "namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"bold": True}}, "fields": "namedStyleType,textStyle.bold"}}], 400, "Invalid requests[0].updateNamedStyle: Cannot apply request to an invalid tab ID."),
+    # ns fields textStyle.nope
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1"}, "fields": "namedStyleType,textStyle.nope"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: textStyle.nope"),
+    # ns size no unit
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"fontSize": {"magnitude": 3}}}, "fields": "namedStyleType,textStyle.fontSize"}}], 400, "Invalid requests[0].updateNamedStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # ns pstyle named mismatch
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "paragraphStyle": {"namedStyleType": "TITLE"}}, "fields": "namedStyleType,paragraphStyle.namedStyleType"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: paragraphStyle.namedStyleType"),
+    # ns type 99
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": 99}, "fields": "namedStyleType"}}], 500, "Internal error encountered."),
+    # acceptSuggestion empty
+    ([{"acceptSuggestion": {}}], 400, "Invalid requests[0].acceptSuggestion: A suggestion ID must be specified."),
+    # rejectSuggestion empty
+    ([{"rejectSuggestion": {}}], 400, "Invalid requests[0].rejectSuggestion: A suggestion ID must be specified."),
+    # deleteSuggestion empty
+    ([{"deleteSuggestion": {}}], 400, "Invalid requests[0].deleteSuggestion: A suggestion ID must be specified."),
+    # addCommentReply empty
+    ([{"addCommentReply": {}}], 400, "Invalid requests[0].addCommentReply: Add reply requests must specify a comment ID or suggestion ID."),
+    # addCommentReply no post
+    ([{"addCommentReply": {"commentId": "AAAAnope"}}], 400, "Invalid requests[0].addCommentReply: Add comment reply requests must specify a non-empty content if comment action is not RESOLVE or REOPEN."),
+    # addCommentReply suggestion nope
+    ([{"addCommentReply": {"suggestionId": "suggest.nope", "post": {"content": "x"}}}], 404, "Suggestion with ID suggest.nope does not exist."),
+    # addCommentReply both ids
+    ([{"addCommentReply": {"commentId": "AAAAnope", "suggestionId": "suggest.nope", "post": {"content": "x"}}}], 400, "Invalid value at 'requests[0].add_comment_reply' (oneof), oneof field 'thread_id' is already set. Cannot set 'suggestionId'"),
+    # deleteComment empty
+    ([{"deleteComment": {}}], 400, "Invalid requests[0].deleteComment: Delete comment requests must specify a comment ID."),
+    # deleteCommentReply empty
+    ([{"deleteCommentReply": {}}], 400, "Invalid requests[0].deleteCommentReply: Delete comment reply requests must specify a post ID."),
+    # deleteCommentReply other post
+    ([{"deleteCommentReply": {"commentId": "AAAAnope", "postId": "BBBBnope"}}], 404, "Comment with ID AAAAnope does not exist."),
+    # deleteCommentReply suggestion
+    ([{"deleteCommentReply": {"suggestionId": "suggest.nope", "postId": "BBBBnope"}}], 404, "Suggestion with ID suggest.nope does not exist."),
+    # updateCommentPost empty
+    ([{"updateCommentPost": {}}], 400, "Invalid requests[0].updateCommentPost: Update comment post requests must specify a post ID."),
+    # updateCommentPost no content
+    ([{"updateCommentPost": {"commentId": "AAAAnope", "postId": "AAAAnope"}}], 400, "Invalid requests[0].updateCommentPost: Update comment post requests must specify non-empty content."),
+    # updateCommentPost suggestion
+    ([{"updateCommentPost": {"suggestionId": "suggest.nope", "postId": "BBBBnope", "content": "x"}}], 404, "Suggestion with ID suggest.nope does not exist."),
+    # deleteDropdownDefinition empty
+    ([{"deleteDropdownDefinition": {}}], 400, "Invalid requests[0].deleteDropdownDefinition: Delete dropdown definition requests must specify a dropdown_definition_id."),
+    # deleteDropdownDefinition tab nope
+    ([{"deleteDropdownDefinition": {"dropdownDefinitionId": "kix.nope", "tabId": "t.nope"}}], 400, "Invalid requests[0].deleteDropdownDefinition: Cannot apply request to an invalid tab ID."),
+    # insertDropdown empty
+    ([{"insertDropdown": {}}], 400, "Invalid requests[0].insertDropdown: No insertion location set."),
+    # insertDropdown at 0
+    ([{"insertDropdown": {"dropdownDefinitionId": "kix.nope", "location": {"index": 0}}}], 400, "Invalid requests[0].insertDropdown: Dropdown definition with ID kix.nope not found."),
+    # insertDropdown at 99
+    ([{"insertDropdown": {"dropdownDefinitionId": "kix.nope", "location": {"index": 99}}}], 400, "Invalid requests[0].insertDropdown: Index 99 must be less than the end index of the referenced segment, 28."),
+    # insertDropdown no id
+    ([{"insertDropdown": {"location": {"index": 1}}}], 400, "Invalid requests[0].insertDropdown: Insert dropdown requests must specify a dropdown_definition_id."),
+    # updateDropdownDefinitionProperties empty
+    ([{"updateDropdownDefinitionProperties": {}}], 400, "Invalid requests[0].updateDropdownDefinitionProperties: Update dropdown definition requests must specify a dropdown_definition_id."),
+    # updateDropdownDefinitionProperties no fields
+    ([{"updateDropdownDefinitionProperties": {"dropdownDefinitionId": "kix.nope", "dropdownDefinitionProperties": {"title": "x"}}}], 400, "Invalid requests[0].updateDropdownDefinitionProperties: Dropdown definition with ID kix.nope not found."),
+    # updateDropdownProperties empty
+    ([{"updateDropdownProperties": {}}], 400, "Invalid requests[0].updateDropdownProperties: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # updateDropdownProperties fields selectedOptionId
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nope", "dropdownProperties": {"selectedOptionId": "x"}, "fields": "selectedOptionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Dropdown with ID kix.nope not found."),
+    # updateDropdownProperties fields nope
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nope", "dropdownProperties": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field: nope"),
+    # replaceImage empty
+    ([{"replaceImage": {}}], 400, "Invalid requests[0].replaceImage: The URL should not be empty."),
+    # replaceImage bad uri
+    ([{"replaceImage": {"imageObjectId": "kix.nope", "uri": "not a uri"}}], 400, "Invalid requests[0].replaceImage: The URL should start with http:// or https://."),
+    # replaceImage tab nope
+    ([{"replaceImage": {"imageObjectId": "kix.nope", "uri": "https://www.gstatic.com/images/branding/product/1x/docs_2020q4_48dp.png", "tabId": "t.nope"}}], 400, "Invalid requests[0].replaceImage: Cannot apply request to an invalid tab ID."),
+    # deletePositionedObject empty
+    ([{"deletePositionedObject": {}}], 400, "Invalid requests[0].deletePositionedObject: Must provide a non-empty object ID"),
+    # deletePositionedObject tab nope
+    ([{"deletePositionedObject": {"objectId": "kix.nope", "tabId": "t.nope"}}], 400, "Invalid requests[0].deletePositionedObject: Cannot apply request to an invalid tab ID."),
+    # row no location, fields nope
+    ([{"updateTableRowStyle": {"rowIndices": [0], "tableRowStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableRowStyle: Table start location must be specified in the request."),
+    # row at 1, fields nope
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 1}, "rowIndices": [0], "tableRowStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableRowStyle: Invalid field: nope"),
+    # row at 1, [5]
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 1}, "rowIndices": [5], "tableRowStyle": {"minRowHeight": {"magnitude": 4, "unit": "PT"}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: The provided table start location is invalid."),
+    # row [5], height -5
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [5], "tableRowStyle": {"minRowHeight": {"magnitude": -5, "unit": "PT"}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: The minimum row height cannot be negative."),
+    # row [5], no unit
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [5], "tableRowStyle": {"minRowHeight": {"magnitude": 4}}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # row tableHeader, nope
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {}, "fields": "tableHeader,nope"}}], 400, "Invalid requests[0].updateTableRowStyle: Unallowed field: tableHeader"),
+    # row nope, tableHeader
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {}, "fields": "nope,tableHeader"}}], 400, "Invalid requests[0].updateTableRowStyle: Invalid field: nope"),
+    # row tab nope
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5, "tabId": "t.nope"}, "rowIndices": [0], "tableRowStyle": {"minRowHeight": {"magnitude": 4, "unit": "PT"}}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableRowStyle: Cannot apply request to an invalid tab ID."),
+    # col no location, fields nope
+    ([{"updateTableColumnProperties": {"columnIndices": [0], "tableColumnProperties": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableColumnProperties: Table start location must be specified in the request."),
+    # col at 1, fields nope
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 1}, "columnIndices": [0], "tableColumnProperties": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableColumnProperties: Invalid field: nope"),
+    # col [5], width 1
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [5], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": 1, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Column width must not be less than minimum column width: 5."),
+    # col width 1, no unit order
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "WIDTH_TYPE_UNSPECIFIED", "width": {"magnitude": 1}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: The column width type is invalid: WIDTH_TYPE_UNSPECIFIED"),
+    # col unspecified, width 1
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "WIDTH_TYPE_UNSPECIFIED", "width": {"magnitude": 1, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: The column width type is invalid: WIDTH_TYPE_UNSPECIFIED"),
+    # cell none, fields nope
+    ([{"updateTableCellStyle": {"tableCellStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableCellStyle: No cells set."),
+    # cell at 1, fields nope
+    ([{"updateTableCellStyle": {"tableStartLocation": {"index": 1}, "tableCellStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableCellStyle: Invalid field: nope"),
+    # cell rowSpan field, range 0
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 0, "columnSpan": 1}, "tableCellStyle": {}, "fields": "rowSpan"}}], 400, "Invalid requests[0].updateTableCellStyle: Unallowed field: rowSpan"),
+    # cell range 0, no unit
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 0, "columnSpan": 1}, "tableCellStyle": {"paddingTop": {"magnitude": 1}}, "fields": "paddingTop"}}], 400, "Invalid requests[0].updateTableCellStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # cell no unit, dash
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingTop": {"magnitude": 1}, "borderTop": {"width": {"magnitude": 1, "unit": "PT"}}}, "fields": "borderTop,paddingTop"}}], 400, "Invalid requests[0].updateTableCellStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # cell dash, no unit
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingTop": {"magnitude": 1}, "borderTop": {"width": {"magnitude": 1, "unit": "PT"}}}, "fields": "paddingTop,borderTop"}}], 400, "Invalid requests[0].updateTableCellStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # cell align, no unit
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingTop": {"magnitude": 1}, "contentAlignment": "CONTENT_ALIGNMENT_UNSUPPORTED"}, "fields": "contentAlignment,paddingTop"}}], 400, "Invalid requests[0].updateTableCellStyle: The alignment type is invalid: CONTENT_ALIGNMENT_UNSUPPORTED"),
+    # pin none, -1
+    ([{"pinTableHeaderRows": {"pinnedHeaderRowsCount": -1}}], 400, "Invalid requests[0].pinTableHeaderRows: Table start location must be specified in the request."),
+    # merge row 5 colSpan 0
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 5, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 0}}}], 400, "Invalid requests[0].mergeTableCells: The columnSpan must be strictly positive, was: 0"),
+    # merge column -1
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": -1}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: The tableCellLocation columnIndex must be non-negative, was: -1"),
+    # sb tab nope, type unspecified
+    ([{"insertSectionBreak": {"location": {"index": 2, "tabId": "t.nope"}}}], 400, "Invalid requests[0].insertSectionBreak: Cannot apply request to an invalid tab ID."),
+    # sb at 99, type unspecified
+    ([{"insertSectionBreak": {"location": {"index": 99}}}], 400, "Invalid requests[0].insertSectionBreak: Index 99 must be less than the end index of the referenced segment, 28."),
+    # sb none, type unspecified
+    ([{"insertSectionBreak": {}}], 400, "Invalid requests[0].insertSectionBreak: No insertion location set."),
+    # ss none, no fields
+    ([{"updateSectionStyle": {"sectionStyle": {}}}], 400, "Invalid requests[0].updateSectionStyle: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # ss past end, fields nope
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 99}, "sectionStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateSectionStyle: Invalid field: nope"),
+    # ss tab nope
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2, "tabId": "t.nope"}, "sectionStyle": {"marginLeft": {"magnitude": 9, "unit": "PT"}}, "fields": "marginLeft"}}], 400, "Invalid requests[0].updateSectionStyle: Cannot apply request to an invalid tab ID."),
+    # ss columnProperties 4
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{}, {}, {}, {}]}, "fields": "columnProperties"}}], 400, "Invalid requests[0].updateSectionStyle: Column padding must be set in order to update column properties."),
+    # ds no fields, tab nope
+    ([{"updateDocumentStyle": {"tabId": "t.nope", "documentStyle": {}}}], 400, "Invalid requests[0].updateDocumentStyle: Cannot apply request to an invalid tab ID."),
+    # ds -1 page, no unit
+    ([{"updateDocumentStyle": {"documentStyle": {"pageNumberStart": -1, "marginTop": {"magnitude": 3}}, "fields": "pageNumberStart,marginTop"}}], 400, "Invalid requests[0].updateDocumentStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # ds no unit, -1 page
+    ([{"updateDocumentStyle": {"documentStyle": {"pageNumberStart": -1, "marginTop": {"magnitude": 3}}, "fields": "marginTop,pageNumberStart"}}], 400, "Invalid requests[0].updateDocumentStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # ds background no color
+    ([{"updateDocumentStyle": {"documentStyle": {"background": {}}, "fields": "background"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for background color must be specified in order to update it."),
+    # ns none, no fields
+    ([{"updateNamedStyle": {}}], 400, "Invalid requests[0].updateNamedStyle: At least one field must be listed in 'fields'. (Use '*' to indicate all fields.)"),
+    # ns no type, fields nope
+    ([{"updateNamedStyle": {"namedStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: nope"),
+    # ns tab nope, no type
+    ([{"updateNamedStyle": {"tabId": "t.nope", "namedStyle": {}, "fields": "namedStyleType"}}], 400, "Invalid requests[0].updateNamedStyle: Cannot apply request to an invalid tab ID."),
+    # ns fields textStyle only, type set
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"bold": True}}, "fields": "textStyle"}}], 400, "Invalid requests[0].updateNamedStyle: Named style type is required."),
+    # ns link
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "textStyle": {"link": {"url": "https://x.com"}}}, "fields": "namedStyleType,textStyle.link"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link"),
+    # ns pstyle headingId
+    ([{"updateNamedStyle": {"namedStyle": {"namedStyleType": "HEADING_1", "paragraphStyle": {"headingId": "h.x"}}, "fields": "namedStyleType,paragraphStyle.headingId"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: paragraphStyle.headingId"),
+    # ss * no right
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}, "marginBottom": {"magnitude": 10, "unit": "PT"}, "marginLeft": {"magnitude": 10, "unit": "PT"}, "marginHeader": {"magnitude": 10, "unit": "PT"}, "marginFooter": {"magnitude": 10, "unit": "PT"}, "contentDirection": "LEFT_TO_RIGHT", "columnProperties": [{"paddingEnd": {"magnitude": 0, "unit": "PT"}}]}, "fields": "*"}}], 400, "Invalid requests[0].updateSectionStyle: A value for right margin must be specified in order to update it."),
+    # ds * no right
+    ([{"updateDocumentStyle": {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": 1}}}}, "marginTop": {"magnitude": 10, "unit": "PT"}, "marginBottom": {"magnitude": 10, "unit": "PT"}, "marginLeft": {"magnitude": 10, "unit": "PT"}, "pageSize": {"width": {"magnitude": 500, "unit": "PT"}, "height": {"magnitude": 700, "unit": "PT"}}, "marginHeader": {"magnitude": 10, "unit": "PT"}, "marginFooter": {"magnitude": 10, "unit": "PT"}}, "fields": "*"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for right margin must be specified in order to update it."),
+    # ds * height only
+    ([{"updateDocumentStyle": {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": 1}}}}, "marginTop": {"magnitude": 10, "unit": "PT"}, "marginBottom": {"magnitude": 10, "unit": "PT"}, "marginLeft": {"magnitude": 10, "unit": "PT"}, "pageSize": {"height": {"magnitude": 700, "unit": "PT"}}, "marginHeader": {"magnitude": 10, "unit": "PT"}, "marginFooter": {"magnitude": 10, "unit": "PT"}, "marginRight": {"magnitude": 10, "unit": "PT"}}, "fields": "*"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for page width must be specified in order to update it."),
+    # deleteCommentReply post only
+    ([{"deleteCommentReply": {"postId": "BBBBnope"}}], 400, "Invalid requests[0].deleteCommentReply: Delete comment reply requests must specify a thread ID."),
+    # updateCommentPost post and content only
+    ([{"updateCommentPost": {"postId": "BBBBnope", "content": "x"}}], 400, "Invalid requests[0].updateCommentPost: Update comment post requests must specify a thread ID."),
+    # addCommentReply resolve no content
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"commentAction": "RESOLVE"}}}], 404, "Comment with ID AAAAnope does not exist."),
+    # replaceImage empty id
+    ([{"replaceImage": {"uri": "https://www.gstatic.com/images/branding/product/1x/docs_2020q4_48dp.png"}}], 400, "Invalid requests[0].replaceImage: Must provide a non-empty object ID"),
+    # replaceImage bad uri, tab nope
+    ([{"replaceImage": {"imageObjectId": "kix.nope", "uri": "ftp://x", "tabId": "t.nope"}}], 400, "Invalid requests[0].replaceImage: Cannot apply request to an invalid tab ID."),
+    # replaceImage empty uri, tab nope
+    ([{"replaceImage": {"imageObjectId": "kix.nope", "tabId": "t.nope"}}], 400, "Invalid requests[0].replaceImage: Cannot apply request to an invalid tab ID."),
+    # deletePositionedObject empty, tab nope
+    ([{"deletePositionedObject": {"tabId": "t.nope"}}], 400, "Invalid requests[0].deletePositionedObject: Cannot apply request to an invalid tab ID."),
+    # deleteDropdownDefinition empty, tab nope
+    ([{"deleteDropdownDefinition": {"tabId": "t.nope"}}], 400, "Invalid requests[0].deleteDropdownDefinition: Cannot apply request to an invalid tab ID."),
+    # updateDropdownDefinitionProperties empty, tab nope
+    ([{"updateDropdownDefinitionProperties": {"tabId": "t.nope"}}], 400, "Invalid requests[0].updateDropdownDefinitionProperties: Cannot apply request to an invalid tab ID."),
+    # updateDropdownProperties empty id
+    ([{"updateDropdownProperties": {"dropdownProperties": {}, "fields": "selectedOptionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Update dropdown properties requests must specify a dropdown_id."),
+    # updateDropdownProperties tab nope
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nope", "tabId": "t.nope", "dropdownProperties": {}, "fields": "selectedOptionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Cannot apply request to an invalid tab ID."),
+    # insertDropdown no id, at 99
+    ([{"insertDropdown": {"location": {"index": 99}}}], 400, "Invalid requests[0].insertDropdown: Index 99 must be less than the end index of the referenced segment, 28."),
+    # insertDropdown no id, tab nope
+    ([{"insertDropdown": {"location": {"index": 1, "tabId": "t.nope"}}}], 400, "Invalid requests[0].insertDropdown: Cannot apply request to an invalid tab ID."),
+    # insertDropdown in header seg nope
+    ([{"insertDropdown": {"dropdownDefinitionId": "kix.nope", "location": {"index": 1, "segmentId": "kix.nope"}}}], 400, "Invalid requests[0].insertDropdown: Segment with ID kix.nope was not found. If a segment ID is provided, it must be a header, footer or footnote ID. Use an empty segment ID to reference the body."),
+    # cell range tab nope, fields nope
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5, "tabId": "t.nope"}}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableCellStyle: Cannot apply request to an invalid tab ID."),
+    # cell start tab nope, fields nope
+    ([{"updateTableCellStyle": {"tableStartLocation": {"index": 5, "tabId": "t.nope"}, "tableCellStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableCellStyle: Cannot apply request to an invalid tab ID."),
+    # cell range no location, fields nope
+    ([{"updateTableCellStyle": {"tableRange": {"rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {}, "fields": "nope"}}], 400, "Invalid requests[0].updateTableCellStyle: Invalid field: nope"),
+    # cell range no start location
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"rowIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingTop": {"magnitude": 1, "unit": "PT"}}, "fields": "paddingTop"}}], 400, "Invalid requests[0].updateTableCellStyle: Table cell location must specify a table start location."),
+    # cell row -1
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": -1, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingTop": {"magnitude": 1, "unit": "PT"}}, "fields": "paddingTop"}}], 400, "Invalid requests[0].updateTableCellStyle: The tableCellLocation rowIndex must be non-negative, was: -1"),
+    # cell column 5
+    ([{"updateTableCellStyle": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 5}, "rowSpan": 1, "columnSpan": 1}, "tableCellStyle": {"paddingTop": {"magnitude": 1, "unit": "PT"}}, "fields": "paddingTop"}}], 400, "Invalid requests[0].updateTableCellStyle: The column index 5 should be less than the total number of columns 2."),
+    # merge row -1
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": -1, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: The tableCellLocation rowIndex must be non-negative, was: -1"),
+    # merge column 5
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 5}, "rowSpan": 1, "columnSpan": 1}}}], 400, "Invalid requests[0].mergeTableCells: The column index 5 should be less than the total number of columns 2."),
+    # merge tab nope
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5, "tabId": "t.nope"}}, "rowSpan": 0, "columnSpan": 1}}}], 400, "Invalid requests[0].mergeTableCells: Cannot apply request to an invalid tab ID."),
+    # merge no start location
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"rowIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: Table cell location must specify a table start location."),
+    # merge at -1
+    ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": -1}}, "rowSpan": 1, "columnSpan": 2}}}], 400, "Invalid requests[0].mergeTableCells: Index must be greater than or equal to 0."),
+    # pin count only, tab nope location
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 1, "tabId": "t.nope"}, "pinnedHeaderRowsCount": 3}}], 400, "Invalid requests[0].pinTableHeaderRows: Cannot apply request to an invalid tab ID."),
+    # col fields width only, unit missing
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"width": {"magnitude": 4}}, "fields": "width"}}], 400, "Invalid requests[0].updateTableColumnProperties: Unsupported dimension unit:UNIT_UNSPECIFIED"),
+    # col fixed, width -10
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": "FIXED_WIDTH", "width": {"magnitude": -10, "unit": "PT"}}, "fields": "width,widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: Column width must not be less than minimum column width: 5."),
+    # col type 99
+    ([{"updateTableColumnProperties": {"tableStartLocation": {"index": 5}, "columnIndices": [0], "tableColumnProperties": {"widthType": 99}, "fields": "widthType"}}], 400, "Invalid requests[0].updateTableColumnProperties: The column width type is invalid: UNRECOGNIZED"),
+    # row fields minRowHeight unset
+    ([{"updateTableRowStyle": {"tableStartLocation": {"index": 5}, "rowIndices": [0], "tableRowStyle": {}, "fields": "minRowHeight"}}], 400, "Invalid requests[0].updateTableRowStyle: A value for min row height must be specified in order to update it."),
+    # ss fields marginLeft unset
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {}, "fields": "marginLeft"}}], 400, "Invalid requests[0].updateSectionStyle: A value for left margin must be specified in order to update it."),
+    # ss fields contentDirection unset
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {}, "fields": "contentDirection"}}], 400, "Invalid requests[0].updateSectionStyle: A value for content direction must be specified in order to update it."),
+    # ss fields columnProperties unset
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {}, "fields": "columnProperties"}}], 400, "Invalid requests[0].updateSectionStyle: At least one set of column properties must be specified in order to update them."),
+    # ss columnProperties 3, last two padded
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{}, {"paddingEnd": {"magnitude": 5, "unit": "PT"}}, {"paddingEnd": {"magnitude": 5, "unit": "PT"}}]}, "fields": "columnProperties"}}], 400, "Invalid requests[0].updateSectionStyle: Column padding must be set in order to update column properties."),
+    # ss columnProperties width given
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{"paddingEnd": {"magnitude": 5, "unit": "PT"}, "width": {"magnitude": 100, "unit": "PT"}}, {}]}, "fields": "columnProperties"}}], 400, "Invalid requests[0].updateSectionStyle: Column widths cannot be updated."),
+    # ds fields marginTop unset
+    ([{"updateDocumentStyle": {"documentStyle": {}, "fields": "marginTop"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for top margin must be specified in order to update it."),
+    # ns link, type unset
+    ([{"updateNamedStyle": {"namedStyle": {"textStyle": {"link": {"url": "https://x.com"}}}, "fields": "textStyle.link"}}], 400, "Invalid requests[0].updateNamedStyle: Unallowed field: textStyle.link"),
+    # ns textStyle.nope, no type
+    ([{"updateNamedStyle": {"namedStyle": {}, "fields": "textStyle.nope"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: textStyle.nope"),
+]  # fmt: skip
+_LAYOUT_REFUSALS += [
+    # `*` asks for each margin, then the content direction and the columns, or the background,
+    # each margin and the page's height and width
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginTop": _PT(10)}, "fields": "*"}}], 400, "Invalid requests[0].updateSectionStyle: A value for bottom margin must be specified in order to update it."),
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {k: _PT(10) for k in ("marginTop", "marginBottom", "marginLeft", "marginRight", "marginHeader", "marginFooter")}, "fields": "*"}}], 400, "Invalid requests[0].updateSectionStyle: A value for content direction must be specified in order to update it."),
+    ([{"updateDocumentStyle": {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": 1}}}}}, "fields": "*"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for top margin must be specified in order to update it."),
+    ([{"updateDocumentStyle": {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": 1}}}}, **{k: _PT(10) for k in ("marginTop", "marginBottom", "marginLeft", "marginRight")}}, "fields": "*"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for page height must be specified in order to update it."),
+    # a 404 comes at its own request, ahead of a 500 behind it and behind a refusal before it
+    ([{"deleteComment": {"commentId": "x"}}, _ins(0, "x")], 404, "Comment thread with ID 'x' was not found."),
+    ([_ins(0, "x"), {"deleteComment": {"commentId": "x"}}], 400, _IN_PARAGRAPH),
+    ([_ins(1, "\ufdd0"), {"deleteComment": {"commentId": "x"}}], 404, "Comment thread with ID 'x' was not found."),
+    ([{"deleteComment": {"commentId": "x"}}, _ins(1, "\ufdd0")], 404, "Comment thread with ID 'x' was not found."),
+]  # fmt: skip
+
+
 @pytest.mark.parametrize(
     "doc,body,status,message",
     [("wr-text", *row) for row in _DOCS_BATCH_REFUSALS]
     + [("wr-tabs", *row) for row in _DOCS_TAB_REFUSALS]
-    + [("wr-table", *row) for row in _DOCS_TABLE_REFUSALS]
+    + [("wr-table", *row) for row in _DOCS_TABLE_REFUSALS + _LAYOUT_REFUSALS]
     + [
         ("wr-tabs", requests, 400, f"Invalid requests[1].updateTextStyle: {message}")
         for requests, message in _HEADING_LINK_REFUSALS

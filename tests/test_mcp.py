@@ -1485,14 +1485,14 @@ def test_backlot_mcp_exits_on_a_signal_with_stdin_still_open(live_server, signam
     terminating signal ends the process with the conventional 128+N."""
     base, _ = live_server
     sig = getattr(signal, signame)
-    proc = _initialised_mcp("--source", "slack", "--url", base)
-    try:
-        proc.send_signal(sig)
-        code = proc.wait(timeout=20)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-    assert code == 128 + sig, (code, proc.stderr.read()[-500:])
+    with _initialised_mcp("--source", "slack", "--url", base) as proc:
+        try:
+            proc.send_signal(sig)
+            code = proc.wait(timeout=20)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        assert code == 128 + sig, (code, proc.stderr.read()[-500:])
 
 
 # `backlot mcp` in which a sidecar thread delivers the named signal to ITSELF with `pthread_kill`,
@@ -1521,21 +1521,21 @@ def test_backlot_mcp_exits_when_the_signal_lands_on_another_thread(live_server, 
     depend on which thread the signal reaches."""
     base, _ = live_server
     sig = getattr(signal, signame)
-    proc = subprocess.Popen(
+    with subprocess.Popen(
         [sys.executable, "-c", _MCP_SIGNALLED_ON_ANOTHER_THREAD, signame, base],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-    )
-    try:
-        code = proc.wait(timeout=20)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        pytest.fail(f"still running 20s after {signame} was delivered to a non-main thread")
-    finally:
-        if proc.poll() is None:
+    ) as proc:
+        try:
+            code = proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
             proc.kill()
-    assert code == 128 + sig, (code, proc.stderr.read()[-500:])
+            pytest.fail(f"still running 20s after {signame} was delivered to a non-main thread")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        assert code == 128 + sig, (code, proc.stderr.read()[-500:])
 
 
 @pytest.mark.parametrize(
@@ -1558,17 +1558,17 @@ def test_backlot_mcp_takes_its_server_down_when_it_is_ended(tmp_path, end, code)
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
         )
     env = python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
-    proc = _initialised_mcp("--source", "slack", env=env)
-    try:
-        if end == "terminate":
-            proc.terminate()
-        else:
-            proc.send_signal(getattr(signal, end))
-        exited = proc.wait(timeout=30)
-        err = proc.stderr.read().decode()
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    with _initialised_mcp("--source", "slack", env=env) as proc:
+        try:
+            if end == "terminate":
+                proc.terminate()
+            else:
+                proc.send_signal(getattr(signal, end))
+            exited = proc.wait(timeout=30)
+            err = proc.stderr.read().decode()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
     assert exited == code, (exited, err[-500:])
     up = re.search(r"Backlot is up at http://127\.0\.0\.1:(\d+)", err)
     assert up, err
@@ -1622,30 +1622,30 @@ def test_backlot_mcp_takes_down_a_server_it_spawned_but_had_not_yet_yielded(tmp_
             f"a Backlot server is already on {backlot_mcp.DEFAULT_URL}; free it to run this"
         )
     env = python_child_env(BACKLOT_DATA_DIR=str(tmp_path / "data"))
-    proc = subprocess.Popen(
+    child = None
+    with subprocess.Popen(
         [sys.executable, "-c", _MCP_HELD_BEFORE_READY],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         env=env,
-    )
-    child = None
-    try:
-        deadline = time.monotonic() + 60
-        while child is None:
-            line = readline_within(proc.stderr, max(deadline - time.monotonic(), 0))
-            assert line is not None, "no SPAWNED line within 60s"
-            line = line.decode()
-            if not line:
-                pytest.fail(f"backlot mcp ended before spawning a server, code {proc.poll()}")
-            if line.startswith("SPAWNED "):
-                child = int(line.split()[1])
-        proc.send_signal(signal.SIGTERM)
-        code = proc.wait(timeout=30)
-        err = proc.stderr.read().decode()
-    finally:
-        if proc.poll() is None:
-            proc.kill()
+    ) as proc:
+        try:
+            deadline = time.monotonic() + 60
+            while child is None:
+                line = readline_within(proc.stderr, max(deadline - time.monotonic(), 0))
+                assert line is not None, "no SPAWNED line within 60s"
+                line = line.decode()
+                if not line:
+                    pytest.fail(f"backlot mcp ended before spawning a server, code {proc.poll()}")
+                if line.startswith("SPAWNED "):
+                    child = int(line.split()[1])
+            proc.send_signal(signal.SIGTERM)
+            code = proc.wait(timeout=30)
+            err = proc.stderr.read().decode()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
     assert code == _TERMINATED, (code, err[-500:])
     assert "Backlot is up" not in err, "the signal missed the window it was meant to land in"
     deadline = time.monotonic() + 10

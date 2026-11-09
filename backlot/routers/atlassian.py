@@ -3677,9 +3677,9 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         nonlocal at
         kind, text = peek()
         if kind is None:
-            # A value missing at the end of the query inside a group that never closes is the
-            # missing parenthesis, not the missing value: `(type = page and type =`, `(type = and
-            # type = page` and `(type = page and title ~` (Confluence Cloud, 2026-11-05).
+            # A value missing inside a group never closed is the missing parenthesis, not the
+            # missing value: `(type = page and type =`, `(type = and type = page` and
+            # `(type = page and title ~` (Confluence Cloud, 2026-11-05).
             if groups:
                 raise missing_parenthesis()
             raise _Stop(errors_atlassian.cql_expecting_value(operator, field))

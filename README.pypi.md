@@ -10,7 +10,7 @@
 
 **Run enterprise SaaS APIs locally.**
 
-Backlot is a local emulator for Slack, Gmail, Google Drive, GitHub, Jira, Notion, S3, Microsoft Teams and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with **no vendor account**, **no OAuth approval**, **no secrets in CI** and **no network**.
+Backlot is a local emulator for Slack, Gmail, Google Drive, Microsoft Teams, GitHub, Jira, Notion, S3 and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with **no vendor account**, **no OAuth approval**, **no secrets in CI** and **no network**.
 
 ## Try it in 60 seconds
 
@@ -82,6 +82,7 @@ It emulates the documented subset of each API it supports, not every vendor endp
 | Slack | `/slack/api` | [`slack.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/slack.py) |
 | Gmail | `/gmail/v1` | [`gmail.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/gmail.py) |
 | Google Drive (Docs, Sheets, Slides) | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | [`gdrive.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/gdrive.py) |
+| Microsoft Teams | `/msgraph/v1.0` | [`msteams.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/msteams.py) |
 | GitHub | `/github` | [`github.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/github.py) |
 | Jira | `/atlassian/rest/api` | [`jira.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/jira.py) |
 | Confluence | `/atlassian/wiki/rest/api` | [`confluence.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/confluence.py) |
@@ -90,7 +91,6 @@ It emulates the documented subset of each API it supports, not every vendor endp
 | HubSpot | `/hubspot` | [`hubspot.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/hubspot.py) |
 | Fireflies | `/fireflies/graphql` | [`fireflies.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/fireflies.py) |
 | Amazon S3 | `/s3` | [`s3.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/s3.py) |
-| Microsoft Teams | `/msgraph/v1.0` | [`msteams.py`](https://github.com/brekkylab/backlot/blob/main/examples/using-official-sdk/msteams.py) |
 
 The roadmap lives in [the tracking issue](https://github.com/brekkylab/backlot/issues/89) — ask there for the source you need.
 

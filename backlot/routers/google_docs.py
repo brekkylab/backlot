@@ -1040,9 +1040,9 @@ def _docs_cell_style(read: dict, names: list[str]) -> dict:
 def _docs_update_cell_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``updateTableCellStyle`` over a `tableRange`, or over every cell of the table at its
     `tableStartLocation`, in real's order of refusals, measured 2026-11-09: neither set, the
-    fields (the spans unallowed, a border whole), the values (`_docs_cell_style`), then the range
-    (`_docs_table_range`) or the table start location (`_docs_table_at`), the tab they name
-    checked first of all. `*` names every member but the spans, and takes off each one it leaves
+    tab they name, the fields (the spans unallowed, a border whole), the values
+    (`_docs_cell_style`), then the range (`_docs_table_range`) or the table start location
+    (`_docs_table_at`). `*` names every member but the spans, and takes off each one it leaves
     unset."""
     if "table_range" not in req and "table_start_location" not in req:
         raise _EditorRefused("No cells set.")
@@ -1101,8 +1101,6 @@ def _docs_merge(name: str):
 
 
 # --- section breaks, and section, document and named styles --------------------------------------
-#
-# Measured 2026-11-09 against the live Docs v1 API, as a Workspace member on Docs it owns.
 
 _PJ_SECTION_STYLE = _PJ_DOCS("docs.SectionStyle")
 _PJ_DOCUMENT_STYLE = _PJ_DOCS("docs.DocumentStyle")
@@ -1275,9 +1273,9 @@ def _docs_update_document_style(doc: gdocs.Document, req: dict) -> tuple[dict, b
     """``updateDocumentStyle`` on the tab `tabId` names, the first for none, in real's order of
     refusals, measured 2026-11-09: the tab, the fields (the header and footer ids and
     `useCustomHeaderFooterMargins` unallowed), then the values: the background, which must be
-    stated and not transparent, each margin and the page's height and width, which must be
-    stated, in that order whatever order `fields` names them in, `*` naming them all, each margin's
-    unit, then a page number start below zero. A margin below zero is kept, a page size named by
+    stated and not transparent, each margin and the page's height and width, stated and in
+    points, in that order whatever order `fields` names them in (`*` naming them all), then a page
+    number start below zero. A margin below zero is kept, a page size named by
     one of its members sets that one, and a document mode left unset changes nothing. Setting a
     margin takes the same margin off every section of the tab."""
     tab = _docs_tab(doc, req)
@@ -1365,8 +1363,7 @@ def _docs_fit_margins(doc: gdocs.Document, tab: dict) -> None:
     )
 
 
-# What a named style's text may not take: measured 2026-11-09, a font size of 0 or 600 and a weight
-# of 150 were each a 500, where `updateTextStyle` keeps a size in bounds and refuses the weight.
+# The `fields` paths `updateNamedStyle` refuses as unallowed.
 _DOCS_NAMED_UNALLOWED = (
     "textStyle.link",
     "paragraphStyle.headingId",
@@ -1381,8 +1378,7 @@ def _docs_update_named_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool
     named), the named style's type, which `fields` must name and the request state, then the
     values (`_docs_text_style`, `_docs_paragraph_style`). Each member named is set, or taken off
     when left unset; `textStyle` or `paragraphStyle` named whole is replaced by what is stated, and
-    `*` replaces both. A paragraph style replaced keeps `NORMAL_TEXT` as its own type and a
-    direction."""
+    `*` replaces both (`gdocs.Document.set_named_style`)."""
     tab = _docs_tab(doc, req)
     fields = req.get("fields", "")
     if (
@@ -1420,6 +1416,8 @@ def _docs_update_named_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool
         ]
     size = text_read.get("font_size", {}).get("magnitude") if "fontSize" in text_names else None
     weight = text_read.get("weighted_font_family", {}).get("weight", 0) or 400
+    # measured 2026-11-09: a font size of 0 or 600 and a weight of 150 were each a 500, where
+    # `updateTextStyle` keeps a size in bounds and refuses the weight
     if size is not None and not 1 <= size <= 512:
         raise gerr.internal_error()
     if "weightedFontFamily" in text_names and (weight % 100 or not 100 <= weight <= 900):
@@ -2263,12 +2261,12 @@ def _docs_replace_named_range(doc: gdocs.Document, req: dict) -> tuple[dict, boo
 # Nothing here makes a suggestion (`SUGGEST` is refused), a comment, a dropdown or an inline or
 # positioned object, and a corpus states none, so every id these requests name names nothing. Each is
 # checked as real checks it before its lookup, and then refused as real refuses an id naming
-# nothing. Measured 2026-11-09 against the live Docs v1 API, as a Workspace member on Docs it owns.
+# nothing.
 
 
 def _docs_not_found(message: str) -> gerr.GoogleError:
     """Real's answer to an id naming no suggestion or comment: a 404 that names neither the request
-    nor its kind, ahead of the refusals of every request after it."""
+    nor its kind, ahead of an earlier request's deferred 500."""
     return gerr.GoogleError(404, message, reason="notFound", status="NOT_FOUND")
 
 

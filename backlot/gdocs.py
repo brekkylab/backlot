@@ -1622,8 +1622,8 @@ class Body:
 
     def cuts_section(self, start: int, end: int) -> bool:
         """Whether deleting ``[start, end)`` would take a section break without the newline before
-        it, or that newline without the break. Measured 2026-11-09: `a\n`, the break and `b`
-        went, and so did the newline, the break and `b`, while the break and `b`, or the newline
+        it, or that newline without the break. Measured 2026-11-09: `a\n` and the break went,
+        and so did the newline, the break and `b`, while the break and `b`, or the newline
         alone, were refused."""
         return any(
             (start <= pos - 1 < end) != (start <= pos < end)
@@ -2439,9 +2439,9 @@ class Body:
 
     def merge_cells(self, table: int, row: int, column: int, rows: int, columns: int) -> None:
         """The cells ``rows`` by ``columns`` from the one at ``row`` and ``column`` merged into it.
-        Measured 2026-11-09: the first cell spans them; the paragraphs of every other cell that
-        holds more than one empty paragraph move into it, row by row, each keeping of its style
-        only what normal text gives otherwise (`_left`), and the first cell's own empty paragraph
+        Measured 2026-11-09: the first cell spans them; the paragraphs of every other cell but one
+        holding a lone empty paragraph move into it, row by row, each keeping only the members its
+        named style does not give (`_left`), and the first cell's own empty paragraph
         goes when another's come; a cell they left holds an empty paragraph of its last one's
         style as normal text, its newline's style and its `headingId` kept; and a merged row of no
         minimum height takes 10 PT over the largest font size in its cells, 21 PT for normal text

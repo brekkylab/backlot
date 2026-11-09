@@ -194,7 +194,10 @@ def test_every_manifest_meets_its_catalogs_listing_limits():
     here one onto `main`. ``serverInfo`` lists the same icons as server.json. OpenAI's submission
     page also caps the Codex listing text, read 2026-11-09: the name and subtitle at 30 characters,
     the descriptions at 4000, at most 20 capabilities of 120, at most three unique starter prompts
-    of 128 with no @mention, and HTTPS listing URLs of at most 1024."""
+    of 128 with no @mention, and HTTPS listing URLs of at most 1024. Anthropic's directory reads its
+    listing URLs from `plugin.json` and takes each as an `https://` URL (code.claude.com
+    plugins-reference, "Directory listing fields", read 2026-11-09). Both listings link the same
+    support page."""
     claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     server = json.loads((REPO / "server.json").read_text(encoding="utf-8"))
@@ -218,6 +221,9 @@ def test_every_manifest_meets_its_catalogs_listing_limits():
     assert all(len(p) <= 128 and "@" not in p for p in prompts)
     for key in ("websiteURL", "supportURL"):
         assert listing[key].startswith("https://") and len(listing[key]) <= 1024, key
+    for key in ("documentationUrl", "supportUrl"):
+        assert claude[key].startswith("https://"), key
+    assert claude["supportUrl"] == listing["supportURL"]
     for entry in server["icons"]:
         assert entry["src"].startswith(_RAW_MAIN) and len(entry["src"]) <= 255
         path = REPO / entry["src"].removeprefix(_RAW_MAIN)

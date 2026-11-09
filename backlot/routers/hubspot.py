@@ -947,11 +947,11 @@ def _non_standard_number(raw: bytes) -> tuple[tuple[int, int], JSONResponse] | t
     refuses the token wherever it stands, in a member it does not read and as the whole body too,
     names it with its sign, and gives the column just past it, in an envelope with no `category`. It
     reads the body in order and stops at the first value it cannot read, so a value
-    `_refuse_a_batch_read_shape` or `_refuse_an_operator` refuses is named instead when it starts
-    ahead of the token (`{"inputs":[5,NaN]}` names the `5`, `{"inputs":[NaN,5]}` the token); both
-    take the token's start as `before`. A byte that does not decode in the body's encoding stops
-    real too, with a 400 of its own that this router does not send, so only the text ahead of the
-    first such byte is scanned: a token there is named, and a body with none is left to the route.
+    `_refuse_a_batch_read_shape`, `_refuse_a_search_shape` or `_refuse_an_operator` refuses is named
+    instead when it starts ahead of the token (`{"inputs":[5,NaN]}` names the `5`,
+    `{"inputs":[NaN,5]}` the token). A byte that does not decode in the body's encoding stops real
+    too, with a 400 of its own that this router does not send, so only the text ahead of the first
+    such byte is scanned: a token there is named, and a body with none is left to the route.
     `json.loads` reads the three as floats, so without this the routes answer for a float there."""
     encoding = json.detect_encoding(raw)
     if encoding == "utf-8-sig":
@@ -993,8 +993,9 @@ def _refuse_an_operator(
     reads the body in order and stops at the first operator of either kind, an unreadable one
     included when the filter repeats `operator` with a readable one after it. It reads an integer
     operator as an index too, answers a boolean, float, object or array operator with a different
-    400, and refuses a filter with no operator. This router models none of those cases. `before` is
-    where `_non_standard_number` found a token, and an operator from there on is left to it."""
+    400, and refuses a filter with no operator. This router models none of those cases. An operator
+    from `before` on is left to what starts there: the token `_non_standard_number` found, or the
+    value `_refuse_a_search_shape` names."""
     groups = body.get("filterGroups")
     for i, group in enumerate(groups if isinstance(groups, list) else ()):
         if not isinstance(group, dict):
@@ -1052,9 +1053,9 @@ def _array_or_object(value) -> str:
 
 def _not_an_object(item) -> str:
     """Real's text for a list element it reads as an object when the body holds a string, an array,
-    a boolean or a number there, and for a string where it reads `properties`. A string is echoed
-    trimmed (`_TRIM`); for an integer it names the narrowest of Java's int, long and BigInteger that
-    holds the value."""
+    a boolean or a number there, and for a string `properties` or `propertiesWithHistory`. A string
+    is echoed trimmed (`_TRIM`); for an integer it names the narrowest of Java's int, long and
+    BigInteger that holds the value."""
     if isinstance(item, list):
         return _array_or_object(item)
     if isinstance(item, str):
@@ -1192,8 +1193,7 @@ def _refuse_a_search_shape(
     for `filterGroups` and the group's for `filters`: after that object's other values and ahead of
     a later element, `query` or non-standard token. A null `filterGroups`, `filters` or `query`, and
     a group with no `filters`, are read. With a `before` from `_non_standard_number`, a value from
-    there on is left to the token; `search_objects` leaves an operator `_refuse_an_operator` names
-    ahead of the value named here to that."""
+    there on is left to the token."""
 
     def named(position, response):
         if before is not None and position >= before:

@@ -2513,9 +2513,16 @@ class Body:
             cell["rowSpan"] = cell["columnSpan"] = 1
 
     def pin_header_rows(self, table: int, count: int) -> None:
-        """The first ``count`` rows marked as the table's header and the rest not: measured
-        2026-11-09, `tableHeader: true` on each, and a row inserted above or below a header row was
-        one too (`insert_row` copies it)."""
+        """The first ``count`` rows marked as the table's header, and every row a merged cell among
+        them spans, and the rest not: measured 2026-11-09, `tableHeader: true` on each, both rows
+        of a cell merged over rows 0 and 1 for a count of 1, and a row inserted above or below a
+        header row was one too (`insert_row` copies it)."""
+        spans = {
+            (row, row + rows)
+            for row, _, rows, _ in (self.span(table, *cell) for cell in self.merged(table))
+        }
+        while reach := [end for start, end in spans if start < count < end]:
+            count = max(reach)
         for r, own in enumerate(self.grid(table)):
             style = self.chars[own[0]][1]["tableRowStyle"]
             style.pop("tableHeader", None)

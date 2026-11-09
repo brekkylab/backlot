@@ -26,6 +26,7 @@ from fastapi import Request
 
 from backlot import auth, gdocs, protojson, store
 from backlot.errors import google as gerr
+from backlot.errors.atlassian import strip_java_whitespace
 from backlot.openapi import proto_body, qp
 from backlot.routers.google import (
     _BATCH_OUTER,
@@ -361,8 +362,11 @@ for _key, _group in {
     # measured 2026-11-09
     ("docs.UpdateTableCellStyleRequest", "tableRange"): "cells",
     ("docs.UpdateTableCellStyleRequest", "tableStartLocation"): "cells",
-    ("docs.AddCommentReplyRequest", "commentId"): "thread_id",
-    ("docs.AddCommentReplyRequest", "suggestionId"): "thread_id",
+    **{
+        (f"docs.{kind}Request", member): "thread_id"
+        for kind in ("AddCommentReply", "UpdateCommentPost", "DeleteCommentReply")
+        for member in ("commentId", "suggestionId")
+    },
 }.items():
     _DOCS_SHAPES[_key] = {"oneof": _group}
 # `createHeader`'s and `createFooter`'s `type`: measured 2026-11-02, `1` was read as `DEFAULT`, and
@@ -387,6 +391,10 @@ _PJ_DOCS = _pj_messages(
         ("docs.CreateFooterRequest", "type"): _DOCS_HEADER_FOOTER,
         ("docs.CreateParagraphBulletsRequest", "bulletPreset"): _DOCS_BULLET_PRESET,
         ("docs.InsertSectionBreakRequest", "sectionType"): _docs_enum("SectionStyle.SectionType"),
+        # measured 2026-11-09: `FOO` is refused naming this type, and -1 and 7 are read
+        ("docs.ReplaceImageRequest", "imageReplaceMethod"): protojson.Enum(
+            f"{_DOCS_VIEW}.ImageReplaceMethod", ("IMAGE_REPLACE_METHOD_UNSPECIFIED", "CENTER_CROP")
+        ),
     },
     _DOCS_SHAPES,
     {"docs.Request": "BatchUpdateDocumentRequest.Request"},
@@ -1087,7 +1095,10 @@ def _docs_merge(name: str):
             body.unmerge_cells(table, cells)
             return {}, False
         inside = set(cells)
-        if any(not set(body._region(table, [cell])) <= inside for cell in cells):
+        grid = body.grid(table)
+        header = {body.chars[grid[r][0]][1]["tableRowStyle"].get("tableHeader") for r, _ in cells}
+        # measured 2026-11-09: a merge over a header row and a row below the header was refused
+        if any(not set(body._region(table, [cell])) <= inside for cell in cells) or len(header) > 1:
             raise _EditorRefused("A non-rectangular collection of cells cannot be merged.")
         if len(cells) == 1:
             # measured: a merge of one cell kept the `revisionId`
@@ -1195,8 +1206,9 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
     500), then the values. A margin, the content direction or the columns named must be stated, in
     that order whatever order `fields` names them in, `*` naming them all; every column but the
     last needs its padding, and a width stated is refused (`_docs_column_widths`); a margin below
-    zero is a 500. The first section's page numbering and first-page flag are its tab's
-    `documentStyle`'s, a later section's its own."""
+    zero is a 500, and the margins are fitted to the page (`_docs_fit_margins`). The first
+    section's page numbering and first-page flag are its tab's `documentStyle`'s, a later
+    section's its own."""
     names = _docs_fields(
         req.get("fields", ""),
         _PJ_SECTION_STYLE,
@@ -1247,14 +1259,16 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
     else:
         hit = [k for k in range(len(sections)) if starts[k] < end and starts[k + 1] > start]
     page = doc.document_style(tab)
+    margins = {key: value for key, value in stated.items() if key in _DOCS_MARGINS}
     for k in hit:
         style = sections[k][1]
         own = dict(stated)
+        own |= _docs_fit_margins({**style, **margins}, page, set(margins))
         if "columnProperties" in names:
-            left = own.get("marginLeft", style.get("marginLeft", page["marginLeft"]))["magnitude"]
-            right = own.get("marginRight", style.get("marginRight", page["marginRight"]))[
-                "magnitude"
-            ]
+            left, right = (
+                own.get(key, style.get(key, page[key])).get("magnitude", 0)
+                for key in ("marginLeft", "marginRight")
+            )
             width = page["pageSize"]["width"]["magnitude"] - left - right
             own["columnProperties"] = _docs_column_widths(read["column_properties"], width)
         if k == 0:
@@ -1275,9 +1289,11 @@ def _docs_update_document_style(doc: gdocs.Document, req: dict) -> tuple[dict, b
     `useCustomHeaderFooterMargins` unallowed), then the values: the background, which must be
     stated and not transparent, each margin and the page's height and width, stated and in
     points, in that order whatever order `fields` names them in (`*` naming them all), then a page
-    number start below zero. A margin below zero is kept, a page size named by
-    one of its members sets that one, and a document mode left unset changes nothing. Setting a
-    margin takes the same margin off every section of the tab."""
+    number start below zero. A margin below zero is kept, a page size named by one of its members
+    sets that one, and a document mode left unset changes nothing. Setting a margin takes the same
+    margin off every section of the tab. The tab's margins, then each section's, are fitted to the
+    page (`_docs_fit_margins`), and then a page near a paper size takes that size
+    (`_DOCS_PAPER`)."""
     tab = _docs_tab(doc, req)
     unallowed = _DOCS_SEGMENT_IDS + ("useCustomHeaderFooterMargins",)
     fields = req.get("fields", "")
@@ -1333,11 +1349,16 @@ def _docs_update_document_style(doc: gdocs.Document, req: dict) -> tuple[dict, b
         if mode:
             stated["documentFormat"] = {"documentMode": _docs_enum_name(_DOCS_MODE, mode)}
     doc.set_document_style(tab, stated)
-    _docs_fit_margins(doc, tab)
+    page = doc.document_style(tab)
+    doc.set_document_style(tab, _docs_fit_margins(page, page, set(stated) & set(_DOCS_MARGINS)))
+    page = doc.document_style(tab)
     margins = {k: None for k in stated if k in _DOCS_MARGINS}
-    if margins:
-        for _, style in doc.open(tab).sections():
-            gdocs.restate(style, margins, gdocs.SECTION_STYLE_ORDER)
+    for _, style in doc.open(tab).sections():
+        gdocs.restate(style, margins, gdocs.SECTION_STYLE_ORDER)
+        fitted = _docs_fit_margins(style, page, set(style) & {"marginLeft", "marginRight"})
+        gdocs.restate(style, fitted, gdocs.SECTION_STYLE_ORDER)
+    if "pageSize" in stated:
+        doc.set_document_style(tab, {"pageSize": _docs_paper(page["pageSize"])})
     return {}, False
 
 
@@ -1346,21 +1367,68 @@ def _docs_update_document_style(doc: gdocs.Document, req: dict) -> tuple[dict, b
 _DOCS_MIN_TEXT_WIDTH = 36
 
 
-def _docs_fit_margins(doc: gdocs.Document, tab: dict) -> None:
-    """The tab's left and right margins, when they leave less than `_DOCS_MIN_TEXT_WIDTH` of the
-    page between them, cut in proportion until they leave that."""
-    style = doc.document_style(tab)
-    left, right = style["marginLeft"].get("magnitude", 0), style["marginRight"].get("magnitude", 0)
-    room = style["pageSize"]["width"]["magnitude"] - _DOCS_MIN_TEXT_WIDTH
-    if left + right <= room or left + right <= 0:
-        return
-    doc.set_document_style(
-        tab,
-        {
-            key: {"magnitude": _docs_number(value * room / (left + right)), "unit": "PT"}
-            for key, value in (("marginLeft", left), ("marginRight", right))
-        },
-    )
+def _docs_fit_margins(style: dict, page: dict, named: set[str]) -> dict:
+    """The margins ``style`` (a tab's `documentStyle` or a section's `sectionStyle`) states, fitted
+    to the page of ``page``, its tab's `documentStyle`, as `gdocs.restate` takes them. Measured
+    2026-11-09 on a 612 by 792 PT page:
+    - A left and right margin that leave less than `_DOCS_MIN_TEXT_WIDTH` between them are cut. A
+      margin a section does not state is its tab's. When ``named`` holds one of the two and the
+      other leaves room, that one is cut to the room left (600 beside 72 was 504, and beside 100.5,
+      475.5). Otherwise the left takes its share of the room rounded down, and the right the rest,
+      neither below 0 (500 and 200 were 411 and 165, 200 and 500 were 164 and 412, and 72 and 72
+      on a 30 PT page were 0 and 0).
+    - A top, bottom, header or footer margin above two fifths of the page's height is cut to that
+      (800 was 316.8, and 72 on a 100 PT page was 40)."""
+    out: dict = {}
+    size = page["pageSize"]
+    left, right = (style.get(k, page[k]).get("magnitude", 0) for k in ("marginLeft", "marginRight"))
+    room = size["width"].get("magnitude", 0) - _DOCS_MIN_TEXT_WIDTH
+    if left + right > max(room, 0):
+        cut = [k for k in ("marginLeft", "marginRight") if k in named]
+        other = right if cut == ["marginLeft"] else left
+        if len(cut) == 1 and room >= other:
+            out[cut[0]] = room - other
+        else:
+            out["marginLeft"] = max(0, math.floor(room * left / (left + right)))
+            out["marginRight"] = max(0, room - out["marginLeft"])
+    most = size["height"].get("magnitude", 0) * 2 / 5
+    for key in ("marginTop", "marginBottom", "marginHeader", "marginFooter"):
+        if style.get(key, {}).get("magnitude", 0) > most:
+            out[key] = most
+    return {
+        key: ({"magnitude": _docs_number(value)} if value else {}) | {"unit": "PT"}
+        for key, value in out.items()
+    }
+
+
+_DOCS_MM = 72 / 25.4
+# The paper sizes a page near one takes, width by height in points: measured 2026-11-09, a width
+# and height each within 5 PT of one, either way round, were kept as it (611 by 792 as Letter, 596
+# by 842 as A4, 1225 by 793 as Tabloid on its side), and 618 by 792 and 540 by 720 were kept as
+# sent. Letter, Tabloid, Legal, Statement, Folio, Executive, then A3, A4, A5, B4 and B5.
+_DOCS_PAPER = (
+    (612, 792),
+    (792, 1224),
+    (612, 1008),
+    (396, 612),
+    (612, 936),
+    (522, 756),
+    *(
+        (w * _DOCS_MM, h * _DOCS_MM)
+        for w, h in ((297, 420), (210, 297), (148, 210), (250, 353), (176, 250))
+    ),
+)
+
+
+def _docs_paper(size: dict) -> dict:
+    """A `pageSize`, as the paper size it is near (`_DOCS_PAPER`) when it is near one."""
+    width, height = (size[k].get("magnitude", 0) for k in ("width", "height"))
+    for w, h in _DOCS_PAPER:
+        for across, down in ((w, h), (h, w)):
+            if abs(width - across) <= 5 and abs(height - down) <= 5:
+                near = {"width": across, "height": down}
+                return {k: {"magnitude": _docs_number(near[k]), "unit": "PT"} for k in size}
+    return size
 
 
 # The `fields` paths `updateNamedStyle` refuses as unallowed.
@@ -2284,17 +2352,35 @@ def _docs_thread(req: dict) -> None:
     raise _docs_not_found(f"Comment with ID {req.get('comment_id', '')} does not exist.")
 
 
+def _docs_blank(text: str | None) -> bool:
+    """Whether a post's content is empty as real reads it: measured 2026-11-09, a tab, a newline,
+    U+001F, U+2003, U+2028 and U+3000 alone were empty, and U+00A0, U+0085 and U+200B were not, as
+    Java's `Character.isWhitespace` has them."""
+    return not strip_java_whitespace(text or "")
+
+
 def _docs_add_comment_reply(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """``addCommentReply``: a thread named, then the post's content unless its `commentAction`
-    resolves or reopens the thread."""
+    """``addCommentReply``, in real's order of refusals, measured 2026-11-09: a thread named; on
+    a comment, a `commentAction` the enum does not declare, then empty content unless the action
+    resolves or reopens the thread; on a suggestion, empty content, then any `commentAction` set,
+    0 included. A `suggestionAction` is not checked."""
     if not req.get("comment_id") and not req.get("suggestion_id"):
         raise _EditorRefused("Add reply requests must specify a comment ID or suggestion ID.")
     post = req.get("post", {})
-    if not post.get("content") and post.get("comment_action") not in (2, 3):
-        raise _EditorRefused(
-            "Add comment reply requests must specify a non-empty content if comment action is not "
-            "RESOLVE or REOPEN."
-        )
+    action = post.get("comment_action")
+    if req.get("suggestion_id"):
+        if _docs_blank(post.get("content")):
+            raise _EditorRefused("Add suggestion reply requests must specify non-empty post text.")
+        if action is not None:
+            raise _EditorRefused("Add suggestion reply requests may not specify a comment action.")
+    else:
+        if action is not None and not 0 <= action <= 3:
+            raise _EditorRefused("Unrecognized comment action type.")
+        if _docs_blank(post.get("content")) and action not in (2, 3):
+            raise _EditorRefused(
+                "Add comment reply requests must specify a non-empty content if comment action is "
+                "not RESOLVE or REOPEN."
+            )
     _docs_thread(req)
     return {}, False
 
@@ -2322,7 +2408,7 @@ def _docs_delete_comment_reply(doc: gdocs.Document, req: dict) -> tuple[dict, bo
 def _docs_update_comment_post(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     if not req.get("post_id"):
         raise _EditorRefused("Update comment post requests must specify a post ID.")
-    if not req.get("content"):
+    if _docs_blank(req.get("content")):
         raise _EditorRefused("Update comment post requests must specify non-empty content.")
     if not req.get("comment_id") and not req.get("suggestion_id"):
         raise _EditorRefused("Update comment post requests must specify a thread ID.")
@@ -2366,16 +2452,28 @@ def _docs_insert_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
 
 def _docs_update_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """``updateDropdownProperties``: the tab, its fields, `*` among them naming the read-only id, a
-    dropdown named, then looked up."""
+    """``updateDropdownProperties``, in real's order of refusals, measured 2026-11-09: the tab,
+    its fields, `*` among them naming the read-only id, the first of `displayValue` and
+    `dropdownDefinitionId` named, a dropdown named, then a `selectedOptionId` named and left empty,
+    then the lookup."""
     _docs_tab(doc, req)
     fields = req.get("fields", "")
     if fields.strip(_DOCS_SPACE) == "*":
         raise _EditorRefused("Invalid field mask: * includes read-only fields")
     if _docs_fields(fields, _PJ_DOCS("docs.DropdownProperties"), ()) is None:
         raise gerr.internal_error()
+    paths = [_docs_snake(_docs_camel(p.strip(_DOCS_SPACE))) for p in fields.split(",")]
+    for path in paths:
+        if path in ("display_value", "dropdown_definition_id"):
+            raise _EditorRefused(f"Invalid field mask: {path} cannot be updated")
     if not req.get("dropdown_id"):
         raise _EditorRefused("Update dropdown properties requests must specify a dropdown_id.")
+    if "selected_option_id" in paths and not req.get("dropdown_properties", {}).get(
+        "selected_option_id"
+    ):
+        raise _EditorRefused(
+            "Update dropdown properties requests must specify a selected_option_id."
+        )
     raise _EditorRefused(f"Dropdown with ID {req['dropdown_id']} not found.")
 
 

@@ -104,11 +104,12 @@ goes to.
 A merge moves the text of the cells it covers into the first, which spans them, and gives a merged
 row of no height one 10 PT taller than its largest font; an unmerge splits it again and leaves the
 text where it is. A row or column added or deleted beside a merged cell grows, shrinks or takes it
-as real's does, a border set on a cell is set on the cell across that edge too, and `files.export`
-leaves out what a merged cell covers. A section break stands after the newline it inserts, and is
-deleted only with that newline. A section's columns are as wide as real's for the page and margins
-they sit between, and a named style a write changed is what Markdown marks that style's text
-with.
+as real's does, header rows reach to the end of a merged cell among them, a border set on a cell is
+set on the cell across that edge too, and `files.export` leaves out what a merged cell covers. A
+section break stands after the newline it inserts, and is deleted only with that newline. Margins
+that leave too little of the page are cut as real cuts them, a page near a paper size takes that
+size, a section's columns are as wide as real's for the page and margins they sit between, and a
+named style a write changed is what Markdown marks that style's text with.
 
 A table is made as `insertTable` makes one, after a newline it inserts, and a row or a column takes
 the style of the cells it is made beside; the last row or column deleted takes the table with it.
@@ -184,12 +185,14 @@ field list, so the ordering divergence below has no entry to live in and is stat
   data sources, and every cell format but a number format are read and not kept.
 - **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
   `spreadsheets.create` and `sheets.copyTo`.
-- **Suggestions, comments, dropdowns, smart chips and images in Docs.** Nothing here makes one,
-  so a request naming one (`acceptSuggestion`, `addCommentReply`, `deleteDropdownDefinition`,
-  `replaceImage` and the rest) is refused as real refuses an id naming nothing, and the requests
-  and write mode that make one (`insertComment`, `createDropdownDefinition`, `insertDate`,
+- **Suggestions, comments, dropdowns, smart chips and images in Docs.** Nothing here makes one, so a
+  request naming one (`acceptSuggestion`, `addCommentReply`, `deleteDropdownDefinition`,
+  `replaceImage` and the rest) is refused as real refuses an id naming nothing, and the requests and
+  write mode that make one (`insertComment`, `createDropdownDefinition`, `insertDate`,
   `insertPerson`, `insertRichLink`, `insertInlineImage`, `SUGGEST`) are refused naming themselves,
-  where real applies them.
+  where real applies them. `replaceImage` checks only its URL's scheme before the object id, where
+  real fetches the image first and refuses one it cannot fetch (`The provided image was not
+  found.`), measured 2026-11-09.
 - **A heading a merge empties.** A merge leaves a heading it moves out of a cell as an empty normal
   paragraph of the heading's style, where real also states normal text's spacing and indents on
   it, measured 2026-11-09.

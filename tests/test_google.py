@@ -20782,6 +20782,19 @@ def _docs_served(wc, h, doc: str, part: str):
     if part == "sections":
         content = read["body"]["content"]
         return [el["sectionBreak"]["sectionStyle"] for el in content if "sectionBreak" in el]
+    if part == "page":
+        return {k: v.get("magnitude") for k, v in read["documentStyle"]["pageSize"].items()}
+    if part == "margins":
+
+        def margins(style: dict) -> dict:
+            return {k: v.get("magnitude", 0) for k, v in style.items() if k.startswith("margin")}
+
+        page, size = read["documentStyle"], read["documentStyle"]["pageSize"]
+        content = read["body"]["content"]
+        return [
+            margins(page) | {"w": size["width"]["magnitude"], "h": size["height"]["magnitude"]},
+            [margins(el["sectionBreak"]["sectionStyle"]) for el in content if "sectionBreak" in el],
+        ]
     if part.startswith("named:"):
         styles = read["namedStyles"]["styles"]
         return next(s for s in styles if s["namedStyleType"] == part.removeprefix("named:"))
@@ -20942,6 +20955,84 @@ _TABLE_LAYOUT_ROWS = [
     ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"insertSectionBreak": {"location": {"index": 2}, "sectionType": "NEXT_PAGE"}}], "export", ["﻿a\r\nb\r\n\r\n\r\nc1\r\nc2\r\n\tc3\r\n\tc4\r\n\tcd", "a  \nb\n\n| c1 c2 |  |\n| :---- | :---- |\n| c3 | c4 |\n\ncd"]),
     # export merged 2x2
     ("wr-table", [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 2}}}], "export", ["﻿ab\r\n\r\n\r\nc1\r\nc2\r\nc3\r\nc4\r\n\tcd", "ab\n\n| c1 c2 c3 c4 |  |\n| :---- | ----- |\n|  |  |\n\ncd"]),
+    # ds L600
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 600, "unit": "PT"}}, "fields": "marginLeft"}}], "margins", [{"marginLeft": 504, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds R100.5 then L600
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": 100.5, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 600, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 475.5, "marginRight": 100.5, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds L500 R200
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 500, "unit": "PT"}, "marginRight": {"magnitude": 200, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 411, "marginRight": 165, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds L200 R500
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 200, "unit": "PT"}, "marginRight": {"magnitude": 500, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 164, "marginRight": 412, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds L700 R72 both named
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}, "marginRight": {"magnitude": 72, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 522, "marginRight": 54, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds width100 and L50
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 100, "unit": "PT"}}, "marginLeft": {"magnitude": 50, "unit": "PT"}}, "fields": "pageSize.width,marginLeft"}}], "margins", [{"marginLeft": 26, "marginRight": 38, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 100, "h": 792}, [{}]]),
+    # ds width300 and L300
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 300, "unit": "PT"}}, "marginLeft": {"magnitude": 300, "unit": "PT"}}, "fields": "pageSize.width,marginLeft"}}], "margins", [{"marginLeft": 192, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 300, "h": 792}, [{}]]),
+    # ds width100
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 100, "unit": "PT"}}}, "fields": "pageSize.width"}}], "margins", [{"marginLeft": 32, "marginRight": 32, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 100, "h": 792}, [{}]]),
+    # ds L100 R40 then width100
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 100, "unit": "PT"}, "marginRight": {"magnitude": 40, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 100, "unit": "PT"}}}, "fields": "pageSize.width"}}]], "margins", [{"marginLeft": 45, "marginRight": 19, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 100, "h": 792}, [{}]]),
+    # ds width30
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 30, "unit": "PT"}}}, "fields": "pageSize.width"}}], "margins", [{"marginLeft": 0, "marginRight": 0, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 30, "h": 792}, [{}]]),
+    # ds width611.5 L500 R200
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 611.5, "unit": "PT"}}, "marginLeft": {"magnitude": 500, "unit": "PT"}, "marginRight": {"magnitude": 200, "unit": "PT"}}, "fields": "pageSize.width,marginLeft,marginRight"}}], "margins", [{"marginLeft": 411, "marginRight": 164.5, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds T800
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginTop": {"magnitude": 800, "unit": "PT"}}, "fields": "marginTop"}}], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 316.8, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds height501 and T250
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"height": {"magnitude": 501, "unit": "PT"}}, "marginTop": {"magnitude": 250, "unit": "PT"}}, "fields": "pageSize.height,marginTop"}}], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 200.4, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 501}, [{}]]),
+    # ds height100
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"height": {"magnitude": 100, "unit": "PT"}}}, "fields": "pageSize.height"}}], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 40, "marginBottom": 40, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 100}, [{}]]),
+    # ds F800
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginFooter": {"magnitude": 800, "unit": "PT"}}, "fields": "marginFooter"}}], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 316.8, "w": 612, "h": 792}, [{}]]),
+    # ss L600
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 600, "unit": "PT"}}, "fields": "marginLeft"}}], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 504}]]),
+    # ss L500 R200
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 500, "unit": "PT"}, "marginRight": {"magnitude": 200, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 411, "marginRight": 165}]]),
+    # ds R100 then ss L600
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": 100, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 600, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 72, "marginRight": 100, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 476}]]),
+    # ds L500 then ss R200
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 500, "unit": "PT"}}, "fields": "marginLeft"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginRight": {"magnitude": 200, "unit": "PT"}}, "fields": "marginRight"}}]], "margins", [{"marginLeft": 500, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginRight": 76}]]),
+    # ss R300 then ss L300
+    ("wr-table", [[{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginRight": {"magnitude": 300, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 300, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 276, "marginRight": 300}]]),
+    # ss L300 then ds width200
+    ("wr-table", [[{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 300, "unit": "PT"}}, "fields": "marginLeft"}}], [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 200, "unit": "PT"}}}, "fields": "pageSize.width"}}]], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 200, "h": 792}, [{"marginLeft": 92}]]),
+    # ss L300 R250 then ds width500
+    ("wr-table", [[{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 300, "unit": "PT"}, "marginRight": {"magnitude": 250, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 500, "unit": "PT"}}}, "fields": "pageSize.width"}}]], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 500, "h": 792}, [{"marginLeft": 253, "marginRight": 211}]]),
+    # ss H800
+    ("wr-table", [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginHeader": {"magnitude": 800, "unit": "PT"}}, "fields": "marginHeader"}}], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginHeader": 316.8}]]),
+    # ss T300 then ds height500
+    ("wr-table", [[{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginTop": {"magnitude": 300, "unit": "PT"}}, "fields": "marginTop"}}], [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"height": {"magnitude": 500, "unit": "PT"}}}, "fields": "pageSize.height"}}]], "margins", [{"marginLeft": 72, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 500}, [{"marginTop": 200}]]),
+    # page 611
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 611, "unit": "PT"}}}, "fields": "pageSize.width"}}], "page", {"height": 792, "width": 612}),
+    # page 617 797
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 617, "unit": "PT"}, "height": {"magnitude": 797, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 792, "width": 612}),
+    # page 618 792
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 618, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 792, "width": 618}),
+    # page 596 842
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 596, "unit": "PT"}, "height": {"magnitude": 842, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 841.8897637795277, "width": 595.2755905511812}),
+    # page 601.276 841.89
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 601.2755905511812, "unit": "PT"}, "height": {"magnitude": 841.8897637795276, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 841.8897637795276, "width": 601.2755905511812}),
+    # page 1225 793
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 1225, "unit": "PT"}, "height": {"magnitude": 793, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 792, "width": 1224}),
+    # page 523 757
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 523, "unit": "PT"}, "height": {"magnitude": 757, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 756, "width": 522}),
+    # page 541 721
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 541, "unit": "PT"}, "height": {"magnitude": 721, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 721, "width": 541}),
+    # page 843 1192
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 843, "unit": "PT"}, "height": {"magnitude": 1192, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 1190.5511811023623, "width": 841.8897637795277}),
+    # page 710 500
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 710, "unit": "PT"}, "height": {"magnitude": 500, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 498.8976377952756, "width": 708.6614173228347}),
+    # page 300.5 792
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 612, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize"}}, {"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 300.5, "unit": "PT"}, "height": {"magnitude": 792, "unit": "PT"}}}, "fields": "pageSize.width,pageSize.height"}}], "page", {"height": 792, "width": 300.5}),
+    # merge col0 then pin 1
+    ("wr-table", [[{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}]], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}]]]),
+    # merge col0, pin 1, unmerge
+    ("wr-table", [[{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}], [{"unmergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}]], "table", [[2, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}]]]),
+    # merge col0, pin 1, insert row below 0
+    ("wr-table", [[{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}], [{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 1}, "insertBelow": True}}]], "table", [[3, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}]]]),
+    # insert row below 1, merge rows 0-1 col0, pin 1
+    ("wr-table", [[{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}, "insertBelow": True}}], [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}]], "table", [[3, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"unit": "PT"}}]]]),
 ]  # fmt: skip
 
 
@@ -23729,6 +23820,74 @@ _LAYOUT_REFUSALS += [
     ([_ins(0, "x"), {"deleteComment": {"commentId": "x"}}], 400, _IN_PARAGRAPH),
     ([_ins(1, "\ufdd0"), {"deleteComment": {"commentId": "x"}}], 404, "Comment thread with ID 'x' was not found."),
     ([{"deleteComment": {"commentId": "x"}}, _ins(1, "\ufdd0")], 404, "Comment thread with ID 'x' was not found."),
+    # pinned row 0, then a merge over rows 0 and 1
+    ([{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}, {"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], 400, "Invalid requests[1].mergeTableCells: A non-rectangular collection of cells cannot be merged."),
+    # updateDropdownProperties displayValue none
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties dropdownDefinitionId x
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "dropdownDefinitionId", "dropdownProperties": {"dropdownDefinitionId": "x"}}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: dropdown_definition_id cannot be updated"),
+    # updateDropdownProperties display_value snake
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "display_value"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties displayValue,selectedOptionId none
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue,selectedOptionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties selectedOptionId,dropdownDefinitionId
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "selectedOptionId,dropdownDefinitionId", "dropdownProperties": {"selectedOptionId": "x"}}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: dropdown_definition_id cannot be updated"),
+    # updateDropdownProperties no id, displayValue
+    ([{"updateDropdownProperties": {"dropdownId": "", "fields": "displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties no id, selectedOptionId none
+    ([{"updateDropdownProperties": {"dropdownId": "", "fields": "selectedOptionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Update dropdown properties requests must specify a dropdown_id."),
+    # updateDropdownProperties selectedOptionId none
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "selectedOptionId"}}], 400, "Invalid requests[0].updateDropdownProperties: Update dropdown properties requests must specify a selected_option_id."),
+    # updateDropdownProperties selectedOptionId empty
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "selectedOptionId", "dropdownProperties": {"selectedOptionId": ""}}}], 400, "Invalid requests[0].updateDropdownProperties: Update dropdown properties requests must specify a selected_option_id."),
+    # updateDropdownProperties selectedOptionId space
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "selectedOptionId", "dropdownProperties": {"selectedOptionId": " "}}}], 400, "Invalid requests[0].updateDropdownProperties: Dropdown with ID kix.nopenopenope not found."),
+    # replaceImage method FOO
+    ([{"replaceImage": {"imageObjectId": "kix.nopenopenope", "uri": "https://www.gstatic.com/images/branding/product/1x/docs_2020q4_48dp.png", "imageReplaceMethod": "FOO"}}], 400, "Invalid value at 'requests[0].replace_image.image_replace_method' (type.googleapis.com/google.apps.docs.v1.ImageReplaceMethod), \"FOO\""),
+    # replaceImage method 7
+    ([{"replaceImage": {"imageObjectId": "kix.nopenopenope", "uri": "https://www.gstatic.com/images/branding/product/1x/docs_2020q4_48dp.png", "imageReplaceMethod": 7}}], 400, "Invalid requests[0].replaceImage: The object with ID kix.nopenopenope could not be found."),
+    # addCommentReply no thread, action 99
+    ([{"addCommentReply": {"post": {"content": "x", "commentAction": 99}}}], 400, "Invalid requests[0].addCommentReply: Add reply requests must specify a comment ID or suggestion ID."),
+    # addCommentReply action 99 no content
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"commentAction": 99}}}], 400, "Invalid requests[0].addCommentReply: Unrecognized comment action type."),
+    # addCommentReply action -1
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "x", "commentAction": -1}}}], 400, "Invalid requests[0].addCommentReply: Unrecognized comment action type."),
+    # addCommentReply action 4
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "x", "commentAction": 4}}}], 400, "Invalid requests[0].addCommentReply: Unrecognized comment action type."),
+    # addCommentReply action 1 no content
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"commentAction": "NO_COMMENT_ACTION_CHANGE"}}}], 400, "Invalid requests[0].addCommentReply: Add comment reply requests must specify a non-empty content if comment action is not RESOLVE or REOPEN."),
+    # addCommentReply suggestionAction 99 comment
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "x", "suggestionAction": 99}}}], 404, "Comment with ID AAAAnope does not exist."),
+    # addCommentReply content tab
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "\t"}}}], 400, "Invalid requests[0].addCommentReply: Add comment reply requests must specify a non-empty content if comment action is not RESOLVE or REOPEN."),
+    # addCommentReply content line sep
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "\u2028"}}}], 400, "Invalid requests[0].addCommentReply: Add comment reply requests must specify a non-empty content if comment action is not RESOLVE or REOPEN."),
+    # addCommentReply content nbsp
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "\u00a0"}}}], 404, "Comment with ID AAAAnope does not exist."),
+    # addCommentReply content x85
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "\u0085"}}}], 404, "Comment with ID AAAAnope does not exist."),
+    # addCommentReply content zwsp
+    ([{"addCommentReply": {"commentId": "AAAAnope", "post": {"content": "\u200b"}}}], 404, "Comment with ID AAAAnope does not exist."),
+    # addCommentReply suggestion thread RESOLVE
+    ([{"addCommentReply": {"suggestionId": "suggest.nope", "post": {"commentAction": "RESOLVE"}}}], 400, "Invalid requests[0].addCommentReply: Add suggestion reply requests must specify non-empty post text."),
+    # addCommentReply suggestion thread action 99
+    ([{"addCommentReply": {"suggestionId": "suggest.nope", "post": {"content": "x", "commentAction": 99}}}], 400, "Invalid requests[0].addCommentReply: Add suggestion reply requests may not specify a comment action."),
+    # addCommentReply on a suggestion, content action 0
+    ([{"addCommentReply": {"suggestionId": "suggest.nope", "post": {"content": "x", "commentAction": 0}}}], 400, "Invalid requests[0].addCommentReply: Add suggestion reply requests may not specify a comment action."),
+    # addCommentReply on a suggestion, content ACCEPT
+    ([{"addCommentReply": {"suggestionId": "suggest.nope", "post": {"content": "x", "suggestionAction": "ACCEPT"}}}], 404, "Suggestion with ID suggest.nope does not exist."),
+    # addCommentReply on a suggestion, content tab
+    ([{"addCommentReply": {"suggestionId": "suggest.nope", "post": {"content": "\t"}}}], 400, "Invalid requests[0].addCommentReply: Add suggestion reply requests must specify non-empty post text."),
+    # addCommentReply on a suggestion, content nbsp
+    ([{"addCommentReply": {"suggestionId": "suggest.nope", "post": {"content": "\u00a0"}}}], 404, "Suggestion with ID suggest.nope does not exist."),
+    # updateCommentPost content ideographic
+    ([{"updateCommentPost": {"commentId": "AAAAnope", "postId": "p", "content": "\u3000"}}], 400, "Invalid requests[0].updateCommentPost: Update comment post requests must specify non-empty content."),
+    # updateCommentPost content nbsp
+    ([{"updateCommentPost": {"commentId": "AAAAnope", "postId": "p", "content": "\u00a0"}}], 404, "Comment with ID AAAAnope does not exist."),
+    # updateCommentPost comment and suggestion
+    ([{"updateCommentPost": {"commentId": "AAAAnope", "suggestionId": "suggest.nope", "postId": "p", "content": "x"}}], 400, "Invalid value at 'requests[0].update_comment_post' (oneof), oneof field 'thread_id' is already set. Cannot set 'suggestionId'"),
+    # deleteCommentReply comment and suggestion
+    ([{"deleteCommentReply": {"commentId": "AAAAnope", "suggestionId": "suggest.nope", "postId": "p"}}], 400, "Invalid value at 'requests[0].delete_comment_reply' (oneof), oneof field 'thread_id' is already set. Cannot set 'suggestionId'"),
 ]  # fmt: skip
 
 

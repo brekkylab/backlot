@@ -52,6 +52,7 @@ This repo is its own plugin marketplace, so the [agent skill](skills/backlot/SKI
 ```bash
 claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab
 codex plugin marketplace add brekkylab/backlot && codex plugin add backlot@brekkylab
+npx skills add brekkylab/backlot --skill backlot   # any agent skills.sh installs into
 pip install "backlot[mcp]" && claude mcp add backlot -- backlot mcp   # every source as MCP tools
 ```
 

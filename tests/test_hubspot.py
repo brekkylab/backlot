@@ -2782,6 +2782,7 @@ _SEARCH_BODY_ROWS = [
     _sb("operator-integer-9", _WITH_OPERATOR % "9", (_WITH_OPERATOR % '"HAS_PROPERTY"', False)),
     _sb("operator-integer-10", _WITH_OPERATOR % "10", (_WITH_OPERATOR % '"NOT_HAS_PROPERTY"', True)),
     _sb("operator-string-9", _WITH_OPERATOR % '"9"', (_WITH_OPERATOR % '"HAS_PROPERTY"', False)),
+    _sb("operator-negative-zero", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": -0, "value": "ava@acme-health.com"}]}]}', (_WITH_VALUE % '"ava@acme-health.com"', True)),
     _sb("value-integer", _WITH_VALUE % "5", (_WITH_VALUE % '"5"', True)),
     _sb("value-float", _WITH_VALUE % "1.5", (_WITH_VALUE % '"1.5"', True)),
     _sb("value-true", _WITH_VALUE % "true", (_WITH_VALUE % '"true"', True)),
@@ -2819,9 +2820,9 @@ _SEARCH_BODY_CONTACTS = [
 
 def test_hubspot_search_refuses_a_body_real_cannot_read(tmp_path):
     """One body per row: for a body real refuses, the status and body it answered, including which
-    value it names when a second cannot be read (`_refuse_a_search_shape`); for a body it reads, the
-    body whose page it answers (a number or boolean read as text, `_scalars_as_text`) and whether
-    that page is narrower than `{}`'s."""
+    value it names when a second cannot be read (`_refuse_a_search_shape`); for a body it reads, a
+    body that answers the same page, such as one with a number or boolean as its text
+    (`_scalars_as_text`), and whether that page is narrower than `{}`'s."""
     from tests._helpers import client_for
 
     s = tiny_corpus(tmp_path, _SEARCH_BODY_CONTACTS)

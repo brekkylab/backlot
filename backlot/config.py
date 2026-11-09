@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     fireflies_per_minute: int = 30
     fireflies_per_day: int = 500
 
+    # --- hubspot ---
+    # The requests a key may send in a day, a free portal's: the `x-hubspot-ratelimit-daily`
+    # api.hubapi.com sent on 2026-10-18 and 2026-11-07. HubSpot's other plans publish other limits.
+    hubspot_per_day: int = 250000
+
     # --- usage telemetry (backlot.telemetry; docs/telemetry.md says what is sent) ---
     telemetry: bool = True
     # The `DO_NOT_TRACK` convention many developer tools honour, read without the prefix, from the

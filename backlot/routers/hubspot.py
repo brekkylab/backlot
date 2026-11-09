@@ -24,8 +24,11 @@ import json
 import math
 import re
 import secrets
+import time
 import unicodedata
 import uuid
+from collections import deque
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
@@ -35,6 +38,7 @@ from pydantic import BaseModel, ConfigDict
 
 from backlot import ascii_folding, auth, published, store, synth
 from backlot.acl import Caller
+from backlot.config import get_settings
 from backlot.errors.atlassian import _java_double as _parse_java_double
 from backlot.openapi import qp
 from backlot.routers import json_body
@@ -218,6 +222,83 @@ async def correlate(request: Request, response: Response) -> Response:
         k: v for k, v in response.headers.items() if k not in ("content-length", "content-type")
     }
     return Response(body, status_code=response.status_code, headers=headers, media_type=_JSON)
+
+
+_RATE_LIMIT_MAX = 100
+_RATE_LIMIT_WINDOW = 10
+
+
+class RateLimitCounts:
+    """Each key's requests in real's sliding 10-second window and in its day, which search counts
+    apart. Measured against api.hubapi.com on 2026-10-18 with a service key over 100 answers:
+    `x-hubspot-ratelimit-daily` was 250000 on each, and `-daily-remaining` one lower on each answer
+    than on the one before, 249790 down to 249710 over the 81 outside search, while search's seven
+    went from 249977 to 249971 and left the other count where it was. `-remaining` was 100 less the
+    requests of the 10 seconds up to the answer, this one included, on 62 of those 81 and one or
+    two higher on the rest; after 11 seconds with none it was 99 again. `-secondly-remaining` was
+    `-remaining` divided by 10 and rounded down on all 81. When the day turns over was not
+    measured: this takes the calendar day in UTC, as ``backlot.routers.fireflies.Budget`` does.
+    Nothing is refused past either count, which stops at 0. ``clock`` is `time.time` unless a
+    test hands in another."""
+
+    def __init__(self, clock: Callable[[], float] = time.time):
+        self.clock = clock
+        self._windows: dict[str, deque[float]] = {}
+        self._days: dict[tuple[str, bool], list[int]] = {}
+
+    @staticmethod
+    def of(app) -> "RateLimitCounts":
+        """The app's counts, made on first use."""
+        counts = getattr(app.state, "hubspot_rate_limits", None)
+        if counts is None:
+            counts = app.state.hubspot_rate_limits = RateLimitCounts()
+        return counts
+
+    def count(self, key: str, search: bool, windowed: bool) -> dict[str, str]:
+        """The `x-hubspot-ratelimit-*` headers once one request of ``key`` is counted in its day,
+        search's where ``search``, and, where ``windowed``, in its 10-second window."""
+        now = self.clock()
+        today = self._days.get((key, search))
+        if today is None or today[0] != int(now // 86400):
+            today = self._days[(key, search)] = [int(now // 86400), 0]
+        today[1] += 1
+        per_day = get_settings().hubspot_per_day
+        headers = {
+            "x-hubspot-ratelimit-daily": str(per_day),
+            "x-hubspot-ratelimit-daily-remaining": str(max(per_day - today[1], 0)),
+        }
+        if not windowed:
+            return headers
+        window = self._windows.setdefault(key, deque())
+        while window and window[0] <= now - _RATE_LIMIT_WINDOW:
+            window.popleft()
+        window.append(now)
+        remaining = max(_RATE_LIMIT_MAX - len(window), 0)
+        return headers | {
+            "x-hubspot-ratelimit-max": str(_RATE_LIMIT_MAX),
+            "x-hubspot-ratelimit-remaining": str(remaining),
+            "x-hubspot-ratelimit-interval-milliseconds": str(_RATE_LIMIT_WINDOW * 1000),
+            "x-hubspot-ratelimit-secondly": str(_RATE_LIMIT_MAX // _RATE_LIMIT_WINDOW),
+            "x-hubspot-ratelimit-secondly-remaining": str(remaining // _RATE_LIMIT_WINDOW),
+        }
+
+
+def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
+    """The `x-hubspot-ratelimit-*` headers real puts on this answer, counted in
+    :class:`RateLimitCounts`, or none. Over the 165 answers of 2026-09-30 the two daily ones came on
+    147, all but the 401s, the 405s, the 406s, a `text/plain` 415 and the front's 404, and the other
+    five on 106, those less every search answer, a 200 among them. On 2026-10-18 the
+    `/crm/v4/associations/` answers, a 200, a 207, a 400, a 403 and a 500, carried only the daily
+    two, and a 401 or the front's 404 counted against neither count. A request counts in each
+    count its answer reports: whether one under `/crm/v4/associations/` or search counts in the
+    10-second window as well was not measured."""
+    key = _bearer_credential(request)
+    if key is None or status_code in (401, 405, 406):
+        return {}
+    path = request.url.path.removeprefix("/hubspot").rstrip("/")
+    search = path.startswith("/crm/v3/objects/") and path.endswith("/search")
+    windowed = not search and not path.startswith("/crm/v4/associations/")
+    return RateLimitCounts.of(request.app).count(key, search, windowed)
 
 
 # batch/read refuses more than this many ids, each counted once as `_batch_read_id` reads it.

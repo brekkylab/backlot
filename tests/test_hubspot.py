@@ -728,7 +728,11 @@ def test_hubspot_names_every_answer_by_a_correlation_id(client, admin_h):
             assert r.headers["content-length"] == str(len(r.content)), (method, path)
         elif r.headers.get("content-type") == _JSON:
             assert "correlationId" not in r.json(), (method, path)
-        named = {k for k in r.headers if k.startswith("x-hubspot")}
+        named = {
+            k
+            for k in r.headers
+            if k.startswith("x-hubspot") and not k.startswith("x-hubspot-ratelimit")
+        }
         answered[(method, path, credential)] = (
             r.status_code,
             r.headers.get("content-type"),
@@ -751,6 +755,153 @@ def test_hubspot_names_every_answer_by_a_correlation_id(client, admin_h):
     again = client.get("/hubspot/crm/v3/objects/contacts?limit=1", headers=admin_h)
     assert again.headers[_ID] == ids[("GET", "/crm/v3/objects/contacts?limit=1", "key")]
     assert len(set(ids.values())) == len({(m, p) for m, p, _ in ids})
+
+
+_DAILY = ("x-hubspot-ratelimit-daily", "x-hubspot-ratelimit-daily-remaining")
+_WINDOW = (
+    "x-hubspot-ratelimit-max",
+    "x-hubspot-ratelimit-remaining",
+    "x-hubspot-ratelimit-interval-milliseconds",
+    "x-hubspot-ratelimit-secondly",
+    "x-hubspot-ratelimit-secondly-remaining",
+)
+
+
+def _limits(daily_remaining: int | None, remaining: int | None = None) -> dict[str, str]:
+    """The `x-hubspot-ratelimit-*` headers of an answer whose day has ``daily_remaining`` left, and
+    whose 10-second window ``remaining``, None for an answer that carries none of them."""
+    headers = {} if daily_remaining is None else dict(zip(_DAILY, ("250000", str(daily_remaining))))
+    if remaining is not None:
+        values = ("100", str(remaining), "10000", "10", str(remaining // 10))
+        headers |= dict(zip(_WINDOW, values))
+    return headers
+
+
+# (method, path, credential, Accept, body, status, the `x-hubspot-ratelimit-*` headers), sent in
+# this order within one second, as `rate_limit_headers` and `RateLimitCounts` record them.
+_RATE_LIMITED = [
+    ("GET", "/crm/v3/objects/contacts?limit=1", "key", None, None, 200, _limits(249999, 99)),
+    ("POST", "/crm/v3/objects/contacts/search", "key", None, {}, 200, _limits(249999)),
+    ("GET", "/crm/v3/objects/contacts", None, None, None, 401, {}),
+    ("GET", "/crm/v3/objects/contacts", "Bearer nope", None, None, 401, {}),
+    ("OPTIONS", "/crm/v3/objects/contacts", "key", None, None, 401, {}),
+    ("GET", "/crm/v3/nosuch", "key", None, None, 404, {}),
+    ("PUT", "/crm/v3/objects/contacts/1", "key", None, None, 405, {}),
+    ("GET", "/crm/v3/objects/contacts", "key", "text/html", None, 406, {}),
+    ("GET", "/crm/v3/objects/contacts/1", "key", None, None, 404, _limits(249998, 98)),
+    ("PATCH", "/crm/v3/objects/contacts/1", "key", None, {}, 403, _limits(249997, 97)),
+    ("POST", "/crm/v3/objects/widgets/search", "key", None, {}, 400, _limits(249998)),
+    (
+        "POST",
+        "/crm/v4/associations/contacts/companies/batch/create",
+        "key",
+        None,
+        {"inputs": []},
+        403,
+        _limits(249996),
+    ),
+    (
+        "GET",
+        "/crm/v4/objects/contacts/abc/associations/companies",
+        "key",
+        None,
+        None,
+        404,
+        _limits(249995, 96),
+    ),
+    (
+        "POST",
+        "/crm/v3/objects/contacts/batch/read",
+        "key",
+        None,
+        {"inputs": [{"id": "1"}]},
+        207,
+        _limits(249994, 95),
+    ),
+]
+
+
+def test_hubspot_reports_its_rate_limits_on_the_answers_real_reports_them_on(client, admin_h):
+    """A keyed answer carries the two daily headers but a 401, a 405, a 406 and the front's 404, and
+    the other five as well but under search and `/crm/v4/associations/`. Search keeps a day of its
+    own, and an answer with none of the headers counts against neither count."""
+    from backlot.routers.hubspot import RateLimitCounts
+
+    client.app.state.hubspot_rate_limits = RateLimitCounts(clock=lambda: 1_793_059_200.0)
+    key = admin_h["Authorization"]
+    answered, expected = [], []
+    for method, path, credential, accept, body, status, limits in _RATE_LIMITED:
+        sent = {"Authorization": key if credential == "key" else credential} if credential else {}
+        if accept:
+            sent["Accept"] = accept
+        r = client.request(method, f"/hubspot{path}", headers=sent, json=body)
+        reported = {k: v for k, v in r.headers.items() if k.startswith("x-hubspot-ratelimit")}
+        answered.append((method, path, credential, r.status_code, reported))
+        expected.append((method, path, credential, status, limits))
+    assert answered == expected
+
+
+# The requests counted in `RateLimitCounts` (the second, the key, whether it is a search, whether
+# it is counted in the 10-second window), and the headers of the last.
+_COUNTED = [
+    pytest.param([(0.0, "a", False, True)], _limits(249999, 99), id="one"),
+    pytest.param(
+        [(i * 0.3, "a", False, True) for i in range(5)], _limits(249995, 95), id="five in 1.5 s"
+    ),
+    pytest.param(
+        [(0.0, "a", False, True), (5.0, "a", False, True), (10.5, "a", False, True)],
+        _limits(249997, 98),
+        id="the first slides out",
+    ),
+    pytest.param(
+        [(t, "a", False, True) for t in (0.0, 1.0, 2.0, 13.0)],
+        _limits(249996, 99),
+        id="11 seconds with none",
+    ),
+    pytest.param([(0.0, "a", False, True)] * 105, _limits(249895, 0), id="past the window"),
+    pytest.param([(0.0, "a", True, False), (0.0, "a", True, False)], _limits(249998), id="search"),
+    pytest.param(
+        [(0.0, "a", True, False), (0.0, "a", False, True)],
+        _limits(249999, 99),
+        id="search leaves the other count",
+    ),
+    pytest.param(
+        [(0.0, "a", False, False), (0.0, "a", False, True)],
+        _limits(249998, 99),
+        id="v4 associations count in the day only",
+    ),
+    pytest.param(
+        [(0.0, "a", False, True), (0.0, "b", False, True)], _limits(249999, 99), id="another key"
+    ),
+    pytest.param(
+        [(86399.0, "a", False, True), (86401.0, "a", False, True)],
+        _limits(249999, 98),
+        id="the next day in UTC",
+    ),
+]
+
+
+@pytest.mark.parametrize(("counted", "headers"), _COUNTED)
+def test_hubspots_rate_limit_counts_slide_over_10_seconds_and_turn_over_with_the_day(
+    counted, headers
+):
+    from backlot.routers.hubspot import RateLimitCounts
+
+    now = [0.0]
+    counts = RateLimitCounts(clock=lambda: 1_793_059_200.0 + now[0])
+    for now[0], key, search, windowed in counted:
+        last = counts.count(key, search, windowed)
+    assert last == headers
+
+
+def test_hubspots_daily_limit_is_a_setting(monkeypatch):
+    from backlot.config import get_settings
+    from backlot.routers.hubspot import RateLimitCounts
+
+    monkeypatch.setattr(get_settings(), "hubspot_per_day", 500000)
+    headers = RateLimitCounts(clock=lambda: 0.0).count("a", False, True)
+    assert headers["x-hubspot-ratelimit-daily"] == "500000"
+    assert headers["x-hubspot-ratelimit-daily-remaining"] == "499999"
 
 
 _CONTACT_SCOPES = [

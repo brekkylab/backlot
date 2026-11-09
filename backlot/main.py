@@ -494,8 +494,9 @@ async def answer_a_hubspot_method_or_accept_no_route_takes(request: Request, cal
 @_middleware(lambda scope: scope["path"].startswith("/hubspot/"))
 async def put_a_correlation_id_on_hubspot_answers(request: Request, call_next):
     """Put real's correlation id, charset and error `correlationId` on every `/hubspot` answer
-    (``backlot.routers.hubspot.correlate``) but the 404 for a path no HubSpot route serves, which
-    real's front answers with none (api.hubapi.com, 2026-09-30 and 2026-10-18).
+    (``backlot.routers.hubspot.correlate``), and its rate-limit headers on those that carry them
+    (``backlot.routers.hubspot.rate_limit_headers``), but the 404 for a path no HubSpot route
+    serves, which real's front answers with none (api.hubapi.com, 2026-09-30 and 2026-10-18).
 
     Registered after the other `/hubspot` middlewares above so it wraps them, and the answers they
     give ahead of the router carry it too. The Cloudflare page for a repeated header
@@ -503,7 +504,9 @@ async def put_a_correlation_id_on_hubspot_answers(request: Request, call_next):
     response = await call_next(request)
     if response.status_code == 404 and _hubspot_route(request.scope) is None:
         return response
-    return await hubspot.correlate(request, response)
+    response = await hubspot.correlate(request, response)
+    response.headers.update(hubspot.rate_limit_headers(request, response.status_code))
+    return response
 
 
 @_middleware(lambda scope: _url_path(scope).startswith("/github"))

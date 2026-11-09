@@ -1346,36 +1346,35 @@ def _scalars_as_text(raw: bytes, body: dict) -> dict:
     """`body` with each number or boolean real reads as text spelt as the body spells it: `query`,
     and in each filter `propertyName`, `value`, `highValue` and the elements of `values`. Measured
     against api.hubapi.com on 2026-11-09, each body against the same body with the text in its
-    place: `5`, `1.5` and `true` in `query`, `value` and `values`, and `5` and `true` in
-    `highValue`, answered the page their text does, and `5` and `1.5` in `propertyName` the 400
-    their text does, for a property the portal does not have. `body` is one `_refuse_a_search_shape`
-    has passed, so each of its groups and filters is an object or null."""
+    place: `5`, `1.5` and `true` in `query`, `value` and `values`, `1.50` in `query` and `values`,
+    and `5` and `true` in `highValue`, answered the page their text does, and `5` and `1.5` in
+    `propertyName` the 400 their text does, for a property the portal does not have. A number keeps
+    its spelling, as a number id in a batch/read body does in real's 207 (`_batch_read_id`). `body`
+    is one `_refuse_a_search_shape` has passed, so each of its groups and filters is an object."""
     if not body:
         # `json_body`'s answer for a body it could not read as an object: nothing to spell
         return body
     spelt = json.loads(raw, parse_int=str, parse_float=str)
 
-    def text(value, spelling):
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        return spelling if isinstance(value, (int, float)) else value
+    def text(spelling):
+        return json.dumps(spelling) if isinstance(spelling, bool) else spelling
 
     def filter_as_text(f: dict, sf: dict) -> dict:
-        f = {k: text(v, sf[k]) if k in _TEXT_MEMBERS else v for k, v in f.items()}
+        f = {k: text(sf[k]) if k in _TEXT_MEMBERS else v for k, v in f.items()}
         if isinstance(f.get("values"), list):
-            f["values"] = [text(v, s) for v, s in zip(f["values"], sf["values"])]
+            f["values"] = [text(s) for s in sf["values"]]
         return f
 
     out = dict(body)
     if "query" in body:
-        out["query"] = text(body["query"], spelt["query"])
-    if isinstance(body.get("filterGroups"), list):
-        out["filterGroups"] = []
-        for g, sg in zip(body["filterGroups"], spelt["filterGroups"]):
-            if g and isinstance(g.get("filters"), list):
-                filters = zip(g["filters"], sg["filters"])
-                g = {**g, "filters": [filter_as_text(f, sf) if f else f for f, sf in filters]}
-            out["filterGroups"].append(g)
+        out["query"] = text(spelt["query"])
+    if body.get("filterGroups"):
+        out["filterGroups"] = [
+            {**g, "filters": [filter_as_text(f, sf) for f, sf in zip(g["filters"], sg["filters"])]}
+            if g.get("filters")
+            else g
+            for g, sg in zip(body["filterGroups"], spelt["filterGroups"])
+        ]
     return out
 
 

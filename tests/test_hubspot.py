@@ -2769,9 +2769,21 @@ _SEARCH_BODY_ROWS = [
     _sb("query-null", '{"query": null}', ("{}", False)),
     _sb("group-without-filters", '{"filterGroups": [{}]}', ("{}", False)),
     _sb("filters-null", '{"filterGroups": [{"filters": null}]}', ("{}", False)),
+    # real refuses a number `propertyName` with the 400 it gives its text, a property the portal does
+    # not have, which this router does not send
+    _sb("propertyName-integer", _WITH_PROPERTY_NAME % "5", (_WITH_PROPERTY_NAME % '"5"', True)),
+    _sb("propertyName-float", _WITH_PROPERTY_NAME % "1.5", (_WITH_PROPERTY_NAME % '"1.5"', True)),
     _sb("operator-integer-9", _WITH_OPERATOR % "9", (_WITH_OPERATOR % '"HAS_PROPERTY"', False)),
     _sb("operator-integer-10", _WITH_OPERATOR % "10", (_WITH_OPERATOR % '"NOT_HAS_PROPERTY"', True)),
     _sb("operator-string-9", _WITH_OPERATOR % '"9"', (_WITH_OPERATOR % '"HAS_PROPERTY"', False)),
+    _sb("value-integer", _WITH_VALUE % "5", (_WITH_VALUE % '"5"', True)),
+    _sb("value-float", _WITH_VALUE % "1.5", (_WITH_VALUE % '"1.5"', True)),
+    _sb("value-true", _WITH_VALUE % "true", (_WITH_VALUE % '"true"', True)),
+    _sb("highValue-integer", _WITH_HIGH_VALUE % "5", (_WITH_HIGH_VALUE % '"5"', True)),
+    _sb("highValue-true", _WITH_HIGH_VALUE % "true", (_WITH_HIGH_VALUE % '"true"', False)),
+    _sb("values-integer-element", _WITH_VALUES % "[5]", (_WITH_VALUES % '["5"]', True)),
+    _sb("values-float-element", _WITH_VALUES % "[1.5]", (_WITH_VALUES % '["1.5"]', True)),
+    _sb("values-true-element", _WITH_VALUES % "[true]", (_WITH_VALUES % '["true"]', True)),
     _sb("member-not-read", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "x": []}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
 ]
 # fmt: on
@@ -2780,7 +2792,7 @@ _SEARCH_BODY_ROWS = [
 def test_hubspot_search_refuses_a_body_real_cannot_read(client, admin_h):
     """`_refuse_a_search_shape`'s rule, one body per row: the status and body real answered,
     including which value it names when a second cannot be read, and for a body it reads, the body
-    whose page it answers (a number or boolean `query` as text, `_query_as_text`) and whether that
+    whose page it answers (a number or boolean read as text, `_scalars_as_text`) and whether that
     page is narrower than `{}`'s."""
     headers = {**admin_h, "Content-Type": "application/json"}
     url = "/hubspot/crm/v3/objects/contacts/search"

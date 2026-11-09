@@ -261,7 +261,10 @@ def test_the_plugin_branch_carries_the_skill_at_one_release_and_nothing_else(tmp
     of at least 40 words outside code blocks that Anthropic's directory requires (pre-submission
     checklist, 2026-10-27), and the LICENSE and NOTICE.md that Apache-2.0 section 4 asks a
     redistribution to carry. A relative link stays only where it reaches the same file on the
-    branch as in the repository; the rest point at their file on GitHub at the release's ref."""
+    branch as in the repository; the rest point at their file on GitHub at the release's ref.
+    From an organization it has not verified, the directory refuses a file that is not Markdown,
+    text, JSON, YAML or a PNG, JPEG, GIF, WebP or ICO image, text that is not UTF-8 or holds a NUL,
+    and a file starting with ``#!`` (its review of a submission, 2026-11-09)."""
     out = tmp_path / "plugin"
     subprocess.run(
         [sys.executable, str(REPO / "scripts" / "plugin_branch.py")]
@@ -282,6 +285,15 @@ def test_the_plugin_branch_carries_the_skill_at_one_release_and_nothing_else(tmp
     assert carried <= built
     extra = built - {".claude-plugin/plugin.json", ".codex-plugin/plugin.json"} - carried
     assert not {f for f in extra if not any(f == n or f.startswith(f"{n}/") for n in named)}
+    magic = {".png": b"\x89PNG", ".jpg": b"\xff\xd8\xff", ".jpeg": b"\xff\xd8\xff"}
+    magic |= {".gif": b"GIF8", ".webp": b"RIFF", ".ico": b"\0\0\1\0"}
+    for f in built:
+        data, suffix = (out / f).read_bytes(), Path(f).suffix
+        if suffix in magic:
+            assert data.startswith(magic[suffix]), f
+        else:
+            assert suffix in {".md", ".txt", ".json", ".yaml", ".yml"} or f == "LICENSE", f
+            assert "\0" not in data.decode("utf-8") and not data.startswith(b"#!"), f
 
     readme = re.sub(r"```.*?```", "", (out / "README.md").read_text(encoding="utf-8"), flags=re.S)
     assert len(readme.split()) >= 40

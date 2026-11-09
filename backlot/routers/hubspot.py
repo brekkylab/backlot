@@ -891,7 +891,8 @@ _LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 def _operator(f: dict):
     """The operator filter `f` reads as: an index (`_OPERATORS_BY_INDEX`) as the operator at that
-    position, a name trimmed (`_TRIM`), and EQ when the filter has none."""
+    position, and a name trimmed (`_TRIM`). A filter with no operator or a null one, which real
+    refuses (`_unreadable_member`), reads as EQ."""
     op = f.get("operator")
     if isinstance(op, int):
         return _OPERATORS_BY_INDEX[op]
@@ -1014,7 +1015,7 @@ def _refuse_an_operator(
     None.
 
     An operator that trims to nothing is named by its path in the body; one that trims to anything
-    but a name in `_OPERATORS` or an index into it (`_OPERATOR_INDEXES`) is named by where it starts
+    but a name in `_OPERATORS` or an index (`_OPERATOR_INDEXES`) is named by where it starts
     (`_token_at`). Real reads the body in order and stops at the first operator of either kind. It
     stops there too when the filter repeats `operator` with a readable one after it, which this
     router does not model. An operator that is not a string is `_unreadable_member`'s. An operator

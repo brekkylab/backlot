@@ -1087,11 +1087,11 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    # The whole script as one transaction. Outside one, each CREATE commits by itself, and on a
-    # fresh file a commit is a durable write the disk has to acknowledge: measured on
-    # windows-latest, 2026-11-06, over 108 starts, the bundled corpus imports in 5 s at the median
-    # and 43 s at the worst, the slow ones sampled in this script and in `build_fts`, which is the
-    # start `serve()` waits for.
+    # The whole script as one transaction. Outside one, each of its statements, over a hundred on a
+    # fresh file, commits by itself, and a commit waits for the disk to make its writes durable: a
+    # 4 KiB write and fsync, 60 tries on each of ten windows-latest runners, 2026-11-06, took 3.9 to
+    # 7.5 ms at the median on the temp disk, where `serve()` imports its corpus, and 0.2 to 0.6 ms
+    # on the workspace disk.
     conn.executescript(f"BEGIN;\n{SCHEMA}\nCOMMIT;")
     return conn
 

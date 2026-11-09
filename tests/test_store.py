@@ -1752,7 +1752,6 @@ def _interrupting_the_probe(conn):
 
 def _unable_to_grow(conn):
     """A file held at its page count: a write that needs a new page answers SQLITE_FULL."""
-    conn.commit()
     conn.execute(f"PRAGMA max_page_count={conn.execute('PRAGMA page_count').fetchone()[0]}")
     return conn
 

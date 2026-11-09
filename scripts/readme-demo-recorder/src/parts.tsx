@@ -277,10 +277,18 @@ export const Verdict: React.FC<{
  */
 export type Served = {
   subject: string;
+  /** The SDK's base path under the server, or `META` for an endpoint of Backlot's own. */
   prefix: string;
   request: string;
+  /** Exactly five rows; a `["", ""]` row is blank, for an answer shorter than that. */
   fields: [string, string][];
 };
+
+/**
+ * Backlot's own endpoints hang off the server root, under no vendor's base URL: no SDK is pointed
+ * at them, so the card shows the root instead of a `base_url=` line.
+ */
+export const META = "/_meta/";
 
 export const SERVED: Served[] = [
   {
@@ -305,6 +313,18 @@ export const SERVED: Served[] = [
       ['"mimeType"', '"application/vnd.google-apps.document"'],
       ['"modifiedTime"', '"2026-02-20T10:10:00Z"'],
       ['"owners"', '[ { "displayName": "Dana Whitfield", … } ]'],
+    ],
+  },
+  {
+    subject: "Microsoft Teams",
+    prefix: "/msgraph/v1.0/",
+    request: "GET /msgraph/v1.0/teams/{t}/channels/{c}/messages",
+    fields: [
+      ['"id"', '"1788523200811"'],
+      ['"messageType"', '"message"'],
+      ['"createdDateTime"', '"2026-09-04T12:00:00.811Z"'],
+      ['"from"', '{ "user": { "displayName": "Dana Whitfield", … } }'],
+      ['"body"', '{ "content": "<p>Quarterly numbers are in.</p>", … }'],
     ],
   },
   {
@@ -379,28 +399,19 @@ export const SERVED: Served[] = [
       ['"StorageClass"', '"STANDARD"'],
     ],
   },
-  {
-    subject: "Microsoft Teams",
-    prefix: "/msgraph/v1.0/",
-    request: "GET /msgraph/v1.0/teams/{t}/channels/{c}/messages",
-    fields: [
-      ['"id"', '"1788523200811"'],
-      ['"messageType"', '"message"'],
-      ['"createdDateTime"', '"2026-09-04T12:00:00.811Z"'],
-      ['"from"', '{ "user": { "displayName": "Dana Whitfield", … } }'],
-      ['"body"', '{ "content": "<p>Quarterly numbers are in.</p>", … }'],
-    ],
-  },
 ];
 
 /**
- * The third act: the same server takes a write, and says what was written.
+ * The third act: the same server takes a write, says what was written, and takes it back.
  *
- * Two cards on the Slack base URL. The first is `chat.postMessage` answered as real Slack answers
- * it, the posted message echoed under `message`; the second is `GET /_meta/overlay`, Backlot's own
- * report of the writes a server has taken — one row, the same `ts` — which is what a grader reads
- * after an agent has acted. Both are this server's answers to the admin token on 2026-11-09, so
- * the `ts` is that run's clock. Five fields each, as above, for the same reason.
+ * Two cards on the Slack base URL: `chat.postMessage` answered as real Slack answers it, the posted
+ * message echoed under `message`, then `conversations.history` returning that message, same `ts`.
+ * Then three on Backlot's own endpoints: `GET /_meta/overlay`, the report of the writes a server
+ * has taken — one row, the same `ts` — which is what a grader reads after an agent has acted;
+ * `POST /_meta/overlay/reset`; and the report again, every list empty. All five are this server's
+ * answers to the admin token on 2026-11-09, so the `ts` is that run's clock. Five rows each, as
+ * above, for the same reason; the reset answers `{"ok": true}` alone, so its card is one row and
+ * four blank ones.
  */
 export const WRITES: Served[] = [
   {
@@ -418,11 +429,41 @@ export const WRITES: Served[] = [
   {
     subject: "Slack",
     prefix: "/slack/api/",
+    request: "GET /slack/api/conversations.history",
+    fields: [
+      ['"ok"', "true"],
+      ['"messages[0].type"', '"message"'],
+      ['"messages[0].user"', '"USERVICE0"'],
+      ['"messages[0].text"', '"Rolled back. Gateway is clean."'],
+      ['"messages[0].ts"', '"1794214615.321821"'],
+    ],
+  },
+  {
+    subject: "Backlot",
+    prefix: META,
     request: "GET /_meta/overlay",
     fields: [
       ['"gdrive_files"', "[]"],
       ['"slack_messages"', '[ { "ts": "1794214615.321821", … } ]'],
       ['"slack_acl"', '[ { "principal_id": "engineering", … } ]'],
+      ['"slack_patch"', "[]"],
+      ['"slack_tombstone"', "[]"],
+    ],
+  },
+  {
+    subject: "Backlot",
+    prefix: META,
+    request: "POST /_meta/overlay/reset",
+    fields: [['"ok"', "true"], ["", ""], ["", ""], ["", ""], ["", ""]],
+  },
+  {
+    subject: "Backlot",
+    prefix: META,
+    request: "GET /_meta/overlay",
+    fields: [
+      ['"gdrive_files"', "[]"],
+      ['"slack_messages"', "[]"],
+      ['"slack_acl"', "[]"],
       ['"slack_patch"', "[]"],
       ['"slack_tombstone"', "[]"],
     ],
@@ -476,7 +517,16 @@ const tick = (
 
 const prefixLine = (s: Served) => (
   <div style={{ font: `500 20px ${F.mono}`, color: C.ink, whiteSpace: "nowrap" }}>
-    base_url=<span style={{ color: C.mint }}>&quot;http://127.0.0.1:8000{s.prefix}&quot;</span>
+    {s.prefix === META ? null : "base_url="}
+    <span style={{ color: C.mint }}>
+      {s.prefix === META ? `http://127.0.0.1:8000${META}` : `"http://127.0.0.1:8000${s.prefix}"`}
+    </span>
+  </div>
+);
+
+const captionLine = (s: Served) => (
+  <div style={{ font: `450 15px ${F.ui}`, color: C.inkFaint }}>
+    {s.prefix === META ? "Backlot's own endpoints, at the server root" : "the only line that changes"}
   </div>
 );
 
@@ -486,9 +536,13 @@ const requestLine = (s: Served) => (
 
 const fieldRow = ([k, v]: [string, string]) => (
   <div style={{ font: `500 17px ${F.mono}`, lineHeight: 2.1, whiteSpace: "nowrap" }}>
-    <span style={{ color: C.inkDim }}>{k}</span>
-    <span style={{ color: C.inkFaint }}>: </span>
-    <span style={{ color: C.mint }}>{v}</span>
+    {k === "" ? null : (
+      <>
+        <span style={{ color: C.inkDim }}>{k}</span>
+        <span style={{ color: C.inkFaint }}>: </span>
+        <span style={{ color: C.mint }}>{v}</span>
+      </>
+    )}
   </div>
 );
 
@@ -511,7 +565,8 @@ export const SourceCycle: React.FC<{
   return (
     <div style={{ position: "absolute", left, top: 118, width }}>
       {/* The lines that never change stay put and stay ticked: the point is that the base URL
-          below them is the only part of the story that differs per source. */}
+          below them is the only part of the story that differs per source. Backlot's own endpoints
+          have no base URL to set, so their cards show the server root there instead. */}
       {["pip install backlot", "backlot import --bundled", "backlot serve"].map((line) => (
         <div
           key={line}
@@ -530,8 +585,10 @@ export const SourceCycle: React.FC<{
               ? prefixLine(cur)
               : swapRow(frame, at, 0, prev ? prefixLine(prev) : null, prefixLine(cur))}
           </div>
-          <div style={{ font: `450 15px ${F.ui}`, color: C.inkFaint, marginTop: 4 }}>
-            the only line that changes
+          <div style={{ height: 20, marginTop: 4 }}>
+            {samePrefix
+              ? captionLine(cur)
+              : swapRow(frame, at, 0, prev ? captionLine(prev) : null, captionLine(cur))}
           </div>
         </div>
       </div>
@@ -697,8 +754,8 @@ export const SourceTally: React.FC<{
 /**
  * The checklist beside the writes, in the place the source tally just left.
  *
- * Each row is one thing the two cards show or the server did in that run: the post, the read that
- * returns it, the overlay report, the reset.
+ * Each row is one request with a card of its own: the post, the read that returns it, the overlay
+ * report, the reset. The report after the reset has no row; it is the reset's evidence.
  */
 const WRITTEN: [string, string][] = [
   ["chat.postMessage", "posted, as the app"],

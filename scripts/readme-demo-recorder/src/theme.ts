@@ -31,7 +31,7 @@ export const F = {
 
 /** 30fps: the timeline below is written in frames, so keep these in sync with Root.tsx. */
 export const FPS = 30;
-export const DURATION = 716;
+export const DURATION = 802;
 
 /** Named beats, so the composition reads as a storyboard rather than a pile of magic numbers. */
 export const T = {
@@ -75,13 +75,13 @@ export const T = {
   // The third act. The source list leaves six frames before the first write card lands, so the
   // writes list arrives into an empty column rather than over a fading one.
   tallyOut: 556,
-  // The post, then the overlay report. The second waits 40 frames, not 22: its rows are the
-  // evidence for the first, and the `ts` has to be seen on both.
-  writes: [562, 602],
-  // The right-hand ticks: the post with its card, the read-back once that card has settled, the
-  // report with its card, the reset after.
-  writeRows: [568, 584, 608, 624],
-  // The closing card waits: the last tick lands at 633 and the checklist is only complete then, so
-  // cutting away 30 frames later gave the finished list no time to be read as finished.
-  endcard: 672,
+  // The post, the read-back, the overlay report, the reset, and the report again, empty. 34 frames
+  // each, not 22: the `ts` has to be read on the first three, and read as the same one.
+  writes: [562, 596, 630, 664, 698],
+  // The right-hand ticks, each six frames after its card: the post, the read-back, the report, the
+  // reset. The empty report after the reset is the reset's evidence and has no tick of its own.
+  writeRows: [568, 602, 636, 670],
+  // The closing card waits two seconds after the last card lands, so the empty report and the
+  // checklist, complete since 679, can be read as finished before the cut.
+  endcard: 758,
 } as const;

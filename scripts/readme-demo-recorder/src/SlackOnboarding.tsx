@@ -25,9 +25,9 @@ import {
  * first the slow way, then the fast way — the reader has to hold the first half in memory to feel
  * the second. Run in parallel, the comparison is just what the frame looks like.
  *
- * Then the surviving column repeats itself for one source after another, and last, on the Slack
- * base URL again, takes a write: a message posted, and the server's own report of what was written,
- * which is the read a grader makes after an agent has acted.
+ * Then the surviving column repeats itself for one source after another, and last takes a write:
+ * a message posted on the Slack base URL and read back, then Backlot's own report of what was
+ * written, which is the read a grader makes after an agent has acted, and the reset that empties it.
  *
  * Nothing here uses a Slack logo or wordmark styling. The service is named in text, which is
  * nominative use; a redrawn vendor mark in a project's own README is a trademark question we have

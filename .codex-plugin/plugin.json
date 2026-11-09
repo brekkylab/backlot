@@ -21,9 +21,10 @@
     "s3"
   ],
   "skills": "./skills/",
+  "requires_local_executor": true,
   "interface": {
     "displayName": "Backlot",
-    "shortDescription": "Emulate an enterprise SaaS source over your own corpus",
+    "shortDescription": "Local enterprise SaaS emulator",
     "developerName": "brekkylab",
     "category": "Developer Tools",
     "longDescription": "Backlot serves Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion, Linear, HubSpot, Fireflies and S3 from one local process, over a corpus you supply. It reproduces the response shapes, pagination, authentication, errors and per-document access controls those APIs have, so an integration, an agent or a RAG pipeline can be built and tested against the official vendor SDKs with no vendor account, no OAuth approval, no secrets in CI and no network. Every user in the corpus gets a token, so what one caller may read and another may not is testable too.",
@@ -35,6 +36,12 @@
       "Import a corpus from JSONL, or ship the bundled one"
     ],
     "websiteURL": "https://github.com/brekkylab/backlot",
+    "supportURL": "https://github.com/brekkylab/backlot/issues",
+    "defaultPrompt": [
+      "Use Backlot to serve Slack from a small corpus and point slack_sdk at it.",
+      "Use Backlot to test that my Jira connector returns only the issues each user may read.",
+      "Use Backlot to run my RAG pipeline against Gmail and Google Drive with no network."
+    ],
     "composerIcon": "./assets/icon/backlot-mark-light.svg",
     "composerIconDark": "./assets/icon/backlot-mark-dark.svg",
     "logo": "./assets/icon/backlot-icon-light.png",

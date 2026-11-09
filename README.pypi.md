@@ -49,6 +49,7 @@ This repo is its own plugin marketplace, so the [agent skill](https://github.com
 ```bash
 claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab
 codex plugin marketplace add brekkylab/backlot && codex plugin add backlot@brekkylab
+npx skills add brekkylab/backlot --skill backlot   # any agent skills.sh installs into
 ```
 
 and prompt like this:

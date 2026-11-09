@@ -1546,14 +1546,16 @@ async def root(request: Request) -> Response:
     each of the six methods, with a token and a `Notion-Version` and with neither, and to a
     preflight; a body the body reader refuses was its refusal instead.
 
-    The HTML body goes with no `content-length`: `GET` and `POST` with `Accept: text/html` were
-    sent `transfer-encoding: chunked` (26 of each) and `HEAD` no framing header (26), where the
-    plain-text body carried `content-length: 43` (90 answers) and the empty one `content-length:
-    0`. Each was asked with no `Accept-Encoding`, and none carried a `content-encoding`. On
-    2026-11-09 `PUT`, `PATCH`, `DELETE` and `OPTIONS` with `Accept: text/html` were chunked too.
-    Starlette writes the length it measures, so it is taken off here, and the server sends the body
-    in chunks where there is none; a `HEAD`'s is left off by
-    ``errors.notion.head_content_length``, which reads ``request.state.notion_html_redirect``.
+    The HTML body goes with no `content-length`: `GET` and `POST` with `Accept: text/html` were sent
+    `transfer-encoding: chunked` (26 of each) and `HEAD` no framing header (26), where the
+    plain-text body carried `content-length: 43` (90 answers) and the empty one `content-length: 0`.
+    Each was asked with no `Accept-Encoding`, and none carried a `content-encoding`. On 2026-11-09
+    `PUT`, `PATCH`, `DELETE` and `OPTIONS` answered each body as `GET` does, and with
+    `Accept-Encoding: gzip` the HTML and plain-text bodies drew the same framing on `GET`, `POST`
+    and `HEAD`, uncompressed. Starlette declares the length of the body it is given, so the route
+    takes that header off and uvicorn sends the body chunked. The route also marks the request
+    ``notion_html_redirect`` for ``errors.notion.head_content_length``, so that the answer to a
+    `HEAD` declares no length either.
 
     Real's Express is read off its answers; Notion does not say which it runs. Its HTML body carries
     the link Express 4.19.2 writes and 4.20.0 leaves out, and each `Accept` sent on 2026-10-31 drew

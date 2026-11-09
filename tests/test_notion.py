@@ -418,9 +418,17 @@ _ROOT_FRAMING = [
     ("GET", "text/plain", "43", None),
     ("POST", "text/plain", "43", None),
     ("HEAD", "text/plain", "43", None),
+    ("PUT", "text/plain", "43", None),
+    ("PATCH", "text/plain", "43", None),
+    ("DELETE", "text/plain", "43", None),
+    ("OPTIONS", "text/plain", "43", None),
     ("GET", "image/png", "0", None),
     ("POST", "image/png", "0", None),
     ("HEAD", "image/png", "0", None),
+    ("PUT", "image/png", "0", None),
+    ("PATCH", "image/png", "0", None),
+    ("DELETE", "image/png", "0", None),
+    ("OPTIONS", "image/png", "0", None),
 ]
 
 
@@ -432,6 +440,12 @@ def test_notion_the_roots_html_redirect_is_sent_chunked_as_real_sends_it(live_se
     import httpx
 
     base_url, _ = live_server
+    bodies = {
+        "text/html": b'<p>Found. Redirecting to <a href="https://www.notion.so">'
+        b"https://www.notion.so</a></p>",
+        "text/plain": b"Found. Redirecting to https://www.notion.so",
+        "image/png": b"",
+    }
     answers, expected = {}, {}
     for method, accept, length, coding in _ROOT_FRAMING:
         r = httpx.request(method, f"{base_url}/notion/", headers={"Accept": accept})
@@ -442,13 +456,7 @@ def test_notion_the_roots_html_redirect_is_sent_chunked_as_real_sends_it(live_se
             r.headers.get("transfer-encoding"),
             r.content,
         )
-        body = {
-            "text/html": b'<p>Found. Redirecting to <a href="https://www.notion.so">'
-            b"https://www.notion.so</a></p>",
-            "text/plain": b"Found. Redirecting to https://www.notion.so",
-            "image/png": b"",
-        }[accept]
-        expected[row] = (302, length, coding, b"" if method == "HEAD" else body)
+        expected[row] = (302, length, coding, b"" if method == "HEAD" else bodies[accept])
     assert len(answers) == len(_ROOT_FRAMING)
     assert answers == expected
 

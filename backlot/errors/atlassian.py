@@ -2978,14 +2978,20 @@ def head_content_length(request: Request, status_code: int) -> bool:
     beside it declares the same (`myself`, 2026-09-30), and its 500 page (:func:`jira_oops_page`,
     on `serverInfo` and `myself`, 2026-10-13). Confluence's 406 declares its length but
     on `search` (Tomcat's page on `space`, 441 bytes, and nothing on `search`'s empty one,
-    2026-10-13).
+    2026-10-13), and so does its 401 for a Basic value it cannot read: on 2026-11-09 a `HEAD`
+    at `space`, `user/current`, `nosuch` and `api/v2/spaces` with `Authorization: Basic !!!`
+    answered 401 with `content-length: 437`, the length of Tomcat's 401 page its `GET` sends.
+    The length a `HEAD` declares here is the length of the body this server's `GET` sends, so on
+    a served route that is the JSON 401's 43 bytes until that body is Tomcat's page; where
+    the page itself is served, the same answer declares its 437. `search` was not among the paths
+    measured for this 401, and the hook keeps answering no there, as it does for every status.
     """
     path = request.url.path
     if not is_confluence(path):
         return status_code in (401, 500)
     if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:
         return False
-    return 200 <= status_code < 300 or status_code == 406
+    return 200 <= status_code < 300 or status_code in (401, 406)
 
 
 def _jira_envelope(message: str) -> dict:

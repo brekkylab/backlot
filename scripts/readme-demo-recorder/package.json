@@ -6,6 +6,7 @@
   "description": "The README's demo: what connecting Slack costs, with and without Backlot.",
   "scripts": {
     "capture": "node capture.mjs",
+    "figures": "node figures/render.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

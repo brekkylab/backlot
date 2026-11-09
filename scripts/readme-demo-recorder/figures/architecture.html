@@ -1,0 +1,91 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Backlot, in one figure</title>
+<!--
+  The architecture figure the README embeds from assets/figures/: your code on the left, one local
+  server in the middle, your corpus on the right. render.mjs screenshots this page twice, once per
+  colour scheme. The colours follow prefers-color-scheme, and the three marks drawn in a colour meant
+  for a dark ground (Confluence, GitHub, Notion) swap through <picture>, the way the README swaps the
+  figure itself. Geist and Geist Mono come from Google Fonts at render time.
+-->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&family=Geist+Mono&display=block">
+<style>
+:root{
+  --bg:#ffffff; --ink:#1f2328; --text:#59636e; --mute:#59636e; --cap:#6e7781;
+  --edge:#d1d9e0; --panel:#f6f8fa; --head:#eff2f5; --arrow:#8c959f;
+  --green:#1a7f37; --wash:rgba(26,127,55,.08);
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0B1322; --ink:#F6FAFF; --text:#A9B2C5; --mute:#8C97B2; --cap:#5C6885;
+  --edge:#1E263C; --panel:#0D1526; --head:#111A2E; --arrow:#2A3350;
+  --green:#45DD9C; --wash:rgba(69,221,156,.09);
+}}
+*{box-sizing:border-box;margin:0}
+html{background:var(--bg)}
+body{width:1240px;background:var(--bg);color:var(--ink);font-family:Geist,sans-serif;
+     display:grid;grid-template-columns:382px 94px 484px 94px 170px;align-items:start;
+     padding:30px 8px 14px}
+.mono{font-family:"Geist Mono",monospace}
+.cap{font-family:"Geist Mono",monospace;font-size:15px;letter-spacing:.22em;color:var(--cap);height:26px}
+.panel{border:1px solid var(--edge);background:var(--panel);border-radius:12px}
+.head{height:44px;border-bottom:1px solid var(--edge);background:var(--head);display:flex;align-items:center;
+      justify-content:space-between;padding:0 16px;font-family:"Geist Mono",monospace;font-size:14.5px;color:var(--text)}
+.code{padding:16px 14px;font-family:"Geist Mono",monospace;font-size:14px;line-height:29px;color:var(--text);white-space:pre}
+.w{color:var(--ink)}.g{color:var(--green)}
+.rows{padding:10px 6px 12px;display:grid;grid-template-columns:1fr 1fr;column-gap:6px}
+.row{display:flex;align-items:center;gap:10px;padding:6px 8px}
+.row img{width:20px;height:20px;flex:0 0 20px}
+.nm{font-size:15px;font-weight:500;line-height:18px;color:var(--ink);white-space:nowrap}
+.pt{font-family:"Geist Mono",monospace;font-size:11.5px;line-height:15px;color:var(--mute);white-space:nowrap}
+.more{grid-column:1/-1;justify-content:center;padding-top:8px}
+/* As tall as the code panel beside it, so both arrows sit at that panel's mid-height. */
+.arrow{display:flex;flex-direction:column;align-items:center;justify-content:center;
+       height:165px;gap:8px;margin-top:26px;color:var(--arrow)}
+.alab{font-family:"Geist Mono",monospace;font-size:11px;line-height:16px;letter-spacing:.02em;white-space:nowrap;color:var(--mute);text-align:center}
+.chip{border:1px solid var(--green);background:var(--wash);border-radius:10px;padding:14px 12px;
+      font-family:"Geist Mono",monospace;font-size:15.5px;color:var(--green);text-align:center}
+.meta{font-family:"Geist Mono",monospace;font-size:13.5px;color:var(--text);line-height:24px;margin-top:13px;text-align:center}
+</style>
+<div>
+  <div class="cap">YOUR CODE</div>
+  <div class="panel">
+    <div class="head"><span>app.py</span><span>only the base URL moves</span></div>
+    <div class="code">slack = <span class="w">WebClient</span>(token=t,
+          base_url=<span class="g">B</span> + <span class="g">"/slack/api/"</span>)
+gh = <span class="w">Github</span>(auth=a, base_url=<span class="g">B</span> + <span class="g">"/github"</span>)</div>
+  </div>
+</div>
+<div class="arrow">
+  <svg width="92" height="10"><path d="M2 5 H80" stroke="currentColor" stroke-width="1.4"/><path d="M80 1 L88 5 L80 9 Z" fill="currentColor"/></svg>
+  <div class="alab">one host<br>no network</div>
+</div>
+<div>
+  <div class="cap">ONE LOCAL SERVER</div>
+  <div class="panel">
+    <div class="head"><span class="g">http://127.0.0.1:8000</span><span>backlot serve</span></div>
+    <div class="rows">
+      <div class="row"><img src="vendors/slack.svg" alt=""><div><div class="nm">Slack</div><div class="pt">/slack/api</div></div></div>
+      <div class="row"><img src="vendors/jira.svg" alt=""><div><div class="nm">Jira</div><div class="pt">/atlassian/rest/api</div></div></div>
+      <div class="row"><img src="vendors/gmail.svg" alt=""><div><div class="nm">Gmail</div><div class="pt">/gmail/v1</div></div></div>
+      <div class="row"><picture><source media="(prefers-color-scheme: dark)" srcset="vendors/confluence-dark.svg"><img src="vendors/confluence.svg" alt=""></picture><div><div class="nm">Confluence</div><div class="pt">/atlassian/wiki/rest/api</div></div></div>
+      <div class="row"><img src="vendors/drive.svg" alt=""><div><div class="nm">Google Drive</div><div class="pt">/drive/v3</div></div></div>
+      <div class="row"><picture><source media="(prefers-color-scheme: dark)" srcset="vendors/notion-dark.svg"><img src="vendors/notion.svg" alt=""></picture><div><div class="nm">Notion</div><div class="pt">/notion/v1</div></div></div>
+      <div class="row"><img src="vendors/teams.svg" alt=""><div><div class="nm">Microsoft Teams</div><div class="pt">/msgraph/v1.0</div></div></div>
+      <div class="row"><img src="vendors/linear.svg" alt=""><div><div class="nm">Linear</div><div class="pt">/linear/graphql</div></div></div>
+      <div class="row"><picture><source media="(prefers-color-scheme: dark)" srcset="vendors/github-dark.svg"><img src="vendors/github.svg" alt=""></picture><div><div class="nm">GitHub</div><div class="pt">/github</div></div></div>
+      <div class="row"><img src="vendors/fireflies.png" alt=""><div><div class="nm">Fireflies</div><div class="pt">/fireflies/graphql</div></div></div>
+      <div class="row"><img src="vendors/hubspot.svg" alt=""><div><div class="nm">HubSpot</div><div class="pt">/hubspot</div></div></div>
+      <div class="row"><img src="vendors/s3.svg" alt=""><div><div class="nm">Amazon S3</div><div class="pt">/s3</div></div></div>
+      <div class="row more"><span class="pt">+ the ones you ask for</span></div>
+    </div>
+  </div>
+</div>
+<div class="arrow">
+  <svg width="92" height="10"><path d="M2 5 H80" stroke="currentColor" stroke-width="1.4"/><path d="M80 1 L88 5 L80 9 Z" fill="currentColor"/></svg>
+  <div class="alab">all answers<br>one file</div>
+</div>
+<div style="display:flex;flex-direction:column;align-items:center">
+  <div class="cap">YOUR CORPUS</div>
+  <div class="chip">data/db.sqlite</div>
+  <div class="meta">one SQLite file<br>bundled or your own<br>per-document ACLs</div>
+</div>

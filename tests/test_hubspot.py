@@ -2627,6 +2627,94 @@ def test_hubspot_refuses_a_non_standard_number_token(client, admin_h):
     assert answered == expected
 
 
+def _sb(id, raw, want):
+    return pytest.param(raw, want, id=id)
+
+
+_A_GOOD_FILTER = (
+    '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": "x"}'
+)
+_A_BOGUS_OPERATOR = '{"filters": [{"propertyName": "email", "operator": "BOGUS"}]}'
+
+# fmt: off
+_SEARCH_BODY_ROWS = [
+    _sb("filterGroups-string", '{"filterGroups": "x"}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("filterGroups-object", '{"filterGroups": {}}', _json_refusal(18, _not_a_list("Object", "START_OBJECT"))),
+    _sb("filterGroups-integer", '{"filterGroups": 5}', _json_refusal(18, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("filterGroups-float", '{"filterGroups": 1.5}', _json_refusal(18, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _sb("filterGroups-true", '{"filterGroups": true}', _json_refusal(18, _not_a_list("Boolean", "VALUE_TRUE"))),
+    _sb("string-group", '{"filterGroups": ["x"]}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
+    _sb("padded-string-group", '{"filterGroups": [" x "]}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
+    _sb("blank-string-group", '{"filterGroups": [" "]}', _blank_field("filterGroups[0]")),
+    _sb("integer-group", '{"filterGroups": [5]}', _json_refusal(19, _no_creator("int/Int", "Number value (5)"))),
+    _sb("true-group", '{"filterGroups": [true]}', _json_refusal(19, _no_creator("boolean/Boolean", "boolean value (true)"))),
+    _sb("float-group", '{"filterGroups": [1.5]}', _json_refusal(19, _no_creator("double/Double", "Number value (1.5)"))),
+    _sb("array-group", '{"filterGroups": [[]]}', _json_refusal(19, _ARRAY)),
+    _sb("null-group", '{"filterGroups": [null]}', _json_refusal(24, "filterGroups element")),
+    _sb("filters-string", '{"filterGroups": [{"filters": "x"}]}', _json_refusal(31, _not_a_list("String", "VALUE_STRING"))),
+    _sb("filters-object", '{"filterGroups": [{"filters": {}}]}', _json_refusal(31, _not_a_list("Object", "START_OBJECT"))),
+    _sb("filters-integer", '{"filterGroups": [{"filters": 5}]}', _json_refusal(31, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("string-filter", '{"filterGroups": [{"filters": ["x"]}]}', _json_refusal(32, _no_creator("String", "String value ('x')"))),
+    _sb("padded-string-filter", '{"filterGroups": [{"filters": [" x "]}]}', _json_refusal(32, _no_creator("String", "String value ('x')"))),
+    _sb("blank-string-filter", '{"filterGroups": [{"filters": [" "]}]}', _blank_field("filterGroups[0].filters[0]")),
+    _sb("integer-filter", '{"filterGroups": [{"filters": [5]}]}', _json_refusal(32, _no_creator("int/Int", "Number value (5)"))),
+    _sb("array-filter", '{"filterGroups": [{"filters": [[]]}]}', _json_refusal(32, _ARRAY)),
+    _sb("null-filter", '{"filterGroups": [{"filters": [null]}]}', _json_refusal(37, "filters element")),
+    _sb("query-array", '{"query": ["x"]}', _json_refusal(11, _ARRAY)),
+    _sb("query-object", '{"query": {}}', _json_refusal(11, _OBJECT)),
+    # bodies with a second value real cannot read
+    _sb("query-array-then-filterGroups-string", '{"query": ["x"], "filterGroups": "x"}', _json_refusal(11, _ARRAY)),
+    _sb("filterGroups-string-then-query-array", '{"filterGroups": "x", "query": ["x"]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("bad-operator-then-string-group", '{"filterGroups": [' + _A_BOGUS_OPERATOR + ', "x"]}', _enum_refusal(1, 70)),
+    _sb("string-group-then-bad-operator", '{"filterGroups": ["x", ' + _A_BOGUS_OPERATOR + ']}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
+    _sb("filterGroups-string-then-nan", '{"filterGroups": "x", "query": NaN}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("nan-then-filterGroups-string", '{"query": NaN, "filterGroups": "x"}', _token_refusal(14, "NaN")),
+    _sb("filter-then-string-filter", _A_GOOD_FILTER + ', "y"]}]}', _json_refusal(91, _no_creator("String", "String value ('y')"))),
+    _sb("group-then-integer-group", _A_GOOD_FILTER + ']}, 5]}', _json_refusal(93, _no_creator("int/Int", "Number value (5)"))),
+    _sb("after-then-filterGroups-string", '{"after": "10000", "filterGroups": "x"}', _json_refusal(36, _not_a_list("String", "VALUE_STRING"))),
+    # bodies with a null element, named where `_refuse_a_search_shape` says
+    _sb("null-group-then-string-group", '{"filterGroups": [null, "x"]}', _json_refusal(25, _no_creator("String", "String value ('x')"))),
+    _sb("null-group-then-query-array", '{"filterGroups": [null], "query": ["x"]}', _json_refusal(35, _ARRAY)),
+    _sb("null-filter-then-string-group", '{"filterGroups": [{"filters": [null]}, "x"]}', _json_refusal(37, "filters element")),
+    _sb("null-filter-then-query-array", '{"filterGroups": [{"filters": [null]}], "query": ["x"]}', _json_refusal(37, "filters element")),
+    _sb("null-filter-then-null-group", '{"filterGroups": [{"filters": [null]}, null]}', _json_refusal(37, "filters element")),
+    _sb("null-group-then-null-filter", '{"filterGroups": [null, {"filters": [null]}]}', _json_refusal(43, "filters element")),
+    _sb("null-group-then-bad-operator", '{"filterGroups": [null, ' + _A_BOGUS_OPERATOR + ']}', _enum_refusal(1, 76)),
+    _sb("null-group-then-nan", '{"filterGroups": [null], "query": NaN}', _token_refusal(38, "NaN")),
+    _sb("null-filter-then-nan", '{"filterGroups": [{"filters": [null]}], "query": NaN}', _json_refusal(37, "filters element")),
+    # bodies real reads: (body answering the same page, is that page narrower than `{}`'s)
+    _sb("query-integer", '{"query": 5}', ('{"query": "5"}', True)),
+    _sb("query-float", '{"query": 1.5}', ('{"query": "1.5"}', True)),
+    _sb("query-true", '{"query": true}', ('{"query": "true"}', True)),
+    _sb("filterGroups-null", '{"filterGroups": null}', ("{}", False)),
+    _sb("query-null", '{"query": null}', ("{}", False)),
+    _sb("group-without-filters", '{"filterGroups": [{}]}', ("{}", False)),
+    _sb("filters-null", '{"filterGroups": [{"filters": null}]}', ("{}", False)),
+]
+# fmt: on
+
+
+def test_hubspot_search_refuses_a_body_real_cannot_read(client, admin_h):
+    """`_refuse_a_search_shape`'s rule, one body per row: the status and body real answered,
+    including which value it names when a second cannot be read, and for a body it reads, the body
+    whose page it answers (a number or boolean `query` as text, `_query_as_text`) and whether that
+    page is narrower than `{}`'s."""
+    headers = {**admin_h, "Content-Type": "application/json"}
+    url = "/hubspot/crm/v3/objects/contacts/search"
+    everything = client.post(url, headers=headers, content=b"{}").json()["results"]
+    answered, expected = {}, {}
+    for row in _SEARCH_BODY_ROWS:
+        raw, want = row.values
+        r = client.post(url, headers=headers, content=raw.encode())
+        if isinstance(want, dict):
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
+        else:
+            control = client.post(url, headers=headers, content=want[0].encode()).json()["results"]
+            answered[row.id] = (r.status_code, r.json()["results"], control != everything)
+            expected[row.id] = (200, control, want[1])
+    assert answered == expected
+
+
 @pytest.mark.parametrize(
     "inputs, caller, status",
     [

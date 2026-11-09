@@ -1010,17 +1010,8 @@ def _refuse_an_operator(
             if not _ahead(raw, path, before):
                 return None
             if op == "":
-                return _error(
-                    400,
-                    "Invalid input JSON: unable to deserialize field "
-                    f'"filterGroups[{i}].filters[{j}].operator". Invalid value: ',
-                )
-            line, column = _token_at(raw, path)
-            return _error(
-                400,
-                f"Invalid input JSON on line {line}, column {column}: "
-                f"Enum type must be one of: [{', '.join(_OPERATORS)}]",
-            )
+                return _blank(path)
+            return _invalid_at(raw, path, f"Enum type must be one of: [{', '.join(_OPERATORS)}]")
     return None
 
 
@@ -1037,8 +1028,8 @@ def _java_double(x: float) -> str:
 
 
 def _not_a_list(value) -> str:
-    """Real's text for a batch/read member it reads as a list when the body holds something else
-    there, naming the JSON value it found."""
+    """Real's text for a member it reads as a list when the body holds something else there, naming
+    the JSON value it found."""
     if isinstance(value, bool):
         kind, token = "Boolean", "VALUE_TRUE" if value else "VALUE_FALSE"
     elif isinstance(value, int):
@@ -1052,12 +1043,23 @@ def _not_a_list(value) -> str:
     return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
 
 
-def _not_an_input(item) -> str:
-    """Real's text for an element of `inputs` that is an array, a boolean or a number. For an
-    integer it names the narrowest of Java's int, long and BigInteger that holds the value."""
+def _array_or_object(value) -> str:
+    """Real's text for an array or object where it reads a string, or an array where it reads an
+    object."""
+    kind = "Object" if isinstance(value, dict) else "Array"
+    return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.START_{kind.upper()}`)"
+
+
+def _not_an_object(item) -> str:
+    """Real's text for a list element it reads as an object when the body holds a string, an array,
+    a boolean or a number there, and for a string where it reads `properties`. A string is echoed
+    trimmed (`_TRIM`); for an integer it names the narrowest of Java's int, long and BigInteger that
+    holds the value."""
     if isinstance(item, list):
-        return "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
-    if isinstance(item, bool):
+        return _array_or_object(item)
+    if isinstance(item, str):
+        arg, shown = "String", f"String value ('{item.strip(_TRIM)}')"
+    elif isinstance(item, bool):
         arg, shown = "boolean/Boolean", f"boolean value ({str(item).lower()})"
     elif isinstance(item, float):
         arg, shown = "double/Double", f"Number value ({_java_double(item)})"
@@ -1073,9 +1075,34 @@ def _not_an_input(item) -> str:
     )
 
 
-def _invalid_at(raw: bytes, path: tuple, text: str) -> JSONResponse:
-    line, column = _token_at(raw, path)
+def _invalid(position: tuple[int, int], text: str) -> JSONResponse:
+    line, column = position
     return _error(400, f"Invalid input JSON on line {line}, column {column}: {text}")
+
+
+def _invalid_at(raw: bytes, path: tuple, text: str) -> JSONResponse:
+    return _invalid(_token_at(raw, path), text)
+
+
+def _field(path: tuple) -> str:
+    """The body path `path` as real names a field: `filterGroups[0].filters[1].operator`."""
+    return "".join(f"[{step}]" if isinstance(step, int) else f".{step}" for step in path)[1:]
+
+
+def _blank(path: tuple) -> JSONResponse:
+    """Real's 400 for a string at `path` that trims (`_TRIM`) to nothing, named by field alone."""
+    text = f'unable to deserialize field "{_field(path)}". Invalid value: '
+    return _error(400, "Invalid input JSON: " + text)
+
+
+def _unbuildable(raw: bytes, path: tuple, item) -> tuple[tuple[int, int], JSONResponse]:
+    """Where the list element at `path`, which is not an object, starts, and real's 400 for it: a
+    blank string is named by its field (`_blank`), anything else where it starts
+    (`_not_an_object`)."""
+    position = _token_at(raw, path)
+    if isinstance(item, str) and not item.strip(_TRIM):
+        return position, _blank(path)
+    return position, _invalid(position, _not_an_object(item))
 
 
 def _refuse_a_batch_read_shape(
@@ -1105,16 +1132,8 @@ def _refuse_a_batch_read_shape(
             if key == "inputs" or not isinstance(value, str):
                 return _invalid_at(raw, (key,), _not_a_list(value))
             if not value.strip(_TRIM):
-                return _error(
-                    400, f'Invalid input JSON: unable to deserialize field "{key}". Invalid value: '
-                )
-            return _invalid_at(
-                raw,
-                (key,),
-                "Cannot construct instance of  (although at least one Creator exists): no "
-                "String-argument constructor/factory method to deserialize from String value "
-                f"('{value.strip(_TRIM)}')",
-            )
+                return _blank((key,))
+            return _invalid_at(raw, (key,), _not_an_object(value))
         for i, item in enumerate(value):
             path = (key, i)
             if key == "inputs":
@@ -1124,7 +1143,7 @@ def _refuse_a_batch_read_shape(
                 if not isinstance(item, (str, dict)):
                     if not _ahead(raw, path, before):
                         return None
-                    return _invalid_at(raw, path, _not_an_input(item))
+                    return _invalid_at(raw, path, _not_an_object(item))
                 if isinstance(item, str):
                     continue
                 if item.get("id") is None:
@@ -1145,13 +1164,7 @@ def _refuse_a_batch_read_shape(
             if isinstance(item, (dict, list)):
                 if not _ahead(raw, path, before):
                     return None
-                kind = "Object" if isinstance(item, dict) else "Array"
-                return _invalid_at(
-                    raw,
-                    path,
-                    f"Cannot deserialize value of type  from {kind} value "
-                    f"(token `JsonToken.START_{kind.upper()}`)",
-                )
+                return _invalid_at(raw, path, _array_or_object(item))
     if before is None:
         for key in ("properties", "propertiesWithHistory"):
             if key in null_properties:
@@ -1165,6 +1178,75 @@ def _refuse_a_batch_read_shape(
                 content={"status": "error", "message": "Input IDs must be non-null."},
             )
     return None
+
+
+def _refuse_a_search_shape(
+    raw: bytes, body: dict, before: tuple[int, int] | None = None
+) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
+    """Real's 400 for a search body it cannot read, with where the value it names starts, or
+    `(None, None)`. Measured against api.hubapi.com on 2026-10-01 and 2026-11-09: real reads the
+    body in order and stops at the first value it cannot read, naming where it starts: a
+    `filterGroups` or a group's `filters` that is neither null nor a list (`_not_a_list`), an
+    element of either that is not an object (`_unbuildable`), or a `query` that is an array or an
+    object. A null element is named at the closing brace of the object holding its list, the body's
+    for `filterGroups` and the group's for `filters`: after that object's other values and ahead of
+    a later element, `query` or non-standard token. A null `filterGroups`, `filters` or `query`, and
+    a group with no `filters`, are read. With a `before` from `_non_standard_number`, a value from
+    there on is left to the token; `search_objects` leaves an operator `_refuse_an_operator` names
+    ahead of the value named here to that."""
+
+    def named(position, response):
+        if before is not None and position >= before:
+            return None, None
+        return position, response
+
+    null_group = False
+    for key, value in body.items():
+        if key == "query":
+            if isinstance(value, (dict, list)):
+                position = _token_at(raw, (key,))
+                return named(position, _invalid(position, _array_or_object(value)))
+            continue
+        if key != "filterGroups" or value is None:
+            continue
+        if not isinstance(value, list):
+            position = _token_at(raw, (key,))
+            return named(position, _invalid(position, _not_a_list(value)))
+        for i, group in enumerate(value):
+            if group is None:
+                null_group = True
+                continue
+            if not isinstance(group, dict):
+                return named(*_unbuildable(raw, (key, i), group))
+            filters = group.get("filters")
+            if filters is None:
+                continue
+            if not isinstance(filters, list):
+                position = _token_at(raw, (key, i, "filters"))
+                return named(position, _invalid(position, _not_a_list(filters)))
+            null_filter = False
+            for j, f in enumerate(filters):
+                if f is None:
+                    null_filter = True
+                elif not isinstance(f, dict):
+                    return named(*_unbuildable(raw, (key, i, "filters", j), f))
+            if null_filter:
+                position = _closing_at(raw, (key, i))
+                return named(position, _invalid(position, "filters element"))
+    if null_group:
+        position = _closing_at(raw, ())
+        return named(position, _invalid(position, "filterGroups element"))
+    return None, None
+
+
+def _query_as_text(raw: bytes, body: dict) -> dict:
+    """`body` with a number or boolean `query` as the text the body spells it with. Real reads one
+    as text: `{"query": 5}`, `{"query": 1.5}` and `{"query": true}` answer as `{"query": "5"}`,
+    `{"query": "1.5"}` and `{"query": "true"}` do (api.hubapi.com, 2026-11-09)."""
+    if isinstance(body.get("query"), (bool, int, float)):
+        text, start, end = _token_span(raw, ("query",))
+        return {**body, "query": text[start:end]}
+    return body
 
 
 def _hubspot_fold(value: str) -> str:
@@ -1750,12 +1832,17 @@ async def search_objects(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
-    before, refused = _non_standard_number(await request.body())
+    raw = await request.body()
+    before, refused = _non_standard_number(raw)
+    at, unreadable = _refuse_a_search_shape(raw, body, before)
     # Before `after`: real refuses the operator first when the cursor is one it can parse but
-    # names no record (measured 2026-10-06).
-    refused = _refuse_an_operator(await request.body(), body, before) or refused
+    # names no record (measured 2026-10-06), and a `filterGroups` it cannot read ahead of such a
+    # cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
+    # refusal names, that value when it starts ahead of the non-standard token.
+    refused = _refuse_an_operator(raw, body, before if at is None else at) or unreadable or refused
     if refused is not None:
         return refused
+    body = _query_as_text(raw, body)
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
     visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)

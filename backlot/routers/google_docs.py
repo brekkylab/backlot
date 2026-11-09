@@ -4,7 +4,7 @@
 The routes are registered on `routers.google.router` as `routers.google_sheets` describes, and a
 ``fields`` mask is read as the Sheets routes read theirs (`routers.google._gmask_select`).
 
-The answers below were measured on docs.googleapis.com between 2026-10-09 and 2026-11-03, each
+The answers below were measured on docs.googleapis.com between 2026-10-09 and 2026-11-09, each
 comment dating its own, by a Google Workspace member on Docs it owns and by a second member it was
 shared with as a reader.
 """
@@ -1287,9 +1287,9 @@ def _docs_update_document_style(doc: gdocs.Document, req: dict) -> tuple[dict, b
     """``updateDocumentStyle`` on the tab `tabId` names, the first for none, in real's order of
     refusals, measured 2026-11-09: the tab, the fields (the header and footer ids and
     `useCustomHeaderFooterMargins` unallowed), then the values: the background, which must be
-    stated and not transparent, each margin and the page's height and width, stated and in
-    points, in that order whatever order `fields` names them in (`*` naming them all), then a page
-    number start below zero. A margin below zero is kept, a page size named by one of its members
+    stated and not transparent, the top, bottom, left and right margins, the page's height and
+    width, then the header and footer margins, each stated and in points, in that order whatever
+    order `fields` names them in (`*` naming them all), then a page number start below zero. A margin below zero is kept, a page size named by one of its members
     sets that one, and a document mode left unset changes nothing. Setting a margin takes the same
     margin off every section of the tab. The tab's margins, then each section's, are fitted to the
     page (`_docs_fit_margins`), and then a page near a paper size takes that size

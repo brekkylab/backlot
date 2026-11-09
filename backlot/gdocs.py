@@ -2439,8 +2439,8 @@ class Body:
 
     def merge_cells(self, table: int, row: int, column: int, rows: int, columns: int) -> None:
         """The cells ``rows`` by ``columns`` from the one at ``row`` and ``column`` merged into it.
-        Measured 2026-11-09: the first cell spans them; the paragraphs of every other cell but one
-        holding a lone empty paragraph move into it, row by row, each keeping only the members its
+        Measured 2026-11-09: the first cell spans them; the paragraphs of every other cell, unless it
+        holds only an empty paragraph, move into it, row by row, each keeping only the members its
         named style does not give (`_left`), and the first cell's own empty paragraph
         goes when another's come; a cell they left holds an empty paragraph of its last one's
         style as normal text, its newline's style and its `headingId` kept; and a merged row of no

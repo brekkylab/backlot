@@ -21686,7 +21686,7 @@ _TABLE_LAYOUT_WRITES = [
     ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}, {"replaceAllText": {"containsText": {"text": "c1\nc2"}, "replaceText": "X"}}], ["Tab 1: ab//[X|;c3|c4]/cd"], [{}, {"replaceAllText": {"occurrencesChanged": 1}}]),
     # merged col, delete column 0
     ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}, {"deleteTableColumn": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}}}], ["Tab 1: ab//[c2;c4]/cd"], [{}, {}]),
-    # merge row 0 then column ops
+    # merge row 0
     ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 1, "columnSpan": 2}}}], ["Tab 1: ab//[c1/c2|;c3|c4]/cd"], [{}]),
     # sb at paragraph start 1
     ([{"insertSectionBreak": {"location": {"index": 1}, "sectionType": "NEXT_PAGE"}}], ["Tab 1: /[SB]/ab//[c1|c2;c3|c4]/cd"], [{}]),
@@ -21717,8 +21717,8 @@ _TABLE_LAYOUT_WRITES = [
 
 
 def test_a_tab_segment_or_table_write_changes_the_doc_as_real_does(write_settings, wh):
-    """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`, and of `_TABLE_WRITES` to a fresh
-    `wr-table`: its replies, the tabs, segments and tables it leaves, whether the `revisionId`
+    """Each row of `_TAB_WRITES` sent to a fresh `wr-tabs`, and of `_TABLE_WRITES` and
+    `_TABLE_LAYOUT_WRITES` to a fresh `wr-table`: its replies, the tabs, segments and tables it leaves, whether the `revisionId`
     moved (a batch after which real kept the revision keeps it here, so a write pinned to it is
     taken), and the flat read being the first tab's, whatever its id."""
     from tests._helpers import client_for, served_id
@@ -23809,8 +23809,8 @@ _LAYOUT_REFUSALS = [
     ([{"updateNamedStyle": {"namedStyle": {}, "fields": "textStyle.nope"}}], 400, "Invalid requests[0].updateNamedStyle: Invalid field: textStyle.nope"),
 ]  # fmt: skip
 _LAYOUT_REFUSALS += [
-    # `*` asks for each margin, then the content direction and the columns, or the background,
-    # each margin and the page's height and width
+    # `*` asks for each margin, then the content direction and the columns; or the background, the
+    # top, bottom, left and right margins, then the page's height and width
     ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginTop": _PT(10)}, "fields": "*"}}], 400, "Invalid requests[0].updateSectionStyle: A value for bottom margin must be specified in order to update it."),
     ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {k: _PT(10) for k in ("marginTop", "marginBottom", "marginLeft", "marginRight", "marginHeader", "marginFooter")}, "fields": "*"}}], 400, "Invalid requests[0].updateSectionStyle: A value for content direction must be specified in order to update it."),
     ([{"updateDocumentStyle": {"documentStyle": {"background": {"color": {"color": {"rgbColor": {"red": 1}}}}}, "fields": "*"}}], 400, "Invalid requests[0].updateDocumentStyle: A value for top margin must be specified in order to update it."),

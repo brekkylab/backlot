@@ -2701,6 +2701,11 @@ _SEARCH_BODY_ROWS = [
     _sb("group-then-integer-group", _A_GOOD_FILTER + ']}, 5]}', _json_refusal(93, _no_creator("int/Int", "Number value (5)"))),
     _sb("after-then-filterGroups-string", '{"after": "10000", "filterGroups": "x"}', _json_refusal(36, _not_a_list("String", "VALUE_STRING"))),
     _sb("after-then-query-array", '{"after": "10000", "query": ["x"]}', _json_refusal(29, _ARRAY)),
+    _sb("blank-string-group-then-nan", '{"filterGroups": [" "], "query": NaN}', _unreadable_field("filterGroups[0]")),
+    _sb("blank-string-group-then-bad-operator", '{"filterGroups": [" ", ' + _A_BOGUS_OPERATOR + ']}', _unreadable_field("filterGroups[0]")),
+    # a list real reads, ahead of the value it cannot
+    _sb("properties-then-filterGroups-string", '{"properties": ["email"], "filterGroups": "x"}', _json_refusal(43, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-string-then-filterGroups-string", '{"sorts": ["email"], "filterGroups": "x"}', _json_refusal(38, _not_a_list("String", "VALUE_STRING"))),
     # bodies with a null element, named where `_refuse_a_search_shape` says
     _sb("null-group-then-string-group", '{"filterGroups": [null, "x"]}', _json_refusal(25, _no_creator("String", "String value ('x')"))),
     _sb("null-group-then-query-array", '{"filterGroups": [null], "query": ["x"]}', _json_refusal(35, _ARRAY)),
@@ -2764,6 +2769,7 @@ _SEARCH_BODY_ROWS = [
     _sb("query-true", '{"query": true}', ('{"query": "true"}', True)),
     _sb("query-zero", '{"query": 0}', ('{"query": "0"}', True)),
     _sb("query-false", '{"query": false}', ('{"query": "false"}', True)),
+    _sb("query-float-1.50", '{"query": 1.50}', ('{"query": "1.50"}', True)),
     _sb("filterGroups-null", '{"filterGroups": null}', ("{}", False)),
     _sb("filterGroups-empty", '{"filterGroups": []}', ("{}", False)),
     _sb("query-null", '{"query": null}', ("{}", False)),
@@ -2784,29 +2790,56 @@ _SEARCH_BODY_ROWS = [
     _sb("values-integer-element", _WITH_VALUES % "[5]", (_WITH_VALUES % '["5"]', True)),
     _sb("values-float-element", _WITH_VALUES % "[1.5]", (_WITH_VALUES % '["1.5"]', True)),
     _sb("values-true-element", _WITH_VALUES % "[true]", (_WITH_VALUES % '["true"]', True)),
+    _sb("values-float-element-1.50", '{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": [1.50]}]}]}', ('{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": ["1.50"]}]}]}', True)),
+    _sb("values-null", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "values": null}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
     _sb("member-not-read", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "x": []}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
 ]
 # fmt: on
+# The contacts `_SEARCH_BODY_ROWS` are answered over. Bo's texts hold `1.5`, `1.50` and `true`, so
+# `1.50` read as `1.5`, or `true` and `false` read as each other, answers another page.
+_SEARCH_BODY_CONTACTS = [
+    {
+        "source_type": "hubspot",
+        "doc_id": "hs-c-ava",
+        "object_type": "contacts",
+        "title": "Ava Stone",
+        "content": "VP Platform.",
+        "properties": {"email": "ava@acme-health.com"},
+    },
+    {
+        "source_type": "hubspot",
+        "doc_id": "hs-c-bo",
+        "object_type": "contacts",
+        "title": "Bo Lin",
+        "content": "Rated 1.5, opted in: true.",
+        "properties": {"email": "bo@lin.example", "firstname": "1.50"},
+    },
+]
 
 
-def test_hubspot_search_refuses_a_body_real_cannot_read(client, admin_h):
-    """`_refuse_a_search_shape`'s rule, one body per row: the status and body real answered,
-    including which value it names when a second cannot be read, and for a body it reads, the body
-    whose page it answers (a number or boolean read as text, `_scalars_as_text`) and whether that
-    page is narrower than `{}`'s."""
-    headers = {**admin_h, "Content-Type": "application/json"}
+def test_hubspot_search_refuses_a_body_real_cannot_read(tmp_path):
+    """One body per row: for a body real refuses, the status and body it answered, including which
+    value it names when a second cannot be read (`_refuse_a_search_shape`); for a body it reads, the
+    body whose page it answers (a number or boolean read as text, `_scalars_as_text`) and whether
+    that page is narrower than `{}`'s."""
+    from tests._helpers import client_for
+
+    s = tiny_corpus(tmp_path, _SEARCH_BODY_CONTACTS)
+    headers = {"Authorization": f"Bearer {s.admin_token}", "Content-Type": "application/json"}
     url = "/hubspot/crm/v3/objects/contacts/search"
-    everything = client.post(url, headers=headers, content=b"{}").json()["results"]
     answered, expected = {}, {}
-    for row in _SEARCH_BODY_ROWS:
-        raw, want = row.values
-        r = client.post(url, headers=headers, content=raw.encode())
-        if isinstance(want, dict):
-            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
-        else:
-            control = client.post(url, headers=headers, content=want[0].encode()).json()["results"]
-            answered[row.id] = (r.status_code, r.json()["results"], control != everything)
-            expected[row.id] = (200, control, want[1])
+    with client_for(s) as client:
+        everything = client.post(url, headers=headers, content=b"{}").json()["results"]
+        for row in _SEARCH_BODY_ROWS:
+            raw, want = row.values
+            r = client.post(url, headers=headers, content=raw.encode())
+            if isinstance(want, dict):
+                answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
+            else:
+                page = client.post(url, headers=headers, content=want[0].encode()).json()
+                control = page["results"]
+                answered[row.id] = (r.status_code, r.json()["results"], control != everything)
+                expected[row.id] = (200, control, want[1])
     assert answered == expected
 
 

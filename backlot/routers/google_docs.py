@@ -1264,6 +1264,12 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
         style = sections[k][1]
         own = dict(stated)
         own |= _docs_fit_margins({**style, **margins}, page, set(margins))
+        # measured 2026-11-09: beside a tab's right margin of -40, a left margin of 613 or 700
+        # was kept as the page's width, 612
+        page_width = page["pageSize"]["width"].get("magnitude", 0)
+        for key in ("marginLeft", "marginRight"):
+            if key in margins and own[key].get("magnitude", 0) > page_width:
+                own[key] = {"magnitude": _docs_number(page_width), "unit": "PT"}
         if "columnProperties" in names:
             left, right = (
                 own.get(key, style.get(key, page[key])).get("magnitude", 0)
@@ -1371,26 +1377,32 @@ def _docs_fit_margins(style: dict, page: dict, named: set[str]) -> dict:
     """The margins ``style`` (a tab's `documentStyle` or a section's `sectionStyle`) states, fitted
     to the page of ``page``, its tab's `documentStyle`, as `gdocs.restate` takes them. Measured
     2026-11-09 on a 612 by 792 PT page:
-    - A left and right margin that leave less than `_DOCS_MIN_TEXT_WIDTH` between them are cut. A
-      margin a section does not state is its tab's. When ``named`` holds one of the two and the
-      other leaves room, that one is cut to the room left (600 beside 72 was 504, and beside 100.5,
-      475.5). Otherwise the left takes its share of the room rounded down, and the right the rest,
-      neither below 0 (500 and 200 were 411 and 165, 200 and 500 were 164 and 412, and 72 and 72
-      on a 30 PT page were 0 and 0).
+    - A left and right margin that leave less than `_DOCS_MIN_TEXT_WIDTH` between them, or less
+      than none on a narrower page, are cut. A margin a section does not state is its tab's. When
+      ``named`` holds one of the two, and the other fits in the room and is not a negative margin
+      of the same style, the named one is cut to the room the other leaves (600 beside 72 was 504,
+      beside 100.5 was 475.5, and on a section beside its tab's -10 was 586). Otherwise the left
+      takes its share of the room rounded down, never more than it was, and the right the rest (500
+      and 200 were 411 and 165, 200 and 500 were 164 and 412, 700 beside -20 was 592 and -16, -50
+      and 700 were -50 and 626, and 72 and 72 on a 30 PT page were 0 and 0).
     - A top, bottom, header or footer margin above two fifths of the page's height is cut to that
       (800 was 316.8, and 72 on a 100 PT page was 40)."""
     out: dict = {}
     size = page["pageSize"]
     left, right = (style.get(k, page[k]).get("magnitude", 0) for k in ("marginLeft", "marginRight"))
-    room = size["width"].get("magnitude", 0) - _DOCS_MIN_TEXT_WIDTH
-    if left + right > max(room, 0):
+    room = max(size["width"].get("magnitude", 0) - _DOCS_MIN_TEXT_WIDTH, 0)
+    if left + right > room:
         cut = [k for k in ("marginLeft", "marginRight") if k in named]
-        other = right if cut == ["marginLeft"] else left
-        if len(cut) == 1 and room >= other:
+        other_key, other = ("marginRight", right) if cut == ["marginLeft"] else ("marginLeft", left)
+        if (
+            len(cut) == 1
+            and other <= room
+            and (other >= 0 or not (style is page or other_key in style))
+        ):
             out[cut[0]] = room - other
         else:
-            out["marginLeft"] = max(0, math.floor(room * left / (left + right)))
-            out["marginRight"] = max(0, room - out["marginLeft"])
+            out["marginLeft"] = min(left, math.floor(room * left / (left + right)))
+            out["marginRight"] = room - out["marginLeft"]
     most = size["height"].get("magnitude", 0) * 2 / 5
     for key in ("marginTop", "marginBottom", "marginHeader", "marginFooter"):
         if style.get(key, {}).get("magnitude", 0) > most:
@@ -2452,20 +2464,22 @@ def _docs_insert_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
 
 def _docs_update_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """``updateDropdownProperties``, in real's order of refusals, measured 2026-11-09: the tab,
-    its fields, `*` among them naming the read-only id, the first of `displayValue` and
-    `dropdownDefinitionId` named, a dropdown named, then a `selectedOptionId` named and left empty,
-    then the lookup."""
+    """``updateDropdownProperties``, in real's order of refusals, measured 2026-11-09: the tab;
+    the first path of `fields` that is `*` exactly or names `displayValue` or
+    `dropdownDefinitionId`, ahead of any path naming nothing (`nope,*` and `nope,displayValue`
+    were refused for the `*` and the display value, and ` * ` as naming nothing); the fields
+    (`_docs_fields`); a dropdown named; a `selectedOptionId` named and left empty; then the
+    lookup."""
     _docs_tab(doc, req)
     fields = req.get("fields", "")
-    if fields.strip(_DOCS_SPACE) == "*":
-        raise _EditorRefused("Invalid field mask: * includes read-only fields")
+    for path in fields.split(","):
+        if path == "*":
+            raise _EditorRefused("Invalid field mask: * includes read-only fields")
+        if _docs_snake(path) in ("display_value", "dropdown_definition_id"):
+            raise _EditorRefused(f"Invalid field mask: {_docs_snake(path)} cannot be updated")
     if _docs_fields(fields, _PJ_DOCS("docs.DropdownProperties"), ()) is None:
         raise gerr.internal_error()
-    paths = [_docs_snake(_docs_camel(p.strip(_DOCS_SPACE))) for p in fields.split(",")]
-    for path in paths:
-        if path in ("display_value", "dropdown_definition_id"):
-            raise _EditorRefused(f"Invalid field mask: {path} cannot be updated")
+    paths = [_docs_snake(_docs_camel(p)) for p in fields.split(",")]
     if not req.get("dropdown_id"):
         raise _EditorRefused("Update dropdown properties requests must specify a dropdown_id.")
     if "selected_option_id" in paths and not req.get("dropdown_properties", {}).get(

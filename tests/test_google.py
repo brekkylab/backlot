@@ -21033,6 +21033,54 @@ _TABLE_LAYOUT_ROWS = [
     ("wr-table", [[{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}], [{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 1}, "insertBelow": True}}]], "table", [[3, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}]]]),
     # insert row below 1, merge rows 0-1 col0, pin 1
     ("wr-table", [[{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}, "insertBelow": True}}], [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}]], "table", [[3, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"unit": "PT"}}]]]),
+    # ds L-50 R700
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": -50, "unit": "PT"}, "marginRight": {"magnitude": 700, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": -50, "marginRight": 626, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds L700 R-50
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}, "marginRight": {"magnitude": -50, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 620, "marginRight": -44, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds L650 R-10
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 650, "unit": "PT"}, "marginRight": {"magnitude": -10, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 585, "marginRight": -9, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds R-20 then L700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": -20, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 592, "marginRight": -16, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds L-20 then R700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": -20, "unit": "PT"}}, "fields": "marginLeft"}}], [{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": 700, "unit": "PT"}}, "fields": "marginRight"}}]], "margins", [{"marginLeft": -20, "marginRight": 596, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds R-0.5 then L700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": -0.5, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 576, "marginRight": 0, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds R0 then L700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": 0, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 576, "marginRight": 0, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds width30 L-10
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 30, "unit": "PT"}}, "marginLeft": {"magnitude": -10, "unit": "PT"}}, "fields": "pageSize.width,marginLeft"}}], "margins", [{"marginLeft": -10, "marginRight": 10, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 30, "h": 792}, [{}]]),
+    # ds width30 R-10
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 30, "unit": "PT"}}, "marginRight": {"magnitude": -10, "unit": "PT"}}, "fields": "pageSize.width,marginRight"}}], "margins", [{"marginLeft": 0, "marginRight": 0, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 30, "h": 792}, [{}]]),
+    # ds width30 L-10 R-10
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 30, "unit": "PT"}}, "marginLeft": {"magnitude": -10, "unit": "PT"}, "marginRight": {"magnitude": -10, "unit": "PT"}}, "fields": "pageSize.width,marginLeft,marginRight"}}], "margins", [{"marginLeft": -10, "marginRight": -10, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 30, "h": 792}, [{}]]),
+    # ds width100 L-20 R200
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 100, "unit": "PT"}}, "marginLeft": {"magnitude": -20, "unit": "PT"}, "marginRight": {"magnitude": 200, "unit": "PT"}}, "fields": "pageSize.width,marginLeft,marginRight"}}], "margins", [{"marginLeft": -20, "marginRight": 84, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 100, "h": 792}, [{}]]),
+    # ds L100 R-20 then width50
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 100, "unit": "PT"}, "marginRight": {"magnitude": -20, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 50, "unit": "PT"}}}, "fields": "pageSize.width"}}]], "margins", [{"marginLeft": 17, "marginRight": -3, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 50, "h": 792}, [{}]]),
+    # ds L700 R-700
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}, "marginRight": {"magnitude": -700, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 700, "marginRight": -700, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds L600.5 R-3.25
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 600.5, "unit": "PT"}, "marginRight": {"magnitude": -3.25, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], "margins", [{"marginLeft": 579, "marginRight": -3, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds width36 L10 R10
+    ("wr-table", [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 36, "unit": "PT"}}, "marginLeft": {"magnitude": 10, "unit": "PT"}, "marginRight": {"magnitude": 10, "unit": "PT"}}, "fields": "pageSize.width,marginLeft,marginRight"}}], "margins", [{"marginLeft": 0, "marginRight": 0, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 36, "h": 792}, [{}]]),
+    # ds L-100 then R700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": -100, "unit": "PT"}}, "fields": "marginLeft"}}], [{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": 700, "unit": "PT"}}, "fields": "marginRight"}}]], "margins", [{"marginLeft": -100, "marginRight": 676, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{}]]),
+    # ds R-10 then ss L700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": -10, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 72, "marginRight": -10, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 586}]]),
+    # ds R-100 then ss L700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": -100, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 72, "marginRight": -100, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 612}]]),
+    # ds R-40 then ss L613
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": -40, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 613, "unit": "PT"}}, "fields": "marginLeft"}}]], "margins", [{"marginLeft": 72, "marginRight": -40, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 612}]]),
+    # ds R-40 then ss L700 R100
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": -40, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 700, "unit": "PT"}, "marginRight": {"magnitude": 100, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}]], "margins", [{"marginLeft": 72, "marginRight": -40, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginLeft": 504, "marginRight": 72}]]),
+    # ds L-40 then ss R700
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": -40, "unit": "PT"}}, "fields": "marginLeft"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginRight": {"magnitude": 700, "unit": "PT"}}, "fields": "marginRight"}}]], "margins", [{"marginLeft": -40, "marginRight": 72, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginRight": 612}]]),
+    # ds R-40 then ss L300 then width200
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginRight": {"magnitude": -40, "unit": "PT"}}, "fields": "marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginLeft": {"magnitude": 300, "unit": "PT"}}, "fields": "marginLeft"}}], [{"updateDocumentStyle": {"documentStyle": {"pageSize": {"width": {"magnitude": 200, "unit": "PT"}}}, "fields": "pageSize.width"}}]], "margins", [{"marginLeft": 72, "marginRight": -40, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 200, "h": 792}, [{"marginLeft": 204}]]),
+    # ds L650 R-10 then a section top margin
+    ("wr-table", [[{"updateDocumentStyle": {"documentStyle": {"marginLeft": {"magnitude": 650, "unit": "PT"}, "marginRight": {"magnitude": -10, "unit": "PT"}}, "fields": "marginLeft,marginRight"}}], [{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"marginTop": {"magnitude": 10, "unit": "PT"}}, "fields": "marginTop"}}]], "margins", [{"marginLeft": 585, "marginRight": -9, "marginTop": 72, "marginBottom": 72, "marginHeader": 36, "marginFooter": 36, "w": 612, "h": 792}, [{"marginTop": 10}]]),
+    # 4 rows, merge r1-2 c0, merge r2-3 c1, pin 2
+    ("wr-table", [[{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}, "insertBelow": True}}], [{"insertTableRow": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}, "insertBelow": True}}], [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 1, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 1}}}], [{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 2, "columnIndex": 1}, "rowSpan": 2, "columnSpan": 1}}}], [{"pinTableHeaderRows": {"tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 2}}]], "table", [[4, 2, {"tableColumnProperties": [{"widthType": "EVENLY_DISTRIBUTED"}, {"widthType": "EVENLY_DISTRIBUTED"}]}, [{"minRowHeight": {"unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}, {"minRowHeight": {"magnitude": 21, "unit": "PT"}, "tableHeader": True}]]]),
 ]  # fmt: skip
 
 
@@ -23888,6 +23936,30 @@ _LAYOUT_REFUSALS += [
     ([{"updateCommentPost": {"commentId": "AAAAnope", "suggestionId": "suggest.nope", "postId": "p", "content": "x"}}], 400, "Invalid value at 'requests[0].update_comment_post' (oneof), oneof field 'thread_id' is already set. Cannot set 'suggestionId'"),
     # deleteCommentReply comment and suggestion
     ([{"deleteCommentReply": {"commentId": "AAAAnope", "suggestionId": "suggest.nope", "postId": "p"}}], 400, "Invalid value at 'requests[0].delete_comment_reply' (oneof), oneof field 'thread_id' is already set. Cannot set 'suggestionId'"),
+    # updateDropdownProperties *,displayValue
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "*,displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties displayValue,*
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue,*"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties selectedOptionId,*
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "selectedOptionId,*", "dropdownProperties": {"selectedOptionId": "x"}}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties *,*
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "*,*"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties *,nope
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "*,nope"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties nope,*
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "nope,*"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties displayValue,nope
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "displayValue,nope"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties nope,displayValue
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "nope,displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: display_value cannot be updated"),
+    # updateDropdownProperties * spaced
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": " * "}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field: *"),
+    # updateDropdownProperties no id, *,displayValue
+    ([{"updateDropdownProperties": {"dropdownId": "", "fields": "*,displayValue"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties empty part,*
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": ",*"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field mask: * includes read-only fields"),
+    # updateDropdownProperties *.x
+    ([{"updateDropdownProperties": {"dropdownId": "kix.nopenopenope", "fields": "*.x"}}], 400, "Invalid requests[0].updateDropdownProperties: Invalid field: *"),
 ]  # fmt: skip
 
 

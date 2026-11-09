@@ -23,8 +23,11 @@ import sys
 import urllib.request
 
 API = "https://api.github.com/graphql"
-COLUMNS = 18
-SIZE = 40
+# 23 faces of SIZE with GAP between them are 824px, and the README is shown in a column of at most
+# 838px on github.com (`article.markdown-body` at a 1440px viewport, 2026-11-09), so the wall is
+# drawn at its own size there. One more column is scaled down, and the faces with it.
+COLUMNS = 23
+SIZE = 32
 GAP = 4
 
 QUERY = """

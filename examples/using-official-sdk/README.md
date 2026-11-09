@@ -127,12 +127,12 @@ library's own token exchange runs against Backlot's `POST /oauth2/token` in both
 | Service | SDK | How to point it at Backlot |
 |---|---|---|
 | Slack | `slack_sdk` | `WebClient(token=T, base_url="http://localhost:8000/slack/api/")` |
-| Microsoft Teams | `msgraph-sdk` | `GraphRequestAdapter(auth).base_url = "http://localhost:8000/msgraph/v1.0"`, then `GraphServiceClient(request_adapter=…)` |
 | GitHub | `PyGithub` | `Github(auth=Auth.Token(T), base_url="http://localhost:8000/github")` |
 | Jira | `atlassian-python-api` | `Jira(url="http://localhost:8000/atlassian", username=EMAIL, password=T)` |
 | Confluence | `atlassian-python-api` | `Confluence(url="http://localhost:8000/atlassian/wiki", username=EMAIL, password=T)` |
 | Gmail | `google-api-python-client` | `build("gmail","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000"))` |
 | Google Drive | `google-api-python-client` | `build("drive","v3", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/drive/v3"))` |
+| Microsoft Teams | `msgraph-sdk` | `GraphRequestAdapter(auth).base_url = "http://localhost:8000/msgraph/v1.0"`, then `GraphServiceClient(request_adapter=…)` |
 | Google Docs | `google-api-python-client` | `build("docs","v1", …, client_options=ClientOptions(api_endpoint="http://localhost:8000/docs"))` |
 | Notion | `notion-client` | `Client(auth=T, base_url="http://localhost:8000/notion")` (SDK appends `/v1/`) |
 | S3 | `boto3` | `client("s3", endpoint_url="http://localhost:8000/s3", config=Config(s3={"addressing_style":"path"}))` |

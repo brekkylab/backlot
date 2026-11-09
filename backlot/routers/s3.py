@@ -682,7 +682,16 @@ def path_refusal(method: str, raw_path: bytes) -> Response | None:
     (``backlot.request_target._s3``). `%21` in a bucket name and `%80` in a key were answered so to
     `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH` and `OPTIONS` too. An escaped `/` ended the bucket as a
     `/` does, and `/<bucket>%C3%A9x/k%80`, whose bucket it refuses and whose key does not decode,
-    was `InvalidURI`."""
+    was `InvalidURI`.
+
+    A target whose first byte is a `\\` (``backlot.request_target.printable_answer``) has no `/`
+    ahead of its first segment, which is its bucket, and each such bucket holds the `\\`. Measured
+    on 2026-11-03 and 2026-11-09 (UTC) against `s3.us-east-1.amazonaws.com` with no credential,
+    each request on a URL of its own: `\\` and `\\nope` were the 400 `InvalidBucketName` naming
+    `\\` and `\\nope`, as were `\\nope/key`, `\\nope/a/b` and `\\nope?max-keys=1` (`\\nope`),
+    `\\nope%20x` and `\\no+pe` (`\\nope x` and `\\no pe`) and `\\\\nope` (`\\\\nope`), on a `GET` and
+    a `POST`, and on a `HEAD` the status and no body; `\\nope%80` and `\\nope/k%80` were
+    `InvalidURI` naming the path as sent. Each closed the connection."""
     path = raw_path.removeprefix(b"/s3")
     if not utf8_escapes.decodes(path):
         refusal = _error(
@@ -692,7 +701,9 @@ def path_refusal(method: str, raw_path: bytes) -> Response | None:
         )
     else:
         decoded = urllib.parse.unquote_plus(path.decode("latin-1"))
-        bucket = decoded.partition("/")[2].partition("/")[0]
+        # a target that starts with a `\` has no `/` ahead of its bucket, which is its first segment
+        rooted = decoded.partition("/")[2] if decoded.startswith("/") else decoded
+        bucket = rooted.partition("/")[0]
         if _BUCKET_CHARACTERS.fullmatch(bucket):
             return None
         refusal = _error(

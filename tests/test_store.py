@@ -958,9 +958,21 @@ def test_connect_rw_busy_timeout(tmp_path):
         c.close()
 
 
-def test_connect_rw_fresh_db_still_works(tmp_path):
+def test_connect_rw_fresh_db_still_works(tmp_path, monkeypatch):
+    """The schema runs inside one transaction, the one the comment in `connect_rw` asks for."""
+    statements: list[str] = []
+    connect = sqlite3.connect
+
+    def traced(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced)
     conn = store.connect_rw(tmp_path / "fresh.sqlite")
     try:
+        assert not conn.in_transaction
+        assert _outside_a_transaction(statements) == []
         cols = {r[1] for r in conn.execute("PRAGMA table_info(github_items)")}
         assert {"path", "changed_paths"} <= cols
         ccols = {r[1] for r in conn.execute("PRAGMA table_info(github_comments)")}
@@ -1695,27 +1707,21 @@ def _outside_a_transaction(statements: list[str]) -> list[str]:
     return loose
 
 
-def test_a_fresh_database_is_built_in_one_transaction_per_step(tmp_path, monkeypatch):
-    """`connect_rw` runs the schema, and `build_fts` each source's index, inside one transaction
-    each: a statement outside one commits by itself, and the comment in `connect_rw` says what
-    that costs on a fresh file. The FTS5 probe `build_fts` starts with leaves no table behind."""
-    statements: list[str] = []
-    connect = sqlite3.connect
-
-    def traced(*args, **kwargs):
-        conn = connect(*args, **kwargs)
-        conn.set_trace_callback(statements.append)
-        return conn
-
-    monkeypatch.setattr(sqlite3, "connect", traced)
+def test_build_fts_builds_each_source_in_one_transaction(tmp_path):
+    """Each source's DROP, CREATE and INSERT run inside one transaction, and the FTS5 probe
+    `build_fts` starts with leaves no table behind."""
     conn = store.connect_rw(tmp_path / "fresh.sqlite")
-    assert not conn.in_transaction
-    assert _outside_a_transaction(statements) == []
-    statements.clear()
-    assert store.build_fts(conn)
-    assert not conn.in_transaction
-    assert _outside_a_transaction(statements) == []
-    assert not conn.execute("SELECT name FROM sqlite_master WHERE name = '_fts_probe'").fetchall()
+    try:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        assert store.build_fts(conn)
+        assert not conn.in_transaction
+        assert _outside_a_transaction(statements) == []
+        assert not conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = '_fts_probe'"
+        ).fetchall()
+    finally:
+        conn.close()
 
 
 # --- incremental FTS indexing --------------------------------------------------

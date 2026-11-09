@@ -42,8 +42,8 @@
       "Use Backlot to test that my Jira connector returns only the issues each user may read.",
       "Use Backlot to run my RAG pipeline against Gmail and Google Drive with no network."
     ],
-    "composerIcon": "./assets/icon/backlot-mark-light.svg",
-    "composerIconDark": "./assets/icon/backlot-mark-dark.svg",
+    "composerIcon": "./assets/icon/backlot-mark-light.png",
+    "composerIconDark": "./assets/icon/backlot-mark-dark.png",
     "logo": "./assets/icon/backlot-icon-light.png",
     "logoDark": "./assets/icon/backlot-icon-dark.png",
     "screenshots": [

@@ -186,12 +186,15 @@ def _square_side(path: Path) -> int:
     return int(width)
 
 
-def test_every_icon_a_manifest_names_is_a_square_image_this_repo_holds():
+def test_every_manifest_meets_its_catalogs_listing_limits():
     """Each catalog has its own icon rules. Anthropic's directory: a square PNG of 512–2048px under
     2 MB (`claude plugin validate --profile directory`, Claude Code 2.1.308). OpenAI's: square, at
     least 48px, raster at most 4096px and 5 MiB (developers.openai.com/plugins/deploy/submission).
     The MCP Registry: an HTTPS `src` of at most 255 characters (server.schema.json 2025-12-11),
-    here one onto `main`. ``serverInfo`` lists the same icons as server.json."""
+    here one onto `main`. ``serverInfo`` lists the same icons as server.json. OpenAI's submission
+    page also caps the Codex listing text, read 2026-11-09: the name and subtitle at 30 characters,
+    the descriptions at 4000, at most 20 capabilities of 120, at most three unique starter prompts
+    of 128 with no @mention, and HTTPS listing URLs of at most 1024."""
     claude = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     codex = json.loads((REPO / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
     server = json.loads((REPO / "server.json").read_text(encoding="utf-8"))
@@ -203,6 +206,18 @@ def test_every_icon_a_manifest_names_is_a_square_image_this_repo_holds():
         path = REPO / codex["interface"][key]
         assert path.stat().st_size <= 5 * 2**20
         assert 48 <= _square_side(path) <= 4096
+    listing = codex["interface"]
+    assert len(listing["displayName"]) <= 30 and len(listing["shortDescription"]) <= 30
+    assert len(codex["description"]) <= 4000 and len(listing["longDescription"]) <= 4000
+    assert len(listing["developerName"]) <= 80
+    assert len(listing["capabilities"]) <= 20 and all(
+        len(c) <= 120 for c in listing["capabilities"]
+    )
+    prompts = listing["defaultPrompt"]
+    assert 1 <= len(prompts) <= 3 and len(set(prompts)) == len(prompts)
+    assert all(len(p) <= 128 and "@" not in p for p in prompts)
+    for key in ("websiteURL", "supportURL"):
+        assert listing[key].startswith("https://") and len(listing[key]) <= 1024, key
     for entry in server["icons"]:
         assert entry["src"].startswith(_RAW_MAIN) and len(entry["src"]) <= 255
         path = REPO / entry["src"].removeprefix(_RAW_MAIN)

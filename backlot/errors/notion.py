@@ -48,5 +48,6 @@ def json_media_type(path: str, status_code: int) -> str:
 def head_content_length(request, status_code: int) -> bool:
     """Whether a `HEAD` declares the length of its `GET`'s body: each does but the 304
     :func:`backlot.routers.notion.not_modified` answers, which declared none on api.notion.com on
-    2026-10-27."""
-    return status_code != 304
+    2026-10-27, and the root's HTML redirect (:func:`backlot.routers.notion.root`), which declared
+    none on 2026-10-31 and is marked on the request's state by the route."""
+    return status_code != 304 and not getattr(request.state, "notion_html_redirect", False)

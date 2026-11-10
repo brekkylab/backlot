@@ -1086,10 +1086,12 @@ def _rows():
         ),
         ("/github/", b"search/code?q=x&b=%x", 401, b""),
         # a broken escape in the path with no Authorization: the front end's 159-byte JSON 400,
-        # and `/rate_limit` with one after it the fasthttp `text/plain` 404
-        # (``backlot.main.refuse_a_broken_escape_in_a_github_path``). A token, or an
-        # `Authorization` that names no credential, is read on, as the `_PRINTABLE` rows with a
-        # credential already are
+        # and a path that starts `/rate_limit` the fasthttp `text/plain` 404
+        # (``backlot.main.refuse_a_broken_escape_in_a_github_path``), ahead of the version, a
+        # trailing slash, a broken escape in the query and a `%00`. A token, or an `Authorization`
+        # that names no credential or is empty, is read on, as the `_PRINTABLE` rows with a
+        # credential already are; a raw byte on either side of the escape stays the front door's
+        # page, and `nope%x` with a target past its bound the 414
         *(
             ("/github/", rest, "github invalid", b"")
             for rest in (
@@ -1098,10 +1100,17 @@ def _rows():
                 b"nope%4",
                 b"nope%zzx",
                 b"nope%4x",
+                b"nope%x/",
+                b"nope%00%x",
                 b"repos/octocat/Hello-World%x",
+                b"repos/octocat/Hello-World%x/",
+                b"repos/octocat/Hello-World%x?b=%x",
+                b"repos/octocat/Hello-World%00%x",
                 b"users/octocat%x",
+                b"Rate_limit%x",
             )
         ),
+        ("/github/", b"nope%x", "github invalid", b"X-GitHub-Api-Version: 1999-01-01\r\n"),
         ("/github/", b"nope%25x", 404, b""),
         *(
             ("/github/", rest, "github rate_limit plain", b"")
@@ -1113,12 +1122,28 @@ def _rows():
                 b"rate_limit%4x",
                 b"rate_limit/%x",
                 b"rate_limit/nope%x",
+                b"rate_limitx%x",
+                b"rate_limit;%x",
+                b"rate_limit%25%x",
+                b"rate_limit%x/",
+                b"rate_limit%x?b=%x",
             )
+        ),
+        (
+            "/github/",
+            b"rate_limit%x",
+            "github rate_limit plain",
+            b"X-GitHub-Api-Version: 1999-01-01\r\n",
         ),
         ("/github/", b"nope%x", 404, b"Authorization: token nope\r\n"),
         ("/github/", b"nope%x", 404, b"Authorization: nope\r\n"),
+        ("/github/", b"nope%x", 404, b"Authorization:\r\n"),
         ("/github/", b"rate_limit%x", 404, b"Authorization: token nope\r\n"),
         ("/github/", b"rate_limit%x", 404, b"Authorization: nope\r\n"),
+        ("/github/", b"rate_limit%x", 404, b"Authorization:\r\n"),
+        ("/github/", b"nope\x01%x", "github", b""),
+        ("/github/", b"nope%x\x01", "github", b""),
+        ("/github/", b"nope%x?a=" + b"x" * 8_200, "github 414", b""),
         # a `%00` in a name a route reads: the 400 ahead of the version and of the 401 for no
         # credential, behind the 401 for a bearer that does not resolve and the one a route that
         # asks for a credential first gives a caller without one

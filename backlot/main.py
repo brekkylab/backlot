@@ -1932,13 +1932,10 @@ async def refuse_a_broken_escape_in_a_github_query(request: Request, call_next):
 
 
 def _a_broken_escape_after_github_rate_limit(raw_path: bytes) -> bool:
-    """Whether ``raw_path`` is `/github/rate_limit` with a `%` two hex digits do not follow in or
-    after that segment, which the fasthttp front answers with a `text/plain` 404 when no
-    `Authorization` is sent."""
+    """Whether ``raw_path``, after `/github`, starts `/rate_limit`, whatever follows in that
+    segment, and holds a `%` two hex digits do not follow."""
     own = raw_path.removeprefix(b"/github")
-    return request_target.breaks_an_escape(own) and (
-        own.startswith(b"/rate_limit/") or own.startswith(b"/rate_limit%")
-    )
+    return own.startswith(b"/rate_limit") and request_target.breaks_an_escape(own)
 
 
 @_middleware(
@@ -1952,25 +1949,21 @@ async def refuse_a_broken_escape_in_a_github_path(request: Request, call_next):
     """Answer a `/github` request whose path holds a `%` two hex digits do not follow, and which
     sent no `Authorization`, with the front end's 400, ahead of the route's 404 or 401. The body
     is the 159-byte JSON ``errors.github.INVALID_REQUEST``, `application/json; charset=utf-8`,
-    with a request id and none of the five `x-ratelimit-*`. `/rate_limit` with a broken escape in
-    or after that segment is the fasthttp `text/plain` 404, 13 bytes `404 Not Found`, also with a
-    request id and none of the five. A `HEAD` is the `GET` with no body and the same
-    `content-length`. Any `Authorization` — a token that resolves, one that does not, or a value
-    that names no credential — is read on, to the route's own answer or the JSON 404 of a path no
-    route serves. The control `%25x` is a valid escape, so it never reaches here.
+    with a request id and none of the five `x-ratelimit-*`. A path that starts `/rate_limit`
+    (:func:`_a_broken_escape_after_github_rate_limit`) is the fasthttp `text/plain` 404, 13 bytes
+    `404 Not Found`, also with a request id and none of the five. A `HEAD` is the `GET` with no body
+    and the same `content-length`. Any `Authorization` — a token that resolves, one that does not, a
+    value that names no credential or an empty one — is read on, to the route's own answer or the
+    JSON 404 of a path no route serves. The control `%25x` is a valid escape, so it never reaches
+    here.
 
-    Measured on api.github.com on 2026-10-31 (UTC) in #1181, and re-measured on 2026-11-10 (UTC)
-    over raw HTTP/1.1 on TLS, each path cache-busted, with no `Authorization`: `GET` on
-    `/nope<cb>%`, `/nope<cb>%4`, `/nope<cb>%zzx`, `/nope<cb>%4x`, `/repos/octocat/Hello-World%x`
-    and `/users/octocat%x`, and `GET`, `HEAD` and `POST` on `/nope<cb>%x`, each the 159-byte 400;
-    `GET` on `/rate_limit%x`, `/rate_limit%`, `/rate_limit%4`, `/rate_limit%zzx`, `/rate_limit%4x`,
-    `/rate_limit/%x` and `/rate_limit/nope%x`, and `HEAD` and `POST` on `/rate_limit%x`, each the
-    13-byte `text/plain` 404. After the 400 to `GET /nope<cb>%x`, and after the 404 to
-    `GET /rate_limit%x`, a second request on the same connection was answered. The control
-    `/nope<cb>%25x` was the JSON 404. An `Authorization` of `token …`, `Bearer …`, `nope`,
-    `Digest x` or `Basic eDp5` on `/nope%x` and on `/rate_limit%x` was the JSON 404. A `#` in the
-    target and a raw byte stay the pages the outer front-door middlewares already answer, ahead
-    of this 400.
+    Measured on api.github.com on 2026-10-31 and 2026-11-10 (UTC) over raw HTTP/1.1 on TLS, each
+    path cache-busted, with no `Authorization` and with `token …`, `Bearer …`, `nope`, `Digest x`,
+    `Basic eDp5` and an empty one. After the 400 and after the 404 a second request on the same
+    connection was answered, and two `GET /rate_limit`, one before three of them and one after, read
+    the same `used`. A `#` in the target and a raw byte stay the outer middlewares' answers, ahead
+    of this one, and on a path that does not start `/rate_limit` so does a target past the bound of
+    :func:`answer_a_github_request_target_past_its_bound`.
 
     Registered after :func:`refuse_a_broken_escape_in_a_github_query` and before
     :func:`put_a_request_id_on_github_answers`, so the answers carry a request id, and outside

@@ -113,13 +113,9 @@ def owns(path: str) -> bool:
 #: What real's JSON responses declare, 200 and error alike, on every GitHub route measured but one.
 JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 
-#: The 159-byte JSON body api.github.com's Varnish front answers for a broken escape in the path
-#: with no `Authorization` (``backlot.main.refuse_a_broken_escape_in_a_github_path``). Measured in
-#: #1181 on 2026-10-31 (UTC) and re-measured on 2026-11-10 (UTC) over raw HTTP/1.1 on TLS, each
-#: path cache-busted: `Content-Type: application/json; charset=utf-8`, `Content-Length: 159`, the
-#: body ending with a newline and two spaces after the closing brace, and no further newline. A
-#: `HEAD` carries the same length and no body. The five `x-ratelimit-*` headers are absent; a
-#: second request on the same connection is answered.
+#: The body of the 400 api.github.com's Varnish front gives a path holding a broken escape when no
+#: `Authorization` is sent, 159 bytes ending in a newline and two spaces after the closing brace
+#: (``backlot.main.refuse_a_broken_escape_in_a_github_path`` holds the measurement).
 INVALID_REQUEST = (
     b'{\n    "documentation_url": "https://developer.github.com/v3/",\n'
     b'    "message": "You have sent an invalid request. '

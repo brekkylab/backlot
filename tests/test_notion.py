@@ -355,7 +355,8 @@ _ROOT_ACCEPT_ROWS = [
 def test_notion_the_root_redirects_to_the_marketing_site_as_real_does(client, notion_h):
     """``notion.root`` on each method, with a credential and without, on both spellings of the
     root and with a query, under the client's own `Accept: */*`; then each row of
-    ``_ROOT_ACCEPT_ROWS``, its header bytes as sent."""
+    ``_ROOT_ACCEPT_ROWS``, its header bytes as sent. The HTML body declares no `content-length`,
+    the plain-text and the empty one declare theirs."""
     site = "https://www.notion.so"
     bodies = {
         "text/plain": f"Found. Redirecting to {site}".encode(),
@@ -383,7 +384,7 @@ def test_notion_the_root_redirects_to_the_marketing_site_as_real_does(client, no
             site,
             content_type,
             vary,
-            str(len(body)),
+            None if kind == "text/html" else str(len(body)),
             True,
             b"" if method == "HEAD" else body,
         )
@@ -402,6 +403,62 @@ def test_notion_the_root_redirects_to_the_marketing_site_as_real_does(client, no
             observed.append((method, accepts, answer(r)))
             wanted.append((method, accepts, expected(method, kind)))
     assert observed == wanted
+
+
+# The framing ``notion.root`` answers each method and body with: the `Accept` it is asked for, and
+# the `content-length` and `transfer-encoding` of the answer.
+_ROOT_FRAMING = [
+    ("GET", "text/html", None, "chunked"),
+    ("POST", "text/html", None, "chunked"),
+    ("HEAD", "text/html", None, None),
+    ("PUT", "text/html", None, "chunked"),
+    ("PATCH", "text/html", None, "chunked"),
+    ("DELETE", "text/html", None, "chunked"),
+    ("OPTIONS", "text/html", None, "chunked"),
+    ("GET", "text/plain", "43", None),
+    ("POST", "text/plain", "43", None),
+    ("HEAD", "text/plain", "43", None),
+    ("PUT", "text/plain", "43", None),
+    ("PATCH", "text/plain", "43", None),
+    ("DELETE", "text/plain", "43", None),
+    ("OPTIONS", "text/plain", "43", None),
+    ("GET", "image/png", "0", None),
+    ("POST", "image/png", "0", None),
+    ("HEAD", "image/png", "0", None),
+    ("PUT", "image/png", "0", None),
+    ("PATCH", "image/png", "0", None),
+    ("DELETE", "image/png", "0", None),
+    ("OPTIONS", "image/png", "0", None),
+]
+
+
+def test_notion_the_roots_html_redirect_is_sent_chunked_as_real_sends_it(live_server):
+    """Each row of ``_ROOT_FRAMING``, read off a real uvicorn server, since the framing is what it
+    writes where the answer declares no length: the HTML body is sent in chunks to each method but
+    `HEAD`, which gets no framing header, where the plain-text and the empty body carry a
+    `content-length`."""
+    import httpx
+
+    base_url, _ = live_server
+    bodies = {
+        "text/html": b'<p>Found. Redirecting to <a href="https://www.notion.so">'
+        b"https://www.notion.so</a></p>",
+        "text/plain": b"Found. Redirecting to https://www.notion.so",
+        "image/png": b"",
+    }
+    answers, expected = {}, {}
+    for method, accept, length, coding in _ROOT_FRAMING:
+        r = httpx.request(method, f"{base_url}/notion/", headers={"Accept": accept})
+        row = f"{method} {accept}"
+        answers[row] = (
+            r.status_code,
+            r.headers.get("content-length"),
+            r.headers.get("transfer-encoding"),
+            r.content,
+        )
+        expected[row] = (302, length, coding, b"" if method == "HEAD" else bodies[accept])
+    assert len(answers) == len(_ROOT_FRAMING)
+    assert answers == expected
 
 
 def test_notion_a_slashed_path_is_acl_scoped_like_the_path_without_it(client, admin_h, tokens):

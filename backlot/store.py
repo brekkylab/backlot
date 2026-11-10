@@ -3245,10 +3245,12 @@ def _fts5_ok(conn) -> bool:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts_probe USING fts5(x)")
         return True
     except sqlite3.OperationalError as e:
-        # Only "FTS5 not compiled in" means genuinely-unsupported → LIKE fallback. A different
-        # OperationalError (e.g. "database is locked") must surface, not masquerade as no-FTS5
-        # and make build_fts a silent no-op.
-        if "no such module" in str(e).lower() or "fts5" in str(e).lower():
+        # `no such module: fts5` is SQLite's answer for a module it was not built with (the text a
+        # made-up module name gets on SQLite 3.50.4, 2026-11-09), and the one error that means the
+        # LIKE fallback; any other is raised. A file that cannot grow answers the probe with
+        # `fts5: error creating shadow table _fts_probe_data: database or disk is full` (same
+        # SQLite): the FTS5 wrapper around SQLITE_FULL.
+        if str(e) == "no such module: fts5":
             return False
         raise
     finally:

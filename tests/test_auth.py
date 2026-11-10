@@ -132,8 +132,8 @@ def test_basic_credential_kind_reports_no_basic_pair_as_absent_or_unparseable(he
 )
 def test_atlassian_bearer_token_takes_only_the_spelling_the_real_site_reads(header, token):
     """Which spellings count as a bearer credential, measured against ecosystem.atlassian.net and
-    brekkylab.atlassian.net on 2026-09-04 on a Jira route: a recognised one is refused (403), and
-    an unrecognised one is processed anonymously (200), so the answer says which the site read.
+    a site with no public project on 2026-09-04 on a Jira route: a recognised one is refused (403),
+    and an unrecognised one is processed anonymously (200), so the answer says which the site read.
     Both sites agreed on every row.
 
     Not :func:`auth.bearer_token`, which is deliberately permissive because GitHub really does
@@ -406,8 +406,7 @@ def test_resolve_api_key_rejects_an_unknown_key(acl):
 
 
 # --- resolve_basic: the pair, not either half -------------------------------------
-# Measured against a real Atlassian Cloud site (brekkylab.atlassian.net,
-# GET /rest/api/3/myself) with a user API token:
+# Measured against a real Atlassian Cloud site (GET /rest/api/3/myself) with a user API token:
 #
 #   email + real token      -> 200, authenticated as that account
 #   email + empty password  -> 401

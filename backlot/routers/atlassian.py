@@ -2344,7 +2344,7 @@ async def confluence_cql_search(request: Request):
         raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "")
+        page = _confluence_page(conn, request, r, "", search=True)
         results.append(
             {
                 "content": page,
@@ -2772,7 +2772,7 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
-def _confluence_page(conn, request: Request, row, expand: str) -> dict:
+def _confluence_page(conn, request: Request, row, expand: str, search: bool = False) -> dict:
     created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
     cid = row["id"]
@@ -2841,19 +2841,72 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         "editor2",
         "anonymous_export_view",
     )
-    expandable = {
-        "childTypes": "",
-        "container": f"/rest/api/space/{key}",
-        "metadata": "",
-        "operations": "",
-        "restrictions": "",
-        "history": f"/rest/api/content/{cid}/history",
-        "ancestors": "",
-        "body": "",
-        "version": "",
-        "descendants": "",
-        "space": f"/rest/api/space/{key}",
-    }
+    # The names real lists under `_expandable`, with their values, measured on Confluence Cloud on
+    # 2026-11-03: a search row's eleven, and a content read's fifteen less those an `expand`
+    # serves. Real orders a content read's by how many are left: twelve or fewer in `few`'s order,
+    # as on the bare read and after `expand=body,metadata,ancestors`, and thirteen or more in
+    # `many`'s, as on a listing row and after `expand=body,metadata` (2026-11-03 and 2026-11-09).
+    if search:
+        expandable = {
+            "container": "",
+            "metadata": "",
+            "extensions": "",
+            "operations": "",
+            "children": "",
+            "history": f"/rest/api/content/{cid}/history",
+            "ancestors": "",
+            "body": "",
+            "version": "",
+            "descendants": "",
+            "space": f"/rest/api/space/{key}",
+        }
+    else:
+        links = {
+            "container": f"/rest/api/space/{key}",
+            "children": f"/rest/api/content/{cid}/child",
+            "restrictions": f"/rest/api/content/{cid}/restriction/byOperation",
+            "history": f"/rest/api/content/{cid}/history",
+            "descendants": f"/rest/api/content/{cid}/descendant",
+            "space": f"/rest/api/space/{key}",
+        }
+        few = (
+            "childTypes",
+            "container",
+            "schedulePublishInfo",
+            "metadata",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "restrictions",
+            "history",
+            "ancestors",
+            "body",
+            "version",
+            "draftVersion",
+            "descendants",
+            "space",
+        )
+        many = (
+            "container",
+            "metadata",
+            "restrictions",
+            "history",
+            "body",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        )
+        # The six an `expand` serves, each of which leaves `_expandable` below.
+        served = wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}
+        order = few if len(few) - len(served) <= 12 else many
+        expandable = {name: links.get(name, "") for name in order}
     # `space` was served above, before this dict existed, so it leaves `_expandable` here.
     if "space" in wanted:
         expandable.pop("space")
@@ -2884,7 +2937,23 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         expandable.pop("body")
         body = {}
         for name in body_named:
-            body[name] = {"value": body_writers[name](), "representation": name}
+            # A representation real serves carries more than `value` and `representation`:
+            # `storage` adds `embeddedContent: []` and an `_expandable` naming the content, and
+            # the other three this server renders add an `_expandable` of four names (Confluence
+            # Cloud: `storage` and `export_view` on 2026-11-03, `view` and `atlas_doc_format` on
+            # 2026-11-04).
+            rep = {"value": body_writers[name](), "representation": name}
+            if name == "storage":
+                rep["embeddedContent"] = []
+                rep["_expandable"] = {"content": f"/rest/api/content/{cid}"}
+            else:
+                rep["_expandable"] = {
+                    "webresource": "",
+                    "embeddedContent": "",
+                    "mediaToken": "",
+                    "content": f"/rest/api/content/{cid}",
+                }
+            body[name] = rep
         unexpanded = [name for name in body_representations if name not in body_named]
         body["_expandable"] = dict.fromkeys(unexpanded, "")
         page["body"] = body

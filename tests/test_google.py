@@ -24321,6 +24321,8 @@ _LAYOUT_REFUSALS += [
     ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{"paddingEnd": {"magnitude": 10, "unit": "PT"}, "width": {"magnitude": 50, "unit": "PT"}}, {"paddingEnd": {"magnitude": 7.25, "unit": "PT"}}, {}]}, "fields": "columnProperties"}}], 400, "Invalid requests[0].updateSectionStyle: Column widths cannot be updated."),
     # 7 paddings ((3, 0), (4, 0), (3, 0))
     ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{"paddingEnd": {"magnitude": 3, "unit": "PT"}}, {"paddingEnd": {"magnitude": 4, "unit": "PT"}}, {"paddingEnd": {"magnitude": 3, "unit": "PT"}}]}, "fields": "columnProperties"}}], 400, "Invalid requests[0].updateSectionStyle: All column padding ends must be the same."),
+    # 7 paddings ((10, 0), (7.25, 0), (5 with no unit, 0))
+    ([{"updateSectionStyle": {"range": {"startIndex": 1, "endIndex": 2}, "sectionStyle": {"columnProperties": [{"paddingEnd": {"magnitude": 10, "unit": "PT"}}, {"paddingEnd": {"magnitude": 7.25, "unit": "PT"}}, {"paddingEnd": {"magnitude": 5}}]}, "fields": "columnProperties"}}], 400, "Invalid requests[0].updateSectionStyle: Unsupported dimension unit:UNIT_UNSPECIFIED"),
     # 3p merge 2x2, delete covered newline
     ([{"mergeTableCells": {"tableRange": {"tableCellLocation": {"tableStartLocation": {"index": 5}, "rowIndex": 0, "columnIndex": 0}, "rowSpan": 2, "columnSpan": 2}}}, {"deleteContentRange": {"range": {"startIndex": 26, "endIndex": 27}}}], 500, "Internal error encountered."),
     # replaceImage  https://www.gstatic.com/a.png

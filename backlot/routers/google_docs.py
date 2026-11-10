@@ -1193,10 +1193,10 @@ def _docs_required(read: dict, names: list[str], key: str, refusal: str) -> dict
 
 def _docs_column_widths(columns: list[dict], width: float) -> list[dict]:
     """A section's `columnProperties` as `updateSectionStyle` keeps them: each column the page's
-    width between the margins, less every column's padding, shared out evenly, cut after three
-    decimals, the last column's padding read and then dropped. Measured 2026-11-09: two columns of
-    10 PT and 0 padding on a 612 PT page between 72 PT margins were 229 PT wide, as were two of 10
-    and 7.25, three of 5, 5 and 0 were 152.666, and three of 10, 10 and 5 were 149.333."""
+    width between the margins, less the padding of every column but the last, shared out evenly, cut
+    after three decimals, the last column's padding read and then dropped. Measured 2026-11-09: two
+    columns of 10 PT and 0 padding on a 612 PT page between 72 PT margins were 229 PT wide, as were
+    two of 10 and 7.25, three of 5, 5 and 0 were 152.666, and three of 10, 10 and 5 were 149.333."""
     read = [_docs_dimension(c["padding_end"]) if "padding_end" in c else None for c in columns]
     padded = [*read[:-1], {"unit": "PT"}]
     share = (width - sum(p.get("magnitude", 0) for p in padded)) / len(columns)
@@ -1211,11 +1211,11 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
     (`_docs_range`, no range refused as an index missing; one in a header, footer or footnote is a
     500), then the values. A margin, the content direction or the columns named must be stated, in
     that order whatever order `fields` names them in, `*` naming them all; every column but the
-    last needs its padding, a width stated is refused, and then those paddings must be the same
-    (`_docs_column_widths`); a margin below
-    zero is a 500, and the margins are fitted to the page (`_docs_fit_margins`). The first
-    section's page numbering and first-page flag are its tab's `documentStyle`'s, a later
-    section's its own."""
+    last needs its padding, a width stated is refused, every padding stated is read for its unit,
+    and then those of every column but the last must be the same (`_docs_column_widths`); a margin
+    below zero is a 500, and the margins are fitted to the page (`_docs_fit_margins`). The first
+    section's page numbering and first-page flag are its tab's `documentStyle`'s, a later section's
+    its own."""
     names = _docs_fields(
         req.get("fields", ""),
         _PJ_SECTION_STYLE,
@@ -1251,8 +1251,10 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
             raise _EditorRefused("Column padding must be set in order to update column properties.")
         if any("width" in c for c in columns):
             raise _EditorRefused("Column widths cannot be updated.")
-        # measured 2026-11-09: 10 and 7.25, and 3, 4 and 3, were refused, 7 and 7.0 taken
-        if len({_docs_dimension(c["padding_end"]).get("magnitude", 0) for c in columns[:-1]}) > 1:
+        # measured 2026-11-09: 10 and 7.25, and 3, 4 and 3, were refused, 7 and 7.0 taken;
+        # 2026-11-10: 10, 7.25 and a last padding with no unit were refused by that unit
+        paddings = [_docs_dimension(c["padding_end"]) for c in columns if "padding_end" in c]
+        if len({p.get("magnitude", 0) for p in paddings[: len(columns) - 1]}) > 1:
             raise _EditorRefused("All column padding ends must be the same.")
     if "columnSeparatorStyle" in names:
         value = read.get("column_separator_style", 0)
@@ -2517,8 +2519,8 @@ def _docs_update_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
 def _docs_replace_image(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``replaceImage``: the tab, a URL of `http` or `https` in any case, one naming no host a
-    500, an image named, then looked up. Measured 2026-11-09: `HTTPS://` and `hTTp://` were taken,
-    ` https://` refused, and `https:/x`, `httpS:x` and `https://` each a 500."""
+    500, an image named, then looked up. Measured 2026-11-09: `HTTPS://` and `hTTp://` before a
+    host were taken, ` https://` refused, and `https:/x`, `httpS:x` and `https://` each a 500."""
     _docs_tab(doc, req)
     uri = req.get("uri", "")
     if not uri:

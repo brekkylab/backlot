@@ -3331,8 +3331,9 @@ class _Nesting:
     - A paragraph indented `s` points (`indentStart`) goes under the first `s // 36` items the
       last list holds open (`_Items.markers`), or all of them when fewer, its first line
       indented by their markers as `_list_marker` indents an item under them. It goes under none
-      once a paragraph with text went under none since the last item. An empty paragraph did not
-      count on 2026-11-10, whether a quote, `> `, or a heading, `## `.
+      once a paragraph with text went under none since the last item. An empty paragraph under
+      none did not stop the next one going under the items, and on 2026-11-10 neither did an empty
+      quote, `> `, or an empty heading, `## `.
     - It is a quote, a `> ` for each 30 points it stands past the items it goes under, when that
       is a whole multiple of 30: under no item 30 points were `> ` and 60 `> > `, where 29, 31, 65
       and 66 were nothing; under one item 66 points were `> `.

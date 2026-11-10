@@ -2980,11 +2980,16 @@ def head_content_length(request: Request, status_code: int) -> bool:
     beside it declares the same (`myself`, 2026-09-30), and its 500 page (:func:`jira_oops_page`,
     on `serverInfo` and `myself`, 2026-10-13). Confluence's 406 declares its length but
     on `search` (Tomcat's page on `space`, 441 bytes, and nothing on `search`'s empty one,
-    2026-10-13).
+    2026-10-13). Its 401 for a Basic value it cannot read declares one, on `search` as elsewhere:
+    on 2026-11-09 a `HEAD` with `Authorization: Basic !!!` at `space`, `space/{key}`, `content`,
+    `search` (with a `cql` and without), `user/current`, `nosuch` and `api/v2/spaces` answered 401
+    with `content-length: 437`, the length of Tomcat's 401 page each `GET` sends.
     """
+    if status_code == 401:
+        return True
     path = request.url.path
     if not is_confluence(path):
-        return status_code in (401, 500)
+        return status_code == 500
     if _instance(path) == _CONFLUENCE_HEAD_NO_LENGTH:
         return False
     return 200 <= status_code < 300 or status_code == 406

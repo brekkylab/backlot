@@ -2092,6 +2092,49 @@ def test_hubspot_wildcard_needle_with_many_stars_stays_fast():
     assert hs._match_one("a" * 20000 + "b", f) is True
 
 
+def _json_refusal(column: int, text: str, line: int = 1) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line {line}, column {column}: {text}",
+        "category": "VALIDATION_ERROR",
+    }
+
+
+def _not_a_list(kind: str, token: str) -> str:
+    return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
+
+
+def _no_creator(arg: str, shown: str) -> str:
+    return (
+        "Cannot construct instance of  (although at least one Creator exists): "
+        f"no {arg}-argument constructor/factory method to deserialize from {shown}"
+    )
+
+
+def _unreadable_field(field: str, value: str = "") -> dict:
+    return {
+        "status": "error",
+        "message": f'Invalid input JSON: unable to deserialize field "{field}". Invalid value: {value}',
+        "category": "VALIDATION_ERROR",
+    }
+
+
+def _mismatched(kind: str, token: str) -> str:
+    return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.{token}`)"
+
+
+def _past_int_refusal(column: int, digits: str) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line 1, column {column}: Numeric value ({digits}) out of "
+        "range of int (-2147483648 - 2147483647)",
+    }
+
+
+_ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
+_OBJECT = "Cannot deserialize value of type  from Object value (token `JsonToken.START_OBJECT`)"
+
+
 def _enum_refusal(line: int, column: int) -> dict:
     return {
         "status": "error",
@@ -2134,8 +2177,16 @@ def _op(id, raw, want, object_type="contacts", authed=True):
     return pytest.param(raw, want, object_type, authed, id=id)
 
 
-def _served_as(name):
-    return ("served as", _jobtitle([(name, "Salesperson")]))
+def _served_as(control: str, *, empty: bool = False) -> tuple:
+    """A 200 serving the page of `control`, a body naming the operator the row reads as, which is
+    empty on this corpus when `empty` is true."""
+    return ("served as", control, empty)
+
+
+_NEQ = _jobtitle([("NEQ", "Salesperson")])
+# One filter on `email` with its operator left to the row.
+_WITH_OPERATOR = '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": %s}]}]}'
+_OPERATOR_FIELD = "filterGroups[0].filters[0].operator"
 
 
 # fmt: off
@@ -2177,23 +2228,49 @@ _OPERATOR_ROWS = [
     _op("before-a-cursor-naming-no-record", _jobtitle([("neq", "x")], after="10000"), _enum_refusal(1, 68)),
     _op("after-an-unknown-type", _jobtitle([("neq", "Salesperson")]), {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
     _op("after-the-credential", _jobtitle([("neq", "Salesperson")]), 401, authed=False),
-    _op("space-before", _jobtitle([(" NEQ", "Salesperson")]), _served_as("NEQ")),
-    _op("tab-before", _jobtitle([("\tNEQ", "Salesperson")]), _served_as("NEQ")),
-    _op("u0001-before", _jobtitle([(chr(1) + "NEQ", "Salesperson")]), _served_as("NEQ")),
-    _op("space-after", _jobtitle([("NEQ ", "Salesperson")]), _served_as("NEQ")),
-    _op("index-0", _jobtitle([("0", "Salesperson")]), 200),
-    _op("index-12", _jobtitle([("12", "Salesperson")]), 200),
-    _op("index-1-after-a-space", _jobtitle([(" 1", "Salesperson")]), 200),
+    _op("space-before", _jobtitle([(" NEQ", "Salesperson")]), _served_as(_NEQ)),
+    _op("tab-before", _jobtitle([("\tNEQ", "Salesperson")]), _served_as(_NEQ)),
+    _op("u0001-before", _jobtitle([(chr(1) + "NEQ", "Salesperson")]), _served_as(_NEQ)),
+    _op("space-after", _jobtitle([("NEQ ", "Salesperson")]), _served_as(_NEQ)),
+    _op("index-0", _jobtitle([("0", "Salesperson")]), _served_as(_jobtitle([("EQ", "Salesperson")]), empty=True)),
+    _op("index-12", _jobtitle([("12", "Salesperson")]), _served_as(_jobtitle([("NOT_CONTAINS_TOKEN", "Salesperson")]))),
+    _op("index-1-after-a-space", _jobtitle([(" 1", "Salesperson")]), _served_as(_NEQ)),
+    _op("operator-integer-9", _WITH_OPERATOR % "9", _served_as(_WITH_OPERATOR % '"HAS_PROPERTY"')),
+    _op("operator-integer-10", _WITH_OPERATOR % "10", _served_as(_WITH_OPERATOR % '"NOT_HAS_PROPERTY"', empty=True)),
+    _op("operator-string-9", _WITH_OPERATOR % '"9"', _served_as(_WITH_OPERATOR % '"HAS_PROPERTY"')),
+    _op("operator-negative-zero", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": -0, "value": "ava@acme-health.com"}]}]}', _served_as('{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": "ava@acme-health.com"}]}]}')),
+    # an integer outside 0 to 12, a float, a boolean, an array or an object as the operator
+    _op("operator-13", _WITH_OPERATOR % "13", _unreadable_field(_OPERATOR_FIELD, "13")),
+    _op("operator-minus-1", _WITH_OPERATOR % "-1", _unreadable_field(_OPERATOR_FIELD, "-1")),
+    _op("operator-int-min", _WITH_OPERATOR % "-2147483648", _unreadable_field(_OPERATOR_FIELD, "-2147483648")),
+    _op("operator-int-max", _WITH_OPERATOR % "2147483647", _unreadable_field(_OPERATOR_FIELD, "2147483647")),
+    _op("operator-past-int", _WITH_OPERATOR % "2147483648", _past_int_refusal(80, "2147483648")),
+    _op("operator-past-int-negative", _WITH_OPERATOR % "-2147483649", _past_int_refusal(81, "-2147483649")),
+    _op("operator-past-long", _WITH_OPERATOR % "99999999999999999999", _past_int_refusal(90, "99999999999999999999")),
+    _op("operator-float", _WITH_OPERATOR % "1.5", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("operator-float-6.0", _WITH_OPERATOR % "6.0", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("operator-exponent", _WITH_OPERATOR % "1e1", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("operator-true", _WITH_OPERATOR % "true", _json_refusal(70, _mismatched("Boolean", "VALUE_TRUE"))),
+    _op("operator-false", _WITH_OPERATOR % "false", _json_refusal(70, _mismatched("Boolean", "VALUE_FALSE"))),
+    _op("operator-empty-array", _WITH_OPERATOR % "[]", _json_refusal(70, _ARRAY)),
+    _op("operator-array", _WITH_OPERATOR % '["EQ"]', _json_refusal(70, _ARRAY)),
+    _op("operator-object", _WITH_OPERATOR % "{}", _json_refusal(70, _OBJECT)),
+    # an operator beside a second value real cannot read
+    _op("operator-float-then-propertyName-array", '{"filterGroups": [{"filters": [{"operator": 1.5, "propertyName": []}]}]}', _json_refusal(45, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("propertyName-array-then-operator-float", '{"filterGroups": [{"filters": [{"propertyName": [], "operator": 1.5}]}]}', _json_refusal(49, _ARRAY)),
+    _op("operator-13-then-query-array", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}], "query": ["x"]}', _unreadable_field(_OPERATOR_FIELD, "13")),
+    _op("query-array-then-operator-13", '{"query": ["x"], "filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}]}', _json_refusal(11, _ARRAY)),
+    _op("operator-13-then-null-filter", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}, null]}]}', _unreadable_field(_OPERATOR_FIELD, "13")),
+    _op("null-filter-then-operator-13", '{"filterGroups": [{"filters": [null, {"propertyName": "email", "operator": 13}]}]}', _unreadable_field("filterGroups[0].filters[1].operator", "13")),
 ]
 # fmt: on
 
 
 def test_hubspot_search_reads_a_filter_operator_as_real_does(client, admin_h):
-    """`_refuse_an_operator`'s rule, one body per row: the status and message real answered for each
-    operator it could not read, and a 200 for each it trims (`_TRIM`) or reads as an index
-    (`_OPERATOR_INDEXES`). The trimmed rows put real's trimmed spellings around `NEQ`, whose page on
-    this corpus is not empty, and compare that page with `NEQ`'s own; the index rows check only that
-    the body is served."""
+    """`_refuse_an_operator`'s rule, and `_unreadable_member`'s for an operator that is not a
+    string, one body per row: the status and message real answered for each operator it could not
+    read, and for each it trims (`_TRIM`) or reads as an index (`_OPERATORS_BY_INDEX`), the page of
+    a body naming the operator it reads as, and whether that page is empty on this corpus."""
     answered, expected = {}, {}
     for row in _OPERATOR_ROWS:
         raw, want, object_type, authed = row.values
@@ -2204,10 +2281,11 @@ def test_hubspot_search_reads_a_filter_operator_as_real_does(client, admin_h):
         if isinstance(want, dict):
             answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
         elif isinstance(want, tuple):
-            control = client.post(url, headers=headers, content=want[1].encode()).json()["results"]
+            _, body, empty = want
+            control = client.post(url, headers=headers, content=body.encode()).json()["results"]
             answered[row.id], expected[row.id] = (
-                (r.status_code, r.json()["results"], control != []),
-                (200, control, True),
+                (r.status_code, r.json()["results"], control == []),
+                (200, control, empty),
             )
         else:
             answered[row.id], expected[row.id] = r.status_code, want
@@ -2439,52 +2517,11 @@ def test_hubspot_batch_read(client, admin_h):
     assert {r["id"] for r in j["results"]} == set(ids)
 
 
-def _json_refusal(column: int, text: str, line: int = 1) -> dict:
-    return {
-        "status": "error",
-        "message": f"Invalid input JSON on line {line}, column {column}: {text}",
-        "category": "VALIDATION_ERROR",
-    }
-
-
-def _not_a_list(kind: str, token: str) -> str:
-    return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
-
-
-def _no_creator(arg: str, shown: str) -> str:
-    return (
-        "Cannot construct instance of  (although at least one Creator exists): "
-        f"no {arg}-argument constructor/factory method to deserialize from {shown}"
-    )
-
-
-def _unreadable_field(field: str, value: str = "") -> dict:
-    return {
-        "status": "error",
-        "message": f'Invalid input JSON: unable to deserialize field "{field}". Invalid value: {value}',
-        "category": "VALIDATION_ERROR",
-    }
-
-
-def _mismatched(kind: str, token: str) -> str:
-    return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.{token}`)"
-
-
-def _past_int_refusal(column: int, digits: str) -> dict:
-    return {
-        "status": "error",
-        "message": f"Invalid input JSON on line 1, column {column}: Numeric value ({digits}) out of "
-        "range of int (-2147483648 - 2147483647)",
-    }
-
-
 def _br(id, raw, want, object_type="companies", authed=True):
     return pytest.param(raw, want, object_type, authed, id=id)
 
 
 _ONE = '{"inputs":[{"id":"1"}],'
-_ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
-_OBJECT = "Cannot deserialize value of type  from Object value (token `JsonToken.START_OBJECT`)"
 
 
 def _no_id(column: int) -> dict:
@@ -2755,6 +2792,14 @@ _TOKEN_ROWS = [
     _nt("operator-ahead-of-filters", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]},{"filters":Infinity}]}', _enum_refusal(1, 64)),
     _nt("blank-operator-ahead", "search", "{" + _AN_OPERATOR % '" "' + ',"limit":NaN}', _empty_operator_refusal(0, 0)),
     _nt("blank-operator-behind", "search", '{"limit":NaN,' + _AN_OPERATOR % '" "' + "}", _token_refusal(13, "NaN")),
+    _nt("filterGroups-string-then-nan", "search", '{"filterGroups": "x", "query": NaN}', _json_refusal(18, _not_a_list("String", "VALUE_STRING")), object_type="contacts"),
+    _nt("nan-then-filterGroups-string", "search", '{"query": NaN, "filterGroups": "x"}', _token_refusal(14, "NaN"), object_type="contacts"),
+    _nt("blank-string-group-then-nan", "search", '{"filterGroups": [" "], "query": NaN}', _unreadable_field("filterGroups[0]"), object_type="contacts"),
+    _nt("operator-13-then-nan", "search", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}], "x": NaN}', _unreadable_field(_OPERATOR_FIELD, "13"), object_type="contacts"),
+    # a null element and the token, named where `_refuse_a_search_shape` says
+    _nt("null-group-then-nan", "search", '{"filterGroups": [null], "query": NaN}', _token_refusal(38, "NaN"), object_type="contacts"),
+    _nt("null-filter-then-nan", "search", '{"filterGroups": [{"filters": [null]}], "query": NaN}', _json_refusal(37, "filters element"), object_type="contacts"),
+    _nt("null-filter-then-nan-in-its-group", "search", '{"filterGroups": [{"filters": [null], "x": NaN}]}', _token_refusal(47, "NaN"), object_type="contacts"),
     # after the type and the credential
     _nt("after-an-unknown-type", "search", '{"limit":NaN}', {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
     _nt("after-the-credential", "batch/read", '{"inputs":[NaN]}', 401, authed=False),
@@ -2770,9 +2815,10 @@ _TOKEN_ROWS = [
 
 def test_hubspot_refuses_a_non_standard_number_token(client, admin_h):
     """`_non_standard_number`'s rule, one body per row: the status and body real answered,
-    including which value it names when the body also holds one `_refuse_a_batch_read_shape` or
-    `_refuse_an_operator` refuses, and the status for the three spellings inside a string, which
-    real reads as text (a 207 for batch/read because no company has those ids)."""
+    including which value it names when the body also holds one `_refuse_a_batch_read_shape`,
+    `_refuse_a_search_shape` or `_refuse_an_operator` refuses, and the status for the three
+    spellings inside a string, which real reads as text (a 207 for batch/read because no company
+    has those ids)."""
     answered, expected = {}, {}
     for row in _TOKEN_ROWS:
         route, raw, want, object_type, authed = row.values
@@ -2799,7 +2845,6 @@ _A_BOGUS_OPERATOR = '{"filters": [{"propertyName": "email", "operator": "BOGUS"}
 _WITH_PROPERTY_NAME = (
     '{"filterGroups": [{"filters": [{"propertyName": %s, "operator": "HAS_PROPERTY"}]}]}'
 )
-_WITH_OPERATOR = '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": %s}]}]}'
 _WITH_VALUE = (
     '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": %s}]}]}'
 )
@@ -2810,7 +2855,6 @@ _WITH_HIGH_VALUE = (
 _WITH_VALUES = (
     '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "IN", "values": %s}]}]}'
 )
-_OPERATOR_FIELD = "filterGroups[0].filters[0].operator"
 
 # fmt: off
 _SEARCH_BODY_ROWS = [
@@ -2843,13 +2887,10 @@ _SEARCH_BODY_ROWS = [
     _sb("filterGroups-string-then-query-array", '{"filterGroups": "x", "query": ["x"]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
     _sb("bad-operator-then-string-group", '{"filterGroups": [' + _A_BOGUS_OPERATOR + ', "x"]}', _enum_refusal(1, 70)),
     _sb("string-group-then-bad-operator", '{"filterGroups": ["x", ' + _A_BOGUS_OPERATOR + ']}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
-    _sb("filterGroups-string-then-nan", '{"filterGroups": "x", "query": NaN}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
-    _sb("nan-then-filterGroups-string", '{"query": NaN, "filterGroups": "x"}', _token_refusal(14, "NaN")),
     _sb("filter-then-string-filter", _A_GOOD_FILTER + ', "y"]}]}', _json_refusal(91, _no_creator("String", "String value ('y')"))),
     _sb("group-then-integer-group", _A_GOOD_FILTER + ']}, 5]}', _json_refusal(93, _no_creator("int/Int", "Number value (5)"))),
     _sb("after-then-filterGroups-string", '{"after": "10000", "filterGroups": "x"}', _json_refusal(36, _not_a_list("String", "VALUE_STRING"))),
     _sb("after-then-query-array", '{"after": "10000", "query": ["x"]}', _json_refusal(29, _ARRAY)),
-    _sb("blank-string-group-then-nan", '{"filterGroups": [" "], "query": NaN}', _unreadable_field("filterGroups[0]")),
     _sb("blank-string-group-then-bad-operator", '{"filterGroups": [" ", ' + _A_BOGUS_OPERATOR + ']}', _unreadable_field("filterGroups[0]")),
     # a list real reads, ahead of the value it cannot
     _sb("properties-then-filterGroups-string", '{"properties": ["email"], "filterGroups": "x"}', _json_refusal(43, _not_a_list("String", "VALUE_STRING"))),
@@ -2862,29 +2903,11 @@ _SEARCH_BODY_ROWS = [
     _sb("null-filter-then-null-group", '{"filterGroups": [{"filters": [null]}, null]}', _json_refusal(37, "filters element")),
     _sb("null-group-then-null-filter", '{"filterGroups": [null, {"filters": [null]}]}', _json_refusal(43, "filters element")),
     _sb("null-group-then-bad-operator", '{"filterGroups": [null, ' + _A_BOGUS_OPERATOR + ']}', _enum_refusal(1, 76)),
-    _sb("null-group-then-nan", '{"filterGroups": [null], "query": NaN}', _token_refusal(38, "NaN")),
-    _sb("null-filter-then-nan", '{"filterGroups": [{"filters": [null]}], "query": NaN}', _json_refusal(37, "filters element")),
     _sb("null-filter-then-bad-operator", '{"filterGroups": [{"filters": [null, {"propertyName": "email", "operator": "BOGUS"}]}]}', _enum_refusal(1, 76)),
-    _sb("null-filter-then-nan-in-its-group", '{"filterGroups": [{"filters": [null], "x": NaN}]}', _token_refusal(47, "NaN")),
     # filter members
     _sb("propertyName-empty-array", _WITH_PROPERTY_NAME % "[]", _json_refusal(49, _ARRAY)),
     _sb("propertyName-array", _WITH_PROPERTY_NAME % '["email"]', _json_refusal(49, _ARRAY)),
     _sb("propertyName-object", _WITH_PROPERTY_NAME % "{}", _json_refusal(49, _OBJECT)),
-    _sb("operator-13", _WITH_OPERATOR % "13", _unreadable_field(_OPERATOR_FIELD, "13")),
-    _sb("operator-minus-1", _WITH_OPERATOR % "-1", _unreadable_field(_OPERATOR_FIELD, "-1")),
-    _sb("operator-int-min", _WITH_OPERATOR % "-2147483648", _unreadable_field(_OPERATOR_FIELD, "-2147483648")),
-    _sb("operator-int-max", _WITH_OPERATOR % "2147483647", _unreadable_field(_OPERATOR_FIELD, "2147483647")),
-    _sb("operator-past-int", _WITH_OPERATOR % "2147483648", _past_int_refusal(80, "2147483648")),
-    _sb("operator-past-int-negative", _WITH_OPERATOR % "-2147483649", _past_int_refusal(81, "-2147483649")),
-    _sb("operator-past-long", _WITH_OPERATOR % "99999999999999999999", _past_int_refusal(90, "99999999999999999999")),
-    _sb("operator-float", _WITH_OPERATOR % "1.5", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
-    _sb("operator-float-6.0", _WITH_OPERATOR % "6.0", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
-    _sb("operator-exponent", _WITH_OPERATOR % "1e1", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
-    _sb("operator-true", _WITH_OPERATOR % "true", _json_refusal(70, _mismatched("Boolean", "VALUE_TRUE"))),
-    _sb("operator-false", _WITH_OPERATOR % "false", _json_refusal(70, _mismatched("Boolean", "VALUE_FALSE"))),
-    _sb("operator-empty-array", _WITH_OPERATOR % "[]", _json_refusal(70, _ARRAY)),
-    _sb("operator-array", _WITH_OPERATOR % '["EQ"]', _json_refusal(70, _ARRAY)),
-    _sb("operator-object", _WITH_OPERATOR % "{}", _json_refusal(70, _OBJECT)),
     _sb("value-empty-array", _WITH_VALUE % "[]", _json_refusal(85, _ARRAY)),
     _sb("value-array", _WITH_VALUE % '["x"]', _json_refusal(85, _ARRAY)),
     _sb("value-object", _WITH_VALUE % "{}", _json_refusal(85, _OBJECT)),
@@ -2902,15 +2925,8 @@ _SEARCH_BODY_ROWS = [
     _sb("values-object-element", _WITH_VALUES % "[{}]", _json_refusal(87, _OBJECT)),
     _sb("values-string-then-array-element", _WITH_VALUES % '["x", ["y"]]', _json_refusal(92, _ARRAY)),
     # bodies with a second member or value real cannot read
-    _sb("operator-float-then-propertyName-array", '{"filterGroups": [{"filters": [{"operator": 1.5, "propertyName": []}]}]}', _json_refusal(45, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
-    _sb("propertyName-array-then-operator-float", '{"filterGroups": [{"filters": [{"propertyName": [], "operator": 1.5}]}]}', _json_refusal(49, _ARRAY)),
     _sb("value-array-then-bad-operator", '{"filterGroups": [{"filters": [{"propertyName": "email", "value": [], "operator": "BOGUS"}]}]}', _json_refusal(67, _ARRAY)),
     _sb("bad-operator-then-value-array", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "BOGUS", "value": []}]}]}', _enum_refusal(1, 70)),
-    _sb("operator-13-then-query-array", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}], "query": ["x"]}', _unreadable_field(_OPERATOR_FIELD, "13")),
-    _sb("query-array-then-operator-13", '{"query": ["x"], "filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}]}', _json_refusal(11, _ARRAY)),
-    _sb("operator-13-then-nan", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}], "x": NaN}', _unreadable_field(_OPERATOR_FIELD, "13")),
-    _sb("operator-13-then-null-filter", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}, null]}]}', _unreadable_field(_OPERATOR_FIELD, "13")),
-    _sb("null-filter-then-operator-13", '{"filterGroups": [{"filters": [null, {"propertyName": "email", "operator": 13}]}]}', _unreadable_field("filterGroups[0].filters[1].operator", "13")),
     # bodies real reads: (body answering the same page, is that page narrower than `{}`'s)
     _sb("query-integer", '{"query": 5}', ('{"query": "5"}', True)),
     _sb("query-float", '{"query": 1.5}', ('{"query": "1.5"}', True)),
@@ -2927,10 +2943,6 @@ _SEARCH_BODY_ROWS = [
     # does not have, which this router does not send
     _sb("propertyName-integer", _WITH_PROPERTY_NAME % "5", (_WITH_PROPERTY_NAME % '"5"', True)),
     _sb("propertyName-float", _WITH_PROPERTY_NAME % "1.5", (_WITH_PROPERTY_NAME % '"1.5"', True)),
-    _sb("operator-integer-9", _WITH_OPERATOR % "9", (_WITH_OPERATOR % '"HAS_PROPERTY"', False)),
-    _sb("operator-integer-10", _WITH_OPERATOR % "10", (_WITH_OPERATOR % '"NOT_HAS_PROPERTY"', True)),
-    _sb("operator-string-9", _WITH_OPERATOR % '"9"', (_WITH_OPERATOR % '"HAS_PROPERTY"', False)),
-    _sb("operator-negative-zero", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": -0, "value": "ava@acme-health.com"}]}]}', (_WITH_VALUE % '"ava@acme-health.com"', True)),
     _sb("value-integer", _WITH_VALUE % "5", (_WITH_VALUE % '"5"', True)),
     _sb("value-float", _WITH_VALUE % "1.5", (_WITH_VALUE % '"1.5"', True)),
     _sb("value-true", _WITH_VALUE % "true", (_WITH_VALUE % '"true"', True)),

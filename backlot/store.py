@@ -1087,7 +1087,12 @@ def connect_rw(path: Path, *, busy_ms: int = 60_000) -> sqlite3.Connection:
     # live server is reading rides through the reader's lock instead of a spurious "locked".
     if busy_ms:
         conn.execute(f"PRAGMA busy_timeout={busy_ms}")
-    conn.executescript(SCHEMA)
+    # The whole script as one transaction. Outside one, each of its statements, over a hundred on a
+    # fresh file, commits by itself, and a commit waits for the disk to make its writes durable: a
+    # 4 KiB write and fsync, 60 tries on each of ten windows-latest runners, 2026-11-06, took 3.9 to
+    # 7.5 ms at the median on the temp disk, where `serve()` imports its corpus, and 0.2 to 0.6 ms
+    # on the workspace disk.
+    conn.executescript(f"BEGIN;\n{SCHEMA}\nCOMMIT;")
     return conn
 
 
@@ -2850,6 +2855,25 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
     ).fetchone()
 
 
+def gdrive_created_ids(conn, file_id: str | None = None) -> set[str]:
+    """The ids of the files created during this server's lifetime, of ``file_id`` alone when it
+    is given. An overlay row alone does not say so: a write to a corpus file copies it there, so
+    every corpus id is left out."""
+    from backlot import overlay
+
+    if not overlay.is_attached(conn):
+        return set()
+    where, args = (" AND f.id = ?", [file_id]) if file_id is not None else ("", [])
+    return {
+        r[0]
+        for r in conn.execute(
+            "SELECT f.id FROM ov.gdrive_files f "
+            "WHERE NOT EXISTS (SELECT 1 FROM main.gdrive_files m WHERE m.id = f.id)" + where,
+            args,
+        )
+    }
+
+
 def gdrive_sheets_for(conn, file_id: str) -> list[sqlite3.Row]:
     """A spreadsheet's sheets in index order, or an empty list when it states no grid.
 
@@ -3214,9 +3238,11 @@ def fireflies_sentences(conn, transcript_id) -> list[sqlite3.Row]:
 
 
 def _fts5_ok(conn) -> bool:
+    # A savepoint, rolled back rather than dropped: the probe table is not committed, and a
+    # transaction the caller holds open stays open.
+    conn.execute("SAVEPOINT fts_probe")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts_probe USING fts5(x)")
-        conn.execute("DROP TABLE IF EXISTS _fts_probe")
         return True
     except sqlite3.OperationalError as e:
         # Only "FTS5 not compiled in" means genuinely-unsupported → LIKE fallback. A different
@@ -3225,6 +3251,12 @@ def _fts5_ok(conn) -> bool:
         if "no such module" in str(e).lower() or "fts5" in str(e).lower():
             return False
         raise
+    finally:
+        # An error SQLite answers by rolling the whole transaction back, an interrupt for one,
+        # takes the savepoint with it, leaving nothing to roll back to or release.
+        if conn.in_transaction:
+            conn.execute("ROLLBACK TO fts_probe")
+            conn.execute("RELEASE fts_probe")
 
 
 def _has_fts(conn, source_type: str) -> bool:
@@ -3305,6 +3337,8 @@ def build_fts(conn) -> bool:
         key = ", ".join(id_columns(src))
         decl = ", ".join(f"{c} UNINDEXED" for c in id_columns(src))
         cols = ", ".join(_fts_text_columns(src))
+        if not conn.in_transaction:  # the DROP, the CREATE and the INSERT as one commit, not three
+            conn.execute("BEGIN")
         conn.execute(f"DROP TABLE IF EXISTS {fts}")
         conn.execute(
             f"CREATE VIRTUAL TABLE {fts} USING fts5({decl}, {cols}, tokenize='porter unicode61')"

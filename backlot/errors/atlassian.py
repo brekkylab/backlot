@@ -2553,7 +2553,8 @@ _GATEWAY_PATCH_PAGE = (
 #: (:func:`jaxrs_media_type_refusal`): the status and its reason in the title and in `<h1>` and
 #: nothing else, on `text/html;charset=utf-8` with `Content-Language: en`. Measured 2026-10-12 for
 #: the 400 and 2026-10-13 for the 403, 405, 406 and 415 (:func:`confluence_refusal`), 431 to 457
-#: bytes.
+#: bytes, and 2026-10-31 for the 401, 437 bytes, which a Basic value Tomcat cannot read answers
+#: (:func:`backlot.routers.atlassian.refuse_an_unreadable_confluence_basic`).
 _TOMCAT_PAGE = (
     '<!doctype html><html lang="en"><head><title>HTTP Status {status} – {phrase}</title>'
     '<style type="text/css">body {{font-family:Tahoma,Arial,sans-serif;}} h1, h2, h3, b '
@@ -2564,6 +2565,7 @@ _TOMCAT_PAGE = (
 )
 _TOMCAT_PHRASES = {
     400: "Bad Request",
+    401: "Unauthorized",
     403: "Forbidden",
     405: "Method Not Allowed",
     406: "Not Acceptable",
@@ -2572,7 +2574,7 @@ _TOMCAT_PHRASES = {
 
 
 def tomcat_page(status: int) -> str:
-    """Tomcat's page for ``status``, one of the five it was measured for."""
+    """Tomcat's page for ``status``, one of the six it was measured for."""
     return _TOMCAT_PAGE.format(status=status, phrase=_TOMCAT_PHRASES[status])
 
 

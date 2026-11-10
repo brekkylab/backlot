@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Backlot serves enterprise SaaS APIs (Slack, Gmail, Google Drive, GitHub, Jira, and more) over a corpus the
-user supplies, with per-document ACLs. Fidelity to the real APIs is the point of the project — read
-this before changing anything.
+Backlot serves enterprise SaaS APIs (Slack, Gmail, Google Drive, Microsoft Teams, GitHub, Jira, and
+more) over a corpus the user supplies, with per-document ACLs. Fidelity to the real APIs is the
+point of the project — read this before changing anything.
 
 ## Fidelity is measured, never assumed
 

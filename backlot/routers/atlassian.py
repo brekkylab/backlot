@@ -85,6 +85,9 @@ def _refuse_the_accept(request: Request, refused: errors_atlassian.AtlassianErro
     the quota and `search`'s cache pair, on the 406 and on the JAX-RS 400 alike (2026-10-13)."""
     if refused is not None:
         request.scope["atlassian_accept_refused"] = True
+        if refused.status_code == 500:
+            # Jersey's 500 for an `Accept` it fails on is the vendor's own answer
+            request.state.answered_5xx = True
         raise refused
 
 
@@ -2344,7 +2347,7 @@ async def confluence_cql_search(request: Request):
         raise errors_atlassian.search_next_out_of_range()
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "")
+        page = _confluence_page(conn, request, r, "", search=True)
         results.append(
             {
                 "content": page,
@@ -2772,7 +2775,7 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
-def _confluence_page(conn, request: Request, row, expand: str) -> dict:
+def _confluence_page(conn, request: Request, row, expand: str, search: bool = False) -> dict:
     created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
     cid = row["id"]
@@ -2841,19 +2844,72 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         "editor2",
         "anonymous_export_view",
     )
-    expandable = {
-        "childTypes": "",
-        "container": f"/rest/api/space/{key}",
-        "metadata": "",
-        "operations": "",
-        "restrictions": "",
-        "history": f"/rest/api/content/{cid}/history",
-        "ancestors": "",
-        "body": "",
-        "version": "",
-        "descendants": "",
-        "space": f"/rest/api/space/{key}",
-    }
+    # The names real lists under `_expandable`, with their values, measured on Confluence Cloud on
+    # 2026-11-03: a search row's eleven, and a content read's fifteen less those an `expand`
+    # serves. Real orders a content read's by how many are left: twelve or fewer in `few`'s order,
+    # as on the bare read and after `expand=body,metadata,ancestors`, and thirteen or more in
+    # `many`'s, as on a listing row and after `expand=body,metadata` (2026-11-03 and 2026-11-09).
+    if search:
+        expandable = {
+            "container": "",
+            "metadata": "",
+            "extensions": "",
+            "operations": "",
+            "children": "",
+            "history": f"/rest/api/content/{cid}/history",
+            "ancestors": "",
+            "body": "",
+            "version": "",
+            "descendants": "",
+            "space": f"/rest/api/space/{key}",
+        }
+    else:
+        links = {
+            "container": f"/rest/api/space/{key}",
+            "children": f"/rest/api/content/{cid}/child",
+            "restrictions": f"/rest/api/content/{cid}/restriction/byOperation",
+            "history": f"/rest/api/content/{cid}/history",
+            "descendants": f"/rest/api/content/{cid}/descendant",
+            "space": f"/rest/api/space/{key}",
+        }
+        few = (
+            "childTypes",
+            "container",
+            "schedulePublishInfo",
+            "metadata",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "restrictions",
+            "history",
+            "ancestors",
+            "body",
+            "version",
+            "draftVersion",
+            "descendants",
+            "space",
+        )
+        many = (
+            "container",
+            "metadata",
+            "restrictions",
+            "history",
+            "body",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        )
+        # The six an `expand` serves, each of which leaves `_expandable` below.
+        served = wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}
+        order = few if len(few) - len(served) <= 12 else many
+        expandable = {name: links.get(name, "") for name in order}
     # `space` was served above, before this dict existed, so it leaves `_expandable` here.
     if "space" in wanted:
         expandable.pop("space")
@@ -2884,7 +2940,23 @@ def _confluence_page(conn, request: Request, row, expand: str) -> dict:
         expandable.pop("body")
         body = {}
         for name in body_named:
-            body[name] = {"value": body_writers[name](), "representation": name}
+            # A representation real serves carries more than `value` and `representation`:
+            # `storage` adds `embeddedContent: []` and an `_expandable` naming the content, and
+            # the other three this server renders add an `_expandable` of four names (Confluence
+            # Cloud: `storage` and `export_view` on 2026-11-03, `view` and `atlas_doc_format` on
+            # 2026-11-04).
+            rep = {"value": body_writers[name](), "representation": name}
+            if name == "storage":
+                rep["embeddedContent"] = []
+                rep["_expandable"] = {"content": f"/rest/api/content/{cid}"}
+            else:
+                rep["_expandable"] = {
+                    "webresource": "",
+                    "embeddedContent": "",
+                    "mediaToken": "",
+                    "content": f"/rest/api/content/{cid}",
+                }
+            body[name] = rep
         unexpanded = [name for name in body_representations if name not in body_named]
         body["_expandable"] = dict.fromkeys(unexpanded, "")
         page["body"] = body
@@ -4983,6 +5055,48 @@ def _confluence_jaxrs_media_refusal(request: Request, vendor_path: str) -> Respo
     return _jaxrs_media_refusal(request, checks_type=checks_type)
 
 
+def refuse_an_unreadable_confluence_basic(request: Request) -> Response | None:
+    """Tomcat's 401 page for a Basic value it cannot read, on a Confluence request no operation
+    answers, or None.
+
+    Under `/wiki/rest/` and `/wiki/api/v2/`, real answers an unreadable Basic value with Tomcat's
+    401 page, naming the site's OAuth realm in `WWW-Authenticate`: before routing and ahead of the
+    charset refusal at a path no operation serves, at a method none publishes and at the v2 API,
+    and at each operation as well. A request a served route takes, or a published operation
+    covers, is left to :func:`_confluence_caller`'s JSON 401, which the comment above
+    ``errors.atlassian.CONFLUENCE_UNAUTHORIZED`` keeps JSON on purpose. Paths outside the two
+    mounts stay as they are.
+
+    Measured on Confluence Cloud on 2026-10-31, each request on its own cache-busted URL, with
+    `Authorization: Basic !!!` and a `Content-Type` of `text/plain;charset=nope` and of
+    `text/plain;charset=`: `OPTIONS` and `DELETE` at `space` and at `user/current`, and `GET` at
+    `space/{key}/nope`, `/wiki/rest/api`, `/wiki/rest/api/nosuch` and `/wiki/api/v2/spaces`
+    answered the 401 page under both. On 2026-11-09, with no `Content-Type`, `OPTIONS space`,
+    `GET /wiki/rest/api/nosuch` and `GET /wiki/api/v2/spaces` answered it under an `Accept` of
+    none, `*/*`, `application/json` and `text/html`, each with `Content-Language: en` and the
+    realm, and answered it to a value with no colon, an empty user, an empty password or a second
+    colon as to `Basic !!!`.
+    """
+    vendor_path = _vendor_path(request.scope["path"])
+    if not (vendor_path.startswith("/wiki/rest/") or vendor_path.startswith("/wiki/api/v2/")):
+        return None
+    if auth.basic_credential_kind(request) != auth.BASIC_UNPARSEABLE:
+        return None
+    if _a_route_answers(request):
+        return None
+    if _is(_CONFLUENCE_PUBLISHED, request.method, vendor_path) or _is(
+        _CONFLUENCE_OUTSIDE_THE_DOCUMENT, request.method, vendor_path
+    ):
+        return None
+    realm = quote(f"{_site(request)}/wiki", safe="")
+    return Response(
+        errors_atlassian.tomcat_page(401),
+        status_code=401,
+        media_type=errors_atlassian.TOMCAT_MEDIA_TYPE,
+        headers={"Content-Language": "en", "WWW-Authenticate": f'OAuth realm="{realm}"'},
+    )
+
+
 def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     """The empty 500 Confluence answers a charset Java cannot name
     (``errors.atlassian.refuse_a_confluence_charset``) wherever its Spring application answers the
@@ -5021,6 +5135,8 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     refused = errors_atlassian.refuse_a_confluence_charset(request.headers)
     if refused is None:
         return None
+    # the vendor's answer to a wrong request, which the telemetry classes by this mark
+    request.state.answered_5xx = True
     return Response(refused.body, status_code=refused.status_code)
 
 
@@ -5284,6 +5400,7 @@ def _confluence_not_found(request: Request) -> Response:
         # Jersey fails to write its 404 under an `Accept` it cannot parse: an empty 500 with no
         # `content-type`, measured 2026-10-14 on `nopesuchroute` and `nope/deeper` with `q=2`, a
         # blank member and `;foo`, with a credential and without one, and 2026-10-16 with U+00A0
+        request.state.answered_5xx = True  # the vendor's own answer, not this server's
         return Response(b"", status_code=500)
     url = f"{_site(request)}{vendor_path}"
     # the query as it arrived, for the reason `normalise_the_slashes_in_an_atlassian_path` reads
@@ -5353,6 +5470,8 @@ def _search_options(request: Request) -> Response:
     # the decoded path picks the product only; the 400 echoes the header, not the path
     unparsed = errors_atlassian.not_acceptable(request.url.path, accept, jaxrs=True)
     if unparsed is not None and unparsed.status_code in (400, 500):
+        if unparsed.status_code == 500:
+            request.state.answered_5xx = True  # Jersey's, not this server's
         raise unparsed
     if accept is None:
         media_type = "application/vnd.sun.wadl+xml"

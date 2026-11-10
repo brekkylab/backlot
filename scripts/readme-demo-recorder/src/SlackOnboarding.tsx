@@ -11,7 +11,9 @@ import {
   Verdict,
   SourceCycle,
   SourceTally,
+  WritesTally,
   SERVED,
+  WRITES,
   activeServed,
 } from "./parts";
 
@@ -22,6 +24,10 @@ import {
  * already returning messages while the left is still filling in OAuth scopes. Told in sequence —
  * first the slow way, then the fast way — the reader has to hold the first half in memory to feel
  * the second. Run in parallel, the comparison is just what the frame looks like.
+ *
+ * Then the surviving column repeats itself for one source after another, and last takes a write:
+ * a message posted on the Slack base URL and read back, then Backlot's own report of what was
+ * written, which is the read a grader makes after an agent has acted, and the reset that empties it.
  *
  * Nothing here uses a Slack logo or wordmark styling. The service is named in text, which is
  * nominative use; a redrawn vendor mark in a project's own README is a trademark question we have
@@ -313,7 +319,7 @@ export const SlackOnboarding: React.FC<{ frame: number }> = ({ frame }) => {
   // fade and left one frame with neither fully present, which is the same blink in a new place.
   const lanesOut = frame >= T.slide + 20 ? 0 : 1;
   const i = activeServed(frame, T.cycle);
-  const subject = i < 0 ? "Slack" : SERVED[i].subject;
+  const subject = i < 0 || frame >= T.writes[0] ? "Slack" : SERVED[i].subject;
 
   return (
     <AbsoluteFill style={{ background: C.bg }}>
@@ -415,8 +421,22 @@ export const SlackOnboarding: React.FC<{ frame: number }> = ({ frame }) => {
           /atlassian/wiki/rest/api/ — runs to x=809 at 20px mono, and at the old 606/760 it ran
           straight through the list. Shrinking the type or dropping the scheme from the URL would
           have cost either the hierarchy or the accuracy; the gutter was the cheaper thing to spend. */}
-      <SourceCycle frame={frame} cycle={T.cycle} left={94} width={736} />
-      <SourceTally frame={frame} cycle={T.cycle} slide={T.slide} left={908} rule={866} />
+      <SourceCycle
+        frame={frame}
+        cycle={[...T.cycle, ...T.writes]}
+        entries={[...SERVED, ...WRITES]}
+        left={94}
+        width={736}
+      />
+      <SourceTally
+        frame={frame}
+        cycle={T.cycle}
+        slide={T.slide}
+        out={T.tallyOut}
+        left={908}
+        rule={866}
+      />
+      <WritesTally frame={frame} at={T.writes[0]} rows={T.writeRows} left={908} />
 
       <EndCard frame={frame} />
     </AbsoluteFill>

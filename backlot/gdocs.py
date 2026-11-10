@@ -2952,9 +2952,9 @@ def plain_text(doc: dict) -> str:
 # line, with nothing but empty paragraphs between them, are one blank line.
 _BREAK, _BLOCK = object(), object()
 
-# A line of exactly two spaces, but the first paragraph's, with a blank line after it: written as
-# nothing, and the breaks on both sides of it as three newlines. Real wrote so before a heading on
-# 2026-11-01, and before a table and a list item on 2026-11-09.
+# A line of exactly two spaces in any paragraph but the first, with a blank line after it: written
+# as nothing, and the breaks on both sides of it as three newlines. Real wrote so before a heading
+# on 2026-11-01, and before a table, a list item and a paragraph on 2026-11-09.
 _GAP = object()
 
 # Escaped wherever they stand. `+`, `-` and `=` are escaped at a word's start, after a space, a tab

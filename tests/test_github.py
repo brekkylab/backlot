@@ -2655,15 +2655,16 @@ _COUNTED_TOKEN_SHAPED = [
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: eleven are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the tenth as the `/orgs/{}` path
-#: `/organizations/{id}` is rewritten to and the eleventh on a path whose slash-terminated spelling
-#: a route matches; the next five are in it too, but the last two, in `_ROUTED_UNPUBLISHED`; the
-#: next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the two after
-#: them are no operation, though a parsed URL ends the first at its decoded `#` and a
-#: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
-#: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; the
-#: two after it are paths under `/agents/automations/{}` that real answered 404 for every
-#: credential; the six after them are paths outside the two agent families
+#: twenty are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the tenth as the `/orgs/{}` path
+#: `/organizations/{id}` is rewritten to, the eleventh on a path whose slash-terminated spelling
+#: a route matches, and the six after `security-advisories` on `contents`, `git/refs` and `zipball`
+#: whose parameters span segments; the next two are in `_ROUTED_UNPUBLISHED`; the next seven are
+#: baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it, or operations whose parameter
+#: routes one segment only; the two after them are no operation, though a parsed URL ends the first
+#: at its decoded `#` and a `missing_param` row of the baseline spells the second's path; the next
+#: is a method GitHub does not publish on a path whose `PATCH` it does, which real answered a bad
+#: bearer with its 404; the two after it are paths under `/agents/automations/{}` that real
+#: answered 404 for every credential; the six after them are paths outside the two agent families
 #: (`backlot.routers.github.under_an_agent_family`), which real answered 404 for every credential
 #: too; and the last two are no GitHub request at all.
 _UNSERVED_ROWS = [
@@ -2686,12 +2687,21 @@ _UNSERVED_ROWS = [
         True,
         404,
     ),
+    ("PUT", "/github/repos/{org}/codebase/contents/a", True, 405),
+    ("PUT", "/github/repos/{org}/codebase/contents/a/b", True, 405),
+    ("DELETE", "/github/repos/{org}/codebase/git/refs/x", True, 404),
+    ("DELETE", "/github/repos/{org}/codebase/git/refs/heads/x", True, 404),
+    ("GET", "/github/repos/{org}/codebase/zipball/a", True, 404),
+    ("GET", "/github/repos/{org}/codebase/zipball/a/b", True, 404),
     ("GET", "/github/agents/automations/available-tools", True, 404),
     ("GET", "/github/agents/automations/1/tasks", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/github/repos/{org}/codebase/releases/1/assets", False, 404),
     ("GET", "/github/repos/{org}/codebase/dependabot/runner-settings", False, 404),
     ("PUT", "/github/repos/{org}/codebase/dependabot/runner-settings", False, 404),
+    ("DELETE", "/github/repos/{org}/codebase/hooks/1/2", False, 404),
+    ("DELETE", "/github/gists/1/2", False, 404),
+    ("DELETE", "/github/repos/{org}/codebase/releases/1/2", False, 404),
     ("GET", "/github/zen%23", False, 404),
     ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
     ("PUT", "/github/orgs/{org}", False, 405),

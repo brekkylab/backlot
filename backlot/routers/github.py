@@ -612,9 +612,16 @@ async def _canonical_path_repo(request: Request) -> None:
 #: `/repos/{}/{}/dependabot/runner-settings`: on 2026-11-06 each was 404 `Not Found` with no
 #: credential, with `Bearer nope`, `Digest x` and a bearer after a tab, and with a token, an
 #: administrator's among them for the `GET`, where `GET …/dependabot/secrets` on the same public
-#: repository was 401 for the first two.
+#: repository was 401 for the first two. Three parameters may hold a `/`: `contents/{path}`,
+#: `git/refs/{ref}` and `zipball/{ref}` take several segments (`{+}`), where the other operations with
+#: path parameters route one segment only (measured 2026-10-14).
 _ROUTED_AS = {
-    "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip"
+    "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip",
+    "DELETE /repos/{}/{}/contents/{}": "DELETE /repos/{}/{}/contents/{+}",
+    "PUT /repos/{}/{}/contents/{}": "PUT /repos/{}/{}/contents/{+}",
+    "DELETE /repos/{}/{}/git/refs/{}": "DELETE /repos/{}/{}/git/refs/{+}",
+    "PATCH /repos/{}/{}/git/refs/{}": "PATCH /repos/{}/{}/git/refs/{+}",
+    "GET /repos/{}/{}/zipball/{}": "GET /repos/{}/{}/zipball/{+}",
 }
 _NOT_ROUTED = frozenset(
     {

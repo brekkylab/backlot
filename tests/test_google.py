@@ -15129,6 +15129,11 @@ def test_gmail_an_empty_or_lone_quoted_operator(tmp_path):
 
 
 _GMAIL_STRAY_QUOTE_ROWS = [
+    ('""', ["plan", "lunch"]),
+    ('"()"', ["plan", "lunch"]),
+    ('"( )"', ["plan", "lunch"]),
+    ('"from:me"', ["lunch"]),
+    ('"Rollout plan"', ["plan"]),
     ('from:" me', ["lunch"]),
     ('to:" me', ["plan"]),
     ('from:" probe', []),

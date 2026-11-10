@@ -36,6 +36,9 @@ the body with `gh pr view <n> --json body` or from the prompt, and `AGENTS.md`, 
    with measurements in a table rather than a paragraph. The measurement section names a live call,
    introspection or generated client and a date. The body ends at the template's checklist: a
    signature, a "Generated with" line or a session link after it is a finding.
+7. **Tenants in measurements.** The `AGENTS.md` rule on measurement comments covers more than the
+   Atlassian hostnames its test reads. Another vendor's site, or a workspace, organization or
+   repository a reader cannot open, is a finding too, resolved by naming the vendor and endpoint.
 
 A debloat pull request (a `claude/debloat-` or `claude/rehearsal-debloat-` branch, or one the prompt
 calls debloat) follows `.claude/skills/backlot-debloat/SKILL.md` step 8 for its body: its
@@ -58,7 +61,7 @@ VERDICT: pass | block
 - [note] docs/page.md:45 — <observation> — <optional suggestion>
 ```
 
-Paths are repository-relative. Drift, history in comments, a generated-doc hand edit and a missing
-PR template section are `block`. Length and duplication are `block` only when the resolution is a strict cut with no loss of
-information; otherwise `note`. A finding you cannot quote from the diff or a file is not written.
-Three certain findings beat ten plausible ones.
+Paths are repository-relative. Drift, history in comments, a generated-doc hand edit, a missing PR
+template section and a tenant in a measurement are `block`. Length and duplication are `block` only
+when the resolution is a strict cut with no loss of information; otherwise `note`. A finding you
+cannot quote from the diff or a file is not written. Three certain findings beat ten plausible ones.

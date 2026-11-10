@@ -48,6 +48,10 @@ docs, `pyproject.toml` keywords.
 - The served surface is not read-only, and user-facing docs should not call it that. Say what is
   true instead: the corpus is never written, and a served write lives in a per-server overlay. The
   endpoint tables already say which methods each source answers.
+- A measurement comment names the vendor, the endpoint and the date, never the tenant it was
+  measured on. A reader cannot reach that tenant, so its name reproduces nothing, and the package
+  would publish it. Where the site's setup decides the answer, describe the setup instead, as in
+  "a site with no public project". The test catches only an Atlassian Cloud site's hostname.
 
 ## Tests
 

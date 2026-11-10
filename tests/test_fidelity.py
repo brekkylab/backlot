@@ -703,8 +703,7 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         assert baseline.source == name
         assert baseline.endpoints == comparison.endpoints, name
         if name == "linear":
-            # Measured 2026-11-10: introspection hides these nine fields yet a query selecting them
-            # answers 200, and lists `Document.workspaceAccess`, which Backlot does not serve.
+            # Measured 2026-11-10: see each entry's note.
             hidden = {
                 "Document": ["contentState", "cycle", "parentDocument", "subDocumentSortOrder"]
                 + ["summary", "team"],

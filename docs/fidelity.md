@@ -97,7 +97,7 @@ it would leave the two introspection sources uncompared night after night.
 ## A published spec is weaker evidence than introspection
 
 Introspection is the vendor's own account of its contract. Linear is a measured exception: on
-2026-11-10 api.linear.app validated fields its introspection no longer lists. A published OpenAPI
+2026-11-10 api.linear.app validated fields its introspection does not list. A published OpenAPI
 document only *describes* the contract, and it lags, omits paid tiers, and documents one verb where
 the server accepts two. Every `extra_operation` this has reported so far was the spec being
 incomplete rather than Backlot being wrong:

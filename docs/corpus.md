@@ -174,8 +174,9 @@ break may not, and a footnote holds no table.
 ```
 
 A corpus states neither a font, a size, a colour or a paragraph's alignment and spacing, nor a
-named range, nor a cell's or a column's style: `documents.batchUpdate` makes the first two (see
-[the write overlay](write-overlay.md)).
+named range, nor a cell's, a row's or a column's style or a merged cell, nor a section break, a
+section's style or a tab's document and named styles: `documents.batchUpdate` makes each of them
+(see [the write overlay](write-overlay.md)).
 
 ## Load a public dataset
 

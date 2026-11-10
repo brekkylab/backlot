@@ -77,6 +77,48 @@ PARAGRAPH_STYLE_ORDER = (
     "pageBreakBefore",
 )
 
+# The members of a table's `TableRowStyle`, a column's `TableColumnProperties` and a cell's
+# `TableCellStyle` in the order real serves them, measured 2026-11-09 on each member set.
+ROW_STYLE_ORDER = ("minRowHeight", "tableHeader", "preventOverflow")
+COLUMN_PROPERTIES_ORDER = ("widthType", "width")
+CELL_STYLE_ORDER = (
+    "rowSpan",
+    "columnSpan",
+    "backgroundColor",
+    "borderLeft",
+    "borderRight",
+    "borderTop",
+    "borderBottom",
+    "paddingLeft",
+    "paddingRight",
+    "paddingTop",
+    "paddingBottom",
+    "contentAlignment",
+)
+
+
+# Each border of a cell, the step to the cell across it and that cell's border on the same edge.
+_FACING = {
+    "borderLeft": (0, -1, "borderRight"),
+    "borderRight": (0, 1, "borderLeft"),
+    "borderTop": (-1, 0, "borderBottom"),
+    "borderBottom": (1, 0, "borderTop"),
+}
+
+
+def restate(style: dict, stated: dict, order: tuple[str, ...]) -> None:
+    """``stated``'s members set on ``style`` in place, each one None taken off, and the members
+    put in ``order``."""
+    for key, value in stated.items():
+        if value is None:
+            style.pop(key, None)
+        else:
+            style[key] = value
+    ordered = {k: style[k] for k in order if k in style}
+    style.clear()
+    style.update(ordered)
+
+
 # The characters `insertText` strips from what it inserts: U+0000-U+0008, U+000C-U+001F (`\r`
 # among them) and U+E000-U+F8FF. A tab, `\x0b`, `\x7f`, U+2028 and a character past the BMP stay.
 STRIPPED = re.compile("[\x00-\x08\x0c-\x1f\ue000-\uf8ff]")
@@ -103,7 +145,12 @@ _ELEMENTS = FOOTNOTE + PAGE_BREAK
 # one after its last cell. `replaceAllText` reads none of them (`Body.find`), and no text holds
 # them (`STRIPPED`).
 TABLE, ROW, CELL, TABLE_END = "\x10", "\x12", "\x1c", "\x11"
-_STRUCTURE = TABLE + ROW + CELL + TABLE_END
+# A section break after the body's first, which stands between two paragraphs and takes one index:
+# measured 2026-11-09, `insertSectionBreak` at 2 of `ab` left `a\n` at 1, the break at 3 and `b\n`
+# at 4. An insert at it is refused as one at a table's start, and no text holds it (`STRIPPED`).
+SECTION = "\x13"
+_TABLE = TABLE + ROW + CELL + TABLE_END
+_STRUCTURE = _TABLE + SECTION
 # What a paragraph's first character follows: a newline, or a table's start, row, cell or end.
 _BOUNDARY = "\n" + _STRUCTURE
 
@@ -112,17 +159,63 @@ _BOUNDARY = "\n" + _STRUCTURE
 _FOOTNOTE_TEXT = {"fontSize": {"magnitude": 10, "unit": "PT"}}
 
 
-def document_style(header: str | None = None, footer: str | None = None) -> dict:
-    """A tab's `documentStyle`: the defaults, and its header's and footer's ids after
-    `background`, where real serves them (measured 2026-10-26 and 2026-11-02)."""
-    style = copy.deepcopy(_DEFAULTS["documentStyle"])
+# `DocumentStyle`'s and `SectionStyle`'s members in the order real serves them: measured
+# 2026-10-26 on a blank Doc, and 2026-11-09 on each member a write sets.
+DOCUMENT_STYLE_ORDER = (
+    "background",
+    "defaultHeaderId",
+    "defaultFooterId",
+    "evenPageHeaderId",
+    "evenPageFooterId",
+    "firstPageHeaderId",
+    "firstPageFooterId",
+    "useFirstPageHeaderFooter",
+    "useEvenPageHeaderFooter",
+    "pageNumberStart",
+    "marginTop",
+    "marginBottom",
+    "marginRight",
+    "marginLeft",
+    "pageSize",
+    "marginHeader",
+    "marginFooter",
+    "useCustomHeaderFooterMargins",
+    "flipPageOrientation",
+    "documentFormat",
+)
+SECTION_STYLE_ORDER = (
+    "columnProperties",
+    "columnSeparatorStyle",
+    "contentDirection",
+    "marginTop",
+    "marginBottom",
+    "marginRight",
+    "marginLeft",
+    "marginHeader",
+    "marginFooter",
+    "sectionType",
+    "defaultHeaderId",
+    "defaultFooterId",
+    "firstPageHeaderId",
+    "firstPageFooterId",
+    "evenPageHeaderId",
+    "evenPageFooterId",
+    "useFirstPageHeaderFooter",
+    "pageNumberStart",
+    "flipPageOrientation",
+)
+
+
+def document_style(
+    header: str | None = None, footer: str | None = None, stored: dict | None = None
+) -> dict:
+    """A tab's `documentStyle`: what a write stored (`Document.document_style`), else the
+    defaults, with its header's and footer's ids, where real serves them (measured 2026-10-26 and
+    2026-11-02)."""
+    style = copy.deepcopy(stored or _DEFAULTS["documentStyle"])
     ids = {k: v for k, v in (("defaultHeaderId", header), ("defaultFooterId", footer)) if v}
-    out: dict = {}
-    for key, value in style.items():
-        out[key] = value
-        if key == "background":
-            out |= ids
-    return out
+    style |= ids
+    return {k: style[k] for k in DOCUMENT_STYLE_ORDER if k in style}
 
 
 def named_styles() -> dict:
@@ -733,9 +826,11 @@ def document_tab(tab: dict, lone: bool = False) -> dict:
                 sid: {key: sid, "content": indexed(c, None, lone)} for sid, c in tab[kind].items()
             }
     out["documentStyle"] = document_style(
-        next(iter(tab["headers"]), None), next(iter(tab["footers"]), None)
+        next(iter(tab["headers"]), None), next(iter(tab["footers"]), None), tab.get("documentStyle")
     )
-    out["namedStyles"] = named_styles()
+    out["namedStyles"] = (
+        copy.deepcopy(tab["namedStyles"]) if "namedStyles" in tab else named_styles()
+    )
     if tab["lists"]:
         out["lists"] = {lid: tab["lists"][lid] for lid in sorted(tab["lists"])}
     if tab["namedRanges"]:
@@ -1396,13 +1491,17 @@ class Body:
         self.ranges: list[dict] = []
         # the last request so far in this body's tab (`Document.note`), which `_reached` reads
         self.previous: Previous = (None, None, None)
-        # the tab and segment this is, set by `Document.open`
+        # the tab and segment this is, and the tab itself, set by `Document.open`
         self.key: tuple[str, str] | None = None
+        self.tab: dict | None = None
 
     def _flatten(self, content: list[dict]) -> None:
         """Stored content as characters, a table as its `TABLE`, `ROW`, `CELL` and `TABLE_END`
         characters around its cells' content, each holding the style it is served with."""
         for el in content:
+            if "sectionBreak" in el:
+                self.chars.append((SECTION, el["sectionBreak"], next(self._runs)))
+                continue
             if "table" in el:
                 table = el["table"]
                 self.chars.append((TABLE, {"tableStyle": table["tableStyle"]}, next(self._runs)))
@@ -1504,13 +1603,13 @@ class Body:
             if c == TABLE:
                 opened.append(pos)
             mine = None
-            if c in _STRUCTURE:
+            if c in _TABLE:
                 mine = opened[-1]
             elif c == "\n" and pos + 1 < len(self.chars):
                 after = self.chars[pos + 1][0]
                 if after == TABLE:
                     mine = pos + 1
-                elif after in _STRUCTURE:
+                elif after in _TABLE:
                     mine = opened[-1]
             if c == TABLE_END:
                 opened.pop()
@@ -1521,6 +1620,17 @@ class Body:
             ):
                 return True
         return False
+
+    def cuts_section(self, start: int, end: int) -> bool:
+        """Whether deleting ``[start, end)`` would take a section break without the newline before
+        it, or that newline without the break. Measured 2026-11-09: `a\n` and the break went,
+        and so did the newline, the break and `b`, while the break and `b`, or the newline
+        alone, were refused."""
+        return any(
+            (start <= pos - 1 < end) != (start <= pos < end)
+            for pos, (c, *_) in enumerate(self.chars)
+            if c == SECTION
+        )
 
     def _closes(self, table: int) -> int:
         """The position of the `TABLE_END` of the table that starts at ``table``."""
@@ -1747,7 +1857,7 @@ class Body:
             if start <= pos < end:
                 if c == "\n" and self._starts_paragraph_at(pos, start):
                     self._style_bullet(p, stated)
-                new = _restyled(style, stated, _resolved(self._named(p)), c == "\n")
+                new = _restyled(style, stated, self._given(self._named(p)), c == "\n")
             else:
                 new = style | {"link": link}
             changed[pos] = new != style
@@ -1780,6 +1890,16 @@ class Body:
                     self.chars[i] = (self.chars[i][0], plain, self.chars[i][2])
             a = z
 
+    def _given(self, named: str) -> dict:
+        """The text style a paragraph of ``named`` style gives its runs, as its tab's named styles
+        are now: measured 2026-11-09, `bold: false` on a letter of a paragraph whose tab's normal
+        text a write made bold was kept, and 14 PT where it was made 14 PT was not."""
+        styles = (self.tab or {}).get("namedStyles")
+        if not styles:
+            return _resolved(named)
+        own = {s["namedStyleType"]: s.get("textStyle", {}) for s in styles["styles"]}
+        return {**own.get("NORMAL_TEXT", {}), **own.get(named, {})}
+
     def _starts_paragraph_at(self, newline: int, start: int) -> bool:
         """Whether the paragraph that ``newline`` ends starts at or after ``start``."""
         pos = newline
@@ -1791,7 +1911,7 @@ class Body:
         props = self.paragraphs[p]
         if "bullet" not in props:
             return
-        named = _resolved(self._named(p))
+        named = self._given(self._named(p))
         restyled = shown(_restyled(props["bullet"]["textStyle"], stated, named, True))
         kept = {k: v for k, v in restyled.items() if v != named.get(k)}
         self.paragraphs[p] = props | {"bullet": props["bullet"] | {"textStyle": kept}}
@@ -2129,6 +2249,75 @@ class Body:
     def table_at(self, pos: int) -> bool:
         return pos < len(self.chars) and self.chars[pos][0] == TABLE
 
+    def _coverings(self) -> list[tuple[range, range]]:
+        """Each cell a merged cell covers, as the positions of its content, with the positions of
+        the merged cell's content."""
+        out = []
+        for table, (c, *_) in enumerate(self.chars):
+            if c != TABLE:
+                continue
+            grid = self.grid(table)
+            for (r, col), (head_r, head_c) in self.merged(table).items():
+                cell, head = grid[r][1 + col], grid[head_r][1 + head_c]
+                out.append(
+                    (range(cell + 1, self._cell_end(cell)), range(head + 1, self._cell_end(head)))
+                )
+        return out
+
+    def uncovered(self, pos: int) -> int:
+        """Where text or a table inserted before ``pos`` goes: there, or for a position in a cell
+        a merged cell covers, before the merged cell's last newline. Measured 2026-11-09: `x` at a
+        cell a merge of one row and two columns covered, and at each cell a merge of two by two
+        covered, ended the merged cell's last paragraph, `p\nq` there made its last paragraph and
+        one more, and a table there followed its last paragraph."""
+        for cell, head in self._coverings():
+            if pos in cell:
+                return head.stop - 1
+        return pos
+
+    def covers(self, first: int, last: int) -> bool:
+        """Whether ``[first, last)`` lies in one cell a merged cell covers."""
+        return any(first in cell and last - 1 in cell for cell, _ in self._coverings())
+
+    def uncovered_spans(self, first: int, last: int) -> list[tuple[int, int]]:
+        """The characters a style over ``[first, last)`` reaches, as runs of positions: those, but
+        for each cell a merged cell covers, the merged cell's content in place of the cell's.
+        Measured 2026-11-09: bold over the newline of a covered cell, or from it into the next
+        row, bolded the merged cell and not the covered one, and bold from the merged cell's start
+        to the covered cell's end the merged cell alone."""
+        coverings = self._coverings()
+        touched = [head for cell, head in coverings if cell.start < last and first < cell.stop]
+        if not touched:
+            return [(first, last)]
+        # a covered cell's own character too, so that a run stopping before it does not reach its
+        # newline (`style`)
+        hidden = {pos for cell, _ in coverings for pos in range(cell.start - 1, cell.stop)}
+        reached = sorted(
+            {pos for pos in range(first, last) if pos not in hidden}
+            | {pos for head in touched for pos in head}
+        )
+        spans: list[tuple[int, int]] = []
+        for pos in reached:
+            if spans and spans[-1][1] == pos:
+                spans[-1] = (spans[-1][0], pos + 1)
+            else:
+                spans.append((pos, pos + 1))
+        return spans
+
+    def uncovered_paragraphs(self, paragraphs: range) -> list[int]:
+        """``paragraphs``, but for each cell a merged cell covers, the merged cell's paragraphs in
+        place of the cell's (`uncovered_spans`): measured 2026-11-09, a paragraph style or bullets
+        over a covered cell's newline reached every paragraph of the merged cell."""
+        out = set(paragraphs)
+        for cell, head in self._coverings():
+            own = set(range(self._paragraph_of(cell.start), self._paragraph_of(cell.stop - 1) + 1))
+            if own & out:
+                out -= own
+                out |= set(
+                    range(self._paragraph_of(head.start), self._paragraph_of(head.stop - 1) + 1)
+                )
+        return sorted(out)
+
     def grid(self, table: int) -> list[list[int]]:
         """The table that starts at ``table``, as each row's cells' positions, each row's own
         position first."""
@@ -2158,7 +2347,7 @@ class Body:
                 depth += (c == TABLE) - (c == TABLE_END)
             elif c == TABLE:
                 depth = 1
-            elif c in _STRUCTURE:
+            elif c in _TABLE:
                 return pos
         raise ValueError(cell)
 
@@ -2179,55 +2368,350 @@ class Body:
         props.pop("bullet", None)
         return chars, [props]
 
-    def insert_row(self, table: int, row: int, below: bool) -> None:
-        """A row above or below row ``row``, a cell made from each of its cells (`_blank_cell`)."""
+    def span(self, table: int, row: int, column: int) -> tuple[int, int, int, int]:
+        """The merged cell the cell at ``row`` and ``column`` belongs to, as its row, column, row
+        span and column span: a cell no merge covers is its own, of one row and one column."""
+        head = self.merged(table).get((row, column), (row, column))
+        style = self._cell_style(table, *head)
+        return (*head, style.get("rowSpan", 1), style.get("columnSpan", 1))
+
+    def merged(self, table: int) -> dict[tuple[int, int], tuple[int, int]]:
+        """Each cell of the table at ``table`` that a merged cell covers, by its row and column,
+        and the row and column of the cell covering it."""
+        out = {}
+        for r, own in enumerate(self.grid(table)):
+            for c, cell in enumerate(own[1:]):
+                style = self.chars[cell][1]["tableCellStyle"]
+                for dr in range(style.get("rowSpan", 1)):
+                    for dc in range(style.get("columnSpan", 1)):
+                        if dr or dc:
+                            out[(r + dr, c + dc)] = (r, c)
+        return out
+
+    def _cell_style(self, table: int, row: int, column: int) -> dict:
+        return self.chars[self.grid(table)[row][1 + column]][1]["tableCellStyle"]
+
+    def _heads(self, table: int) -> list[tuple[int, int, dict]]:
+        """Each merged cell of the table, by its row and column, and its style."""
+        out = []
+        for r, own in enumerate(self.grid(table)):
+            for c, cell in enumerate(own[1:]):
+                style = self.chars[cell][1]["tableCellStyle"]
+                if style.get("rowSpan", 1) > 1 or style.get("columnSpan", 1) > 1:
+                    out.append((r, c, style))
+        return out
+
+    @staticmethod
+    def _spanned(style: dict, rows: int, columns: int) -> dict:
+        made = copy.deepcopy(style)
+        made["tableCellStyle"]["rowSpan"] = rows
+        made["tableCellStyle"]["columnSpan"] = columns
+        return made
+
+    def _carry(self, table: int, old: tuple[int, int], new: tuple[int, int], spans) -> None:
+        """The merged cell at ``old`` moved to ``new``, a cell it covers, its paragraphs in place
+        of that cell's, each keeping only the members its named style does not give (`_left`),
+        spanning ``spans`` rows and columns and keeping of its own style only what differs from a
+        new cell's. Measured 2026-11-09: a cell of a new table's style held its spans alone, one
+        given a red background and a left padding of 9 PT kept both, and one given a right
+        padding of 5 PT and a top alignment, as a new cell has, lost them."""
+        grid = self.grid(table)
+        source, target = grid[old[0]][1 + old[1]], grid[new[0]][1 + new[1]]
+        end, target_end = self._cell_end(source), self._cell_end(target)
+        moved = self.chars[source + 1 : end]
+        props = [
+            p | {"paragraphStyle": _left(p["paragraphStyle"], _named(p))}
+            for p in self.paragraphs[
+                self._paragraph_of(source + 1) : self._paragraph_of(end - 1) + 1
+            ]
+        ]
+        blank = new_table(1, 1)["table"]["tableRows"][0]["tableCells"][0]["tableCellStyle"]
+        own = self.chars[source][1]["tableCellStyle"]
+        kept = {
+            k: copy.deepcopy(v)
+            for k, v in own.items()
+            if k not in ("rowSpan", "columnSpan") and blank.get(k) != v
+        }
+        first, last = self._paragraph_of(target + 1), self._paragraph_of(target_end - 1)
+        self.chars[target + 1 : target_end] = moved
+        self.paragraphs[first : last + 1] = props
+        self.chars[target][1]["tableCellStyle"] = {"rowSpan": spans[0], "columnSpan": spans[1]} | {
+            k: kept[k] for k in CELL_STYLE_ORDER if k in kept
+        }
+
+    def insert_row(self, table: int, row: int, column: int, below: bool) -> None:
+        """A row above the merged cell the cell at ``row`` and ``column`` belongs to (`span`), or
+        below its last row, each new cell made from the cell of that row in its column
+        (`_blank_cell`) over one row. A merged cell the new row falls inside spans it too, its new
+        cells covered, and one the new row falls beside gives the new cell in its first column its
+        columns. Measured 2026-11-09 on a cell merged over two rows: a row below it from the merged
+        cell or the cell it covers went under both, and a row below the row beside it went between
+        them and was spanned; a row below a cell merged over two columns, and one above or below a
+        cell merged over two rows and two columns, was merged over two columns, and one inside the
+        latter held two covered cells."""
+        head_row, _, rows_spanned, _ = self.span(table, row, column)
+        at_row = head_row + rows_spanned if below else head_row
+        source = at_row - 1 if below else at_row
         rows = self.grid(table)
-        own = rows[row]
+        own = rows[source]
         chars = [(ROW, copy.deepcopy(self.chars[own[0]][1]), next(self._runs))]
         paragraphs: list[dict] = []
-        for cell in own[1:]:
+        for c, cell in enumerate(own[1:]):
             made, props = self._blank_cell(cell)
+            first_row, first_column, spanned, columns = self.span(table, source, c)
+            outside = not first_row < at_row < first_row + spanned
+            columns = columns if outside and c == first_column else 1
+            made[0] = (CELL, self._spanned(made[0][1], 1, columns), made[0][2])
             chars += made
             paragraphs += props
-        at = (
-            own[0]
-            if not below
-            else rows[row + 1][0]
-            if row + 1 < len(rows)
-            else self._closes(table)
-        )
+        for r, _, style in self._heads(table):
+            if r < at_row < r + style.get("rowSpan", 1):
+                style["rowSpan"] += 1
+        at = rows[at_row][0] if at_row < len(rows) else self._closes(table)
         self._put(at, chars, paragraphs)
 
-    def insert_column(self, table: int, column: int, right: bool) -> None:
-        """A column left or right of column ``column``, each row's new cell made from that row's
-        cell in it (`_blank_cell`), and its properties the column's."""
+    def insert_column(self, table: int, row: int, column: int, right: bool) -> None:
+        """A column left of the merged cell the cell at ``row`` and ``column`` belongs to, or right
+        of its last column, as `insert_row` puts a row, its properties the column's it was made
+        from. Measured 2026-11-09: a column right of a cell merged over two rows held a cell merged
+        over two rows as well, as did one left or right of a cell merged over two rows and two
+        columns, and one inside a cell merged over two columns was spanned and held covered
+        cells."""
+        _, head_column, _, columns_spanned = self.span(table, row, column)
+        at_column = head_column + columns_spanned if right else head_column
+        source = at_column - 1 if right else at_column
         styled = self.chars[table][1]["tableStyle"]["tableColumnProperties"]
-        styled.insert(column + right, copy.deepcopy(styled[column]))
+        styled.insert(at_column, copy.deepcopy(styled[source]))
+        grid = self.grid(table)
+        spans = [self.span(table, r, source) for r in range(len(grid))]
+        for _, c, style in self._heads(table):
+            if c < at_column < c + style.get("columnSpan", 1):
+                style["columnSpan"] += 1
+        for r in reversed(range(len(grid))):
+            own = grid[r]
+            made, props = self._blank_cell(own[1 + source])
+            first_row, first_column, rows, spanned = spans[r]
+            outside = not first_column < at_column < first_column + spanned
+            rows = rows if outside and r == first_row else 1
+            made[0] = (CELL, self._spanned(made[0][1], rows, 1), made[0][2])
+            at = own[1 + at_column] if at_column < len(own) - 1 else self._cell_end(own[-1])
+            self._put(at, made, props)
+
+    def delete_row(self, table: int, row: int, column: int) -> None:
+        """Every row of the merged cell the cell at ``row`` and ``column`` belongs to, or the whole
+        table with its last rows, and each merged cell over a deleted row spanning as many fewer,
+        one whose first row goes moving to the first of its rows left (`_carry`). Measured
+        2026-11-03, deleting both rows of a table left the paragraphs either side of it as they
+        were; measured 2026-11-09, a row deleted from a cell merged over two rows, or from the cell
+        it covered, took the table, and a row deleted beside one left it a row high, holding its
+        paragraphs in the row left when the row deleted was its first, as did the first row of a
+        cell merged over three rows or over two rows and two columns."""
+        head_row, _, rows_spanned, _ = self.span(table, row, column)
+        rows = self.grid(table)
+        if rows_spanned == len(rows):
+            self.delete(table, self._closes(table) + 1)
+            return
+        gone = range(head_row, head_row + rows_spanned)
+        for r, c, style in self._heads(table):
+            spanned = range(r, r + style.get("rowSpan", 1))
+            if r not in gone:
+                style["rowSpan"] -= len(set(spanned) & set(gone))
+            elif spanned.stop > gone.stop:
+                kept = (spanned.stop - gone.stop, style.get("columnSpan", 1))
+                self._carry(table, (r, c), (gone.stop, c), kept)
+        rows = self.grid(table)
+        end = rows[gone.stop][0] if gone.stop < len(rows) else self._closes(table)
+        self.delete(rows[head_row][0], end)
+
+    def delete_column(self, table: int, row: int, column: int) -> None:
+        """Every column of the merged cell the cell at ``row`` and ``column`` belongs to, or the
+        whole table with its last columns, as `delete_row` deletes rows."""
+        _, head_column, _, columns_spanned = self.span(table, row, column)
+        rows = self.grid(table)
+        if columns_spanned == len(rows[0]) - 1:
+            self.delete(table, self._closes(table) + 1)
+            return
+        gone = range(head_column, head_column + columns_spanned)
+        for r, c, style in self._heads(table):
+            spanned = range(c, c + style.get("columnSpan", 1))
+            if c not in gone:
+                style["columnSpan"] -= len(set(spanned) & set(gone))
+            elif spanned.stop > gone.stop:
+                kept = (style.get("rowSpan", 1), spanned.stop - gone.stop)
+                self._carry(table, (r, c), (r, gone.stop), kept)
         for own in reversed(self.grid(table)):
-            cell = own[1 + column]
-            made, props = self._blank_cell(cell)
-            self._put(self._cell_end(cell) if right else cell, made, props)
+            first = own[1 + gone.start]
+            self.delete(
+                first, own[1 + gone.stop] if gone.stop < len(own) - 1 else self._cell_end(own[-1])
+            )
+        del self.chars[table][1]["tableStyle"]["tableColumnProperties"][gone.start : gone.stop]
 
-    def delete_row(self, table: int, row: int) -> None:
-        """Row ``row``, or the whole table with its last row: measured 2026-11-03, deleting both
-        rows of a table left the paragraphs either side of it as they were."""
-        rows = self.grid(table)
-        if len(rows) == 1:
-            self.delete(table, self._closes(table) + 1)
-            return
-        end = rows[row + 1][0] if row + 1 < len(rows) else self._closes(table)
-        self.delete(rows[row][0], end)
+    def _region(self, table: int, cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """``cells`` with every cell of each merged cell one of them belongs to, row by row."""
+        out = set()
+        for r, c in cells:
+            head_row, head_column, rows_spanned, columns_spanned = self.span(table, r, c)
+            out |= {
+                (head_row + dr, head_column + dc)
+                for dr in range(rows_spanned)
+                for dc in range(columns_spanned)
+            }
+        return sorted(out)
 
-    def delete_column(self, table: int, column: int) -> None:
-        """Column ``column``, or the whole table with its last column, as `delete_row`."""
+    def style_cells(self, table: int, cells: list[tuple[int, int]], stated: dict) -> None:
+        """``stated``'s `TableCellStyle` members set on ``cells`` and on every cell of a merged
+        cell among them, each one None taken off, cell by cell along each row. A border set on one
+        cell is set on the cell beside it across that edge as well, so the cell after a shared
+        edge has the last word. Measured 2026-11-09: a cell's right border was its right
+        neighbour's left, a whole table given four borders kept the left and top borders on its
+        inner edges, and styling the cell a merged cell covered styled the merged cell too."""
         rows = self.grid(table)
-        if len(rows[0]) == 2:
-            self.delete(table, self._closes(table) + 1)
+        width = len(rows[0]) - 1
+        for r, c in self._region(table, cells):
+            restate(self.chars[rows[r][1 + c]][1]["tableCellStyle"], stated, CELL_STYLE_ORDER)
+            for key, (dr, dc, other) in _FACING.items():
+                if key in stated and 0 <= r + dr < len(rows) and 0 <= c + dc < width:
+                    neighbour = self.chars[rows[r + dr][1 + c + dc]][1]["tableCellStyle"]
+                    restate(neighbour, {other: copy.deepcopy(stated[key])}, CELL_STYLE_ORDER)
+
+    def merge_cells(self, table: int, row: int, column: int, rows: int, columns: int) -> None:
+        """The cells ``rows`` by ``columns`` from the one at ``row`` and ``column`` merged into it.
+        Measured 2026-11-09: the first cell spans them; the paragraphs of every other cell, unless
+        it holds only an empty paragraph, move into it, row by row, each keeping only the members
+        its named style does not give (`_left`), and the first cell's own empty paragraph goes when
+        another's come; a cell they left holds an empty paragraph of its last one's style as normal
+        text, its newline's style and its `headingId` kept; and a merged row of no minimum height
+        takes 10 PT over the largest font size in its cells, 21 PT for normal text and 26 PT beside
+        a HEADING_2."""
+        grid = self.grid(table)
+        region = [(r, c) for r in range(row, row + rows) for c in range(column, column + columns)]
+        for r in range(row, row + rows):
+            style = self.chars[grid[r][0]][1]["tableRowStyle"]
+            if not style.get("minRowHeight", {}).get("magnitude"):
+                sizes = [self._font_size(grid[r][1 + c]) for c in range(column, column + columns)]
+                height = {"magnitude": 10 + max(sizes), "unit": "PT"}
+                restate(style, {"minRowHeight": height}, ROW_STYLE_ORDER)
+        for r, c in region:
+            cell = self._cell_style(table, r, c)
+            cell["rowSpan"] = cell["columnSpan"] = 1
+        head = self._cell_style(table, row, column)
+        head["rowSpan"], head["columnSpan"] = rows, columns
+        moved: list[tuple[str, dict, int]] = []
+        props: list[dict] = []
+        for r, c in reversed(region[1:]):
+            cell = self.grid(table)[r][1 + c]
+            end = self._cell_end(cell)
+            if end - cell == 2 and self.chars[cell + 1][0] == "\n":
+                continue
+            first, last = self._paragraph_of(cell + 1), self._paragraph_of(end - 1)
+            kept = self.paragraphs[last]
+            left = copy.deepcopy(kept)
+            left.pop("bullet", None)
+            left["paragraphStyle"] = left["paragraphStyle"] | {"namedStyleType": "NORMAL_TEXT"}
+            newline = self.chars[end - 1]
+            moved[:0] = self.chars[cell + 1 : end]
+            props[:0] = [
+                p | {"paragraphStyle": _left(p["paragraphStyle"], _named(p))}
+                for p in self.paragraphs[first : last + 1]
+            ]
+            self.chars[cell + 1 : end] = [(newline[0], newline[1], next(self._runs))]
+            self.paragraphs[first : last + 1] = [left]
+        if not moved:
             return
-        for own in reversed(rows):
-            cell = own[1 + column]
-            self.delete(cell, self._cell_end(cell))
-        del self.chars[table][1]["tableStyle"]["tableColumnProperties"][column]
+        cell = self.grid(table)[row][1 + column]
+        end = self._cell_end(cell)
+        at = self._paragraph_of(end)
+        if end - cell == 2 and self.chars[cell + 1][0] == "\n":
+            del self.chars[cell + 1]
+            del self.paragraphs[at - 1]
+            end, at = end - 1, at - 1
+        self.chars[end:end] = moved
+        self.paragraphs[at:at] = props
+
+    def _font_size(self, cell: int) -> int | float:
+        """The largest font size of the text in the cell at ``cell``: each character's own, or its
+        paragraph's named style's."""
+        out: int | float = 0
+        for pos in range(cell + 1, self._cell_end(cell)):
+            c, style, _ = self.chars[pos]
+            if c in _STRUCTURE:
+                continue
+            named = _resolved(self._named(self._paragraph_of(pos)))
+            size = style.get("fontSize", named.get("fontSize", {})).get("magnitude", 0)
+            out = max(out, size)
+        return out
+
+    def unmerge_cells(self, table: int, cells: list[tuple[int, int]]) -> None:
+        """Each merged cell ``cells`` meets split back into its cells, which keep the content they
+        hold: measured 2026-11-09, the paragraphs a merge moved stayed in the first cell, and the
+        rows kept the height the merge gave them."""
+        for r, c in {self.span(table, r, c)[:2] for r, c in cells}:
+            cell = self._cell_style(table, r, c)
+            cell["rowSpan"] = cell["columnSpan"] = 1
+
+    def pin_header_rows(self, table: int, count: int) -> None:
+        """The first ``count`` rows marked as the table's header, and every row a merged cell among
+        them spans, and the rest not: measured 2026-11-09, `tableHeader: true` on each, both rows
+        of a cell merged over rows 0 and 1 for a count of 1, and a row inserted above or below a
+        header row was one too (`insert_row` copies it)."""
+        spans = {
+            (row, row + rows)
+            for row, _, rows, _ in (self.span(table, *cell) for cell in self.merged(table))
+        }
+        while reach := [end for start, end in spans if start < count < end]:
+            count = max(reach)
+        for r, own in enumerate(self.grid(table)):
+            style = self.chars[own[0]][1]["tableRowStyle"]
+            style.pop("tableHeader", None)
+            if r < count:
+                style["tableHeader"] = True
+            ordered = {k: style[k] for k in ROW_STYLE_ORDER if k in style}
+            style.clear()
+            style.update(ordered)
+
+    def style_rows(self, table: int, rows: list[int], stated: dict) -> None:
+        """``stated``'s `TableRowStyle` members set on each of ``rows``, every row for none, each
+        one None taken off."""
+        grid = self.grid(table)
+        for r in rows or range(len(grid)):
+            style = self.chars[grid[r][0]][1]["tableRowStyle"]
+            restate(style, stated, ROW_STYLE_ORDER)
+
+    def style_columns(self, table: int, columns: list[int], stated: dict) -> None:
+        """``stated``'s `TableColumnProperties` members set on each of ``columns``, every column
+        for none, each one None taken off."""
+        props = self.chars[table][1]["tableStyle"]["tableColumnProperties"]
+        for c in columns or range(len(props)):
+            restate(props[c], stated, COLUMN_PROPERTIES_ORDER)
+
+    def insert_section_break(self, pos: int, section_type: str) -> None:
+        """A newline before the character at ``pos``, as `insertText` inserts one, and a section
+        break of ``section_type`` after it. Measured 2026-11-09: at 1 of `ab` an empty paragraph,
+        the break and `ab`; at 3 `ab`, the break and an empty paragraph; inside a bold heading both
+        halves bold headings; at the body's end the break and an empty paragraph after it; at the
+        start of a list item an empty paragraph indented as the item and in no list, the first
+        item's, a nested one's and the last one's alike; and the break's `sectionStyle` its type
+        beside a blank Doc's."""
+        at_start = self._starts_paragraph(pos)
+        self.insert(pos, "\n")
+        if at_start:
+            p = self._paragraph_of(pos)
+            self.paragraphs[p] = {k: v for k, v in self.paragraphs[p].items() if k != "bullet"}
+        style = {"sectionStyle": {**_DEFAULTS["sectionStyle"], "sectionType": section_type}}
+        if self.ranges:
+            self._inserted(self._units(pos + 1), 1)
+        self.chars.insert(pos + 1, (SECTION, style, next(self._runs)))
+
+    def sections(self) -> list[dict]:
+        """Each section's `sectionStyle`, by the index its break stands at: the body's first at 0,
+        then each `SECTION`."""
+        out = [(0, self._section["sectionBreak"]["sectionStyle"])] if self._section else []
+        out += [
+            (self._units(pos), style["sectionStyle"])
+            for pos, (c, style, _) in enumerate(self.chars)
+            if c == SECTION
+        ]
+        return out
 
     def bullet(self, p: int) -> dict | None:
         return self.paragraphs[p].get("bullet")
@@ -2400,6 +2884,9 @@ class Body:
         into = [out]  # the content each paragraph goes into, a cell's while one is open
         tables: list[list] = []  # each table open, and whether one of its cells is
         for c, style, run in self.chars:
+            if c == SECTION:
+                into[-1].append({"sectionBreak": style})
+                continue
             if c in _STRUCTURE:
                 if c == TABLE:
                     made = {"table": {"tableRows": [], "tableStyle": style["tableStyle"]}}
@@ -2488,6 +2975,7 @@ class Document:
             body = Body(self.file_id, content, self.revision, self._headings)
             body.ranges = [r for r in self.ranges(tab) if r.get("segmentId", "") == segment]
             body.previous, body.key = self.previous.get(key[0], (None, None, None)), key
+            body.tab = tab
             self._open[key] = body
         return self._open[key]
 
@@ -2551,6 +3039,37 @@ class Document:
 
     def _segment(self, tab: dict, segment: str) -> list[dict]:
         return tab[f"{self.kind(tab, segment)}s"][segment]
+
+    @staticmethod
+    def document_style(tab: dict) -> dict:
+        """The tab's `documentStyle` as a write leaves it, without its header's and footer's ids."""
+        return copy.deepcopy(tab.get("documentStyle") or _DEFAULTS["documentStyle"])
+
+    def set_document_style(self, tab: dict, stated: dict) -> None:
+        """``stated``'s `DocumentStyle` members set on the tab, each one None taken off."""
+        style = self.document_style(tab)
+        restate(style, stated, DOCUMENT_STYLE_ORDER)
+        tab["documentStyle"] = style
+
+    @staticmethod
+    def set_named_style(
+        tab: dict, named: str, text: dict, paragraph: dict, text_whole: bool, paragraph_whole: bool
+    ) -> None:
+        """The tab's named style ``named`` given ``text`` and ``paragraph``, each member None taken
+        off, a style named whole first emptied: its paragraph style to `NORMAL_TEXT` and a
+        direction, as real kept one replaced (measured 2026-11-09)."""
+        styles = tab.setdefault("namedStyles", named_styles())
+        own = next(s for s in styles["styles"] if s["namedStyleType"] == named)
+        if text_whole:
+            own["textStyle"] = {}
+        if paragraph_whole:
+            own["paragraphStyle"] = {"namedStyleType": "NORMAL_TEXT"}
+        restate(own["textStyle"], text, TEXT_STYLE_ORDER)
+        para = own["paragraphStyle"]
+        restate(para, paragraph, PARAGRAPH_STYLE_ORDER)
+        if paragraph_whole:
+            para.setdefault("direction", "LEFT_TO_RIGHT")
+            restate(para, {}, PARAGRAPH_STYLE_ORDER)
 
     def new_list(self, tab: dict, levels: list[dict]) -> str:
         made = self.new_id(segment_id)
@@ -2651,6 +3170,23 @@ _MARKDOWN_LEVEL = {"TITLE": 1, "SUBTITLE": 2, **{f"HEADING_{n}": n for n in rang
 # Each named style's own text style, which its paragraphs' runs take where they state nothing:
 # HEADING_6's italic is Markdown's `*`.
 _TEXT_STYLES = {s["namedStyleType"]: s["textStyle"] for s in _DEFAULTS["namedStyles"]["styles"]}
+# Where `_export_parts` puts the text styles of a tab whose named styles a write changed, on each of
+# its paragraphs, for `_named_text`.
+_NAMED_TEXT = "_namedText"
+
+
+def _named_text(paragraph: dict) -> dict:
+    """The text style a paragraph's named style gives its runs in an export: a blank Doc's, or
+    for a tab whose named styles a write changed, its own over its tab's normal text's. Measured
+    2026-11-09: normal text made bold wrote `**ab**`, and a HEADING_1 made italic beside it
+    `# ***cd***`."""
+    styles = paragraph.get(_NAMED_TEXT)
+    named = _named(paragraph)
+    if styles is None:
+        return _TEXT_STYLES.get(named, {})
+    return {**styles["NORMAL_TEXT"], **styles.get(named, {})}
+
+
 _PARAGRAPH_STYLES = {
     s["namedStyleType"]: {k: v for k, v in s["paragraphStyle"].items() if k != "namedStyleType"}
     for s in _DEFAULTS["namedStyles"]["styles"]
@@ -2687,7 +3223,7 @@ def _spans(paragraph: dict) -> list[tuple[str, dict]]:
     one. A text style the paragraph's named style sets to the same value (HEADING_6's italic) is
     left out first, as real's body leaves it out: on 2026-11-01 an unstyled space and an italic tab
     in a HEADING_6 read back as one unstyled run."""
-    named = _TEXT_STYLES.get(_named(paragraph), {})
+    named = _named_text(paragraph)
     out: list[tuple[str, dict]] = []
     for text, style in _paragraph_runs(paragraph):
         text = text.replace(PAGE_BREAK, "")
@@ -2739,7 +3275,7 @@ def _lead_breaks(paragraph: dict) -> list[tuple[int, int]]:
     page break are runs of their own, and a page break is no run that follows, measured 2026-11-03:
     a vertical tab then a reference of one text style took the CRLF of two runs, a vertical tab then
     a page break none, and a vertical-tab link then a page break its link's one, before the rule."""
-    named = _TEXT_STYLES.get(_named(paragraph), {})
+    named = _named_text(paragraph)
     runs: list[tuple[str, dict]] = []
     for text, style in _paragraph_runs(paragraph):
         style = {k: v for k, v in style.items() if named.get(k) != v}
@@ -2857,15 +3393,34 @@ def _plain_lines(content: list[dict], note, items: _Items) -> list[str]:
 
 def _flow(content: list[dict]) -> Iterator[dict | None]:
     """Each paragraph of stored content in order, a table's cells' where the table stands, and None
-    where each cell ends."""
+    where each cell ends, a cell a merged cell covers left out (measured 2026-11-09: `c1`, `c2` of
+    a merged first row, then a tab and `c3`)."""
     for el in content:
         if "paragraph" in el:
             yield el["paragraph"]
         elif "table" in el:
-            for row in el["table"]["tableRows"]:
-                for cell in row["tableCells"]:
+            covered = _covered(el["table"])
+            for r, row in enumerate(el["table"]["tableRows"]):
+                for c, cell in enumerate(row["tableCells"]):
+                    if (r, c) in covered:
+                        continue
                     yield from _flow(cell["content"])
                     yield None
+
+
+def _covered(table: dict) -> set[tuple[int, int]]:
+    """The cells of a stored table that a merged cell covers, by row and column."""
+    out = set()
+    for r, row in enumerate(table["tableRows"]):
+        for c, cell in enumerate(row["tableCells"]):
+            style = cell["tableCellStyle"]
+            out |= {
+                (r + dr, c + dc)
+                for dr in range(style.get("rowSpan", 1))
+                for dc in range(style.get("columnSpan", 1))
+                if dr or dc
+            }
+    return out
 
 
 class _Items:
@@ -2899,7 +3454,7 @@ def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, 
     each footnote's id with its content. Measured 2026-11-02: a second tab's body followed the
     first's with no title, its header and footer were left out, and its first footnote was `[2]`
     after the first tab's `[1]`."""
-    tabs = [tab for tab, *_ in walk(doc["tabs"])]
+    tabs = [_with_named_text(tab) for tab, *_ in walk(doc["tabs"])]
     body = [el for tab in tabs for el in tab["body"]]
     lists = {lid: made for tab in tabs for lid, made in tab["lists"].items()}
     first = doc["tabs"][0]
@@ -2917,6 +3472,24 @@ def _export_parts(doc: dict) -> tuple[list[dict], list[dict], list[dict], dict, 
     ]
     numbers = {fid: n for n, (fid, _) in enumerate(notes, 1)}
     return body, header, footer, numbers, notes, lists
+
+
+def _with_named_text(tab: dict) -> dict:
+    """``tab``, and when a write changed its named styles a copy whose paragraphs each carry
+    them (`_named_text`)."""
+    if "namedStyles" not in tab:
+        return tab
+    styles = {s["namedStyleType"]: s["textStyle"] for s in tab["namedStyles"]["styles"]}
+    tab = copy.deepcopy(tab)
+    for content in (
+        tab["body"],
+        *tab["headers"].values(),
+        *tab["footers"].values(),
+        *tab["footnotes"].values(),
+    ):
+        for paragraph in paragraphs_of(content):
+            paragraph[_NAMED_TEXT] = styles
+    return tab
 
 
 def plain_text(doc: dict) -> str:
@@ -3330,20 +3903,25 @@ def _markdown(
     style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
     paragraph after its marker (`_list_marker`), its items apart from the paragraphs either side
     of the list as a heading is, and a table as `_table` writes it, apart from what is either side
-    of it as a heading is. Nothing is trimmed, and nothing ends the last line."""
-    blocks = [el.get("paragraph", el) for el in content if "paragraph" in el or "table" in el]
+    of it as a heading is. A section break after a list paragraph sets what follows it apart as
+    well: measured 2026-11-09, items of one list or of two either side of a break were a blank
+    line apart, and plain paragraphs either side of one a hard break. Nothing is trimmed, and
+    nothing ends the last line."""
+    at = [k for k, el in enumerate(content) if "paragraph" in el or "table" in el]
+    blocks = [content[k].get("paragraph", content[k]) for k in at]
     levels = ["table" if "table" in b else _MARKDOWN_LEVEL.get(_named(b)) for b in blocks]
     listed = ["bullet" in b for b in blocks]
     tokens: list = []
     for i, (paragraph, level) in enumerate(zip(blocks, levels)):
         if i:
-            apart = level or levels[i - 1] or listed[i] != listed[i - 1]
+            broken = any("sectionBreak" in el for el in content[at[i - 1] + 1 : at[i]])
+            apart = level or levels[i - 1] or listed[i] != listed[i - 1] or broken and listed[i - 1]
             tokens.append(_BLOCK if apart else _BREAK)
         if level == "table":
             tokens.append(_table(paragraph["table"], notes, anchors))
             continue
         runs = [(text, _anchored(style, anchors)) for text, style in _spans(paragraph)]
-        named = _TEXT_STYLES.get(_named(paragraph), {})
+        named = _named_text(paragraph)
         marker = _list_marker(items, paragraph["bullet"]) if listed[i] else ""
         if level:
             heading = "".join(_inline(runs, named, notes, heading=True))
@@ -3377,7 +3955,8 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
     kept and an empty cell `|  |`; a bold run and a bold link in the first row were plain, in the
     second `**` and `[**…**]`, and italic and struck-through text in the first row was marked.
     Measured 2026-11-05: an empty paragraph of a table inside a cell was left out, where the
-    cell's own empty paragraph was kept."""
+    cell's own empty paragraph was kept. Measured 2026-11-09: a cell a merged cell covers was
+    written empty, and a column every cell of which a merged cell covers was aligned `-----`."""
     rows = []
     for n, row in enumerate(table["tableRows"]):
         cells = []
@@ -3386,7 +3965,7 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
             for el in cell["content"]:
                 own = "paragraph" in el
                 for paragraph in [el["paragraph"]] if own else paragraphs_of([el]):
-                    named = _TEXT_STYLES.get(_named(paragraph), {})
+                    named = _named_text(paragraph)
                     pieces = []
                     for text, style in _spans(paragraph):
                         marks = _marks({**named, **_anchored(style, anchors)})
@@ -3398,7 +3977,12 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
             cells.append(" ".join(lines))
         rows.append("| " + " | ".join(cells) + " |")
     columns = len(table["tableStyle"]["tableColumnProperties"])
-    return "\n".join([rows[0], "| " + " | ".join([":----"] * columns) + " |", *rows[1:]])
+    covered = _covered(table)
+    aligned = [
+        ":----" if any((r, c) not in covered for r in range(len(rows))) else "-----"
+        for c in range(columns)
+    ]
+    return "\n".join([rows[0], "| " + " | ".join(aligned) + " |", *rows[1:]])
 
 
 # The arrow and left-triangle glyphs `_list_marker` writes as `-`.

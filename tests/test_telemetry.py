@@ -286,6 +286,46 @@ def test_a_failure_is_classed_by_its_answer(source, support, status, code, spent
 
 
 @pytest.mark.parametrize(
+    "source, status, code, answered, expected",
+    [
+        # the marker the Atlassian vendor-5xx answers carry: the 500 is the vendor's own
+        ("jira", 500, "", True, "client"),
+        ("confluence", 500, "", True, "client"),
+        ("confluence", 500, "jaxrs_out_of_bounds", True, "client"),
+        # without it, the same answers are this server's failure
+        ("jira", 500, "", False, "internal"),
+        ("confluence", 500, "", False, "internal"),
+        ("confluence", 500, "jaxrs_out_of_bounds", False, "internal"),
+        # the marker moves no other class
+        ("jira", 401, "", True, "auth"),
+        ("jira", 429, "", True, "rate_limit"),
+        ("github", 501, "notImplemented", True, "client"),
+    ],
+)
+def test_a_marked_5xx_is_the_clients(source, status, code, answered, expected):
+    """A 5xx a route marks as the vendor's answer to a wrong request is the client's, with a code or
+    without one; a failure of this server stays internal whatever the route marks."""
+    assert error_class(source, "implemented", status, code, False, answered=answered) == expected
+    assert (
+        error_class(source, "implemented", status, code, False, raised=True, answered=answered)
+        == "internal"
+    )
+
+
+def test_jerseys_out_of_bounds_500_carries_its_own_code():
+    """Jersey's 500 for a character past ASCII in `Accept` is coded by its message, which carries
+    only the character's code; a message the table does not know stays unrecognized."""
+    message = "java.lang.ArrayIndexOutOfBoundsException: Index 160 out of bounds for length 128"
+    body = json.dumps({"statusCode": 500, "message": message}, separators=(",", ":")).encode()
+    assert errors.error_code("confluence", 500, body) == "jaxrs_out_of_bounds"
+    other = json.dumps(
+        {"statusCode": 500, "message": "java.lang.SomeOtherException: nope"},
+        separators=(",", ":"),
+    ).encode()
+    assert errors.error_code("confluence", 500, other) == "unrecognized"
+
+
+@pytest.mark.parametrize(
     "source, status, body, expected",
     [
         ("slack", 200, b'{"ok":false,"error":"channel_not_found"}', "channel_not_found"),
@@ -1059,14 +1099,18 @@ def test_each_graphql_error_is_counted_by_the_code_backlot_sends(
 
 
 def test_every_message_slug_has_a_request_that_sends_it():
-    sent = {
-        row[-1]
-        for t in (
-            test_each_message_slug_is_one_backlot_sends,
-            test_each_graphql_error_is_counted_by_the_code_backlot_sends,
-        )
-        for row in t.pytestmark[0].args[1]
-    } | {"rate_limited", "unsupported_filter"}
+    sent = (
+        {
+            row[-1]
+            for t in (
+                test_each_message_slug_is_one_backlot_sends,
+                test_each_graphql_error_is_counted_by_the_code_backlot_sends,
+            )
+            for row in t.pytestmark[0].args[1]
+        }
+        | {"rate_limited", "unsupported_filter"}
+        | {code for *_, code in _VENDOR_5XX if code}
+    )
     tables = errors._GITHUB + errors._JIRA + errors._CONFLUENCE + errors._GRAPHQL + errors._MSGRAPH
     assert {slug for _, slug in tables} <= sent
 
@@ -1119,6 +1163,50 @@ def test_a_spent_github_window_is_a_rate_limit(hello):
         call["backlot.error_code"],
         call["backlot.error_class"],
     ) == (403, "rate_limited", "rate_limit")
+
+
+# The 500s the Atlassian routes serve as the vendor's own answer to a wrong request, each sent with
+# no credential, so that each place that marks one ``answered_5xx`` is reached.
+_VENDOR_5XX = [
+    ("GET", f"{W}/space", "Content-Type", "text/plain;charset=", 500, None),
+    ("OPTIONS", f"{W}/space", "Content-Type", "text/plain;charset=", 500, None),
+    ("GET", f"{W}/space", "Accept", "application/json;Q=abc, text/plain", 500, None),
+    ("GET", f"{W}/nopesuchroute", "Accept", "application/json;q=2", 500, None),
+    (
+        "GET",
+        f"{W}/search?cql=type%3Dpage",
+        "Accept",
+        "\xa0application/json",
+        500,
+        "jaxrs_out_of_bounds",
+    ),
+    ("OPTIONS", f"{W}/search", "Accept", "\xa0application/json", 500, "jaxrs_out_of_bounds"),
+    ("GET", f"{J}/serverInfo", "Accept", "application/json;Q=2", 500, None),
+    ("OPTIONS", f"{J}/serverInfo", "Accept", "application/json;Q=2", 500, None),
+    ("GET", f"{J}/serverInfo", "Accept", "application/json;Q=abc, text/plain", 500, None),
+]
+
+
+def test_a_5xx_a_vendor_answers_a_wrong_request_with_is_the_clients(hello):
+    """Each Atlassian 500 the routes answer a wrong request with is the vendor's own, not this
+    server's failure: the telemetry classes it by the `answered_5xx` mark the route leaves. Each
+    header goes as its latin-1 bytes, which the TestClient would re-encode (``sent_as``)."""
+    from tests._helpers import sent_as
+
+    with (
+        _env(BACKLOT_TELEMETRY="1", DO_NOT_TRACK=None),
+        _ExportTo(UNREACHABLE),
+        client_for(hello) as c,
+    ):
+        for method, path, name, value, status, code in _VENDOR_5XX:
+            (call,) = _calls(lambda: sent_as(c, method, path, [(name, value)]))
+            got = (
+                call["http.request.method"],
+                call["http.response.status_code"],
+                call.get("backlot.error_code"),
+                call["backlot.error_class"],
+            )
+            assert got == (method, status, code, "client"), (method, path, name)
 
 
 def test_a_403_with_a_window_left_is_auth(client):

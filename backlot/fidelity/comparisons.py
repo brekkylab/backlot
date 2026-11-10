@@ -239,9 +239,11 @@ class GoogleDiscoveryComparison:
 class GraphQLComparison:
     """A source compared against the schema its vendor answers introspection with.
 
-    Introspection IS the contract, which is what separates this from a published document: a field
-    absent from it is absent from the API, not merely undocumented. The cost is a credential, which
-    is why these two are the sources that go uncompared when one is not set.
+    The vendor's side is answered by the live API rather than written beside it, which is what
+    separates this from a published document. It can still leave surface out: the notes on Linear's
+    ``extra_field`` entries record fields api.linear.app answers and its introspection does not
+    list. The cost is a credential, which is why these two are the sources that go uncompared when
+    one is not set.
     """
 
     name: str

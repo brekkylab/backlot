@@ -20903,6 +20903,18 @@ _NESTED_MARKDOWN_ROWS = [
         "markdown",
         "1. aa\n\n> bb",
     ),
+    # a line of two spaces before an item it does not join is nothing, and the breaks either side of
+    # it three newlines
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n  \nbb")],
+            [_bullets(7, 8)],
+        ],
+        "markdown",
+        "aa\n\n\n* bb",
+    ),
     # 60 PT is `> > `, and a paragraph under no item joins one under none before it
     (
         "wr-text",
@@ -21178,6 +21190,56 @@ _NESTED_MARKDOWN_ROWS = [
         ],
         "markdown",
         "aa\n\n- bb  \n  cc  \n  * dd  \n    ee  \n    z\n\n    \n    ",
+    ),
+    # an empty paragraph under a `*` item is a line of two spaces, and so nothing before an item it
+    # does not join
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\ncc\n\nbb")],
+            [_bullets(1, 10)],
+            [_unbullet(4, 5), _unbullet(7, 8)],
+            [_indent(4, 5, 72, 72), _indent(7, 8, 36, 36)],
+        ],
+        "markdown",
+        "* aa\n\n  cc\n\n\n* bb",
+    ),
+    # a first paragraph of two spaces is written before a heading
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "  \nhh")],
+            [_ps(4, 5, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "  \n\n## hh",
+    ),
+    # a line of two spaces before a table, not the first, is nothing
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n  ")],
+            [{"insertTable": {"rows": 1, "columns": 1, "endOfSegmentLocation": {}}}],
+        ],
+        "markdown",
+        "aa\n\n\n|  |\n| :---- |\n\n",
+    ),
+    # in a footnote, a line of two spaces before a list item
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "ab")],
+            [_fn(2)],
+            [_in_segment("$3.0", _ins(1, "xx\n  \nyy"))],
+            [_in_segment("$3.0", _del(0, 1))],
+            [_in_segment("$3.0", _bullets(6, 7))],
+        ],
+        "markdown",
+        "a[^1]b\n\n[^1]: xx\n\n\n    * yy",
     ),
 ]
 

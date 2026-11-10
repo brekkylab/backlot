@@ -2952,8 +2952,9 @@ def plain_text(doc: dict) -> str:
 # line, with nothing but empty paragraphs between them, are one blank line.
 _BREAK, _BLOCK = object(), object()
 
-# A paragraph of exactly two spaces before a heading: written as nothing, and the breaks on both
-# sides of it as three newlines (real's answers on 2026-11-01).
+# A line of exactly two spaces, but the first paragraph's, with a blank line after it: written as
+# nothing, and the breaks on both sides of it as three newlines. Real wrote so before a heading on
+# 2026-11-01, and before a table and a list item on 2026-11-09.
 _GAP = object()
 
 # Escaped wherever they stand. `+`, `-` and `=` are escaped at a word's start, after a space, a tab
@@ -3411,6 +3412,7 @@ def _markdown(
     listed = ["bullet" in b for b in blocks]
     tokens: list = []
     nesting = _Nesting(items)
+    gap = None  # where a line of two spaces stands in `tokens`, until the block after it
     for i, (paragraph, level) in enumerate(zip(blocks, levels)):
         prefix = rest = ""
         if level == "table":
@@ -3423,6 +3425,9 @@ def _markdown(
         if i:
             joined = nesting.joins(kind, step, bool(level or levels[i - 1]))
             tokens.append(_BREAK if joined else _BLOCK)
+            if gap is not None and not joined:
+                tokens[gap] = _GAP
+        gap = None
         nesting.went(kind, step, joined, paragraph)
         if level == "table":
             tokens.append(_table(paragraph["table"], notes, anchors))
@@ -3442,10 +3447,9 @@ def _markdown(
             (rest if n else prefix) + x if isinstance(x, str) else x
             for n, x in enumerate(_inline(runs, named, notes))
         ]
-        if line == ["  "] and i + 1 < len(blocks) and levels[i + 1]:
-            tokens.append(_GAP)
-        else:
-            tokens += line
+        if i and line == ["  "]:
+            gap = len(tokens)
+        tokens += line
     out, pending = "", []
     for t in tokens:
         if t is _BREAK or t is _BLOCK or t is _GAP:

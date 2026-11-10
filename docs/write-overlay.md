@@ -103,13 +103,17 @@ goes to.
 
 A merge moves the text of the cells it covers into the first, which spans them, and gives a merged
 row of no height one 10 PT taller than its largest font; an unmerge splits it again and leaves the
-text where it is. A row or column added or deleted beside a merged cell grows, shrinks or takes it
-as real's does, header rows reach to the end of a merged cell among them, a border set on a cell is
-set on the cell across that edge too, and `files.export` leaves out what a merged cell covers. A
-section break stands after the newline it inserts, and is deleted only with that newline. Margins
-that leave too little of the page are cut as real cuts them, a page near a paper size takes that
-size, a section's columns are as wide as real's for the page and margins they sit between, and a
-named style a write changed is what Markdown marks that style's text with.
+text where it is, and a merge inside one merged cell changes nothing. A row or column added or
+deleted beside a merged cell grows, shrinks or takes it as real's does, a merged cell whose first
+row or column goes moving with its text to the first one left; text, a table, a style or a list
+written at a cell a merged cell covers goes to the merged cell; header rows reach to the end of a
+merged cell among them, a border set on a cell is set on the cell across that edge too, and
+`files.export` leaves out what a merged cell covers. A section break stands after the newline it
+inserts, which at the start of a list item is in no list, and is deleted only with that newline.
+Margins that leave too little of the page are cut as real cuts them, a page near a paper size takes
+that size, a section's columns are as wide as real's for the page and margins they sit between, the
+last column's padding dropped, and a named style a write changed is what Markdown marks that style's
+text with and what a text style set over it is compared with.
 
 A table is made as `insertTable` makes one, after a newline it inserts, and a row or a column takes
 the style of the cells it is made beside; the last row or column deleted takes the table with it.
@@ -190,9 +194,9 @@ field list, so the ordering divergence below has no entry to live in and is stat
   `replaceImage` and the rest) is refused as real refuses an id naming nothing, and the requests and
   write mode that make one (`insertComment`, `createDropdownDefinition`, `insertDate`,
   `insertPerson`, `insertRichLink`, `insertInlineImage`, `SUGGEST`) are refused naming themselves,
-  where real applies them. `replaceImage` checks only its URL's scheme before the object id, where
-  real fetches the image first and refuses one it cannot fetch (`The provided image was not
-  found.`), measured 2026-11-09.
+  where real applies them. `replaceImage` checks only its URL's scheme and host before the object
+  id, where real fetches the image first and refuses one it cannot fetch
+  (`The provided image was not found.`), measured 2026-11-09.
 - **A heading a merge empties.** A merge leaves a heading it moves out of a cell as an empty normal
   paragraph of the heading's style, where real also states normal text's spacing and indents on
   it, measured 2026-11-09.

@@ -20,6 +20,7 @@ import math
 import re
 import struct
 import time
+import urllib.parse
 from pathlib import Path
 
 from fastapi import Request
@@ -554,7 +555,7 @@ def _docs_insert_text(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     if "location" in req:
         _docs_past_end(index, body)
         _docs_in_paragraph(body, index, _DOCS_OUTSIDE + _DOCS_NEWLINES)
-        pos = _docs_cluster(body, index)
+        pos = body.uncovered(_docs_cluster(body, index))
     else:
         pos = len(body.chars) - 1
     kept = gdocs.STRIPPED.sub("", text)
@@ -592,7 +593,8 @@ def _docs_delete_content_range(doc: gdocs.Document, req: dict) -> tuple[dict, bo
     empty range, a body's section break at 0, the segment's last newline, and either end inside a
     surrogate pair or the range taking part of a table (`gdocs.Body.cuts_table`). Deleting a
     combining mark without the letter it sits on is taken, and deleting a footnote reference
-    deletes its footnote."""
+    deletes its footnote. A range in a cell a merged cell covers is a 500: measured 2026-11-09,
+    the newline of a cell a merge of two by two covered."""
     _, _, body, start, end = _docs_range(
         doc, req.get("range"), "Delete content range requests must include a range to delete."
     )
@@ -605,6 +607,8 @@ def _docs_delete_content_range(doc: gdocs.Document, req: dict) -> tuple[dict, bo
             "The range cannot include the newline character at the end of the segment."
         )
     first, last = body.position(start), body.position(end)
+    if first is not None and last is not None and body.covers(first, last):
+        raise gerr.internal_error()
     if (
         first is None
         or last is None
@@ -737,7 +741,7 @@ def _docs_insert_table(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         raise _EditorRefused("Cannot insert table in a footnote.")
     if "location" in req:
         _docs_in_paragraph(body, index, _DOCS_OUTSIDE)
-        pos = _docs_cluster(body, index)
+        pos = body.uncovered(_docs_cluster(body, index))
     else:
         pos = len(body.chars) - 1
     body.insert_table(pos, rows, columns)
@@ -1082,8 +1086,9 @@ def _docs_update_cell_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]
 
 def _docs_merge(name: str):
     """``mergeTableCells`` or ``unmergeTableCells``: a range set (`_docs_table_range`); a merge of
-    cells only part of an earlier merge holds is refused. A merge of one cell, and an unmerge of
-    cells no merge holds, change nothing (`gdocs.Body.merge_cells`, `gdocs.Body.unmerge_cells`)."""
+    cells only part of an earlier merge holds is refused. A merge of cells all of one merged cell,
+    or of one cell, and an unmerge of cells no merge holds, change nothing
+    (`gdocs.Body.merge_cells`, `gdocs.Body.unmerge_cells`)."""
     merging = name == "Merge"
 
     def apply(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
@@ -1094,16 +1099,17 @@ def _docs_merge(name: str):
         if not merging:
             body.unmerge_cells(table, cells)
             return {}, False
+        if len({body.span(table, *cell)[:2] for cell in cells}) == 1:
+            # measured 2026-11-09: one cell, a cell inside a merged cell, part of one and the same
+            # range merged again were each taken and kept the `revisionId`
+            doc.unchanged += 1
+            return {}, False
         inside = set(cells)
         grid = body.grid(table)
         header = {body.chars[grid[r][0]][1]["tableRowStyle"].get("tableHeader") for r, _ in cells}
         # measured 2026-11-09: a merge over a header row and a row below the header was refused
         if any(not set(body._region(table, [cell])) <= inside for cell in cells) or len(header) > 1:
             raise _EditorRefused("A non-rectangular collection of cells cannot be merged.")
-        if len(cells) == 1:
-            # measured: a merge of one cell kept the `revisionId`
-            doc.unchanged += 1
-            return {}, False
         (row, column), (last_row, last_column) = cells[0], cells[-1]
         body.merge_cells(table, row, column, last_row - row + 1, last_column - column + 1)
         return {}, False
@@ -1142,10 +1148,10 @@ _DOCS_MARGINS = {
 
 def _docs_insert_section_break(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     """``insertSectionBreak``, in real's order of refusals, measured 2026-11-09: no location, the
-    tab, an index below zero, the segment, the index at or past its end, the section type, a
-    header, footer or footnote, a table's row, cell or end or a cell's text, then the first
-    section break, a table's start or a section break (`_docs_in_paragraph`).
-    `endOfSegmentLocation` is before the body's last newline (`gdocs.Body.insert_section_break`)."""
+    tab, an index below zero, the segment, the index at or past its end, the section type, a header,
+    footer or footnote, a table's row, cell or end or a cell's text, then the first section break, a
+    table's start or a section break (`_docs_in_paragraph`). `endOfSegmentLocation` is before the
+    body's last newline (`gdocs.Body.insert_section_break`)."""
     where = req.get("location", req.get("end_of_segment_location"))
     if where is None:
         raise _EditorRefused("No insertion location set.")
@@ -1188,11 +1194,11 @@ def _docs_required(read: dict, names: list[str], key: str, refusal: str) -> dict
 def _docs_column_widths(columns: list[dict], width: float) -> list[dict]:
     """A section's `columnProperties` as `updateSectionStyle` keeps them: each column the page's
     width between the margins, less every column's padding, shared out evenly, cut after three
-    decimals. Measured 2026-11-09: two columns of 10 PT and 0 padding on a 612 PT page between
-    72 PT margins were 229 PT wide, and three of 5, 5 and 0 were 152.666."""
-    padded = [
-        _docs_dimension(c["padding_end"]) if "padding_end" in c else {"unit": "PT"} for c in columns
-    ]
+    decimals, the last column's padding read and then dropped. Measured 2026-11-09: two columns of
+    10 PT and 0 padding on a 612 PT page between 72 PT margins were 229 PT wide, as were two of 10
+    and 7.25, three of 5, 5 and 0 were 152.666, and three of 10, 10 and 5 were 149.333."""
+    read = [_docs_dimension(c["padding_end"]) if "padding_end" in c else None for c in columns]
+    padded = [*read[:-1], {"unit": "PT"}]
     share = (width - sum(p.get("magnitude", 0) for p in padded)) / len(columns)
     each = {"magnitude": _docs_number(math.floor(share * 1000) / 1000), "unit": "PT"}
     return [{"width": dict(each), "paddingEnd": p} for p in padded]
@@ -1205,7 +1211,8 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
     (`_docs_range`, no range refused as an index missing; one in a header, footer or footnote is a
     500), then the values. A margin, the content direction or the columns named must be stated, in
     that order whatever order `fields` names them in, `*` naming them all; every column but the
-    last needs its padding, and a width stated is refused (`_docs_column_widths`); a margin below
+    last needs its padding, a width stated is refused, and then those paddings must be the same
+    (`_docs_column_widths`); a margin below
     zero is a 500, and the margins are fitted to the page (`_docs_fit_margins`). The first
     section's page numbering and first-page flag are its tab's `documentStyle`'s, a later
     section's its own."""
@@ -1244,6 +1251,9 @@ def _docs_update_section_style(doc: gdocs.Document, req: dict) -> tuple[dict, bo
             raise _EditorRefused("Column padding must be set in order to update column properties.")
         if any("width" in c for c in columns):
             raise _EditorRefused("Column widths cannot be updated.")
+        # measured 2026-11-09: 10 and 7.25, and 3, 4 and 3, were refused, 7 and 7.0 taken
+        if len({_docs_dimension(c["padding_end"]).get("magnitude", 0) for c in columns[:-1]}) > 1:
+            raise _EditorRefused("All column padding ends must be the same.")
     if "columnSeparatorStyle" in names:
         value = read.get("column_separator_style", 0)
         stated["columnSeparatorStyle"] = _docs_enum_name(_DOCS_SEPARATOR, value) if value else None
@@ -1379,15 +1389,17 @@ def _docs_fit_margins(style: dict, page: dict, named: set[str]) -> dict:
     2026-11-09 on a 612 by 792 PT page:
     - A left and right margin are cut when together they are wider than the page less
       `_DOCS_MIN_TEXT_WIDTH`, or wider than 0 on a page narrower than that (10 and 10 on a 36 PT
-      page were 0 and 0). A margin a section does not state is its tab's. When
-      ``named`` holds one of the two, and the other fits in the room and is not a negative margin
-      of the same style, the named one is cut to the room the other leaves (600 beside 72 was 504,
-      beside 100.5 was 475.5, and on a section beside its tab's -10 was 586). Otherwise the left
-      takes its share of the room rounded down, never more than it was, and the right the rest (500
-      and 200 were 411 and 165, 200 and 500 were 164 and 412, 700 beside -20 was 592 and -16, -50
-      and 700 were -50 and 626, and 72 and 72 on a 30 PT page were 0 and 0).
-    - A top, bottom, header or footer margin above two fifths of the page's height is cut to that
-      (800 was 316.8, and 72 on a 100 PT page was 40)."""
+      page were 0 and 0). A margin a section does not state is its tab's. When ``named`` holds one
+      of the two, and the other fits in the room and is not a negative margin of the same style, the
+      named one is cut to the room the other leaves (600 beside 72 was 504, beside 100.5 was 475.5,
+      and on a section beside its tab's -10 was 586). Otherwise the left takes its share of the room
+      rounded down, never more than it was, and the right the rest (500 and 200 were 411 and 165,
+      200 and 500 were 164 and 412, 700 beside -20 was 592 and -16, -50 and 700 were -50 and 626,
+      and 72 and 72 on a 30 PT page were 0 and 0).
+    - A top, bottom, header or footer margin above 0.4 times the page's height is cut to that, the
+      height as sent for a top or bottom margin and as kept (`_docs_paper`) for a header or footer
+      one (800 was 316.8, 72 on a 100 PT page was 40, and 400 on a page sent 788 PT high and kept
+      792 was 315.20000000000005 at the top and 316.8 in the header)."""
     out: dict = {}
     size = page["pageSize"]
     left, right = (style.get(k, page[k]).get("magnitude", 0) for k in ("marginLeft", "marginRight"))
@@ -1404,8 +1416,14 @@ def _docs_fit_margins(style: dict, page: dict, named: set[str]) -> dict:
         else:
             out["marginLeft"] = min(left, math.floor(room * left / (left + right)))
             out["marginRight"] = room - out["marginLeft"]
-    most = size["height"].get("magnitude", 0) * 2 / 5
-    for key in ("marginTop", "marginBottom", "marginHeader", "marginFooter"):
+    sent = size["height"].get("magnitude", 0) * 0.4
+    kept = _docs_paper(size)["height"].get("magnitude", 0) * 0.4
+    for key, most in (
+        ("marginTop", sent),
+        ("marginBottom", sent),
+        ("marginHeader", kept),
+        ("marginFooter", kept),
+    ):
         if style.get(key, {}).get("magnitude", 0) > most:
             out[key] = most
     return {
@@ -2076,7 +2094,8 @@ def _docs_update_text_style(doc: gdocs.Document, req: dict) -> tuple[dict, bool]
     first, last = reach
     if stated.get("link", {}) is None and "link" not in body.chars[first][1]:
         stated.pop("link")
-    body.style(first, last, stated)
+    for first, last in body.uncovered_spans(first, last):
+        body.style(first, last, stated)
     return {}, False
 
 
@@ -2147,7 +2166,7 @@ def _docs_update_paragraph_style(doc: gdocs.Document, req: dict) -> tuple[dict, 
     stated = _docs_paragraph_style(req.get("paragraph_style", {}), names)
     if start < body.base:
         raise _EditorRefused("Cannot operate on the first section break in the document.")
-    for p in body.paragraphs_in(start, end):
+    for p in body.uncovered_paragraphs(body.paragraphs_in(start, end)):
         body.style_paragraph(p, stated)
     return {}, False
 
@@ -2179,7 +2198,7 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         raise _EditorRefused(f"Unknown bullet preset {named}")
     if start < body.base:
         raise _EditorRefused("Cannot operate on the first section break in the document.")
-    paragraphs = body.paragraphs_in(start, end)
+    paragraphs = body.uncovered_paragraphs(body.paragraphs_in(start, end))
     owns = [body.bullet(p) for p in paragraphs]
     tabs = [
         0 if own is not None else min(body.leading_tabs(p), _DOCS_LIST_DEPTH)
@@ -2187,7 +2206,7 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     ]
     fewest = min((n for n, own in zip(tabs, owns) if own is None), default=0)
     levels = _docs_shifted(_DOCS_PRESETS[_DOCS_BULLET_PRESET.names[preset]], fewest)
-    before = body.bullet(paragraphs.start - 1) if body.follows_paragraph(paragraphs.start) else None
+    before = body.bullet(paragraphs[0] - 1) if body.follows_paragraph(paragraphs[0]) else None
     made = next((own["listId"] for own in owns if own is not None), None)
     if made is not None:
         tab["lists"][made]["listProperties"]["nestingLevels"] = levels
@@ -2227,7 +2246,7 @@ def _docs_delete_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     _, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
     if start < body.base:
         raise _EditorRefused("Cannot operate on the first section break in the document.")
-    for p in body.paragraphs_in(start, end):
+    for p in body.uncovered_paragraphs(body.paragraphs_in(start, end)):
         body.drop_bullet(p)
     return {}, False
 
@@ -2497,13 +2516,17 @@ def _docs_update_dropdown(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
 
 def _docs_replace_image(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
-    """``replaceImage``: the tab, a URL of `http` or `https`, an image named, then looked up."""
+    """``replaceImage``: the tab, a URL of `http` or `https` in any case, one naming no host a
+    500, an image named, then looked up. Measured 2026-11-09: `HTTPS://` and `hTTp://` were taken,
+    ` https://` refused, and `https:/x`, `httpS:x` and `https://` each a 500."""
     _docs_tab(doc, req)
     uri = req.get("uri", "")
     if not uri:
         raise _EditorRefused("The URL should not be empty.")
-    if not uri.startswith(("http://", "https://")):
+    if uri.partition(":")[0].lower() not in ("http", "https"):
         raise _EditorRefused("The URL should start with http:// or https://.")
+    if not urllib.parse.urlsplit(uri).netloc:
+        raise gerr.internal_error()
     if not req.get("image_object_id"):
         raise _EditorRefused("Must provide a non-empty object ID")
     raise _EditorRefused(f"The object with ID {req['image_object_id']} could not be found.")

@@ -564,8 +564,8 @@ The CRM API is polymorphic over `{objectType}`, so these five work across every 
 than there being a set per type.
 
 A keyed answer carries `x-hubspot-ratelimit-daily` and `-daily-remaining`, counted per key over the
-calendar day in UTC, `BACKLOT_HUBSPOT_PER_DAY` a day (250000, a free portal's), with search keeping a
-day of its own. Outside search and `/crm/v4/associations/` it also carries `-max` 100,
+calendar day in UTC, `BACKLOT_HUBSPOT_PER_DAY` a day (250000, a free portal's), with search and
+`/crm/v4/associations/` sharing a day of their own. Outside those two it also carries `-max` 100,
 `-interval-milliseconds` 10000, `-secondly` 10, and `-remaining` and `-secondly-remaining`, counted
 over the 10 seconds up to the answer. A 401, a 405, a 406 and the 404 for a path no route serves
 carry none and count against neither. Nothing is refused past either count.

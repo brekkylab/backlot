@@ -229,17 +229,19 @@ _RATE_LIMIT_WINDOW = 10
 
 
 class RateLimitCounts:
-    """Each key's requests in real's sliding 10-second window and in its day, which search counts
-    apart. Measured against api.hubapi.com on 2026-10-18 with a service key over 100 answers:
-    `x-hubspot-ratelimit-daily` was 250000 on each, and `-daily-remaining` one lower on each answer
-    than on the one before, 249790 down to 249710 over the 81 outside search, while search's seven
-    went from 249977 to 249971 and left the other count where it was. `-remaining` was 100 less the
-    requests of the 10 seconds up to the answer, this one included, on 62 of those 81 and one or
-    two higher on the rest; after 11 seconds with none it was 99 again. `-secondly-remaining` was
-    `-remaining` divided by 10 and rounded down on all 81. When the day turns over was not
-    measured: this takes the calendar day in UTC, as ``backlot.routers.fireflies.Budget`` does.
-    Nothing is refused past either count, which stops at 0. ``clock`` is `time.time` unless a
-    test hands in another."""
+    """Each key's requests in real's sliding 10-second window and in two days: one for the requests
+    counted in the window, and one that search and `/crm/v4/associations/` share. Measured against
+    api.hubapi.com on 2026-10-18 with a service key over 100 answers: `x-hubspot-ratelimit-daily`
+    was 250000 on each, and `-daily-remaining` one lower on each answer than on the one before,
+    249790 down to 249710 over the 81 outside search, while search's seven went from 249977 to
+    249971 and left the other count where it was. `-remaining` was 100 less the requests of the 10
+    seconds up to the answer, this one included, on 62 of those 81 and one or two higher on the
+    rest; after 11 seconds with none it was 99 again. `-secondly-remaining` was `-remaining` divided
+    by 10 and rounded down on all 81. On 2026-11-09 a `/crm/v4/associations/` batch read between two
+    searches answered 249988 between their 249989 and 249987, and the listing after them was one
+    lower than the one before. When the day turns over was not measured: this takes the calendar day
+    in UTC, as ``backlot.routers.fireflies.Budget`` does. Nothing is refused past either count,
+    which stops at 0. ``clock`` is `time.time` unless a test hands in another."""
 
     def __init__(self, clock: Callable[[], float] = time.time):
         self.clock = clock
@@ -254,13 +256,14 @@ class RateLimitCounts:
             counts = app.state.hubspot_rate_limits = RateLimitCounts()
         return counts
 
-    def count(self, key: str, search: bool, windowed: bool) -> dict[str, str]:
-        """The `x-hubspot-ratelimit-*` headers once one request of ``key`` is counted in its day,
-        search's where ``search``, and, where ``windowed``, in its 10-second window."""
+    def count(self, key: str, windowed: bool) -> dict[str, str]:
+        """The `x-hubspot-ratelimit-*` headers once one request of ``key`` is counted: in its
+        10-second window and the day of the requests counted there where ``windowed``, else in the
+        day search and `/crm/v4/associations/` share."""
         now = self.clock()
-        today = self._days.get((key, search))
+        today = self._days.get((key, windowed))
         if today is None or today[0] != int(now // 86400):
-            today = self._days[(key, search)] = [int(now // 86400), 0]
+            today = self._days[(key, windowed)] = [int(now // 86400), 0]
         today[1] += 1
         per_day = get_settings().hubspot_per_day
         headers = {
@@ -290,15 +293,16 @@ def rate_limit_headers(request: Request, status_code: int) -> dict[str, str]:
     five on 106, those less every search answer, a 200 among them. On 2026-10-18 the
     `/crm/v4/associations/` answers, a 200, a 207, a 400, a 403 and a 500, carried only the daily
     two, and a 401 or the front's 404 counted against neither count. A request counts in each
-    count its answer reports: whether one under `/crm/v4/associations/` or search counts in the
-    10-second window as well was not measured."""
+    count its answer reports and in no other: on 2026-11-09 five searches, five
+    `/crm/v4/associations/` batch reads, three 405s, three 406s and three 401s, each set sent
+    between two listings under three seconds apart, left the second listing at `-remaining` 98."""
     key = _bearer_credential(request)
     if key is None or status_code in (401, 405, 406):
         return {}
     path = request.url.path.removeprefix("/hubspot").rstrip("/")
     search = path.startswith("/crm/v3/objects/") and path.endswith("/search")
     windowed = not search and not path.startswith("/crm/v4/associations/")
-    return RateLimitCounts.of(request.app).count(key, search, windowed)
+    return RateLimitCounts.of(request.app).count(key, windowed)
 
 
 # batch/read refuses more than this many ids, each counted once as `_batch_read_id` reads it.

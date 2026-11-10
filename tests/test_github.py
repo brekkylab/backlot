@@ -2731,14 +2731,13 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     records of real: the credential's 401 with no header, with or without a version, and for each
     header that carries no credential, then for a token that does not resolve, then the version's
     400, counted, ahead of the router's answer to the admin token and of the refusal of a `Basic`
-    value that names no token, each carrying the version echo. A row not refused is the
-    router's answer for any caller. Real was measured on each row but the last with a bad bearer, an
-    unknown scheme and a bearer after a tab (on 2026-11-10 for the ten refused rows after
-    `security-advisories` and the three not refused after `runner-settings`), on each refused row
-    but those ten with each header below, and with no header on the first eight. On the three
-    refused rows after `git/trees` and the two under `/agents/automations`, two of those headers
-    have no answer of real's: a bearer after a tab that resolves was not sent on the three writes,
-    and `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
+    value that names no token, each carrying the version echo. A row not refused is the router's
+    answer for any caller. Real was measured on each row but the last with a bad bearer, an unknown
+    scheme and a bearer after a tab, on each refused row but the ten after `security-advisories`
+    with each header below, and with no header on the first eight. On the three refused rows after
+    `git/trees` and the two under `/agents/automations`, two of those headers have no answer of
+    real's: a bearer after a tab that resolves was not sent on the three writes, and
+    `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`. On `git/matching-refs`, `tarball` and `zipball` real answered
     `Digest x` with the public repository's 200 list of refs or 302 to the archive, and a bearer
     after a tab with 401 "Bad credentials"; here both are 401 "Requires authentication".

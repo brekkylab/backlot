@@ -21166,6 +21166,45 @@ _NESTED_MARKDOWN_ROWS = [
         "markdown",
         "* aa\n\n> bb  \ncc\n\n* dd  \n  *     \n  * ff\n\n  > gg  \n>     z",
     ),
+    # an empty line between two vertical tabs is nothing, and the hard breaks either side of it one
+    # blank line
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\x0b\x0bcc")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 5, 36, 36)],
+        ],
+        "markdown",
+        "1. aa  \n   bb\n\n   cc",
+    ),
+    # the line after a vertical tab in a quote under an item starts with its `> ` and then the
+    # item's width
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\x0b\x0bcc")],
+            [_bullets(1, 2)],
+            [_indent(4, 5, 66, 66)],
+        ],
+        "markdown",
+        "* aa  \n  > bb\n\n>   cc",
+    ),
+    # a paragraph under an item that is only a vertical tab is a line of two spaces, kept, as a hard
+    # break and not a blank line comes after it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\x0b\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 5, 36, 36)],
+        ],
+        "markdown",
+        "* aa  \n  \n\ncc",
+    ),
     # a paragraph before any item goes under none, and an empty paragraph goes under items as one
     # with text does
     (

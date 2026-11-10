@@ -3521,8 +3521,8 @@ def plain_text(doc: dict) -> str:
 
 # Markdown. A paragraph is a line, a vertical tab in it a hard break (two spaces and a newline),
 # and each paragraph or table is joined to the one before it by a hard break or stands apart from
-# it by a blank line as `_Nesting.joins` says. Two hard breaks in a row, or one beside a blank
-# line, with nothing but empty paragraphs between them, are one blank line.
+# it by a blank line. Two or more breaks with nothing but empty lines between them are one blank
+# line.
 _BREAK, _BLOCK = object(), object()
 
 # A line of exactly two spaces in any paragraph but the first, with a blank line after it: written
@@ -3910,8 +3910,9 @@ class _Nesting:
     - It is a quote, a `> ` for each 30 points it stands past the items it goes under, when that
       is a whole multiple of 30: under no item 30 points were `> ` and 60 `> > `, where 29, 31, 65
       and 66 were nothing; under one item 66 points were `> `.
-    - A line after a vertical tab in it starts with its `> `s and, when it is under items, the
-      width of every item open, those it is not under among them.
+    - A line with text after a vertical tab in it starts with its `> `s and, when it is under
+      items, the width of every item open, those it is not under among them. An empty line there
+      was written as nothing on 2026-11-10, its hard breaks either side one blank line.
     """
 
     def __init__(self, items: _Items):
@@ -3927,8 +3928,8 @@ class _Nesting:
 
     def place(self, paragraph: dict) -> tuple[str, int, str, str]:
         """A paragraph in no list: `under` items, or under none `alone` with text or `empty`;
-        its step, `s // 36`; and what its first line and each line after a vertical tab start
-        with."""
+        its step, `s // 36`; and what its first line and each line with text after a vertical tab
+        start with."""
         start = paragraph["paragraphStyle"].get("indentStart", {}).get("magnitude") or 0
         step = int(start // 36)
         under = [] if self.closed else self.open()[:step]
@@ -4024,7 +4025,7 @@ def _markdown(
             )
             continue
         line = [
-            (rest if n else prefix) + x if isinstance(x, str) else x
+            (rest if n else prefix) + x if isinstance(x, str) and (x or not n) else x
             for n, x in enumerate(_inline(runs, named, notes))
         ]
         if i and line == ["  "]:
@@ -4111,8 +4112,7 @@ def _list_marker(items: _Items, bullet: dict) -> str:
 
 
 def _separator(breaks: list) -> str:
-    """What the breaks between two lines, with only empty paragraphs between them, are
-    written as."""
+    """What the breaks between two lines, with only empty lines between them, are written as."""
     if not breaks:
         return ""
     if _GAP in breaks:

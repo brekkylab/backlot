@@ -3919,7 +3919,9 @@ class _Nesting:
         self.items = items
         self.list_id: str | None = None  # the list of the last item
         self.closed = False  # whether a paragraph with text went under no item since the last item
-        self.tight: bool | None = None  # whether the first block after the last item joined it
+        # whether the first block after the last item joined it, with no table or section break
+        # since
+        self.tight: bool | None = None
         self.before = ("", 0)  # the kind and step of the block before
 
     def open(self) -> list[tuple[int, str, list[int]]]:
@@ -3939,15 +3941,20 @@ class _Nesting:
             return "under", step, " " * _width(under) + quote, quote + " " * _width(self.open())
         return "alone" if _spans(paragraph) else "empty", step, quote, quote
 
-    def joins(self, kind: str, step: int, apart: bool) -> bool:
+    def joins(self, kind: str, step: int, apart: bool, broken: bool) -> bool:
         """Whether a block of ``kind`` at ``step`` joins the block before by a hard break, rather
-        than standing apart by a blank line; ``apart`` when a heading or a table is either side. A
-        paragraph under items joins the item before it when one step (36 points) past the item's
-        level, and a paragraph before it under the same items at its own step when `tight`; a
-        list item joins an item before it, and a paragraph under items before it when `tight`; and
-        a paragraph under no item joins the block before unless that is an item or under items."""
+        than standing apart by a blank line; ``apart`` when a heading or a table is either side,
+        ``broken`` when a section break stands between them. A section break after an item or a
+        paragraph under items sets the block after it apart: measured 2026-11-09, items of one
+        list or of two either side of a break were a blank line apart, and plain paragraphs either
+        side of one a hard break; on 2026-11-10 a paragraph under an item and the paragraph or item
+        after a break were too. A paragraph under items joins the item before it when one step (36
+        points) past the item's level, and a paragraph before it under the same items at its own
+        step when `tight`; a list item joins an item before it, and a paragraph under items before
+        it when `tight`; and a paragraph under no item joins the block before unless that is an
+        item or under items."""
         before, before_step = self.before
-        if apart:
+        if apart or broken and before in ("item", "under"):
             return False
         if kind == "under":
             if before == "item":
@@ -3957,13 +3964,19 @@ class _Nesting:
             return before == "item" or (before == "under" and bool(self.tight))
         return before not in ("item", "under")
 
-    def went(self, kind: str, step: int, joined: bool, paragraph: dict) -> None:
-        """Take a block once placed, and whether it ``joined`` the block before."""
+    def went(self, kind: str, step: int, joined: bool, paragraph: dict, broken: bool) -> None:
+        """Take a block once placed, whether it ``joined`` the block before, and whether a
+        section break stands before it (``broken``). Measured 2026-11-10: after a table or a
+        section break among paragraphs under an item, two paragraphs under it at one step were a
+        blank line apart, and after a table a paragraph under it and the next item too, where with
+        a heading in the table's place two such paragraphs were joined."""
         if kind == "item":
             self.list_id, self.closed, self.tight = paragraph["bullet"]["listId"], False, None
         else:
             self.closed = self.closed or kind == "alone"
-            if self.tight is None:
+            if kind == "table" or broken:
+                self.tight = False
+            elif self.tight is None:
                 self.tight = joined
         self.before = (kind, step)
 
@@ -3981,10 +3994,7 @@ def _markdown(
     style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
     paragraph after its marker (`_list_marker`), a paragraph in no list where `_Nesting` puts it,
     each block joined to the one before or apart from it as `_Nesting.joins` says, and a table as
-    `_table` writes it. A section break after a list paragraph sets what follows it apart as
-    well: measured 2026-11-09, items of one list or of two either side of a break were a blank
-    line apart, and plain paragraphs either side of one a hard break. Nothing is trimmed, and
-    nothing ends the last line."""
+    `_table` writes it. Nothing is trimmed, and nothing ends the last line."""
     at = [k for k, el in enumerate(content) if "paragraph" in el or "table" in el]
     blocks = [content[k].get("paragraph", content[k]) for k in at]
     levels = ["table" if "table" in b else _MARKDOWN_LEVEL.get(_named(b)) for b in blocks]
@@ -4000,16 +4010,15 @@ def _markdown(
             kind, step = "item", 0
         else:
             kind, step, prefix, rest = nesting.place(paragraph)
-        joined = False
+        joined = broken = False
         if i:
             broken = any("sectionBreak" in el for el in content[at[i - 1] + 1 : at[i]])
-            apart = level or levels[i - 1] or broken and listed[i - 1]
-            joined = nesting.joins(kind, step, bool(apart))
+            joined = nesting.joins(kind, step, bool(level or levels[i - 1]), broken)
             tokens.append(_BREAK if joined else _BLOCK)
             if gap is not None and not joined:
                 tokens[gap] = _GAP
         gap = None
-        nesting.went(kind, step, joined, paragraph)
+        nesting.went(kind, step, joined, paragraph, broken)
         if level == "table":
             tokens.append(_table(paragraph["table"], notes, anchors))
             continue

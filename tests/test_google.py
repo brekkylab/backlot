@@ -21016,6 +21016,103 @@ _NESTED_MARKDOWN_ROWS = [
         "markdown",
         "1. aa  \n   bb  \n   1. cc\n\n      dd\n\n   ee\n\n   ff",
     ),
+    # `bb` and `cc`, under the item at one step after a table, stand apart
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertTable": {"rows": 1, "columns": 1, "location": {"index": 4}}}],
+        ],
+        "markdown",
+        "* aa\n\n\n|  |\n| :---- |\n\n  bb\n\n  cc",
+    ),
+    # `cc`, under the item after a table, stands apart from the item after it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc\nee")],
+            [_bullets(1, 12)],
+            [_unbullet(4, 8)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertTable": {"rows": 1, "columns": 1, "location": {"index": 7}}}],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n\n|  |\n| :---- |\n\n  cc\n\n* ee",
+    ),
+    # with a heading in a table's place, `cc` and `dd` after it, under the item at one step, join
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\nhh\ncc\ndd")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 15, 36, 36)],
+            [_ps(7, 8, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "1. aa  \n   bb\n\n   ## hh\n\n   cc  \n   dd",
+    ),
+    # `xx`, in the paragraph a section break after `bb` made, stands apart from `bb`, and `cc`
+    # from `xx`, all three under the item at one step
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+            [_ins(8, "xx")],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n  xx\n\n  cc",
+    ),
+    # after a section break after `bb`, under the item, the empty paragraph the break made stands
+    # apart, a line of three spaces, and `cc` apart from it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 8, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+        ],
+        "markdown",
+        "1. aa  \n   bb\n\n   \n\n   cc",
+    ),
+    # under a `*` item that empty paragraph is a line of two spaces, and so nothing before `cc`
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n\n  cc",
+    ),
+    # an item after a section break after `bb`, under an item, stands apart from `bb`
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 2)],
+            [_indent(4, 6, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+            [_ins(8, "cc")],
+            [_bullets(8, 10)],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n* cc",
+    ),
     # an empty paragraph after an item does not stop the next going under it
     (
         "wr-text",

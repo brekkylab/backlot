@@ -21406,6 +21406,57 @@ _NESTED_MARKDOWN_ROWS = [
         "markdown",
         "a[^1]b\n\n[^1]: xx\n\n\n    * yy",
     ),
+    # of empty paragraphs under a `*` item each a blank line from the next, the first and the third
+    # are nothing
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\n\n\n\nbb")],
+            [_bullets(1, 2)],
+            [
+                _indent(4, 5, 36, 36),
+                _indent(5, 6, 72, 72),
+                _indent(6, 7, 36, 36),
+                _indent(7, 8, 72, 72),
+            ],
+        ],
+        "markdown",
+        "* aa\n\n\n  \n\n\n  \n\nbb",
+    ),
+    # a vertical tab's line of two spaces before a heading is nothing
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\x0b  \nhh")],
+            [_ps(10, 11, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "aa  \nbb\n\n\n## hh",
+    ),
+    # a line ending in two spaces before a heading is written as it is
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb  \nhh")],
+            [_ps(9, 10, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "aa  \nbb  \n\n## hh",
+    ),
+    # a first line of two spaces before a heading is written as it is
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "  \nhh")],
+            [_ps(4, 5, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "  \n\n## hh",
+    ),
 ]
 
 

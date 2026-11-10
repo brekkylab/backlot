@@ -3525,11 +3525,6 @@ def plain_text(doc: dict) -> str:
 # line.
 _BREAK, _BLOCK = object(), object()
 
-# A line of exactly two spaces in any paragraph but the first, with a blank line after it: written
-# as nothing, and the breaks on both sides of it as three newlines. Real wrote so before a heading
-# on 2026-11-01, and before a table, a list item and a paragraph on 2026-11-09.
-_GAP = object()
-
 # Escaped wherever they stand. `+`, `-` and `=` are escaped at a word's start, after a space, a tab
 # or the start of a run; a run of digits there is escaped at the `.` or `)` that ends it before a
 # space; and the `:` of `http://`, `https://` or `ftp://` and the `.` of `www.`, in any case (U+017F
@@ -3995,14 +3990,20 @@ def _markdown(
     style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
     paragraph after its marker (`_list_marker`), a paragraph in no list where `_Nesting` puts it,
     each block joined to the one before or apart from it as `_Nesting.joins` says, and a table as
-    `_table` writes it. Nothing is trimmed, and nothing ends the last line."""
+    `_table` writes it. A line of exactly two spaces, its prefix included, after another line and
+    with a blank line rather than a hard break first after it, is written as nothing, and the
+    breaks either side of it as three newlines, the line after it then written as it is: real
+    wrote a paragraph of two spaces so before a heading on 2026-11-01 and before a table, a list
+    item and a paragraph on 2026-11-09, and on 2026-11-10 a vertical tab's line of two spaces
+    before a heading, and of four paragraphs of two spaces each a blank line from the next, the
+    first and the third. Real kept a first line of two spaces, and one with a hard break first
+    after it, on 2026-11-10. Nothing is trimmed, and nothing ends the last line."""
     at = [k for k, el in enumerate(content) if "paragraph" in el or "table" in el]
     blocks = [content[k].get("paragraph", content[k]) for k in at]
     levels = ["table" if "table" in b else _MARKDOWN_LEVEL.get(_named(b)) for b in blocks]
     listed = ["bullet" in b for b in blocks]
     tokens: list = []
     nesting = _Nesting(items)
-    gap = None  # where a line of two spaces stands in `tokens`, until the block after it
     for i, (paragraph, level) in enumerate(zip(blocks, levels)):
         prefix = rest = ""
         if level == "table":
@@ -4016,9 +4017,6 @@ def _markdown(
             broken = any("sectionBreak" in el for el in content[at[i - 1] + 1 : at[i]])
             joined = nesting.joins(kind, step, bool(level or levels[i - 1]), broken)
             tokens.append(_BREAK if joined else _BLOCK)
-            if gap is not None and not joined:
-                tokens[gap] = _GAP
-        gap = None
         nesting.went(kind, step, joined, paragraph, broken)
         if level == "table":
             tokens.append(_table(paragraph["table"], notes, anchors))
@@ -4034,21 +4032,29 @@ def _markdown(
                 prefix + "#" * level + " " + heading + (f" {{#{anchor}}}" if anchor else "")
             )
             continue
-        line = [
+        tokens += [
             (rest if n else prefix) + x if isinstance(x, str) and (x or not n) else x
             for n, x in enumerate(_inline(runs, named, notes))
         ]
-        if i and line == ["  "]:
-            gap = len(tokens)
-        tokens += line
-    out, pending = "", []
+    lines, pending = [], []  # each line with the breaks before it
     for t in tokens:
-        if t is _BREAK or t is _BLOCK or t is _GAP:
+        if t is _BREAK or t is _BLOCK:
             pending.append(t)
         elif t:
-            out += _separator(pending) + t
+            lines.append((pending, t))
             pending = []
-    return out + _separator(pending)
+    lines.append((pending, ""))
+    out, k = "", 0
+    while k < len(lines):
+        before, line = lines[k]
+        after = lines[k + 1][0] if k + 1 < len(lines) else []
+        if line == "  " and before and after[:1] == [_BLOCK]:
+            out += "\n\n\n" + lines[k + 1][1]
+            k += 2
+        else:
+            out += _separator(before) + line
+            k += 1
+    return out
 
 
 def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
@@ -4125,6 +4131,4 @@ def _separator(breaks: list) -> str:
     """What the breaks between two lines, with only empty lines between them, are written as."""
     if not breaks:
         return ""
-    if _GAP in breaks:
-        return "\n\n\n"
     return "  \n" if breaks == [_BREAK] else "\n\n"

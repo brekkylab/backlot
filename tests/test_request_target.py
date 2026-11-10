@@ -192,6 +192,20 @@ _CDN_METHODS = [
     (b"PROPFIND", "/atlassian/rest/api/3/", b"nope\ry", "cloudfront"),
 ]
 
+# A `\` as the first byte of the target on the methods other than a `GET` (``_TARGETS`` has the
+# `GET`s): the same answer on a `POST`, and on a `HEAD` its status and headers with no body
+# (``request_target.printable_answer`` dates the measurement).
+_BACKSLASH_FIRST_METHODS = [
+    (b"POST", "/slack", b"\\api/auth.test", "slack"),
+    (b"POST", "/notion", b"\\v1/search", "cloudflare page"),
+    (b"HEAD", "/notion", b"\\v1/users", "cloudflare page"),
+    (b"POST", "/msgraph", b"\\v1.0/me", "graph invalid url"),
+    (b"HEAD", "/msgraph", b"\\v1.0/me", "graph invalid url"),
+    (b"POST", "/s3", b"\\nope", "s3 InvalidBucketName \\nope"),
+    (b"POST", "", b"\\drive/v3/about", "google 1555 kept"),
+    (b"HEAD", "", b"\\drive/v3/about", "google 1555 kept"),
+]
+
 
 # An escape in the path or the query, sent as an escape: (base, target after it, answer), the answer
 # the front door's page or, where it read the target on, the status of the API behind it
@@ -809,7 +823,7 @@ _PRINTABLE = [
     ("/atlassian", b"/\\rest/api/3/serverInfo", "as /rest/api/3/serverInfo"),
     ("/atlassian", b"/\\wiki/rest/api/space", "as /wiki/rest/api/space"),
     *(
-        (mount, b"\\" + rest, "google 1555")
+        (mount, b"\\" + rest, "google 1555 kept")
         for mount, served in (
             ("/docs", b"v1/documents/"),
             ("/sheets", b"v4/spreadsheets/"),
@@ -817,6 +831,78 @@ _PRINTABLE = [
         )
         for rest in (served + b"x", served + b"nope")
     ),
+    # a `\` as the first byte of the target, a path real serves and one it does not, on each front
+    # door the mount stands ahead of
+    *(
+        (mount, b"\\" + rest, answer)
+        for mount, answer, served in (
+            ("/github", "github", (b"rate_limit", b"nope")),
+            ("/slack", "slack", (b"api/auth.test", b"api/nope")),
+            ("/notion", "cloudflare page", (b"v1/users", b"v1/nope")),
+            (
+                "/hubspot",
+                "cloudflare page",
+                (b"crm/v3/objects/contacts", b"crm/v3/objects/contacts/nope"),
+            ),
+            ("/linear", "cloudflare page", (b"graphql", b"nope")),
+            ("/fireflies", "cloudflare page", (b"graphql", b"nope")),
+            ("/msgraph", "graph invalid url", (b"v1.0/me", b"v1.0/nope")),
+        )
+        for rest in served
+    ),
+    # S3: the bucket is the first segment, with its escapes decoded and a `+` a space, and an escape
+    # that does not decode is the path as sent
+    *(
+        ("/s3", b"\\" + rest, f"s3 {code} {named}")
+        for rest, code, named in (
+            (b"", "InvalidBucketName", "\\"),
+            (b"nope", "InvalidBucketName", "\\nope"),
+            (b"nope/key", "InvalidBucketName", "\\nope"),
+            (b"nope/a/b", "InvalidBucketName", "\\nope"),
+            (b"nope?max-keys=1", "InvalidBucketName", "\\nope"),
+            (b"nope%20x", "InvalidBucketName", "\\nope x"),
+            (b"no+pe", "InvalidBucketName", "\\no pe"),
+            (b"no%2Fpe", "InvalidBucketName", "\\no"),
+            (b"nope#x", "InvalidBucketName", "\\nope#x"),
+            (b"\\nope", "InvalidBucketName", "\\\\nope"),
+            (b"nope%80", "InvalidURI", "\\nope%80"),
+            (b"nope/k%80", "InvalidURI", "\\nope/k%80"),
+        )
+    ),
+    # and S3's empty 400 for a `%00` or a broken escape, which comes ahead of the `\`'s
+    *(("/s3", b"\\" + rest, "s3 empty") for rest in (b"nope%00x", b"nope%zzx")),
+    # Drive and Gmail, which are served at their own paths, so that nothing but the `\` is ahead of
+    # the path real is sent: the paths ``request_target._backslash_first_at_google`` takes, and a
+    # raw byte beside one; a path of Backlot's own is left to uvicorn
+    *(
+        ("", b"\\" + rest, "google 1555 kept")
+        for rest in (
+            b"drive/v3",
+            b"drive/v3/",
+            b"drive/v3/about",
+            b"drive/v3/files",
+            b"drive/v3/nope",
+            b"%64rive/v3/about",
+            b"gmail",
+            b"gmail/v1x",
+            b"gmail/v1/users/me/profile",
+            b"gmail/v1/nope",
+            b"gmail/v1%2Fusers/me/profile",
+            b"drive/v3/about\x80",
+            b"gmail/v1/users/me/profile\x80",
+        )
+    ),
+    *(
+        ("", b"\\" + rest, answer)
+        for rest, answer in (
+            (b"drive/v3/about\x00x", "google 54"),
+            (b"drive/v3/about\x01", "google 54"),
+            (b"gmail/v1/users/me/profile\x01", "google 54"),
+            (b"drive/v3/about\tx", "google 1555"),
+            (b"drive/v3/about x", "google 1555"),
+        )
+    ),
+    ("", b"\\_meta/overlay", "uvicorn"),
     *(
         (base, b"nope%cx" % c, "as nope%%%02Xx" % c)
         for base in ("/atlassian/rest/api/3/", "/atlassian/wiki/rest/api/")
@@ -867,7 +953,7 @@ def _rows():
             )
     rest = b"/repos/acme/docs-site/issues/" + b"1" * 4_067 + b"\x80"
     yield pytest.param(b"GET", "/github", rest, "github", 1, b"", b"x", id="a path of 4,097")
-    for method, base, rest, answer in _CDN_METHODS:
+    for method, base, rest, answer in (*_CDN_METHODS, *_BACKSLASH_FIRST_METHODS):
         yield pytest.param(
             method, base, rest, answer, 1, b"", b"x", id=f"{method.decode()} {base} {rest!r}"
         )
@@ -1177,7 +1263,7 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
     got, expected = {}, {}
     for row in _rows():
         method, base, rest, answer, authorizations, header, host = row.values
-        admin = None if base.startswith("/s3/") else settings.admin_token
+        admin = None if base.startswith("/s3") else settings.admin_token
         target = base.encode() + rest
         status, headers, body = _send(base_url, method, target, admin, authorizations, header, host)
         if isinstance(answer, int):  # the API behind the front door, which read the target on
@@ -1229,6 +1315,20 @@ def test_a_byte_an_escape_or_a_host_is_answered_as_the_vendors_front_door_answer
                 b"<Code>HttpVersionNotSupported</Code>" in body,
             )
             expected[row.id] = (connection, 505, "application/xml", True)
+            continue
+        if answer.startswith(("s3 InvalidBucketName ", "s3 InvalidURI ")):
+            # a 400 naming a bucket or a URI, with its request ids
+            _, code, named = answer.split(" ", 2)
+            element = "URI" if code == "InvalidURI" else "BucketName"
+            got[row.id] = (
+                headers.get("connection"),
+                status,
+                headers["content-type"],
+                re.findall(rb"<(Code|BucketName|URI)>(.*?)</", body),
+                headers.get("x-amz-request-id", "") != "" and headers.get("x-amz-id-2", "") != "",
+            )
+            named_in_xml = [(b"Code", code.encode()), (element.encode(), named.encode())]
+            expected[row.id] = (connection, 400, "application/xml", named_in_xml, True)
             continue
         # the edge's page carries the edge's two headers beside its own, Tomcat's behind it the two
         # alone, CloudFront's neither, and Cloudflare's page on api.hubapi.com no

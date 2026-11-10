@@ -494,8 +494,9 @@ async def answer_a_hubspot_method_or_accept_no_route_takes(request: Request, cal
 @_middleware(lambda scope: scope["path"].startswith("/hubspot/"))
 async def put_a_correlation_id_on_hubspot_answers(request: Request, call_next):
     """Put real's correlation id, charset and error `correlationId` on every `/hubspot` answer
-    (``backlot.routers.hubspot.correlate``) but the 404 for a path no HubSpot route serves, which
-    real's front answers with none (api.hubapi.com, 2026-09-30 and 2026-10-18).
+    (``backlot.routers.hubspot.correlate``), and its rate-limit headers on those that carry them
+    (``backlot.routers.hubspot.rate_limit_headers``), but the 404 for a path no HubSpot route
+    serves, which real's front answers with none (api.hubapi.com, 2026-09-30 and 2026-10-18).
 
     Registered after the other `/hubspot` middlewares above so it wraps them, and the answers they
     give ahead of the router carry it too. The Cloudflare page for a repeated header
@@ -503,7 +504,9 @@ async def put_a_correlation_id_on_hubspot_answers(request: Request, call_next):
     response = await call_next(request)
     if response.status_code == 404 and _hubspot_route(request.scope) is None:
         return response
-    return await hubspot.correlate(request, response)
+    response = await hubspot.correlate(request, response)
+    response.headers.update(hubspot.rate_limit_headers(request, response.status_code))
+    return response
 
 
 @_middleware(lambda scope: _url_path(scope).startswith("/github"))
@@ -1134,6 +1137,20 @@ async def refuse_an_illegal_confluence_charset(request: Request, call_next):
     return await call_next(request)
 
 
+@_middleware(lambda scope: errors.atlassian.is_confluence(_url_path(scope)))
+async def refuse_an_unreadable_confluence_basic(request: Request, call_next):
+    """Answer a Confluence request carrying a Basic value Tomcat cannot read with Tomcat's 401
+    page (``atlassian.refuse_an_unreadable_confluence_basic``), ahead of routing and of the
+    charset refusal. Registered between that refusal and the slash rewrite, so it reads the path
+    the rewrite leaves, as that refusal does, and runs before it; the front door stays outside
+    both, so the gateway's `PATCH` 405 still comes first.
+    """
+    refused = atlassian.refuse_an_unreadable_confluence_basic(request)
+    if refused is not None:
+        return refused
+    return await call_next(request)
+
+
 @_middleware(lambda scope: scope["path"].startswith(f"{errors.atlassian.PREFIX}/"))
 async def normalise_the_slashes_in_an_atlassian_path(request: Request, call_next):
     """Route an `/atlassian` path the way the real gateway does: runs of slashes are one, and a
@@ -1434,7 +1451,8 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
     Middleware because what Spring would have answered decides what replaces it: this reads the
     answer the route or the refusal gave and replaces it. Registered before the `HEAD` rewrite
     below, so it reads a `HEAD`'s answer as its GET's, and the front door and the headers are put on
-    what it gives as on any answer.
+    what it gives as on any answer. A 500 it answers carries `answered_5xx` on the request's state,
+    which the telemetry middleware reads: the vendor's answer to a wrong request.
     """
     answer = _spring_failure(request.scope)
     response = await call_next(request)
@@ -1443,6 +1461,8 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
     if failed is None:
         failed = Response(body, status_code=response.status_code)
         failed.raw_headers = response.raw_headers
+    elif failed.status_code == 500:
+        request.state.answered_5xx = True
     return failed
 
 

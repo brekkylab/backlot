@@ -2731,9 +2731,10 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         # Nothing here is starred, as every file's `starred` says.
         return (value == "false") == (op == "=")
     if field == "viewedByMeTime":
-        # No file has one: real matched a file its caller never viewed under `!=` and under no
-        # other comparison, measured 2026-10-20, and `not` around any of them matches the rest.
-        return op == "!="
+        # Real matched a file its caller never viewed only under `!=` (2026-10-20); a viewed
+        # one, here a file its caller created, compares its view time.
+        viewed = f.get("viewed")
+        return _drive_q_compare(op, viewed, value) if viewed is not None else op == "!="
     if field == "sharedWithMe":
         # "Shared with me" = visible to the caller and not owned by them. Items shared with you
         # carry no My Drive parent on real Drive, so this clause is the only way to enumerate
@@ -2899,7 +2900,7 @@ def _drive_modified(row) -> int:
     return row["updated_ts"] if row["updated_ts"] is not None else _drive_created(row) + 3600
 
 
-def _drive_facts(row) -> dict:
+def _drive_facts(row, viewed: bool = False) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
     modified = _drive_modified(row)
     return {
@@ -2911,6 +2912,7 @@ def _drive_facts(row) -> dict:
         "modified": synth.rfc3339(modified),
         "created": synth.rfc3339(_drive_created(row)),
         "owner_email": row["author_email"],
+        "viewed": synth.rfc3339(modified) if viewed else None,
         # real Drive keys `in owners` on the owner's email; Backlot also accepts the owner
         # display name, since that's the only owner identifier some callers have.
         "owners": {(row["author_email"] or "").lower(), (row["owner_display"] or "").lower()},
@@ -3615,9 +3617,11 @@ _DRIVE_ORDER_KEYS = {
     # Real sorts a file shared with the caller that the caller never viewed after every file
     # without a view time and ahead of every view time, one of 2001 included, measured 2026-10-21;
     # a file reached through a shared folder carries no `sharedWithMeTime` and sorts with the
-    # first. Nothing here is viewed, as `viewedByMe` says on every file, so whether the caller was
-    # shared the file is all the key reads.
-    "viewedByMeTime": lambda f: bool(f.get("sharedWithMeTime")),
+    # first. A viewed file sorts after both groups, by its own view time.
+    "viewedByMeTime": lambda f: (
+        2 if f.get("viewedByMeTime") else int(bool(f.get("sharedWithMeTime"))),
+        f.get("viewedByMeTime") or "",
+    ),
     # The later of the caller's last view and last modification; a file with neither after every
     # file with either.
     "recency": lambda f: max(f.get("viewedByMeTime") or "", f.get("modifiedByMeTime") or ""),
@@ -3805,7 +3809,17 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
             trash=trash,
         )
     ids_by_value = _drive_q_fulltext_ids(hits)
-    return [r for r in candidates if _drive_q_eval(query, _drive_facts(r), me, ids_by_value)]
+    created = store.gdrive_created_ids(conn)
+    return [
+        r
+        for r in candidates
+        if _drive_q_eval(
+            query,
+            _drive_facts(r, r["id"] in created and _drive_owned_by(r["author_email"], me)),
+            me,
+            ids_by_value,
+        )
+    ]
 
 
 # --- about ---------------------------------------------------------------------------------
@@ -5152,6 +5166,11 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         shared = bool(store.gdrive_shared(conn, [row["id"]]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
     owned = _drive_owned_by(author, me)
+    # The creator of a file made through Sheets or Docs has viewed it, last at its modifiedTime:
+    # on real the two times were equal after `create` (2026-10-29) and after the creator's
+    # `values.update` and `documents.batchUpdate` (2026-11-09, Drive showing the `values.update`
+    # 150 to 180 seconds on). A write to a corpus file is not counted as a view here.
+    viewed = owned and bool(store.gdrive_created_ids(conn, row["id"]))
     f = {
         "kind": "drive#file",
         "id": row["id"],
@@ -5166,7 +5185,8 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "explicitlyTrashed": bool(row["trashed"]),
         "starred": False,
         "shared": bool(shared),
-        "viewedByMe": False,
+        "viewedByMe": viewed,
+        **({"viewedByMeTime": synth.rfc3339(modified)} if viewed else {}),
         "ownedByMe": owned,
         **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),

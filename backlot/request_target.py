@@ -34,7 +34,7 @@ from backlot import auth, errors, utf8_escapes
 from backlot.routers import atlassian, s3
 
 #: The scope key :mod:`backlot.protocol` leaves the request target on, as sent, where it
-#: percent-encoded a byte of it.
+#: percent-encoded a byte of it or, for a `\` first, put a `/` ahead of it (:func:`encode_line`).
 SENT = "raw_request_target"
 
 #: The scope key a rule sets where the front door reads the target as another request and closes
@@ -74,15 +74,32 @@ def with_a_fragment(line: bytes) -> bytes | None:
     return parts[2] if parts is not None and b"#" in parts[2] else None
 
 
+def _backslash_first_at_google(target: bytes) -> bool:
+    """Whether ``target``, as sent, starts with a `\\` and the path after it, its escapes but `%2F`
+    decoded, is under `/gmail` or under Drive's `/drive/v3`: Google's front door answers such a
+    target with its 400 page (:func:`answer`), and httptools refuses it for its first byte."""
+    if not target.startswith(b"\\"):
+        return False
+    rest = re.sub(rb"%2[Ff]", b"%252F", target[1:].partition(b"?")[0])
+    path = "/" + urllib.parse.unquote(rest.decode("latin-1"))
+    return _under(path, "/gmail") or _under(path, "/drive/v3")
+
+
 def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
     """``line``, a request line ending in its LF, with each byte of :data:`_RAW` in its target
     (:func:`_parts`) percent-encoded, and the target as sent; or ``line`` and ``None`` where the
-    target holds none of them or the line is not `METHOD target HTTP/x.y`."""
+    target holds none of them and is no target of :func:`_backslash_first_at_google`, or where the
+    line is not `METHOD target HTTP/x.y`.
+
+    A target of :func:`_backslash_first_at_google` gains a `/` ahead of it as well, which httptools
+    reads, and is left on the scope as sent: the answer is :func:`answer`'s."""
     parts = _parts(line)
     if parts is None:
         return line, None
     method, lead_spaces, sent, version = parts
     encoded = _RAW.sub(lambda m: b"%%%02X" % m[0][0], sent)
+    if _backslash_first_at_google(sent):
+        encoded = b"/" + encoded
     if encoded == sent:
         return line, None
     return b"%s %s%s %s\n" % (method, lead_spaces, encoded, version), sent
@@ -446,6 +463,24 @@ def _s3(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response
     return None
 
 
+def _s3_bucket_not_valid(scope: Scope, sent_path: bytes) -> Response | None:
+    """S3's 400 for a target whose first byte is a `\\` (:func:`printable_answer`):
+    ``routers.s3.path_refusal``'s `InvalidBucketName`, or its `InvalidURI` where the escapes do not
+    decode to UTF-8, carrying the request ids ``backlot.main.answer_s3_with_request_ids`` gives each
+    answer under `/s3/` and the connection closed after it."""
+    ids = s3.request_ids(scope["method"], scope["path"], scope["query_string"].decode("latin-1"))
+    token = s3.REQUEST_IDS.set(ids)
+    try:
+        refusal = s3.path_refusal(scope["method"], sent_path)
+    finally:
+        s3.REQUEST_IDS.reset(token)
+    if refusal is not None:
+        refusal.headers.update(
+            {"Connection": "close", "x-amz-request-id": ids[0], "x-amz-id-2": ids[1]}
+        )
+    return refusal
+
+
 def _graph(scope: Scope, path_kinds: list[str], query_kinds: list[str]) -> Response | None:
     """Of a `nul` or a `control` and a `tab`, a `cr` or a `space`, whichever comes first in the
     target picks the page: :data:`GRAPH_INVALID_URL` for the first two, :data:`GRAPH_BADLY_FORMED`
@@ -489,6 +524,10 @@ def answer(scope: Scope) -> Response | None:
     door, prefix = front_door(scope["path"]) or (None, None)
     sent_path, _, sent_query = scope[SENT].partition(b"?")
     in_path, in_query = _kinds(sent_path), _kinds(sent_query)
+    if sent_path.startswith(b"\\"):  # Drive's or Gmail's target, which :func:`encode_line` read
+        if (refused := _google(in_path, in_query)) is not None:
+            return refused
+        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
     if door == "github":
         return _github()
     if door == "slack":
@@ -616,7 +655,20 @@ _HUBSPOT_SEMICOLONS = (*_HUBSPOT_JETTY_BRACES, b"/hubspot/crm/v4/associations/")
 _BACKSLASH_MOUNTS = (b"/atlassian/", b"/drive/", b"/gmail/", b"/docs/", b"/sheets/", b"/slides/")
 #: The mounts here that come ahead of the path the vendor is sent, so that a `\` right after one is
 #: the first byte of the vendor's target (:func:`_backslash_first`).
-_MOUNTS_AHEAD_OF_THE_TARGET = (b"/atlassian", b"/docs", b"/sheets", b"/slides")
+_MOUNTS_AHEAD_OF_THE_TARGET = (
+    b"/atlassian",
+    b"/docs",
+    b"/sheets",
+    b"/slides",
+    b"/github",
+    b"/slack",
+    b"/notion",
+    b"/hubspot",
+    b"/linear",
+    b"/fireflies",
+    b"/s3",
+    b"/msgraph",
+)
 
 
 def backslashes_read(path: bytes) -> bytes:
@@ -638,9 +690,36 @@ def printable_answer(scope: Scope) -> Response | None:
     another printable character it refuses, or ``None`` where it reads the target on.
 
     A `\\` right after a mount of :data:`_MOUNTS_AHEAD_OF_THE_TARGET` is the CDN's 400 page on Jira
-    and Confluence and Google's 1,555-byte page on Docs, Sheets and Slides: measured on 2026-11-03
-    (UTC) at a path each serves and at one under its API that no route serves, and on Jira and
-    Confluence after a second `\\` and before a `/` as well. A `/` ahead of the `\\` was read on.
+    and Confluence, Google's 1,555-byte page on Docs, Sheets and Slides, :data:`GITHUB_PAGE` on
+    api.github.com, envoy's `Bad Request` on slack.com, :data:`CLOUDFLARE_PAGE` on Notion, HubSpot,
+    Linear and Fireflies, :data:`GRAPH_INVALID_URL` on Graph and on S3 the 400 `InvalidBucketName`
+    (``routers.s3.path_refusal``): measured on 2026-11-03 (UTC) at a path each serves and at one
+    under its API that no route serves, and on Jira and Confluence after a second `\\` and before a
+    `/` as well. A `/` ahead of the `\\` was read on. On 2026-11-09 (UTC), with no credential, the
+    eight hosts that are not Atlassian's or Google's drew the same answer at each of those paths,
+    each closing the connection after it, and on a `POST` and a `HEAD` on slack.com, api.notion.com,
+    graph.microsoft.com and S3 (a `HEAD` its status and headers with no body); api.github.com
+    answered a `POST` sent with a body by closing the connection with no answer, which is not
+    served here. On S3 a `%00` or a broken escape after the `\\` drew an empty 400 (`\\nope%00x`,
+    `\\nope%zzx`). Google's page on Docs, Sheets and Slides was followed by an answer to a second
+    request on the same connection.
+
+    Drive and Gmail are served at their own paths, so a `\\` as the first byte of the target is the
+    first byte of the target here, which httptools refuses: :func:`encode_line` hands it the target
+    with a `/` ahead of it where :func:`_backslash_first_at_google` holds, and :func:`answer`
+    answers a raw byte beside it as :func:`_google` does and otherwise Google's 1,555-byte page. On
+    2026-11-09 (UTC) www.googleapis.com answered `\\drive/v3`, `\\drive/v3/` and each target under
+    it so (`\\drive/v3/about`, `\\drive/v3/files`, `\\drive/v3/nope`, `\\%64rive/v3/about`), and
+    gmail.googleapis.com `\\gmail`, `\\gmail/v1x` and each target under `/gmail/v1`
+    (`\\gmail/v1%2Fusers/me/profile` among them), and a second request on the same connection was
+    answered, so the page does not close it; a `\\x00` or a `\\x01` after the path drew the 54-byte
+    page and a tab or a space the 1,555-byte one, each closing it, and a `\\x80` the page that
+    does not. Elsewhere on www.googleapis.com a `\\` first was not refused: `\\drive/v3x`,
+    `\\drive`, `\\drive%2Fv3/about` and `\\drive/v3%2Fabout` were its 404 page, `\\batch/drive/v3`
+    the 404 and `\\upload/drive/v3/files` the 405 that a `GET` at that path with no `\\` draws; but
+    `\\drive/v2/about`, under a version Backlot does not serve, was the 1,555-byte page. Each of
+    those is left to uvicorn's 400 here.
+
     On api.github.com its page for a `#` anywhere, and on slack.com envoy's empty 400; then on
     slack.com Apache's page (:data:`SLACK_APACHE_PAGE`) for a broken escape in the path; on Graph
     :data:`GRAPH_INVALID_URL` for one, or for a `"`, a `#`, a `<` or a `>`, in the path; on S3, an
@@ -667,9 +746,8 @@ def printable_answer(scope: Scope) -> Response | None:
     byte (:func:`answer`), but for a `%` or a `%4` that ends the target after one, and on HubSpot a
     `{` beside one, which draw the raw byte's empty 400; slack.com answers a raw `\\x01` ahead of a
     `#` or a broken escape beside it, Graph gives a `\\x01` the page it gives a `"`, and S3 reads a
-    raw byte on. The answers that do not close the connection are Apache's, Jetty's and HubSpot's
-    own: each of those, and no other answer here, was followed by an answer to a second request on
-    the same connection."""
+    raw byte on. Of the answers measured that day, Apache's, Jetty's and HubSpot's own, and no
+    other, were followed by an answer to a second request on the same connection."""
     path, raw_path = scope["path"], scope["raw_path"]
     sent = scope.get(WITH_A_FRAGMENT)
     sent_path = raw_path if sent is None else sent.partition(b"?")[0]
@@ -677,8 +755,18 @@ def printable_answer(scope: Scope) -> Response | None:
     if first == b"/atlassian":
         page = errors.atlassian.cdn_bad_request(scope["method"], sent_path.decode("latin-1"))
         return _front_door(scope, "cdn", page, {})
-    if first is not None:
-        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8")
+    if first in (b"/docs", b"/sheets", b"/slides"):
+        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
+    if first == b"/github":
+        return _github()
+    if first == b"/slack":
+        return _slack()
+    if first in (b"/notion", b"/hubspot", b"/linear", b"/fireflies"):
+        return _page(CLOUDFLARE_PAGE, "text/html")
+    if first == b"/msgraph":
+        return _page(GRAPH_INVALID_URL, "text/html; charset=us-ascii")
+    if first == b"/s3":
+        return _page(b"", None) if _broken(sent_path) else _s3_bucket_not_valid(scope, sent_path)
     if _under(path, "/github"):
         return _github() if sent is not None else None
     if _under(path, "/slack"):

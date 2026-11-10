@@ -1445,7 +1445,6 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
         failed = Response(body, status_code=response.status_code)
         failed.raw_headers = response.raw_headers
     elif failed.status_code == 500:
-        # Spring's answer to an `Accept` it cannot sort or write under, the vendor's own
         request.state.answered_5xx = True
     return failed
 

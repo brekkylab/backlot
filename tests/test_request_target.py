@@ -823,7 +823,7 @@ _PRINTABLE = [
     ("/atlassian", b"/\\rest/api/3/serverInfo", "as /rest/api/3/serverInfo"),
     ("/atlassian", b"/\\wiki/rest/api/space", "as /wiki/rest/api/space"),
     *(
-        (mount, b"\\" + rest, "google 1555")
+        (mount, b"\\" + rest, "google 1555 kept")
         for mount, served in (
             ("/docs", b"v1/documents/"),
             ("/sheets", b"v4/spreadsheets/"),
@@ -862,21 +862,44 @@ _PRINTABLE = [
             (b"nope?max-keys=1", "InvalidBucketName", "\\nope"),
             (b"nope%20x", "InvalidBucketName", "\\nope x"),
             (b"no+pe", "InvalidBucketName", "\\no pe"),
+            (b"no%2Fpe", "InvalidBucketName", "\\no"),
+            (b"nope#x", "InvalidBucketName", "\\nope#x"),
             (b"\\nope", "InvalidBucketName", "\\\\nope"),
             (b"nope%80", "InvalidURI", "\\nope%80"),
             (b"nope/k%80", "InvalidURI", "\\nope/k%80"),
         )
     ),
+    # and S3's empty 400 for a `%00` or a broken escape, which comes ahead of the `\`'s
+    *(("/s3", b"\\" + rest, "s3 empty") for rest in (b"nope%00x", b"nope%zzx")),
     # Drive and Gmail, which are served at their own paths, so that nothing but the `\` is ahead of
-    # the path real is sent; a path of Backlot's own is left to uvicorn
+    # the path real is sent: the paths ``request_target._backslash_first_at_google`` takes, and a
+    # raw byte beside one; a path of Backlot's own is left to uvicorn
     *(
         ("", b"\\" + rest, "google 1555 kept")
         for rest in (
+            b"drive/v3",
+            b"drive/v3/",
             b"drive/v3/about",
             b"drive/v3/files",
             b"drive/v3/nope",
+            b"%64rive/v3/about",
+            b"gmail",
+            b"gmail/v1x",
             b"gmail/v1/users/me/profile",
             b"gmail/v1/nope",
+            b"gmail/v1%2Fusers/me/profile",
+            b"drive/v3/about\x80",
+            b"gmail/v1/users/me/profile\x80",
+        )
+    ),
+    *(
+        ("", b"\\" + rest, answer)
+        for rest, answer in (
+            (b"drive/v3/about\x00x", "google 54"),
+            (b"drive/v3/about\x01", "google 54"),
+            (b"gmail/v1/users/me/profile\x01", "google 54"),
+            (b"drive/v3/about\tx", "google 1555"),
+            (b"drive/v3/about x", "google 1555"),
         )
     ),
     ("", b"\\_meta/overlay", "uvicorn"),

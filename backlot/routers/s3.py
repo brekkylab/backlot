@@ -689,9 +689,10 @@ def path_refusal(method: str, raw_path: bytes) -> Response | None:
     on 2026-11-03 and 2026-11-09 (UTC) against `s3.us-east-1.amazonaws.com` with no credential,
     each request on a URL of its own: `\\` and `\\nope` were the 400 `InvalidBucketName` naming
     `\\` and `\\nope`, as were `\\nope/key`, `\\nope/a/b` and `\\nope?max-keys=1` (`\\nope`),
-    `\\nope%20x` and `\\no+pe` (`\\nope x` and `\\no pe`) and `\\\\nope` (`\\\\nope`), on a `GET` and
-    a `POST`, and on a `HEAD` the status and no body; `\\nope%80` and `\\nope/k%80` were
-    `InvalidURI` naming the path as sent. Each closed the connection."""
+    `\\nope%20x` and `\\no+pe` (`\\nope x` and `\\no pe`) and `\\\\nope` (`\\\\nope`), on a `GET`
+    and a `POST`, and on a `HEAD` the status and no body; `\\nope%80` and `\\nope/k%80` were
+    `InvalidURI` naming the path as sent. On 2026-11-09 a `GET` of `\\no%2Fpe` named `\\no` and
+    one of `\\nope#x` named `\\nope#x`. Each closed the connection."""
     path = raw_path.removeprefix(b"/s3")
     if not utf8_escapes.decodes(path):
         refusal = _error(

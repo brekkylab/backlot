@@ -3249,8 +3249,7 @@ def _fts5_ok(conn) -> bool:
         # made-up module name gets on SQLite 3.50.4, 2026-11-09), and the one error that means the
         # LIKE fallback; any other is raised. A file that cannot grow answers the probe with
         # `fts5: error creating shadow table _fts_probe_data: database or disk is full` (same
-        # SQLite): the FTS5 wrapper around SQLITE_FULL, the code SQLite's result-code list
-        # (sqlite.org/rescode.html) gives a write that could not complete because the disk is full.
+        # SQLite): the FTS5 wrapper around SQLITE_FULL.
         if str(e) == "no such module: fts5":
             return False
         raise

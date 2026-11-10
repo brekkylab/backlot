@@ -1,6 +1,6 @@
 # Backlot
 
-Backlot serves enterprise SaaS APIs (Slack, Gmail, Google Drive, GitHub, Jira, Confluence, Notion and more) from one local process, over a corpus you supply, with per-document access controls. A connector, an agent or a RAG pipeline built on the vendors' official SDKs can be exercised against it with no vendor account and no network.
+Backlot serves enterprise SaaS APIs (Slack, Gmail, Google Drive, Microsoft Teams, GitHub, Jira, Confluence, Notion and more) from one local process, over a corpus you supply, with per-document access controls. A connector, an agent or a RAG pipeline built on the vendors' official SDKs can be exercised against it with no vendor account and no network.
 
 This plugin carries the `backlot` agent skill. The skill teaches a coding agent to write a small corpus, load it, start Backlot and point a real client at it. How to use Backlot is in the skill itself.
 

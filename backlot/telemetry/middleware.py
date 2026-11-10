@@ -150,7 +150,14 @@ class TelemetryMiddleware:
                 attributes["backlot.error_code"] = code
             if code or status >= 400:
                 attributes["backlot.error_class"] = errors.error_class(
-                    named.source, named.support, int(status), code, spent, raised=raised
+                    named.source,
+                    named.support,
+                    int(status),
+                    code,
+                    spent,
+                    raised=raised,
+                    # the route's word that a 5xx it answers is the vendor's own
+                    answered=bool(state.get("answered_5xx")),
                 )
             self.recorder.record(attributes, ((ended or time.perf_counter()) - began) * 1000)
         except Exception:  # noqa: BLE001 — counting a call must never change the answer to it

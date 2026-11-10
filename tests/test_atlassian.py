@@ -2427,6 +2427,124 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         child_j = c.get(f"{api}/content/{cid}", headers=h, params={"expand": "ancestors"}).json()
         assert [a["title"] for a in child_j["ancestors"]] == ["probe"]
         assert "ancestors" not in child_j["_expandable"]
+        # `_expandable`'s names, links and order: the bare read's twelve, a listing row's fifteen
+        # in the order real gives thirteen or more, and a search row's set, with `extensions` and
+        # empty `container`, `children` and `descendants`.
+        bare = c.get(f"{api}/content/{pid}", headers=h).json()
+        assert list(bare["_expandable"]) == [
+            "childTypes",
+            "container",
+            "schedulePublishInfo",
+            "metadata",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "restrictions",
+            "ancestors",
+            "body",
+            "draftVersion",
+            "descendants",
+        ]
+        assert bare["_expandable"]["children"] == f"/rest/api/content/{pid}/child"
+        assert bare["_expandable"]["restrictions"] == (
+            f"/rest/api/content/{pid}/restriction/byOperation"
+        )
+        assert bare["_expandable"]["descendants"] == f"/rest/api/content/{pid}/descendant"
+        listed = c.get(api + "/content", headers=h).json()["results"]
+        listed_row = next(r for r in listed if str(r.get("id")) == str(pid))
+        assert list(listed_row["_expandable"]) == [
+            "container",
+            "metadata",
+            "restrictions",
+            "history",
+            "body",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        ]
+        # Twelve left after an `expand` keep the bare read's order, and thirteen take the listing
+        # row's.
+        twelve = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body,metadata,ancestors"}
+        ).json()
+        assert list(twelve["_expandable"]) == [
+            "childTypes",
+            "container",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "restrictions",
+            "history",
+            "version",
+            "draftVersion",
+            "descendants",
+            "space",
+        ]
+        thirteen = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body,metadata"}
+        ).json()
+        assert list(thirteen["_expandable"]) == [
+            "container",
+            "restrictions",
+            "history",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        ]
+        hit = c.get(api + "/search", headers=h, params={"cql": f"id={pid}"}).json()["results"][0][
+            "content"
+        ]
+        assert list(hit["_expandable"]) == [
+            "container",
+            "metadata",
+            "extensions",
+            "operations",
+            "children",
+            "history",
+            "ancestors",
+            "body",
+            "version",
+            "descendants",
+            "space",
+        ]
+        assert hit["_expandable"]["container"] == ""
+        assert hit["_expandable"]["children"] == ""
+        assert hit["_expandable"]["descendants"] == ""
+        assert hit["_expandable"]["history"] == f"/rest/api/content/{pid}/history"
+        assert hit["_expandable"]["space"] == bare["_expandable"]["container"]
+        # The members each served body representation carries.
+        storage = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}
+        ).json()["body"]["storage"]
+        assert list(storage) == ["value", "representation", "embeddedContent", "_expandable"]
+        assert storage["embeddedContent"] == []
+        assert storage["_expandable"] == {"content": f"/rest/api/content/{pid}"}
+        for name in ("view", "export_view", "atlas_doc_format"):
+            rep = c.get(
+                f"{api}/content/{pid}", headers=h, params={"expand": f"body.{name}"}
+            ).json()["body"][name]
+            assert list(rep) == ["value", "representation", "_expandable"], name
+            assert rep["_expandable"] == {
+                "webresource": "",
+                "embeddedContent": "",
+                "mediaToken": "",
+                "content": f"/rest/api/content/{pid}",
+            }, name
 
 
 # --- Jira ------------------------------------------------------------------------
@@ -5867,6 +5985,11 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 
     rows = [
         *((path, admin_h) for path in _routes(keys)),
+        # the 401 for a Basic value Confluence cannot read, on `search` as elsewhere
+        # (``errors.atlassian.head_content_length``)
+        ("/atlassian/wiki/rest/api/space", {"Authorization": "Basic !!!"}),
+        ("/atlassian/wiki/rest/api/user/current", {"Authorization": "Basic !!!"}),
+        ("/atlassian/wiki/rest/api/search?cql=type%3Dpage", {"Authorization": "Basic !!!"}),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
         ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
         # slashed spellings, answered as the slash-free ones
@@ -5887,7 +6010,7 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         assert head.headers["content-type"] == got.headers["content-type"], path
         search = path.startswith("/atlassian/wiki/rest/api/search")
         confluence_200 = "/wiki/" in path and got.status_code == 200 and not search
-        if confluence_200 or ("/wiki/" not in path and got.status_code == 401):
+        if confluence_200 or got.status_code == 401:
             assert head.headers["content-length"] == str(len(got.content)), path
         else:
             assert "content-length" not in head.headers, path
@@ -8116,6 +8239,15 @@ _SPRING_CHARSET = [
     # where real does not fail the request
     ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
     ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    # a Basic value Tomcat cannot read is its 401 page where no operation answers
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/space/ZZNOPE/nope", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/api/v2/spaces", _EMPTY_CHARSET, "Basic !!!", 401),
     ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
     ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
@@ -8193,6 +8325,7 @@ _LICENSE = "/atlassian/rest/api/3/license/approximateLicenseCount"
 #: real's carried in its `<title>` and its `<h1>`.
 _TOMCAT_PAGES = {
     400: (435, "HTTP Status 400 – Bad Request"),
+    401: (437, "HTTP Status 401 – Unauthorized"),
     403: (431, "HTTP Status 403 – Forbidden"),
     405: (449, "HTTP Status 405 – Method Not Allowed"),
     406: (441, "HTTP Status 406 – Not Acceptable"),
@@ -8595,6 +8728,32 @@ _ACCEPT_ROWS = [
     + ({"deprecation": None, "warning": None},),
     ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
     + (None, {}),
+    # -- Confluence: a Basic value Tomcat cannot read is its 401 page where no operation answers,
+    # under any `Accept`, and the gateway's `PATCH` 405 comes ahead of it
+    (
+        "GET",
+        "/atlassian/wiki/rest/api/nosuch",
+        "unparseable-basic",
+        _HTML,
+        None,
+        401,
+        _TOMCAT,
+        "page",
+    )
+    + (
+        {
+            "content-language": "en",
+            "www-authenticate": 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"',
+        },
+    ),
+    ("OPTIONS", _SPACES, "unparseable-basic", _HTML, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("OPTIONS", _SPACES, "unparseable-basic", _JSON, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("GET", "/atlassian/wiki/api/v2/spaces", "unparseable-basic", None, None, 401, _TOMCAT)
+    + ("page", {"content-language": "en", "www-authenticate": _PRESENT}),
+    ("PATCH", "/atlassian/wiki/rest/api/nosuch", "unparseable-basic", None, None, 405)
+    + ("text/html", None, {"www-authenticate": None}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_LABELS}?prefix=bogus", "admin", _HTML, None, 406, _TOMCAT, "page", {}),

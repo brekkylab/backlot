@@ -5,7 +5,7 @@
 Every setting is an env var with a `BACKLOT_` prefix but `DO_NOT_TRACK`, which is the cross-tool
 convention's own name, and a `.env` file in the working directory is read too — copy
 [`.env.example`](../.env.example) and edit. Defaults are what the server uses when the var is unset.
-There are fifteen, and this page is all of them.
+There are sixteen, and this page is all of them.
 
 ## Corpus and identity
 
@@ -44,6 +44,12 @@ API caps at 100 is a client that breaks in production.
 | `BACKLOT_FIREFLIES_ENFORCE_RATE_LIMITS` | `true` | Refuse each root field a `/fireflies` document runs a resolver for once its key has spent the minute's or the day's budget, with `too_many_requests` and a null in its data, the way api.fireflies.ai does. The counts and their `x-ratelimit-*` headers are sent either way. Turn it off for a long-lived `serve()` whose own volume would rather not meet the minute's budget |
 | `BACKLOT_FIREFLIES_PER_MINUTE` | `30` | The root fields a key may run resolvers for in a minute from the first of them, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `60` |
 | `BACKLOT_FIREFLIES_PER_DAY` | `500` | The root fields a key may run resolvers for in a calendar day in UTC, a Free plan's. Fireflies gives a Pro plan, and a Free user's first 14 days, `5000` |
+
+## HubSpot
+
+| Env var | Default | What it does |
+|---|---|---|
+| `BACKLOT_HUBSPOT_PER_DAY` | `250000` | The requests a key may send in a day, a free portal's, which `x-hubspot-ratelimit-daily` reports and `-daily-remaining` counts down from. HubSpot's other plans publish other limits. Nothing is refused past it |
 
 ## Telemetry
 

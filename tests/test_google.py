@@ -17085,7 +17085,7 @@ def _create(wc, h, body):
     return r.json()
 
 
-def test_a_created_spreadsheet_is_its_creators_alone_at_their_root(wc, wh):
+def test_a_created_spreadsheet_is_its_creators_alone_at_their_root(wc, wh, monkeypatch):
     """Measured: with no `sheets` the one sheet is `Sheet1`, `sheetId 0`, 1000 x 26; the Drive
     file sits at the creator's My Drive root, listed under `'root' in parents`, with one
     permission, the owner's, and not shared; anyone else gets the 403 and 404 a hidden file gets."""
@@ -17142,6 +17142,83 @@ def test_a_created_spreadsheet_is_its_creators_alone_at_their_root(wc, wh):
     )
     owned = wc.get("/drive/v3/files", headers=admin, params={"q": "'me' in owners"}).json()
     assert [f["id"] for f in owned["files"]] == [mine]
+
+    # whoever creates a file has viewed it, at its `modifiedTime`, and no one else has; a write to
+    # a corpus file is no view
+    fields = {"fields": "viewedByMe,viewedByMeTime,modifiedTime"}
+    got, want = [], []
+    for fid, headers, viewed in [(sid, h, True), (mine, admin, True), (sid, admin, False)]:
+        f = wc.get(f"/drive/v3/files/{fid}", headers=headers, params=fields).json()
+        got.append(f)
+        want.append(
+            {
+                "viewedByMe": viewed,
+                "modifiedTime": f["modifiedTime"],
+                **({"viewedByMeTime": f["modifiedTime"]} if viewed else {}),
+            }
+        )
+    corpus = served_id("google_drive", "wr-book")
+    wc.put(
+        f"/sheets/v4/spreadsheets/{corpus}/values/A1",
+        headers=h,
+        params=_RAW,
+        json={"values": [["view1136"]]},
+    ).raise_for_status()
+    f = wc.get(f"/drive/v3/files/{corpus}", headers=h, params=fields).json()
+    got.append(f)
+    want.append({"viewedByMe": False, "modifiedTime": f["modifiedTime"]})
+    assert got == want
+    from backlot.routers import google
+
+    later = int(google.time.time()) + 2
+    with monkeypatch.context() as m:
+        m.setattr(google.time, "time", lambda: later)
+        second = _create(wc, h, {"properties": {"title": "Fresh"}})["spreadsheetId"]
+    got, want = {}, {}
+    for order, expected in [
+        ("viewedByMeTime", [sid, second]),
+        ("viewedByMeTime desc", [second, sid]),
+        ("recency", [second, sid]),
+    ]:
+        rows = wc.get(
+            "/drive/v3/files", headers=h, params={"q": "name = 'Fresh'", "orderBy": order}
+        ).json()["files"]
+        got[order] = [f["id"] for f in rows]
+        want[order] = expected
+    assert got == want
+    rows = wc.get(
+        "/drive/v3/files",
+        headers=h,
+        params={"q": "name = 'Fresh' and viewedByMeTime > '2000-01-01T00:00:00Z'"},
+    ).json()["files"]
+    assert {f["id"] for f in rows} == {sid, second}
+    # the creator's later write moves the view time with `modifiedTime`, as real's did
+    with monkeypatch.context() as m:
+        m.setattr(google.time, "time", lambda: later + 2)
+        wc.put(
+            f"/sheets/v4/spreadsheets/{sid}/values/A1",
+            headers=h,
+            params=_RAW,
+            json={"values": [["x"]]},
+        ).raise_for_status()
+    f = wc.get(f"/drive/v3/files/{sid}", headers=h, params=fields).json()
+    assert f == {
+        "viewedByMe": True,
+        "viewedByMeTime": synth.rfc3339(later + 2),
+        "modifiedTime": synth.rfc3339(later + 2),
+    }
+    got, want = {}, {}
+    for q, order, expected in [
+        ("name = 'Fresh'", "viewedByMeTime", [second, sid]),
+        (f"name = 'Fresh' and viewedByMeTime > '{synth.rfc3339(later + 1)}'", None, [sid]),
+    ]:
+        params = {"q": q, **({"orderBy": order} if order else {})}
+        got[q] = [
+            f["id"] for f in wc.get("/drive/v3/files", headers=h, params=params).json()["files"]
+        ]
+        want[q] = expected
+    assert got == want
+
     path = f"/sheets/v4/spreadsheets/{mine}/values/A1"
     assert wc.put(path, headers=admin, params=_RAW, json={"values": [["x"]]}).status_code == 200
 
@@ -17502,7 +17579,10 @@ def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypa
     read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
     flat = {k: v for k, v in doc.items() if k != "tabs"}
     assert read == {**flat, "commentsViewMode": "COMMENTS_VIEW_MODE_OMITTED"}
-    fields = "name,mimeType,parents,shared,size,quotaBytesUsed,version,createdTime,modifiedTime"
+    fields = (
+        "name,mimeType,parents,shared,size,quotaBytesUsed,version,createdTime,modifiedTime,"
+        "viewedByMe,viewedByMeTime"
+    )
     f = wc.get(f"/drive/v3/files/{did}", headers=h, params={"fields": fields}).json()
     assert f == {
         "name": "Fresh doc",
@@ -17514,6 +17594,25 @@ def test_a_created_document_is_its_creators_alone_at_their_root(wc, wh, monkeypa
         "version": "1",
         "createdTime": f["modifiedTime"],
         "modifiedTime": f["modifiedTime"],
+        "viewedByMe": True,
+        "viewedByMeTime": f["modifiedTime"],
+    }
+    # the creator's `batchUpdate` moves the view time with `modifiedTime`, as real's did
+    from backlot.routers import google
+
+    later = int(google.time.time()) + 10
+    with monkeypatch.context() as m:
+        m.setattr(google.time, "time", lambda: later)
+        wc.post(
+            f"/docs/v1/documents/{did}:batchUpdate",
+            headers=h,
+            json={"requests": [{"insertText": {"location": {"index": 1}, "text": "x"}}]},
+        ).raise_for_status()
+    view = {"fields": "viewedByMe,viewedByMeTime,modifiedTime"}
+    assert wc.get(f"/drive/v3/files/{did}", headers=h, params=view).json() == {
+        "viewedByMe": True,
+        "viewedByMeTime": synth.rfc3339(later),
+        "modifiedTime": synth.rfc3339(later),
     }
     # a Doc with content is past version 1 whatever its two times say
     notes = f"/drive/v3/files/{served_id('google_drive', 'wr-doc')}"

@@ -21201,6 +21201,34 @@ _NESTED_MARKDOWN_ROWS = [
         "markdown",
         "1. aa\n\n## \n\n   cc",
     ),
+    # an empty paragraph under no item right after a section break stops the next going under the
+    # item
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [{"insertSectionBreak": {"location": {"index": 3}, "sectionType": "NEXT_PAGE"}}],
+            [_bullets(1, 2)],
+            [_indent(6, 8, 36, 36)],
+        ],
+        "markdown",
+        "* aa\n\nbb",
+    ),
+    # one not right after a section break does not
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\ncc")],
+            [{"insertSectionBreak": {"location": {"index": 3}, "sectionType": "NEXT_PAGE"}}],
+            [_bullets(1, 2)],
+            [_ins(5, "xx")],
+            [_indent(5, 7, 36, 36), _indent(9, 11, 36, 36)],
+        ],
+        "markdown",
+        "* aa\n\n  xx\n\n  cc",
+    ),
     # a footnote's content is written as a body is: a paragraph under its item, its lines after the
     # first four spaces further in
     (

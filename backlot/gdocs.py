@@ -3904,9 +3904,10 @@ class _Nesting:
     - A paragraph indented `s` points (`indentStart`) goes under the first `s // 36` items the
       last list holds open (`_Items.markers`), or all of them when fewer, its first line
       indented by their markers as `_list_marker` indents an item under them. It goes under none
-      once a paragraph with text went under none since the last item. An empty paragraph under
-      none did not stop the next one going under the items, and on 2026-11-10 neither did an empty
-      quote, `> `, or an empty heading, `## `.
+      once a paragraph with text went under none since the last item, or an empty one right after
+      a section break. An empty paragraph under none did not stop the next one going under the
+      items, and on 2026-11-10 neither did an empty quote, `> `, or an empty heading, `## `; an
+      empty one right after a section break did.
     - It is a quote, a `> ` for each 30 points it stands past the items it goes under, when that
       is a whole multiple of 30: under no item 30 points were `> ` and 60 `> > `, where 29, 31, 65
       and 66 were nothing; under one item 66 points were `> `.
@@ -3918,7 +3919,7 @@ class _Nesting:
     def __init__(self, items: _Items):
         self.items = items
         self.list_id: str | None = None  # the list of the last item
-        self.closed = False  # whether a paragraph with text went under no item since the last item
+        self.closed = False  # whether paragraphs go under no item until the next item
         # whether the first block after the last item joined it, with no table or section break
         # since
         self.tight: bool | None = None
@@ -3973,7 +3974,7 @@ class _Nesting:
         if kind == "item":
             self.list_id, self.closed, self.tight = paragraph["bullet"]["listId"], False, None
         else:
-            self.closed = self.closed or kind == "alone"
+            self.closed = self.closed or kind == "alone" or kind == "empty" and broken
             if kind == "table" or broken:
                 self.tight = False
             elif self.tight is None:

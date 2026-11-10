@@ -26,9 +26,10 @@ A module in ``_ENVELOPES`` provides:
   (:func:`backlot.errors.s3.method_not_allowed`). A vendor without it keeps the shared envelope.
 - ``head_content_length(request, status_code)``, optional — whether a `HEAD` declares the length
   of the body its `GET` would have carried. The whole REQUEST, because Google's answer turns on
-  whether the GET was a download, which the path does not say. A vendor without it declares the
-  length, as GitHub is measured to; Atlassian, Google and Notion implement it, and which of their
-  answers declare one is :func:`backlot.errors.atlassian.head_content_length`,
+  whether the GET was a download and Notion's on the `Accept` the root was asked with, neither of
+  which the path says. A vendor without it declares the length, as GitHub is measured to;
+  Atlassian, Google and Notion implement it, and which of their answers declare one is
+  :func:`backlot.errors.atlassian.head_content_length`,
   :func:`backlot.errors.google.head_content_length` and
   :func:`backlot.errors.notion.head_content_length`.
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON

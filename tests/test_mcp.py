@@ -945,7 +945,8 @@ def _graph_user(text):
 
 def _google_not_found(text):
     """Whether the answer is the 404, and whether it has an ``errors`` list."""
-    return "NOT_FOUND" in text, "'errors'" in text
+    error = json.loads(text.partition(" - ")[2])["error"]
+    return error["status"] == "NOT_FOUND", "errors" in error
 
 
 # One call each through its source's bridge: (id, source, tool, arguments, read, is_error, answer),

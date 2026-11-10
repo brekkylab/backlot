@@ -20856,6 +20856,7 @@ _NESTED_MARKDOWN_ROWS = [
         "markdown",
         "1. aa  \n   bb\n\ncc",
     ),
+    # `bb` goes under the item and joins it with its first line 36 PT in, not 18
     (
         "wr-text",
         [

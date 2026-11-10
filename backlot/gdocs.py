@@ -3324,19 +3324,19 @@ def _anchored(style: dict, anchors: dict[str, str]) -> dict:
 
 
 class _Nesting:
-    """Where a Markdown export writes each paragraph in no list after list items, and what joins
-    each block to the one before. Measured 2026-11-09 after numbered, bulleted and checkbox items
-    nested up to three levels deep, on paragraphs indented up to 150 points:
+    """Where a Markdown export writes each paragraph in no list, and what joins each block to the
+    one before. Measured 2026-11-09 on paragraphs indented up to 150 points, after no item and
+    after numbered, bulleted and checkbox items nested up to three levels deep:
 
     - A paragraph indented `s` points (`indentStart`) goes under the first `s // 36` items the
       last list holds open (`_Items.markers`), or all of them when fewer, its first line
       indented by their markers as `_list_marker` indents an item under them. It goes under none
-      once a paragraph with text went under none since the last item. Measured 2026-11-10, an
-      empty paragraph did not count, written as a quote `> ` or as a heading `## ` alike.
+      once a paragraph with text went under none since the last item. An empty paragraph did not
+      count on 2026-11-10, whether a quote, `> `, or a heading, `## `.
     - It is a quote, a `> ` for each 30 points it stands past the items it goes under, when that
       is a whole multiple of 30: under no item 30 points were `> ` and 60 `> > `, where 29, 31, 65
       and 66 were nothing; under one item 66 points were `> `.
-    - A line after a vertical tab in a paragraph under items starts with its `> `s and then the
+    - A line after a vertical tab in it starts with its `> `s and, when it is under items, the
       width of every item open, those it is not under among them.
     """
 

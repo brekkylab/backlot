@@ -976,8 +976,8 @@ _LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 def _operator(f: dict):
     """The operator filter `f` reads as: an index (`_OPERATORS_BY_INDEX`) as the operator at that
-    position, and a name trimmed (`_TRIM`). A filter with no operator or a null one, which real
-    refuses (`_unreadable_member`), reads as EQ."""
+    position, and a name trimmed (`_TRIM`). A filter with no operator or a null one reads as EQ;
+    real refuses it, which this router does not model (`_unreadable_member`)."""
     op = f.get("operator")
     if isinstance(op, int):
         return _OPERATORS_BY_INDEX[op]
@@ -1375,7 +1375,10 @@ def _refuse_a_search_shape(
     `filters`: after that object's other values and ahead of a later element, `query` or
     non-standard token. A null `filterGroups`, `filters` or `query`, and a group with no `filters`,
     are read. With a `before` from `_non_standard_number`, a value from there on is left to the
-    token."""
+    token. A key the body repeats is read by its last value, the one `json.loads` keeps, where real
+    reads its values in order and names the first it cannot read
+    (`{"filterGroups": "x", "filterGroups": []}` names the `"x"`, measured 2026-11-10); this router
+    does not model that."""
 
     def named(position, response):
         if before is not None and position >= before:
@@ -2051,8 +2054,8 @@ async def search_objects(object_type: str, request: Request):
     before, refused = _non_standard_number(raw)
     at, unreadable = _refuse_a_search_shape(raw, body, before)
     # Before `after`: real refuses the operator first when the cursor is one it can parse but
-    # names no record (measured 2026-10-06), and a `filterGroups` it cannot read ahead of such a
-    # cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
+    # names no record (measured 2026-10-06), and a `filterGroups` or `query` it cannot read ahead of
+    # such a cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
     # refusal names, that value when it starts ahead of the non-standard token.
     refused = _refuse_an_operator(raw, body, before if at is None else at) or unreadable or refused
     if refused is not None:

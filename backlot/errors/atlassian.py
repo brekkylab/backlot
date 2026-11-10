@@ -482,13 +482,15 @@ def cql_missing_closing_parenthesis() -> AtlassianError:
     )
 
 
-def cql_unknown_function(name: str) -> AtlassianError:
-    """The CQL search's refusal of a function call real does not have, the name as sent, with
-    `()`: `label = foo()` answered `Unable to find query function 'foo()'`, and `label = Foo()`
-    the same with `Foo()` (Confluence Cloud, 2026-10-31). Where it falls among the search's
-    other refusals is ``routers.atlassian._cql_refusal``'s."""
+def cql_unknown_function(call: str) -> AtlassianError:
+    """The CQL search's refusal of a function call real does not have, the call as sent:
+    `label = foo()` answered `Unable to find query function 'foo()'`, and `label = Foo()` the
+    same with `Foo()` (Confluence Cloud, 2026-10-31); `label = foo(x)` the same with `foo(x)`,
+    `label = foo(x, y)` with `foo(x,y)`, `label = foo("a b")` with `foo("a b")` and
+    `label = foo(select)` with `foo(select)` (Confluence Cloud, 2026-11-05). Where it falls
+    among the search's other refusals is ``routers.atlassian._cql_refusal``'s."""
     return _service_refusal(
-        400, "api.BadRequestException", f"Unable to find query function '{name}()'"
+        400, "api.BadRequestException", f"Unable to find query function '{call}'"
     )
 
 
@@ -513,6 +515,14 @@ def cql_invalid_relative_date(value: str) -> AtlassianError:
     2026-10-31). Where it falls among the search's other refusals is
     ``routers.atlassian._cql_cannot_run``'s."""
     return _service_refusal(400, "api.BadRequestException", f"Invalid relative date : {value}")
+
+
+def cql_invalid_size_limit(value: str) -> AtlassianError:
+    """The CQL search's refusal of a `recentlyViewedContent` count real cannot read as a size limit,
+    the count as sent: `id in recentlyViewedContent(x)` answered `Invalid size limit : x`, and
+    `id in recentlyViewedContent(1.5)` the same with `1.5` (Confluence Cloud, 2026-11-05). Where it
+    falls among the search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
 
 
 def cql_escaped_end_quote(text: str) -> AtlassianError:
@@ -2543,7 +2553,8 @@ _GATEWAY_PATCH_PAGE = (
 #: (:func:`jaxrs_media_type_refusal`): the status and its reason in the title and in `<h1>` and
 #: nothing else, on `text/html;charset=utf-8` with `Content-Language: en`. Measured 2026-10-12 for
 #: the 400 and 2026-10-13 for the 403, 405, 406 and 415 (:func:`confluence_refusal`), 431 to 457
-#: bytes.
+#: bytes, and 2026-10-31 for the 401, 437 bytes, which a Basic value Tomcat cannot read answers
+#: (:func:`backlot.routers.atlassian.refuse_an_unreadable_confluence_basic`).
 _TOMCAT_PAGE = (
     '<!doctype html><html lang="en"><head><title>HTTP Status {status} – {phrase}</title>'
     '<style type="text/css">body {{font-family:Tahoma,Arial,sans-serif;}} h1, h2, h3, b '
@@ -2554,6 +2565,7 @@ _TOMCAT_PAGE = (
 )
 _TOMCAT_PHRASES = {
     400: "Bad Request",
+    401: "Unauthorized",
     403: "Forbidden",
     405: "Method Not Allowed",
     406: "Not Acceptable",
@@ -2562,7 +2574,7 @@ _TOMCAT_PHRASES = {
 
 
 def tomcat_page(status: int) -> str:
-    """Tomcat's page for ``status``, one of the five it was measured for."""
+    """Tomcat's page for ``status``, one of the six it was measured for."""
     return _TOMCAT_PAGE.format(status=status, phrase=_TOMCAT_PHRASES[status])
 
 

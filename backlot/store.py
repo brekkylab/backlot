@@ -2850,23 +2850,23 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
     ).fetchone()
 
 
-def gdrive_created_times(conn, file_id: str | None = None) -> dict[str, int]:
-    """Creation seconds for files created during this server's lifetime. An overlay row alone
-    is insufficient: a write to a corpus file can copy it there, so exclude every corpus id.
-    Creation stores its own second and later edits preserve it; no extra view state is inferred
-    from a file's current modification time."""
+def gdrive_created_ids(conn, file_id: str | None = None) -> set[str]:
+    """Ids created during this server's lifetime, restricted to ``file_id`` when given.
+    An overlay row alone is insufficient: a write to a corpus file can copy it there, so
+    exclude every corpus id."""
     from backlot import overlay
 
     if not overlay.is_attached(conn):
-        return {}
+        return set()
     where, args = (" AND f.id = ?", [file_id]) if file_id is not None else ("", [])
-    return dict(
-        conn.execute(
-            "SELECT f.id, f.created_ts FROM ov.gdrive_files f "
+    return {
+        row[0]
+        for row in conn.execute(
+            "SELECT f.id FROM ov.gdrive_files f "
             "WHERE NOT EXISTS (SELECT 1 FROM main.gdrive_files m WHERE m.id = f.id)" + where,
             args,
         )
-    )
+    }
 
 
 def gdrive_sheets_for(conn, file_id: str) -> list[sqlite3.Row]:

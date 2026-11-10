@@ -2900,7 +2900,7 @@ def _drive_modified(row) -> int:
     return row["updated_ts"] if row["updated_ts"] is not None else _drive_created(row) + 3600
 
 
-def _drive_facts(row, viewed: int | None = None) -> dict:
+def _drive_facts(row, viewed: bool = False) -> dict:
     """The values `q` clauses are evaluated against, taken from a stored row."""
     modified = _drive_modified(row)
     return {
@@ -2912,7 +2912,7 @@ def _drive_facts(row, viewed: int | None = None) -> dict:
         "modified": synth.rfc3339(modified),
         "created": synth.rfc3339(_drive_created(row)),
         "owner_email": row["author_email"],
-        "viewed": synth.rfc3339(viewed) if viewed is not None else None,
+        "viewed": synth.rfc3339(modified) if viewed else None,
         # real Drive keys `in owners` on the owner's email; Backlot also accepts the owner
         # display name, since that's the only owner identifier some callers have.
         "owners": {(row["author_email"] or "").lower(), (row["owner_display"] or "").lower()},
@@ -3809,15 +3809,13 @@ def _drive_q_rows(conn, query, container: str | None, ids, me: str | None, hits:
             trash=trash,
         )
     ids_by_value = _drive_q_fulltext_ids(hits)
-    created = store.gdrive_created_times(conn)
+    created = store.gdrive_created_ids(conn)
     return [
         r
         for r in candidates
         if _drive_q_eval(
             query,
-            _drive_facts(
-                r, created.get(r["id"]) if _drive_owned_by(r["author_email"], me) else None
-            ),
+            _drive_facts(r, r["id"] in created and _drive_owned_by(r["author_email"], me)),
             me,
             ids_by_value,
         )
@@ -5168,9 +5166,13 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         shared = bool(store.gdrive_shared(conn, [row["id"]]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
     owned = _drive_owned_by(author, me)
-    # Sheets/Docs creation marks the creator as having viewed the file, at its creation-time
-    # modifiedTime (measured 2026-10-29). Editing a corpus file does not create a view.
-    viewed = store.gdrive_created_times(conn, row["id"]).get(row["id"]) if owned else None
+    # Creation marks the creator as having viewed the file (measured 2026-10-29). A reviewer
+    # reported Workspace measurements on 2026-11-09: after the creator's Sheets values update,
+    # Sheets title update and Docs batch update, view time followed modifiedTime. Drive showed
+    # the values update after 150–180 seconds; this server exposes its writes immediately.
+    # Corpus edits remain unviewed. Sheets title and Drive rename write routes are not served;
+    # the latter was reported to differ, so it would need separately tracked view state.
+    viewed = owned and bool(store.gdrive_created_ids(conn, row["id"]))
     f = {
         "kind": "drive#file",
         "id": row["id"],
@@ -5185,8 +5187,8 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         "explicitlyTrashed": bool(row["trashed"]),
         "starred": False,
         "shared": bool(shared),
-        "viewedByMe": viewed is not None,
-        **({"viewedByMeTime": synth.rfc3339(viewed)} if viewed is not None else {}),
+        "viewedByMe": viewed,
+        **({"viewedByMeTime": synth.rfc3339(modified)} if viewed else {}),
         "ownedByMe": owned,
         **_modified_by_me(author, me, modified),
         **_shared_with_me_time(author, me, created),

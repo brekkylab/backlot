@@ -5867,10 +5867,11 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 
     rows = [
         *((path, admin_h) for path in _routes(keys)),
-        # the 401 for a Basic value Confluence cannot read
+        # the 401 for a Basic value Confluence cannot read, on `search` as elsewhere
         # (``errors.atlassian.head_content_length``)
         ("/atlassian/wiki/rest/api/space", {"Authorization": "Basic !!!"}),
         ("/atlassian/wiki/rest/api/user/current", {"Authorization": "Basic !!!"}),
+        ("/atlassian/wiki/rest/api/search?cql=type%3Dpage", {"Authorization": "Basic !!!"}),
         ("/atlassian/wiki/rest/api/space/NOPESUCH", admin_h),
         ("/atlassian/rest/api/3/issue/NOPE-1", admin_h),
         # slashed spellings, answered as the slash-free ones
@@ -5891,8 +5892,7 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
         assert head.headers["content-type"] == got.headers["content-type"], path
         search = path.startswith("/atlassian/wiki/rest/api/search")
         confluence_200 = "/wiki/" in path and got.status_code == 200 and not search
-        confluence_401 = "/wiki/" in path and got.status_code == 401
-        if confluence_200 or confluence_401 or ("/wiki/" not in path and got.status_code == 401):
+        if confluence_200 or got.status_code == 401:
             assert head.headers["content-length"] == str(len(got.content)), path
         else:
             assert "content-length" not in head.headers, path

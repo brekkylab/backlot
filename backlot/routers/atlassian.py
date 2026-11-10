@@ -2937,6 +2937,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         expandable.pop("body")
         body = {}
         for name in body_named:
+            # A representation real serves carries more than `value` and `representation`:
             # `storage` adds `embeddedContent: []` and an `_expandable` naming the content, and
             # the other three this server renders add an `_expandable` of four names (Confluence
             # Cloud: `storage` and `export_view` on 2026-11-03, `view` and `atlas_doc_format` on

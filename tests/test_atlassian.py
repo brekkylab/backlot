@@ -8230,6 +8230,26 @@ _SPRING_CHARSET = [
     ("GET", "/wiki/rest/api/space/ENG/nope", _EMPTY_CHARSET, None, 500),
     ("GET", "/wiki/rest/api", _EMPTY_CHARSET, None, 500),
     ("GET", "/wiki/rest/", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/user/nope", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/group/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/label/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/1", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/2/x", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/nope", _EMPTY_CHARSET, None, 500),
+    # the v2 API
+    ("GET", "/wiki/api/v2/spaces", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/api/v2/spaces", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/api/v2/pages", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/api/v2/pages", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/api/v2/spaces", _EMPTY_CHARSET, "admin", 500),
+    # plugin mounts under `/wiki/rest/`
+    ("GET", "/wiki/rest/atlassian-connect/1/nope", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/atlassian-connect/latest/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/prototype/1/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/applinks/1.0/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/atlassian-connect/1/", _EMPTY_CHARSET, None, 400),
     # the header twice: a blank value left out, the others read joined
     ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
     ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
@@ -8275,6 +8295,34 @@ def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, 
 
 def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
     assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
+
+
+def test_confluence_illegal_charset_distinguishes_v2_unserved_and_plugin_mounts(client, admin_h):
+    """The empty 500 Confluence answers an unnameable charset at the v2 API and at unserved Spring
+    resources (``user``, ``group``, ``label``), and Tomcat's 400 page at plugin mounts
+    (``backlot.routers.atlassian.refuse_a_spring_confluence_charset`` dates the measurement)."""
+    headers = {"Content-Type": _EMPTY_CHARSET}
+    for method, path in (
+        ("GET", "/wiki/api/v2/spaces"),
+        ("POST", "/wiki/api/v2/pages"),
+        ("GET", "/wiki/rest/api/user/nope"),
+        ("OPTIONS", "/wiki/rest/api/group/nope"),
+        ("GET", "/wiki/rest/api/label/nope"),
+    ):
+        body = b"x" if method == "POST" else None
+        r = sent_as(client, method, f"/atlassian{path}", headers, content=body)
+        assert (r.status_code, r.content, r.headers.get("content-type")) == (500, b"", None)
+
+    for path in (
+        "/wiki/rest/atlassian-connect/1/nope",
+        "/wiki/rest/atlassian-connect/latest/x",
+        "/wiki/rest/prototype/1/x",
+        "/wiki/rest/applinks/1.0/x",
+    ):
+        r = sent_as(client, "GET", f"/atlassian{path}", headers)
+        assert r.status_code == 400
+        assert r.text == errors_atlassian.tomcat_page(400)
+        assert r.headers["content-type"] == errors_atlassian.TOMCAT_MEDIA_TYPE
 
 
 @pytest.mark.parametrize(

@@ -4641,8 +4641,12 @@ _UNMATCHED_METHODS = [m for m in errors_atlassian.SERVED_METHODS if m != "HEAD"]
 #: `search/nope`, `settings/nope`, `audit/nope` and a first segment no resource claims
 #: (`nopesuchroute`, `nope/deeper/still`) are the JAX-RS 404. The split is which Java service owns
 #: the prefix, not whether the resource exists — a space key no site has is the page too — so the
-#: two families Backlot serves are named here and everything else takes the API's own 404.
-_CONFLUENCE_HTML_RESOURCES = ("space", "content")
+#: families Spring owns are named here and everything else takes the API's own 404.
+_CONFLUENCE_HTML_RESOURCES = ("space", "content", "user", "group", "label")
+
+#: A Confluence REST plugin mount under `/wiki/rest/`: the plugin's name followed by `1`, `1.0` or
+#: `latest` and a slash, and not the name alone or with `2`, measured 2026-10-31.
+_CONFLUENCE_PLUGIN_MOUNT = re.compile(r"^/wiki/rest/(?!api/)[^/]+/(?:1(?:\.0)?|latest)/")
 
 unmatched_router = APIRouter(prefix="/atlassian", include_in_schema=False)
 
@@ -5102,9 +5106,10 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     (``errors.atlassian.refuse_a_confluence_charset``) wherever its Spring application answers the
     path, or None. That is each path an operation is published at (the baseline's and
     :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT`), whichever method reaches it (`OPTIONS` and the 405s
-    among them), and the product's page under `/wiki/rest/` (:func:`_confluence_serves_html`).
-    Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`, :data:`_CONFLUENCE_JAXRS_GETS` and
-    its 404) answer the header with Tomcat's 400 page instead, and a Basic value Tomcat cannot read
+    among them), the v2 API (:samp:`/wiki/api/v2/{}`), and the product's page under `/wiki/rest/`
+    (:func:`_confluence_serves_html`). Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`,
+    :data:`_CONFLUENCE_JAXRS_GETS`, plugin mounts :data:`_CONFLUENCE_PLUGIN_MOUNT` and its 404)
+    answer the header with Tomcat's 400 page instead, and a Basic value Tomcat cannot read
     is left alone, since real answers it with Tomcat's 401 first.
 
     Measured on Confluence Cloud on 2026-10-31 with `text/plain;charset=` and no credential: of the
@@ -5121,12 +5126,13 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     # with its trailing slash, which the routed path has lost: `/wiki/rest/api/` is Jersey's 404
     # where `/wiki/rest/api` is the page
     sent = _vendor_path(_echoed_path(request))
-    if not sent.startswith("/wiki/rest/"):
+    if not (sent.startswith("/wiki/rest/") or sent.startswith("/wiki/api/v2/")):
         return None
     if _is(_CONFLUENCE_JAXRS, None, vendor_path) or _is(_CONFLUENCE_JAXRS_GETS, None, vendor_path):
         return None
     spring = (
-        _is(_CONFLUENCE_PUBLISHED, None, vendor_path)
+        sent.startswith("/wiki/api/v2/")
+        or _is(_CONFLUENCE_PUBLISHED, None, vendor_path)
         or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, None, vendor_path)
         or _confluence_serves_html(sent)
     )
@@ -5366,10 +5372,13 @@ def _wants_json(request: Request) -> bool:
 def _confluence_serves_html(vendor_path: str) -> bool:
     """Whether real answers this unmatched Confluence path with the product's page.
 
-    Anything under `/wiki` that is not under `/wiki/rest/api/` is the page (`/wiki/rest/nope`,
-    `/wiki/nope`, and `/wiki/rest/api` itself, where `/wiki/rest/api/` with the slash is the API's
-    404). Under the API mount it is the page only below one of :data:`_CONFLUENCE_HTML_RESOURCES`.
+    Anything under `/wiki` that is not under `/wiki/rest/api/` and is not a plugin mount
+    (:data:`_CONFLUENCE_PLUGIN_MOUNT`) is the page (`/wiki/rest/nope`, `/wiki/nope`, and
+    `/wiki/rest/api` itself, where `/wiki/rest/api/` with the slash is the API's 404). Under the
+    API mount it is the page only below one of :data:`_CONFLUENCE_HTML_RESOURCES`.
     """
+    if _CONFLUENCE_PLUGIN_MOUNT.match(vendor_path):
+        return False
     api = f"{errors_atlassian.WIKI[len(errors_atlassian.PREFIX) :]}/rest/api"
     if not vendor_path.startswith(f"{api}/"):
         return True

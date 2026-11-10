@@ -482,13 +482,15 @@ def cql_missing_closing_parenthesis() -> AtlassianError:
     )
 
 
-def cql_unknown_function(name: str) -> AtlassianError:
-    """The CQL search's refusal of a function call real does not have, the name as sent, with
-    `()`: `label = foo()` answered `Unable to find query function 'foo()'`, and `label = Foo()`
-    the same with `Foo()` (Confluence Cloud, 2026-10-31). Where it falls among the search's
-    other refusals is ``routers.atlassian._cql_refusal``'s."""
+def cql_unknown_function(call: str) -> AtlassianError:
+    """The CQL search's refusal of a function call real does not have, the call as sent:
+    `label = foo()` answered `Unable to find query function 'foo()'`, and `label = Foo()` the
+    same with `Foo()` (Confluence Cloud, 2026-10-31); `label = foo(x)` the same with `foo(x)`,
+    `label = foo(x, y)` with `foo(x,y)`, `label = foo("a b")` with `foo("a b")` and
+    `label = foo(select)` with `foo(select)` (Confluence Cloud, 2026-11-05). Where it falls
+    among the search's other refusals is ``routers.atlassian._cql_refusal``'s."""
     return _service_refusal(
-        400, "api.BadRequestException", f"Unable to find query function '{name}()'"
+        400, "api.BadRequestException", f"Unable to find query function '{call}'"
     )
 
 
@@ -513,6 +515,14 @@ def cql_invalid_relative_date(value: str) -> AtlassianError:
     2026-10-31). Where it falls among the search's other refusals is
     ``routers.atlassian._cql_cannot_run``'s."""
     return _service_refusal(400, "api.BadRequestException", f"Invalid relative date : {value}")
+
+
+def cql_invalid_size_limit(value: str) -> AtlassianError:
+    """The CQL search's refusal of a `recentlyViewedContent` count real cannot read as a size limit,
+    the count as sent: `id in recentlyViewedContent(x)` answered `Invalid size limit : x`, and
+    `id in recentlyViewedContent(1.5)` the same with `1.5` (Confluence Cloud, 2026-11-05). Where it
+    falls among the search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
 
 
 def cql_escaped_end_quote(text: str) -> AtlassianError:

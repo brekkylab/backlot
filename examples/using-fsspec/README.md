@@ -77,9 +77,9 @@ reads are ACL-scoped by the credential you pass, exactly as against the real API
   from the parent listing, and answering the repo root for every ref makes `ls("src")` report
   `src/src` and `src/config` and a walk recurse until it runs out of stack.
 
-- **Everything else Backlot serves** — Slack, Gmail, Notion, Jira, Confluence, Linear, HubSpot,
-  Fireflies — has no fsspec implementation at all, from anyone. They are not filesystem-shaped, and
-  fsspec's registry has no entry for them. Read those through their own SDKs
+- **Everything else Backlot serves** — Slack, Gmail, Microsoft Teams, Notion, Jira, Confluence,
+  Linear, HubSpot, Fireflies — has no fsspec implementation at all, from anyone. They are not
+  filesystem-shaped, and fsspec's registry has no entry for them. Read those through their own SDKs
   ([`examples/using-official-sdk/`](../using-official-sdk/)) or LlamaIndex
   ([`examples/using-llamaindex-readers/`](../using-llamaindex-readers/)).
 

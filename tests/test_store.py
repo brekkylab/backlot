@@ -14,6 +14,7 @@ covered by test_overlay.py.
 """
 
 import json
+import re
 import sqlite3
 
 import pytest
@@ -957,9 +958,21 @@ def test_connect_rw_busy_timeout(tmp_path):
         c.close()
 
 
-def test_connect_rw_fresh_db_still_works(tmp_path):
+def test_connect_rw_fresh_db_still_works(tmp_path, monkeypatch):
+    """The schema runs inside one transaction, the one the comment in `connect_rw` asks for."""
+    statements: list[str] = []
+    connect = sqlite3.connect
+
+    def traced(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced)
     conn = store.connect_rw(tmp_path / "fresh.sqlite")
     try:
+        assert not conn.in_transaction
+        assert _outside_a_transaction(statements) == []
         cols = {r[1] for r in conn.execute("PRAGMA table_info(github_items)")}
         assert {"path", "changed_paths"} <= cols
         ccols = {r[1] for r in conn.execute("PRAGMA table_info(github_comments)")}
@@ -1669,6 +1682,62 @@ def test_connect_ro_tuning(sample_settings):
         assert d.execute("PRAGMA mmap_size").fetchone()[0] == 0
     finally:
         d.close()
+
+
+def _outside_a_transaction(statements: list[str]) -> list[str]:
+    """The statements of a trace that ran outside any transaction or savepoint, other than reads
+    and pragmas: each of those was a transaction, and a durable write, of its own."""
+    loose = []
+    depth = 0
+    for text in statements:
+        words = re.sub(r"(--[^\n]*\n?)+", "", text).strip().rstrip(";").split()
+        if not words:
+            continue
+        head = words[0].upper()
+        if head in ("BEGIN", "SAVEPOINT"):
+            depth += 1
+        elif head in ("COMMIT", "END") or (head == "ROLLBACK" and len(words) == 1):
+            depth = 0
+        elif head == "RELEASE":
+            depth -= 1
+        elif head == "ROLLBACK":
+            pass  # ROLLBACK TO a savepoint keeps the transaction open
+        elif depth == 0 and head not in ("SELECT", "PRAGMA"):
+            loose.append(" ".join(words))
+    return loose
+
+
+def test_build_fts_builds_each_source_in_one_transaction(tmp_path):
+    """Each source's DROP, CREATE and INSERT run inside one transaction, and the FTS5 probe
+    `build_fts` starts with leaves no table behind."""
+    conn = store.connect_rw(tmp_path / "fresh.sqlite")
+    try:
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        assert store.build_fts(conn)
+        assert not conn.in_transaction
+        assert _outside_a_transaction(statements) == []
+        assert not conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = '_fts_probe'"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def test_the_fts5_probe_raises_the_error_that_rolled_its_transaction_back(tmp_path):
+    """SQLite answers an interrupted statement by rolling the whole transaction back, the probe's
+    savepoint with it, and the probe raises that interruption. The progress handler interrupts
+    whichever statement the trace callback last saw start, when that is the probe's CREATE."""
+    conn = store.connect_rw(tmp_path / "fresh.sqlite")
+    try:
+        creating = [False]
+        conn.set_trace_callback(lambda sql: creating.append(sql.startswith("CREATE VIRTUAL")))
+        conn.set_progress_handler(lambda: creating[-1], 1)
+        with pytest.raises(sqlite3.OperationalError, match="^interrupted$"):
+            store._fts5_ok(conn)
+        assert not conn.in_transaction
+    finally:
+        conn.close()
 
 
 # --- incremental FTS indexing --------------------------------------------------

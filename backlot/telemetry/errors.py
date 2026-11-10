@@ -26,12 +26,15 @@ failure:
 
 Backlot's own failure is an exception raised instead of an answer, or a field error the GraphQL
 engine answers at 200 and marks (``backlot.graphql.engine.Result.raised``). The rules read whether
-the failure is Backlot's own, the status, the baseline's support state, the error code and the
-``x-ratelimit-remaining`` header, so a code no rule names is classed by its status. A 501 from an
-operation Backlot serves is the vendor's own answer (Google's ``notImplemented``), so it is
-``client``, and so is a 505, S3's front door's answer to a target holding a space
-(``backlot.request_target._s3``), and each 5xx in ``_ANSWERED_5XX``, a vendor's answer to a wrong
-request.
+the failure is Backlot's own, the status, the baseline's support state, the error code, the
+``x-ratelimit-remaining`` header and the route's ``answered_5xx`` mark, so a code no rule names is
+classed by its status and that mark. A 501 from an operation Backlot serves is the vendor's own
+answer (Google's ``notImplemented``), so it is ``client``, and so is a 505, S3's front door's answer
+to a target holding a space (``backlot.request_target._s3``), and each 5xx in ``_ANSWERED_5XX``, a
+vendor's answer to a wrong request. A route can say the same of a 5xx it answers by setting
+``answered_5xx`` on the request's state, which the telemetry middleware reads: Atlassian's charset,
+sort and write failures, and Jersey's for a character past ASCII in ``Accept`` and for the 404 it
+cannot write.
 """
 
 from __future__ import annotations
@@ -90,6 +93,10 @@ _CONFLUENCE = [
         r"Could not parse cql : |Expecting a value for operator |Missing closing parenthesis near "
         r"|Unrecognised clause at : ",
         "invalid_cql",
+    ),
+    (
+        r"java\.lang\.ArrayIndexOutOfBoundsException: Index \d+ out of bounds for length 128",
+        "jaxrs_out_of_bounds",
     ),
     (r"^Unauthorized$", "unauthenticated"),
     (r"^null for uri: ", "no_endpoint"),
@@ -198,10 +205,17 @@ _ANSWERED_5XX = frozenset({("fireflies", "INTERNAL_SERVER_ERROR")})
 
 
 def error_class(
-    source: str, support: str, status: int, code: str, spent: bool, raised: bool = False
+    source: str,
+    support: str,
+    status: int,
+    code: str,
+    spent: bool,
+    raised: bool = False,
+    answered: bool = False,
 ) -> str:
     """The class of a failed call. ``spent`` is whether it answered ``x-ratelimit-remaining: 0``,
-    ``raised`` whether the failure is Backlot's own, as the module docstring has it."""
+    ``raised`` whether the failure is Backlot's own and ``answered`` whether the route marks the
+    answer a vendor's own 5xx to a wrong request, as the module docstring has it."""
     if raised:
         return "internal"
     if support in ("missing", "refused") or code == "unsupported_filter":
@@ -210,6 +224,11 @@ def error_class(
         return "rate_limit"
     if status in (401, 403) or (source, code) in _AUTH:
         return "auth"
-    if status >= 500 and status not in (501, 505) and (source, code) not in _ANSWERED_5XX:
+    if (
+        status >= 500
+        and status not in (501, 505)
+        and (source, code) not in _ANSWERED_5XX
+        and not answered
+    ):
         return "internal"
     return "client"

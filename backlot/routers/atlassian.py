@@ -278,9 +278,9 @@ def _jira_caller(request: Request) -> Caller:
     Jira does not refuse an unresolvable credential on the routes served here: it processes the
     request as an anonymous caller, and says so in ``X-Seraph-LoginReason`` (added for every
     ``/atlassian/rest`` answer in ``backlot.main``). Measured against ecosystem.atlassian.net and
-    brekkylab.atlassian.net on 2026-09-04 with a failed ``email:api_token`` pair, with an empty
-    password, with a value that is not base64, with an unknown scheme and with no header: each one
-    answers `project/search` 200, a bounded `search/jql` 200, and `issue/{key}` 404. Only
+    a site with no public project on 2026-09-04 with a failed ``email:api_token`` pair, with an
+    empty password, with a value that is not base64, with an unknown scheme and with no header: each
+    one answers `project/search` 200, a bounded `search/jql` 200, and `issue/{key}` 404. Only
     ``GET /rest/api/3/myself``, which Backlot does not serve, answers 401.
     """
     return auth.atlassian_caller(request)
@@ -460,13 +460,13 @@ def _reachable_projects(conn, ids) -> list:
     rather than per project, so there is nothing else to read "can browse this project" off.
 
     Measured for the ANONYMOUS caller, on 2026-09-04: `project/search` answers 200 with an empty
-    `values` on a site whose projects are all private (brekkylab.atlassian.net) and with the
-    public ones on a site that has them (ecosystem.atlassian.net). The same rule is applied to a
-    scoped caller, which is NOT measured — real Jira lists a project by its browse permission, and
-    a project can carry one while showing the caller no issue, so a listing there can hold a
-    project this one drops. Measuring it needs two accounts and a per-project permission scheme on
-    a live site. What the rule does rule out is the unfiltered listing, which handed every project
-    to a caller who can open nothing in any of them.
+    `values` on a site whose projects are all private and with the public ones on a site that has
+    them (ecosystem.atlassian.net). The same rule is applied to a scoped caller, which is NOT
+    measured — real Jira lists a project by its browse permission, and a project can carry one while
+    showing the caller no issue, so a listing there can hold a project this one drops. Measuring it
+    needs two accounts and a per-project permission scheme on a live site. What the rule does rule
+    out is the unfiltered listing, which handed every project to a caller who can open nothing in
+    any of them.
     """
     rows = store.list_containers(conn, "jira")
     if ids is None:
@@ -1775,7 +1775,7 @@ def _require_space(request: Request, conn, key: str) -> str:
 
 
 # The thirteen keys real names under `_expandable` on a space, in real's own order. Measured on
-# brekkylab.atlassian.net, 2026-09-16, on a global space and two personal ones, which agreed: four
+# Confluence Cloud, 2026-09-16, on a global space and two personal ones, which agreed: four
 # of the keys carry a path and nine are the empty string. `homepage` is one of the four there, and
 # is empty here — a corpus names no home page for a space, and a space without one is not something
 # the measurement could produce, so the empty string is this server's gap rather than a value real
@@ -1802,7 +1802,7 @@ def _space_permissions(request: Request, conn, container: str) -> list[dict]:
     """The space permission roster, as `?expand=permissions` answers it.
 
     One entry per GRANT, which is real's unit: of the 120 entries on the space measured
-    (brekkylab.atlassian.net, 2026-09-17) 81 carry a subject and every one of those is a single
+    (Confluence Cloud, 2026-09-17) 81 carry a subject and every one of those is a single
     user, while the other 39 carry no `subjects` key at all. So the roster's length tracks grants
     rather than membership, and `permissions[i].subjects.user.results[0]` names one principal. A
     `group` or `org` grant is an entry with no `subjects` here for the same reason real leaves those
@@ -1840,7 +1840,7 @@ def _space_permissions(request: Request, conn, container: str) -> list[dict]:
 def _space_description(container: str, subs: set[str]) -> dict:
     """A space description, as the sub-properties in ``subs`` select it.
 
-    Measured on brekkylab.atlassian.net, 2026-09-17: the bare `expand=description` carries NO value,
+    Measured on Confluence Cloud, 2026-09-17: the bare `expand=description` carries NO value,
     only `{"_expandable": {"view": "", "plain": ""}}`. The value arrives for `description.plain` or
     `description.view`, each leaving the other spelling in a nested `_expandable`, and asking for
     both leaves no `_expandable` at all. A client that reads `description.plain.value` off the bare
@@ -1888,7 +1888,7 @@ def _space(request: Request, conn, container: str, expand: str, *, listed: bool)
     # A term names its property before the first dot and its sub-property after: real answers
     # `expand=description.plain` and `expand=permissions.bogus` with the property expanded, and
     # ignores a term naming no property (`descriptions`, `bogus`) rather than refusing it. Measured
-    # on brekkylab.atlassian.net, 2026-09-17, on `space/{key}`.
+    # on Confluence Cloud, 2026-09-17, on `space/{key}`.
     wanted: dict[str, set[str]] = {}
     for term in (expand or "").split(","):
         head, _, sub = term.strip().partition(".")
@@ -2725,7 +2725,7 @@ def _conf_user(email: str, site: str) -> dict:
 
     One helper for all of them because real sends ONE object: the space roster's subject, a page's
     `version.by` and `history.createdBy`, and a comment's own two are the same thirteen keys in the
-    same order, measured on brekkylab.atlassian.net, 2026-09-17, on `space/{key}?expand=permissions`,
+    same order, measured on Confluence Cloud, 2026-09-17, on `space/{key}?expand=permissions`,
     `content?expand=version` and `content/{id}/child/comment?expand=version,history`.
 
     Four of the thirteen are constants on the site measured and a corpus states nothing that could
@@ -3004,7 +3004,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
     return page
 
 
-# What real converts a query parameter with. Measured on brekkylab.atlassian.net, 2026-09-14,
+# What real converts a query parameter with. Measured on Atlassian Cloud, 2026-09-14,
 # against Jira's comment read and Confluence's space listing, which agree on every case:
 #
 #   ?maxResults=          the default, as though unsent -- an empty value is not a failure

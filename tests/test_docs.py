@@ -160,6 +160,30 @@ def test_no_prose_states_the_bundled_corpus_size():
     )
 
 
+# An Atlassian Cloud site's own hostname: a Jira or Confluence call made with an API token goes to
+# it, so it is the tenant name a measurement comment ends up carrying. Two are nobody's tenant and
+# stay: Atlassian's public ecosystem.atlassian.net, which any reader can call, and
+# backlot.atlassian.net, the fake host `examples/using-mcp-with-agents/atlassian.py` maps to a
+# Backlot server.
+_ATLASSIAN_SITE_RE = re.compile(r"\b([a-z0-9][a-z0-9-]*)\.atlassian\.net\b", re.I)
+_NOT_A_TENANT = frozenset({"ecosystem", "backlot"})
+
+
+def test_no_prose_names_the_site_a_measurement_was_taken_on():
+    """`.json` as well, because a fidelity baseline's `note` records a measurement too."""
+    offenders = []
+    for path, rel in _scanned_files(".md", ".py", ".json"):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            for match in _ATLASSIAN_SITE_RE.finditer(line):
+                if match.group(1).lower() not in _NOT_A_TENANT:
+                    offenders.append(f"{rel}:{lineno}: {match.group(0)!r}")
+    assert not offenders, (
+        "these name the Atlassian site a measurement was taken on — name the product and the date "
+        "instead, and describe the site's setup where it decides the answer:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 def test_generated_docs_are_current():
     """`scripts/gen_docs.py --check` is the single gate on docs/supported-sources.md going stale.
 

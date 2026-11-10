@@ -2851,17 +2851,17 @@ def gdrive_by_id(conn, file_id, visible_ids=None) -> sqlite3.Row | None:
 
 
 def gdrive_created_ids(conn, file_id: str | None = None) -> set[str]:
-    """Ids created during this server's lifetime, restricted to ``file_id`` when given.
-    An overlay row alone is insufficient: a write to a corpus file can copy it there, so
-    exclude every corpus id."""
+    """The ids of the files created during this server's lifetime, of ``file_id`` alone when it
+    is given. An overlay row alone does not say so: a write to a corpus file copies it there, so
+    every corpus id is left out."""
     from backlot import overlay
 
     if not overlay.is_attached(conn):
         return set()
     where, args = (" AND f.id = ?", [file_id]) if file_id is not None else ("", [])
     return {
-        row[0]
-        for row in conn.execute(
+        r[0]
+        for r in conn.execute(
             "SELECT f.id FROM ov.gdrive_files f "
             "WHERE NOT EXISTS (SELECT 1 FROM main.gdrive_files m WHERE m.id = f.id)" + where,
             args,

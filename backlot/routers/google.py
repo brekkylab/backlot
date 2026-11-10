@@ -2731,8 +2731,8 @@ def _drive_q_eval(node, f: dict, me: str | None, fulltext: dict[str, set[str]]) 
         # Nothing here is starred, as every file's `starred` says.
         return (value == "false") == (op == "=")
     if field == "viewedByMeTime":
-        # Real matches an unviewed file only under `!=` (2026-10-20). For a created editor
-        # file, `_drive_file` records the creator's view measurement.
+        # Real matched a file its caller never viewed only under `!=` (2026-10-20); a viewed
+        # one, here a file its caller created, compares its view time.
         viewed = f.get("viewed")
         return _drive_q_compare(op, viewed, value) if viewed is not None else op == "!="
     if field == "sharedWithMe":
@@ -5166,12 +5166,10 @@ def _drive_file(conn, row, shared: bool | None = None, me: str | None = None) ->
         shared = bool(store.gdrive_shared(conn, [row["id"]]))
     ext = row["title"].rsplit(".", 1)[-1] if (native is None and "." in row["title"]) else None
     owned = _drive_owned_by(author, me)
-    # Creation marks the creator as having viewed the file (measured 2026-10-29). A reviewer
-    # reported Workspace measurements on 2026-11-09: after the creator's Sheets values update,
-    # Sheets title update and Docs batch update, view time followed modifiedTime. Drive showed
-    # the values update after 150–180 seconds; this server exposes its writes immediately.
-    # Corpus edits remain unviewed. Sheets title and Drive rename write routes are not served;
-    # the latter was reported to differ, so it would need separately tracked view state.
+    # The creator of a file made through Sheets or Docs has viewed it, last at its modifiedTime:
+    # on real the two times were equal after `create` (2026-10-29) and after the creator's
+    # `values.update` and `documents.batchUpdate` (2026-11-09, Drive showing the `values.update`
+    # 150 to 180 seconds on). A write to a corpus file is not counted as a view here.
     viewed = owned and bool(store.gdrive_created_ids(conn, row["id"]))
     f = {
         "kind": "drive#file",

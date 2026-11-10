@@ -612,15 +612,19 @@ async def _canonical_path_repo(request: Request) -> None:
 #: `/repos/{}/{}/dependabot/runner-settings`: on 2026-11-06 each was 404 `Not Found` with no
 #: credential, with `Bearer nope`, `Digest x` and a bearer after a tab, and with a token, an
 #: administrator's among them for the `GET`, where `GET …/dependabot/secrets` on the same public
-#: repository was 401 for the first two. Three parameters may hold a `/`: `contents/{path}`,
-#: `git/refs/{ref}` and `zipball/{ref}` take several segments (`{+}`), where the other operations with
-#: path parameters route one segment only (measured 2026-10-14).
+#: repository was 401 for the first two. `{path}` on `contents` and `{ref}` on `git/refs`,
+#: `git/matching-refs`, `tarball` and `zipball` take several segments (`{+}`): `Bearer nope` was 401
+#: "Bad credentials" for a value of two segments as for one (2026-10-14 on `PUT …/contents`,
+#: `DELETE …/git/refs` and `zipball`, 2026-11-10 on the other four), where `DELETE …/hooks/1/2`,
+#: `DELETE /gists/1/2` and `DELETE …/releases/1/2` were the 404.
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip",
     "DELETE /repos/{}/{}/contents/{}": "DELETE /repos/{}/{}/contents/{+}",
     "PUT /repos/{}/{}/contents/{}": "PUT /repos/{}/{}/contents/{+}",
     "DELETE /repos/{}/{}/git/refs/{}": "DELETE /repos/{}/{}/git/refs/{+}",
     "PATCH /repos/{}/{}/git/refs/{}": "PATCH /repos/{}/{}/git/refs/{+}",
+    "GET /repos/{}/{}/git/matching-refs/{}": "GET /repos/{}/{}/git/matching-refs/{+}",
+    "GET /repos/{}/{}/tarball/{}": "GET /repos/{}/{}/tarball/{+}",
     "GET /repos/{}/{}/zipball/{}": "GET /repos/{}/{}/zipball/{+}",
 }
 _NOT_ROUTED = frozenset(

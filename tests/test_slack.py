@@ -4188,6 +4188,9 @@ def test_slack_answers_each_published_method_no_route_serves(client):
     dates the measurement): with no credential and a bogus one, for a `GET` and a `POST`."""
     credentials = (("none", {}), ("bogus", {"Authorization": "Bearer xoxb-not-a-real-token"}))
     got, expected = {}, {}
+    assert {"admin.analytics.slackbot.skills", "admin.analytics.slackbot.tools"} <= set(
+        published.missing_operations("slack")
+    )
     for name in sorted(published.missing_operations("slack")):
         answers = _PUBLISHED_ANSWERS.get(name, ("not_authed", "invalid_auth"))
         for verb in ("GET", "POST"):

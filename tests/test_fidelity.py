@@ -702,6 +702,19 @@ def test_every_comparison_ships_a_baseline(tmp_path):
         baseline = Baseline.load(baseline_path(name))
         assert baseline.source == name
         assert baseline.endpoints == comparison.endpoints, name
+        if name == "linear":
+            # Measured 2026-11-10: introspection hides these nine fields yet a query selecting them
+            # answers 200, and lists `Document.workspaceAccess`, which Backlot does not serve.
+            hidden = {
+                "Document": ["contentState", "cycle", "parentDocument", "subDocumentSortOrder"]
+                + ["summary", "team"],
+                "ProjectStatus": ["inheritedFrom", "team", "teamId"],
+            }
+            for type_name, fields in hidden.items():
+                for field in fields:
+                    entry = baseline.acknowledged[f"extra_field:{type_name}.{field}"]
+                    assert entry.note, (type_name, field)
+            assert baseline.acknowledged["missing_field:Document.workspaceAccess"].note
         # Written back from what it loaded, it is the same file: a spelling `--update-baseline`
         # writes differently from the shipped one would churn the next run's diff.
         out = tmp_path / f"{name}.json"

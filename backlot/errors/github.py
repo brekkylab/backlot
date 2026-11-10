@@ -113,6 +113,19 @@ def owns(path: str) -> bool:
 #: What real's JSON responses declare, 200 and error alike, on every GitHub route measured but one.
 JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 
+#: The 159-byte JSON body api.github.com's Varnish front answers for a broken escape in the path
+#: with no `Authorization` (``backlot.main.refuse_a_broken_escape_in_a_github_path``). Measured in
+#: #1181 on 2026-10-31 (UTC) and re-measured on 2026-11-10 (UTC) over raw HTTP/1.1 on TLS, each
+#: path cache-busted: `Content-Type: application/json; charset=utf-8`, `Content-Length: 159`, the
+#: body ending with a newline and two spaces after the closing brace, and no further newline. A
+#: `HEAD` carries the same length and no body. The five `x-ratelimit-*` headers are absent; a
+#: second request on the same connection is answered.
+INVALID_REQUEST = (
+    b'{\n    "documentation_url": "https://developer.github.com/v3/",\n'
+    b'    "message": "You have sent an invalid request. '
+    b'Please do not send this request again."\n  }\n  '
+)
+
 #: The statuses the code search backend answers itself, and so without the charset. Its 400 is
 #: text/plain and never a JSON body; the 401 and the 405 this server answers on the path are the
 #: gateway's kind and keep the charset.

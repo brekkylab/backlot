@@ -1544,7 +1544,7 @@ async def report_failed_jira_login(request: Request, call_next):
     every answer it gives — the 200s included, which is why this is middleware rather than
     something a refusal path could carry. The header is keyed on the username alone, and
     Confluence sends it on nothing. Measured against ecosystem.atlassian.net and
-    brekkylab.atlassian.net on 2026-09-04.
+    a site with no public project on 2026-09-04.
     """
     response = await call_next(request)
     # the path once the slash rewrite inside this has run

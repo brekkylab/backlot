@@ -12,6 +12,7 @@ import logging
 import re
 import sys
 import threading
+import urllib.parse
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -1219,6 +1220,69 @@ async def resolve_github_id_paths(request: Request, call_next):
     if canonical is not None:
         request.scope["path"] = canonical
         request.scope["raw_path"] = canonical.encode()
+    return await call_next(request)
+
+
+_ESCAPED_SLASH = re.compile(r"%2[Ff]")
+_ESCAPED_PERCENT_SLASH = re.compile(r"%252[Ff]", re.I)
+
+
+def _github_routed_path(scope: Scope) -> str:
+    raw = scope.get("raw_path") or scope["path"].encode()
+    text = raw.decode("latin-1")
+    text = _ESCAPED_PERCENT_SLASH.sub(lambda m: "%25252" + m.group(0)[4:], text)
+    text = _ESCAPED_SLASH.sub(lambda m: "%252" + m.group(0)[2:], text)
+    path = urllib.parse.unquote(text)
+
+    if "/contents/" in path:
+        prefix, _, rest = path.partition("/contents/")
+        rest = _ESCAPED_SLASH.sub("/", rest)
+        path = f"{prefix}/contents/{rest}"
+
+    def _read_leading_int(m: re.Match) -> str:
+        prefix = m.group(1)
+        seg = m.group(2)
+        rest = m.group(3)
+        digits_match = re.match(r"^(\d+)", seg)
+        if digits_match:
+            return prefix + digits_match.group(1) + rest
+        return prefix + seg + rest
+
+    return re.sub(
+        r"(/issues/comments/|/pulls/comments/|/issues/|/pulls/|/pull/)([^/]*(?:%2[Ff]|%252[Ff])[^/]*)(/|$)",
+        _read_leading_int,
+        path,
+        flags=re.I,
+    )
+
+
+def _a_github_path_holding_an_escaped_slash(scope: Scope) -> bool:
+    raw = scope.get("raw_path") or b""
+    path = _url_path(scope)
+    return _at_or_under(path, ("/github",)) and (
+        bool(re.search(rb"%2[Ff]|%252[Ff]", raw)) or bool(re.search(r"%2[Ff]|%252[Ff]", path))
+    )
+
+
+@_middleware(_a_github_path_holding_an_escaped_slash)
+async def route_a_github_path_the_way_github_does(request: Request, call_next):
+    """Route a `/github` request whose path holds an escaped slash as real routes it: the `%2F`
+    stays in the segment it is in, rather than splitting it as the server's decoded path does.
+
+    Measured on 2026-11-02 against api.github.com: `repos/{owner}/{repo}%2Fissues%2F{number}` is
+    the repository's 404, where splitting on `%2F` would reach the issue at 200; and on the routes
+    that read an issue, pull or comment number (`issues/{number}%2F1`, `issues/{number}%2F`,
+    `issues/{number}%2Fx`, `issues/{number}%252F1`, `issues/{number}%2F1/comments`,
+    `pulls/{number}%2F1`), the segment stays in that position and real reads its leading integer,
+    answering 200, where splitting on `%2F` was a path no route matches. An `issues/x%2F1` whose
+    segment has no leading integer keeps the route's 404.
+
+    Registered after :func:`resolve_github_id_paths`, which makes it the outer of the two, so an
+    id-keyed path is routed with its `%2F` intact before the id is resolved to its login-keyed
+    spelling.
+    """
+    routed = _github_routed_path(request.scope)
+    request.scope["path"] = routed
     return await call_next(request)
 
 

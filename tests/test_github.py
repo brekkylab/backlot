@@ -2629,6 +2629,51 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     assert answers == dict.fromkeys(numbers, (404, unknown.content)) | {"4301 digits": long}
 
 
+def test_github_escaped_slash_in_path_stays_in_its_segment(gh_client, gh_admin_h, gh_org):
+    """An escaped slash (`%2F` or `%2f`) in a `/github` path stays in its segment rather than
+    splitting it (``backlot.main.route_a_github_path_the_way_github_does`` dates the measurement):
+    `repos/{owner}/{repo}%2Fissues%2F{number}` is the repository's 404 `#get-a-repository`, not the
+    issue at 200; on `issues/{number}%2F1`, `issues/{number}%2F`, `issues/{number}%2Fx` and
+    `issues/{number}%252F1` real reads the segment's leading integer and answers 200 with the issue,
+    its `url` ending `/issues/{number}`; `issues/{number}%2F1/comments` is 200 with comments, and
+    `pulls/{number}%2F1` is 200 with the pull. An `issues/x%2F1` with no leading integer is the
+    issue route's 404 `#get-an-issue`.
+    """
+    c, _ = gh_client
+    issue_num = synth.github_number("gh-issue-1")
+    pr_num = synth.github_number("gh-pr-1")
+    base = f"/github/repos/{gh_org}/gateway"
+
+    # %2F in a repo segment stays in the repo name: 404 #get-a-repository
+    r = c.get(f"{base}%2Fissues%2F{issue_num}", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json()["documentation_url"].endswith("repos/repos#get-a-repository")
+
+    # %2F in an issue or pull number segment reads the leading integer: 200
+    for path in (
+        f"{base}/issues/{issue_num}%2F1",
+        f"{base}/issues/{issue_num}%2F",
+        f"{base}/issues/{issue_num}%2Fx",
+        f"{base}/issues/{issue_num}%252F1",
+    ):
+        r = c.get(path, headers=gh_admin_h)
+        assert r.status_code == 200
+        assert r.json()["number"] == issue_num
+        assert r.json()["url"].endswith(f"/issues/{issue_num}")
+
+    r = c.get(f"{base}/issues/{issue_num}%2F1/comments", headers=gh_admin_h)
+    assert r.status_code == 200
+
+    r = c.get(f"{base}/pulls/{pr_num}%2F1", headers=gh_admin_h)
+    assert r.status_code == 200
+    assert r.json()["number"] == pr_num
+
+    # A segment without a leading integer is the issue route's 404 #get-an-issue
+    r = c.get(f"{base}/issues/x%2F1", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json()["documentation_url"].endswith("issues/issues#get-an-issue")
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which
@@ -4809,7 +4854,7 @@ _LONG_TARGET_ROWS = [
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "admin", "path"),
     *(
         ("GET", "/repos/{org}/gateway/issues/" + escape * 100 + "{pad}", "path", n, "admin", a)
-        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9")
+        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9", "%2F", "%2f")
         for n, a in ((4_096, 404), (4_097, "path"))
     ),
     ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),

@@ -1931,6 +1931,53 @@ async def refuse_a_broken_escape_in_a_github_query(request: Request, call_next):
     )
 
 
+def _a_broken_escape_after_github_rate_limit(raw_path: bytes) -> bool:
+    """Whether ``raw_path``, after `/github`, starts `/rate_limit`, whatever follows in that
+    segment, and holds a `%` two hex digits do not follow."""
+    own = raw_path.removeprefix(b"/github")
+    return own.startswith(b"/rate_limit") and request_target.breaks_an_escape(own)
+
+
+@_middleware(
+    lambda scope: (
+        _at_or_under(_url_path(scope), ("/github",))
+        and request_target.breaks_an_escape(scope["raw_path"])
+        and not any(name == b"authorization" for name, _ in scope["headers"])
+    )
+)
+async def refuse_a_broken_escape_in_a_github_path(request: Request, call_next):
+    """Answer a `/github` request whose path holds a `%` two hex digits do not follow, and which
+    sent no `Authorization`, with the front end's 400, ahead of the route's 404 or 401. The body
+    is the 159-byte JSON ``errors.github.INVALID_REQUEST``, `application/json; charset=utf-8`,
+    with a request id and none of the five `x-ratelimit-*`. A path that starts `/rate_limit`
+    (:func:`_a_broken_escape_after_github_rate_limit`) is the fasthttp `text/plain` 404, 13 bytes
+    `404 Not Found`, also with a request id and none of the five. A `HEAD` is the `GET` with no body
+    and the same `content-length`. Any `Authorization` — a token that resolves, one that does not, a
+    value that names no credential or an empty one — is read on, to the route's own answer or the
+    JSON 404 of a path no route serves. The control `%25x` is a valid escape, so it never reaches
+    here.
+
+    Measured on api.github.com on 2026-10-31 and 2026-11-10 (UTC) over raw HTTP/1.1 on TLS, each
+    path cache-busted, with no `Authorization` and with `token …`, `Bearer …`, `nope`, `Digest x`,
+    `Basic eDp5` and an empty one. After the 400 and after the 404 a second request on the same
+    connection was answered, and two `GET /rate_limit`, one before three of them and one after, read
+    the same `used`. A `#` in the target and a raw byte stay the outer middlewares' answers, ahead
+    of this one, and on a path that does not start `/rate_limit` so does a target past the bound of
+    :func:`answer_a_github_request_target_past_its_bound`.
+
+    Registered after :func:`refuse_a_broken_escape_in_a_github_query` and before
+    :func:`put_a_request_id_on_github_answers`, so the answers carry a request id, and outside
+    :func:`report_github_rate_limit`, so they carry none of the five and are not counted.
+    ``tests/test_request_target.py`` holds the cases."""
+    if _a_broken_escape_after_github_rate_limit(request.scope["raw_path"]):
+        return PlainTextResponse("404 Not Found", status_code=404)
+    return Response(
+        errors.github.INVALID_REQUEST,
+        status_code=400,
+        headers={"Content-Type": errors.github.JSON_MEDIA_TYPE},
+    )
+
+
 @_middleware(lambda scope: _url_path(scope).startswith("/github"))
 async def put_a_request_id_on_github_answers(request: Request, call_next):
     """Put an `x-github-request-id` on every `/github` answer the API gives, as real does on each

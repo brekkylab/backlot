@@ -944,10 +944,28 @@ _OPERATORS = (
     "BETWEEN",
     "NEQ",
 )
-# Real reads "0" to "12" as a position in its own list of the operators: "6" is refused as BETWEEN
-# without a `highValue`, while "13" and "01" are refused as no operator at all (measured
-# 2026-10-06). That list's order is not modelled, so such a filter is served and matches nothing.
-_OPERATOR_INDEXES = frozenset(str(i) for i in range(len(_OPERATORS)))
+# The thirteen operators in the order real reads an index into them: an integer, or a string of
+# digits, from 0 to 12 is the operator at that position, and "13" and "01" are refused as names
+# (2026-10-06). Measured against api.hubapi.com on 2026-11-09 with each integer and no `value`: 9
+# and 10 answered HAS_PROPERTY's and NOT_HAS_PROPERTY's pages, 6 was refused as "6" is, as BETWEEN
+# without a `highValue` (2026-10-06), and each other index as "operator <name> requires a value",
+# or "values" for 7 and 8, naming the operator at its position. "9" answered 9's page.
+_OPERATORS_BY_INDEX = (
+    "EQ",
+    "NEQ",
+    "LT",
+    "LTE",
+    "GT",
+    "GTE",
+    "BETWEEN",
+    "IN",
+    "NOT_IN",
+    "HAS_PROPERTY",
+    "NOT_HAS_PROPERTY",
+    "CONTAINS_TOKEN",
+    "NOT_CONTAINS_TOKEN",
+)
+_OPERATOR_INDEXES = {str(i): name for i, name in enumerate(_OPERATORS_BY_INDEX)}
 # What Java's `String.trim` strips from both ends, which real does to an operator before reading
 # it: `EQ` after a space, a tab or a U+0001 still reads as `EQ`, after a U+00A0 or before a U+2003
 # it does not (measured 2026-10-06).
@@ -957,7 +975,14 @@ _LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 
 def _operator(f: dict):
-    return (f.get("operator") or "EQ").strip(_TRIM)
+    """The operator filter `f` reads as: an index (`_OPERATORS_BY_INDEX`) as the operator at that
+    position, and a name trimmed (`_TRIM`). A filter with no operator or a null one reads as EQ;
+    real refuses it, which this router does not model (`_unreadable_member`)."""
+    op = f.get("operator")
+    if isinstance(op, int):
+        return _OPERATORS_BY_INDEX[op]
+    op = (op or "EQ").strip(_TRIM)
+    return _OPERATOR_INDEXES.get(op, op)
 
 
 def _token_span(raw: bytes, path: tuple) -> tuple[str, int, int]:
@@ -1032,11 +1057,11 @@ def _non_standard_number(raw: bytes) -> tuple[tuple[int, int], JSONResponse] | t
     refuses the token wherever it stands, in a member it does not read and as the whole body too,
     names it with its sign, and gives the column just past it, in an envelope with no `category`. It
     reads the body in order and stops at the first value it cannot read, so a value
-    `_refuse_a_batch_read_shape` or `_refuse_an_operator` refuses is named instead when it starts
-    ahead of the token (`{"inputs":[5,NaN]}` names the `5`, `{"inputs":[NaN,5]}` the token); both
-    take the token's start as `before`. A byte that does not decode in the body's encoding stops
-    real too, with a 400 of its own that this router does not send, so only the text ahead of the
-    first such byte is scanned: a token there is named, and a body with none is left to the route.
+    `_refuse_a_batch_read_shape`, `_refuse_a_search_shape` or `_refuse_an_operator` refuses is named
+    instead when it starts ahead of the token (`{"inputs":[5,NaN]}` names the `5`,
+    `{"inputs":[NaN,5]}` the token). A byte that does not decode in the body's encoding stops real
+    too, with a 400 of its own that this router does not send, so only the text ahead of the first
+    such byte is scanned: a token there is named, and a body with none is left to the route.
     `json.loads` reads the three as floats, so without this the routes answer for a float there."""
     encoding = json.detect_encoding(raw)
     if encoding == "utf-8-sig":
@@ -1071,15 +1096,16 @@ def _ahead(raw: bytes, path: tuple, before: tuple[int, int] | None) -> bool:
 def _refuse_an_operator(
     raw: bytes, body: dict, before: tuple[int, int] | None = None
 ) -> JSONResponse | None:
-    """Real's 400 for the first filter, in body order, whose operator it cannot read, or None.
+    """Real's 400 for the first filter, in body order, whose operator is a string it cannot read, or
+    None.
 
     An operator that trims to nothing is named by its path in the body; one that trims to anything
-    but a name in `_OPERATORS` or an index into it is named by where it starts (`_token_at`). Real
-    reads the body in order and stops at the first operator of either kind, an unreadable one
-    included when the filter repeats `operator` with a readable one after it. It reads an integer
-    operator as an index too, answers a boolean, float, object or array operator with a different
-    400, and refuses a filter with no operator. This router models none of those cases. `before` is
-    where `_non_standard_number` found a token, and an operator from there on is left to it."""
+    but a name in `_OPERATORS` or an index (`_OPERATOR_INDEXES`) is named by where it starts
+    (`_token_at`). Real reads the body in order and stops at the first operator of either kind. It
+    stops there too when the filter repeats `operator` with a readable one after it, which this
+    router does not model. An operator that is not a string is `_unreadable_member`'s. An operator
+    from `before` on is left to what starts there: the token `_non_standard_number` found, or the
+    value `_refuse_a_search_shape` names."""
     groups = body.get("filterGroups")
     for i, group in enumerate(groups if isinstance(groups, list) else ()):
         if not isinstance(group, dict):
@@ -1095,17 +1121,8 @@ def _refuse_an_operator(
             if not _ahead(raw, path, before):
                 return None
             if op == "":
-                return _error(
-                    400,
-                    "Invalid input JSON: unable to deserialize field "
-                    f'"filterGroups[{i}].filters[{j}].operator". Invalid value: ',
-                )
-            line, column = _token_at(raw, path)
-            return _error(
-                400,
-                f"Invalid input JSON on line {line}, column {column}: "
-                f"Enum type must be one of: [{', '.join(_OPERATORS)}]",
-            )
+                return _unreadable_field(path)
+            return _invalid_at(raw, path, f"Enum type must be one of: [{', '.join(_OPERATORS)}]")
     return None
 
 
@@ -1121,28 +1138,44 @@ def _java_double(x: float) -> str:
     return f"{mantissa}E{int(exponent)}"
 
 
-def _not_a_list(value) -> str:
-    """Real's text for a batch/read member it reads as a list when the body holds something else
-    there, naming the JSON value it found."""
+def _json_kind(value) -> tuple[str, str]:
+    """The JSON value `value` as real's type-mismatch texts name it: its kind and its token."""
     if isinstance(value, bool):
-        kind, token = "Boolean", "VALUE_TRUE" if value else "VALUE_FALSE"
-    elif isinstance(value, int):
-        kind, token = "Integer", "VALUE_NUMBER_INT"
-    elif isinstance(value, float):
-        kind, token = "Floating-point", "VALUE_NUMBER_FLOAT"
-    elif isinstance(value, str):
-        kind, token = "String", "VALUE_STRING"
-    else:
-        kind, token = "Object", "START_OBJECT"
+        return "Boolean", "VALUE_TRUE" if value else "VALUE_FALSE"
+    if isinstance(value, int):
+        return "Integer", "VALUE_NUMBER_INT"
+    if isinstance(value, float):
+        return "Floating-point", "VALUE_NUMBER_FLOAT"
+    if isinstance(value, str):
+        return "String", "VALUE_STRING"
+    if isinstance(value, list):
+        return "Array", "START_ARRAY"
+    return "Object", "START_OBJECT"
+
+
+def _not_a_list(value) -> str:
+    """Real's text for a member it reads as a list when the body holds something else there."""
+    kind, token = _json_kind(value)
     return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
 
 
-def _not_an_input(item) -> str:
-    """Real's text for an element of `inputs` that is an array, a boolean or a number. For an
-    integer it names the narrowest of Java's int, long and BigInteger that holds the value."""
+def _mismatched(value) -> str:
+    """Real's text for an array or object where it reads a string, an array where it reads an
+    object, and a boolean, float, array or object where it reads an operator."""
+    kind, token = _json_kind(value)
+    return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.{token}`)"
+
+
+def _not_an_object(item) -> str:
+    """Real's text for a list element it reads as an object when the body holds a string, an array,
+    a boolean or a number there, and for a string `properties`, `propertiesWithHistory` or filter
+    `values`. A string is echoed trimmed (`_TRIM`); for an integer it names the narrowest of Java's
+    int, long and BigInteger that holds the value."""
     if isinstance(item, list):
-        return "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
-    if isinstance(item, bool):
+        return _mismatched(item)
+    if isinstance(item, str):
+        arg, shown = "String", f"String value ('{item.strip(_TRIM)}')"
+    elif isinstance(item, bool):
         arg, shown = "boolean/Boolean", f"boolean value ({str(item).lower()})"
     elif isinstance(item, float):
         arg, shown = "double/Double", f"Number value ({_java_double(item)})"
@@ -1158,9 +1191,51 @@ def _not_an_input(item) -> str:
     )
 
 
-def _invalid_at(raw: bytes, path: tuple, text: str) -> JSONResponse:
-    line, column = _token_at(raw, path)
+def _invalid(position: tuple[int, int], text: str) -> JSONResponse:
+    line, column = position
     return _error(400, f"Invalid input JSON on line {line}, column {column}: {text}")
+
+
+def _invalid_at(raw: bytes, path: tuple, text: str) -> JSONResponse:
+    return _invalid(_token_at(raw, path), text)
+
+
+def _field(path: tuple) -> str:
+    """The body path `path` as real names a field: `filterGroups[0].filters[1].operator`."""
+    return "".join(f"[{step}]" if isinstance(step, int) else f".{step}" for step in path)[1:]
+
+
+def _unreadable_field(path: tuple, value: str = "") -> JSONResponse:
+    """Real's 400 naming the field at `path` and echoing `value`, for a value there that it parses
+    and cannot take: a string that trims (`_TRIM`) to nothing, echoed as nothing, or an integer
+    operator in Java's int that indexes no operator (`_OPERATORS_BY_INDEX`), echoed as itself."""
+    text = f'unable to deserialize field "{_field(path)}". Invalid value: {value}'
+    return _error(400, "Invalid input JSON: " + text)
+
+
+def _past_int(raw: bytes, path: tuple) -> JSONResponse:
+    """Real's 400 for an integer at `path` outside Java's int where it reads an int, named just past
+    the integer, in an envelope with no `category`."""
+    text, start, end = _token_span(raw, path)
+    line, column = _position(text, end)
+    return JSONResponse(
+        status_code=400,
+        content={
+            "status": "error",
+            "message": f"Invalid input JSON on line {line}, column {column}: Numeric value "
+            f"({text[start:end]}) out of range of int (-2147483648 - 2147483647)",
+        },
+    )
+
+
+def _unbuildable(raw: bytes, path: tuple, item) -> tuple[tuple[int, int], JSONResponse]:
+    """Where the value at `path` starts, and real's 400 for it, for a list element that is not an
+    object, or for a string where real reads a list: a string that trims (`_TRIM`) to nothing is
+    named by its field (`_unreadable_field`), anything else where it starts (`_not_an_object`)."""
+    position = _token_at(raw, path)
+    if isinstance(item, str) and not item.strip(_TRIM):
+        return position, _unreadable_field(path)
+    return position, _invalid(position, _not_an_object(item))
 
 
 def _refuse_a_batch_read_shape(
@@ -1189,17 +1264,7 @@ def _refuse_a_batch_read_shape(
                 return None
             if key == "inputs" or not isinstance(value, str):
                 return _invalid_at(raw, (key,), _not_a_list(value))
-            if not value.strip(_TRIM):
-                return _error(
-                    400, f'Invalid input JSON: unable to deserialize field "{key}". Invalid value: '
-                )
-            return _invalid_at(
-                raw,
-                (key,),
-                "Cannot construct instance of  (although at least one Creator exists): no "
-                "String-argument constructor/factory method to deserialize from String value "
-                f"('{value.strip(_TRIM)}')",
-            )
+            return _unbuildable(raw, (key,), value)[1]
         for i, item in enumerate(value):
             path = (key, i)
             if key == "inputs":
@@ -1209,7 +1274,7 @@ def _refuse_a_batch_read_shape(
                 if not isinstance(item, (str, dict)):
                     if not _ahead(raw, path, before):
                         return None
-                    return _invalid_at(raw, path, _not_an_input(item))
+                    return _invalid_at(raw, path, _not_an_object(item))
                 if isinstance(item, str):
                     continue
                 if item.get("id") is None:
@@ -1230,13 +1295,7 @@ def _refuse_a_batch_read_shape(
             if isinstance(item, (dict, list)):
                 if not _ahead(raw, path, before):
                     return None
-                kind = "Object" if isinstance(item, dict) else "Array"
-                return _invalid_at(
-                    raw,
-                    path,
-                    f"Cannot deserialize value of type  from {kind} value "
-                    f"(token `JsonToken.START_{kind.upper()}`)",
-                )
+                return _invalid_at(raw, path, _mismatched(item))
     if before is None:
         for key in ("properties", "propertiesWithHistory"):
             if key in null_properties:
@@ -1250,6 +1309,162 @@ def _refuse_a_batch_read_shape(
                 content={"status": "error", "message": "Input IDs must be non-null."},
             )
     return None
+
+
+# The filter members real reads as text.
+_TEXT_MEMBERS = ("propertyName", "value", "highValue")
+
+
+def _unreadable_member(
+    raw: bytes, path: tuple, f: dict
+) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
+    """Where the first member of the filter `f` at `path`, in body order, that real cannot read
+    starts, and real's 400 for it, or `(None, None)`.
+
+    Measured against api.hubapi.com on 2026-11-09. Real refuses an array or object in a member of
+    `_TEXT_MEMBERS` (`_mismatched`), and reads a number or boolean there (`_scalars_as_text`). It
+    reads an integer `operator` from 0 to 12 as an index (`_operator`), refuses any other integer in
+    Java's int by its field (`_unreadable_field`) and one outside Java's int just past it
+    (`_past_int`), and refuses a boolean, float, array or object operator (`_mismatched`); a string
+    operator is `_refuse_an_operator`'s. It reads a list or a null `values`, refuses a string there
+    as `_unbuildable` does and any other value with `_not_a_list`, and refuses an array or object
+    element of the list (`_mismatched`). A member real does not read, `"x": []` among them, is
+    passed over.
+
+    Real also refuses, at the filter's closing brace, a filter with no `propertyName` or `operator`
+    or a null one, one whose operator needs a `value`, `values` or `highValue` it lacks, and one
+    with a `value` its operator takes none of, and it refuses a null element of `values` with a 400
+    of its own. This router models none of those."""
+
+    def refused(at: tuple, text: str):
+        position = _token_at(raw, at)
+        return position, _invalid(position, text)
+
+    for name, value in f.items():
+        at = path + (name,)
+        if name in _TEXT_MEMBERS and isinstance(value, (dict, list)):
+            return refused(at, _mismatched(value))
+        if name == "operator" and not isinstance(value, (str, type(None))):
+            if isinstance(value, (bool, float, dict, list)):
+                return refused(at, _mismatched(value))
+            if not 0 <= value < len(_OPERATORS_BY_INDEX):
+                in_int = -(2**31) <= value < 2**31
+                response = _unreadable_field(at, str(value)) if in_int else _past_int(raw, at)
+                return _token_at(raw, at), response
+        if name == "values" and value is not None:
+            if isinstance(value, str):
+                return _unbuildable(raw, at, value)
+            if not isinstance(value, list):
+                return refused(at, _not_a_list(value))
+            for k, item in enumerate(value):
+                if isinstance(item, (dict, list)):
+                    return refused(at + (k,), _mismatched(item))
+    return None, None
+
+
+def _refuse_a_search_shape(
+    raw: bytes, body: dict, before: tuple[int, int] | None = None
+) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
+    """Real's 400 for a search body it cannot read, with where the value it names starts, or
+    `(None, None)`. Measured against api.hubapi.com on 2026-10-01 and 2026-11-09: real reads the
+    body in order and stops at the first value it cannot read, naming where it starts: a
+    `filterGroups` or a group's `filters` that is neither null nor a list (`_not_a_list`), an
+    element of either that is not an object (`_unbuildable`), a filter member `_unreadable_member`
+    refuses, or a `query` that is an array or an object. A null element is named at the closing
+    brace of the object holding its list, the body's for `filterGroups` and the group's for
+    `filters`: after that object's other values and ahead of a later element, `query` or
+    non-standard token. A null `filterGroups`, `filters` or `query`, and a group with no `filters`,
+    are read. With a `before` from `_non_standard_number`, a value from there on is left to the
+    token. A key the body repeats is read by its last value, the one `json.loads` keeps, where real
+    reads its values in order and names the first it cannot read
+    (`{"filterGroups": "x", "filterGroups": []}` names the `"x"`, measured 2026-11-10); this router
+    does not model that."""
+
+    def named(position, response):
+        if before is not None and position >= before:
+            return None, None
+        return position, response
+
+    null_group = False
+    for key, value in body.items():
+        if key == "query":
+            if isinstance(value, (dict, list)):
+                position = _token_at(raw, (key,))
+                return named(position, _invalid(position, _mismatched(value)))
+            continue
+        if key != "filterGroups" or value is None:
+            continue
+        if not isinstance(value, list):
+            position = _token_at(raw, (key,))
+            return named(position, _invalid(position, _not_a_list(value)))
+        for i, group in enumerate(value):
+            if group is None:
+                null_group = True
+                continue
+            if not isinstance(group, dict):
+                return named(*_unbuildable(raw, (key, i), group))
+            filters = group.get("filters")
+            if filters is None:
+                continue
+            if not isinstance(filters, list):
+                position = _token_at(raw, (key, i, "filters"))
+                return named(position, _invalid(position, _not_a_list(filters)))
+            null_filter = False
+            for j, f in enumerate(filters):
+                if f is None:
+                    null_filter = True
+                    continue
+                path = (key, i, "filters", j)
+                position, response = (
+                    _unreadable_member(raw, path, f)
+                    if isinstance(f, dict)
+                    else _unbuildable(raw, path, f)
+                )
+                if response is not None:
+                    return named(position, response)
+            if null_filter:
+                position = _closing_at(raw, (key, i))
+                return named(position, _invalid(position, "filters element"))
+    if null_group:
+        position = _closing_at(raw, ())
+        return named(position, _invalid(position, "filterGroups element"))
+    return None, None
+
+
+def _scalars_as_text(raw: bytes, body: dict) -> dict:
+    """`body` with each number or boolean real reads as text spelt as the body spells it: `query`,
+    and in each filter `propertyName`, `value`, `highValue` and the elements of `values`. Measured
+    against api.hubapi.com on 2026-11-09, each body against the same body with the text in its
+    place: `5`, `1.5` and `true` in `query`, `value` and `values`, `1.50` in `query` and `values`,
+    and `5` and `true` in `highValue`, answered the page their text does, and `5` and `1.5` in
+    `propertyName` the 400 their text does, for a property the portal does not have. A number keeps
+    its spelling, as a number id in a batch/read body does in real's 207 (`_batch_read_id`). `body`
+    is one `_refuse_a_search_shape` has passed, so each of its groups and filters is an object."""
+    if not body:
+        # `json_body`'s answer for a body it could not read as an object: nothing to spell
+        return body
+    spelt = json.loads(raw, parse_int=str, parse_float=str)
+
+    def text(spelling):
+        return json.dumps(spelling) if isinstance(spelling, bool) else spelling
+
+    def filter_as_text(f: dict, sf: dict) -> dict:
+        f = {k: text(sf[k]) if k in _TEXT_MEMBERS else v for k, v in f.items()}
+        if isinstance(f.get("values"), list):
+            f["values"] = [text(s) for s in sf["values"]]
+        return f
+
+    out = dict(body)
+    if "query" in body:
+        out["query"] = text(spelt["query"])
+    if body.get("filterGroups"):
+        out["filterGroups"] = [
+            {**g, "filters": [filter_as_text(f, sf) for f, sf in zip(g["filters"], sg["filters"])]}
+            if g.get("filters")
+            else g
+            for g, sg in zip(body["filterGroups"], spelt["filterGroups"])
+        ]
+    return out
 
 
 def _hubspot_fold(value: str) -> str:
@@ -1835,12 +2050,17 @@ async def search_objects(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     body = await json_body(request)
-    before, refused = _non_standard_number(await request.body())
+    raw = await request.body()
+    before, refused = _non_standard_number(raw)
+    at, unreadable = _refuse_a_search_shape(raw, body, before)
     # Before `after`: real refuses the operator first when the cursor is one it can parse but
-    # names no record (measured 2026-10-06).
-    refused = _refuse_an_operator(await request.body(), body, before) or refused
+    # names no record (measured 2026-10-06), and a `filterGroups` or `query` it cannot read ahead of
+    # such a cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
+    # refusal names, that value when it starts ahead of the non-standard token.
+    refused = _refuse_an_operator(raw, body, before if at is None else at) or unreadable or refused
     if refused is not None:
         return refused
+    body = _scalars_as_text(raw, body)
     limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
     visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)

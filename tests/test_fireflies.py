@@ -1170,6 +1170,42 @@ def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, 
     assert ok.content.startswith(b'{"data":')
 
 
+def test_fireflies_email_filter_with_lone_surrogate_is_an_internal_error(client, admin_h):
+    """An email filter holding a lone surrogate draws real's INTERNAL_SERVER_ERROR at 200 rather
+    than invalid_arguments: measured against api.fireflies.ai on 2026-10-27 (UTC) for host_email,
+    organizer_email and participant_email."""
+    headers = {**admin_h, "Content-Type": "application/json"}
+    for field in ("host_email", "organizer_email", "participant_email"):
+        doc = f"query($x: String) {{ transcripts({field}: $x, limit: 2) {{ id }} }}"
+        body = json.dumps({"query": doc, "variables": {"x": "x\ud800@example.com"}}).encode()
+        r = client.post("/fireflies/graphql", content=body, headers=headers)
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload["data"] == {"transcripts": None}
+        err = payload["errors"][0]
+        assert err["code"] == "INTERNAL_SERVER_ERROR"
+        assert err["friendly"] is False
+        assert err["message"] == "Something unexpected happened. Please try again"
+        assert err["path"] == ["transcripts"]
+
+        # An address with U+FFFD in its place is the invalid_arguments field error
+        body_invalid = json.dumps(
+            {"query": doc, "variables": {"x": "x\ufffd@example.com"}}
+        ).encode()
+        r_invalid = client.post("/fireflies/graphql", content=body_invalid, headers=headers)
+        assert r_invalid.status_code == 200
+        err_invalid = r_invalid.json()["errors"][0]
+        assert err_invalid["code"] == "invalid_arguments"
+        assert err_invalid["friendly"] is True
+
+        # A valid address executes cleanly with no errors
+        body_ok = json.dumps({"query": doc, "variables": {"x": "x@example.com"}}).encode()
+        r_ok = client.post("/fireflies/graphql", content=body_ok, headers=headers)
+        assert r_ok.status_code == 200
+        assert r_ok.json()["data"] == {"transcripts": []}
+        assert "errors" not in r_ok.json()
+
+
 def test_fireflies_request_errors_are_400_with_no_data_key(client, admin_h):
     """The engine's request/field split: a malformed or invalid document is decided before
     execution, so the response carries no `data` entry at all."""

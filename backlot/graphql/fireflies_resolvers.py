@@ -413,6 +413,7 @@ _TLD = re.compile(
     "[a-zA-Z\u00a1-\u00a8\u00aa-\ud7ff\uf900-\ufdcf\ufdf0-\uffef]{2,}|[xX][nN][a-zA-Z0-9-]{2,}"
 )
 _LABEL = re.compile("[a-zA-Z0-9_\u00a1-\uffff-]+")
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def _is_email(value: str) -> bool:
@@ -520,6 +521,8 @@ def _validate_transcripts(arguments):
         value = arguments[key]
         if value is None:
             continue
+        if key.endswith("_email") and value and _SURROGATE.search(value):
+            raise _internal_error(arguments["info"].context)
         if name in _PLURAL:
             if held:
                 add(name, "exclusiveFields", f"{_EXCLUSIVE}, {name}.")

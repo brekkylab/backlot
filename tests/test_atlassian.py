@@ -8234,6 +8234,15 @@ _SPRING_CHARSET = [
     # where real does not fail the request
     ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
     ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    # a Basic value Tomcat cannot read is its 401 page where no operation answers
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/space/ZZNOPE/nope", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/api/v2/spaces", _EMPTY_CHARSET, "Basic !!!", 401),
     ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
     ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
@@ -8311,6 +8320,7 @@ _LICENSE = "/atlassian/rest/api/3/license/approximateLicenseCount"
 #: real's carried in its `<title>` and its `<h1>`.
 _TOMCAT_PAGES = {
     400: (435, "HTTP Status 400 – Bad Request"),
+    401: (437, "HTTP Status 401 – Unauthorized"),
     403: (431, "HTTP Status 403 – Forbidden"),
     405: (449, "HTTP Status 405 – Method Not Allowed"),
     406: (441, "HTTP Status 406 – Not Acceptable"),
@@ -8713,6 +8723,32 @@ _ACCEPT_ROWS = [
     + ({"deprecation": None, "warning": None},),
     ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
     + (None, {}),
+    # -- Confluence: a Basic value Tomcat cannot read is its 401 page where no operation answers,
+    # under any `Accept`, and the gateway's `PATCH` 405 comes ahead of it
+    (
+        "GET",
+        "/atlassian/wiki/rest/api/nosuch",
+        "unparseable-basic",
+        _HTML,
+        None,
+        401,
+        _TOMCAT,
+        "page",
+    )
+    + (
+        {
+            "content-language": "en",
+            "www-authenticate": 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"',
+        },
+    ),
+    ("OPTIONS", _SPACES, "unparseable-basic", _HTML, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("OPTIONS", _SPACES, "unparseable-basic", _JSON, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("GET", "/atlassian/wiki/api/v2/spaces", "unparseable-basic", None, None, 401, _TOMCAT)
+    + ("page", {"content-language": "en", "www-authenticate": _PRESENT}),
+    ("PATCH", "/atlassian/wiki/rest/api/nosuch", "unparseable-basic", None, None, 405)
+    + ("text/html", None, {"www-authenticate": None}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_LABELS}?prefix=bogus", "admin", _HTML, None, 406, _TOMCAT, "page", {}),

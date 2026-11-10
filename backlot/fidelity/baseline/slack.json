@@ -32,7 +32,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Measured against slack.com on 2026-11-10 by `POST` with a user token on a workspace that is not an Enterprise Grid organization: it answers `not_an_enterprise`, where `admin.analytics.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment belongs to an Enterprise organization, so a successful response shape rests on the reference alone; recorded as a gap on a maintainer's decision."
+      "note": "Measured against slack.com on 2026-11-10 by `POST` with a user token on a workspace that is not an Enterprise Grid organization: it answers `not_an_enterprise`, where `admin.analytics.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment belongs to an Enterprise organization, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.analytics.slackbot.tools",
@@ -40,7 +40,7 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap",
-      "note": "Measured against slack.com on 2026-11-10 by `POST` with a user token on a workspace that is not an Enterprise Grid organization: it answers `not_an_enterprise`, where `admin.analytics.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment belongs to an Enterprise organization, so a successful response shape rests on the reference alone; recorded as a gap on a maintainer's decision."
+      "note": "Measured against slack.com on 2026-11-10 by `POST` with a user token on a workspace that is not an Enterprise Grid organization: it answers `not_an_enterprise`, where `admin.analytics.nosuchthing`, a name Slack does not have, answers `unknown_method`. No credential in the environment belongs to an Enterprise organization, so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.apps.activities.list",

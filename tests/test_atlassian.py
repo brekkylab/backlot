@@ -64,10 +64,10 @@ def _basic(raw: str) -> dict[str, str]:
 
 FAILED_PAIR = _basic("nobody@example.com:wrongtoken")
 
-# Measured against ecosystem.atlassian.net (a site with public projects) and
-# brekkylab.atlassian.net (one without) on 2026-09-04, with `nobody@example.com:wrongtoken`,
-# with an empty password, with a value that is not base64, with an unknown scheme, and with no
-# Authorization header at all. Every shape below answered the same on both sites.
+# Measured against ecosystem.atlassian.net (a site with public projects) and a site with none on
+# 2026-09-04, with `nobody@example.com:wrongtoken`, with an empty password, with a value that is not
+# base64, with an unknown scheme, and with no Authorization header at all. Every shape below
+# answered the same on both sites.
 UNRESOLVABLE = [
     pytest.param(FAILED_PAIR, id="failed-pair"),
     pytest.param({}, id="no-credential"),
@@ -5598,7 +5598,7 @@ def test_jira_search_still_pages_on_a_token_it_issued(client, admin_h):
 def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow(
     client, admin_h, method, path
 ):
-    """Both requests measured on brekkylab.atlassian.net, 2026-09-16. The shape and what it costs a
+    """Both requests measured on Confluence Cloud, 2026-09-16. The shape and what it costs a
     client are in ``errors.atlassian.method_not_allowed``; this holds it on the wire, including the
     title naming the method that arrived."""
     key = client.get("/atlassian/wiki/rest/api/space", headers=admin_h).json()["results"][0]["key"]
@@ -5623,9 +5623,9 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
 _WRONG_METHODS = [
     (*row, slash)
     for row in [
-        # every row measured on brekkylab.atlassian.net, 2026-09-16, by sending a method the
-        # vendor defines on no route of that path; real's ORDER varies per response, so only
-        # the set is real's and the order below is `_JIRA_ALLOW`'s
+        # every row measured on Jira Cloud, 2026-09-16, by sending a method the vendor defines on no
+        # route of that path; real's ORDER varies per response, so only the set is real's and the
+        # order below is `_JIRA_ALLOW`'s
         ("post", "/rest/api/3/serverInfo", "GET"),
         ("put", "/rest/api/3/field", "GET, POST"),
         ("post", "/rest/api/3/issue/PAY-1", "GET, PUT, DELETE"),

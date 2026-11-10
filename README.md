@@ -1,4 +1,4 @@
-# Backlot
+# <picture><source media="(prefers-color-scheme: dark)" srcset="assets/icon/backlot-mark-dark-cropped.svg"><img alt="" src="assets/icon/backlot-mark-light-cropped.svg" height="23"></picture> Backlot
 
 [![GitHub stars](https://img.shields.io/github/stars/brekkylab/backlot?style=social&label=Star)](https://github.com/brekkylab/backlot)
 [![python](https://img.shields.io/pypi/pyversions/backlot)](https://pypi.org/project/backlot/)
@@ -11,9 +11,9 @@
 
 **Run enterprise SaaS APIs locally.**
 
-Backlot is a local emulator for Slack, Gmail, Google Drive, GitHub, Jira, Notion, S3 and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with **no vendor account**, **no OAuth approval**, **no secrets in CI** and **no network**.
+Backlot is a local emulator for Slack, Gmail, Google Drive, Microsoft Teams, GitHub, Jira, Notion, S3 and other enterprise APIs. It reproduces the response shapes, pagination, authentication, errors and per-document access controls an integration has to handle, over a deterministic corpus you control — so you build and test against the official vendor SDKs with **no vendor account**, **no OAuth approval**, **no secrets in CI** and **no network**.
 
-![Connecting Slack to an app, two ways, side by side. On the left, the real Slack API: create a workspace, register an app, add a bot user, pick OAuth scopes, register a redirect URL, install to the workspace — then wait on an admin to approve it, with still zero API calls made. On the right, Backlot: pip install, backlot serve, and one changed base URL, after which a conversations.history response comes back with the same fields, pagination and per-document ACLs. A day gone, against seconds.](assets/demo.gif)
+![Connecting Slack to an app, two ways, side by side. On the left, the real Slack API: create a workspace, register an app, add a bot user, pick OAuth scopes, register a redirect URL, install to the workspace — then wait on an admin to approve it, with still zero API calls made. On the right, Backlot: pip install backlot, backlot import --bundled, backlot serve, and one changed base URL, after which a conversations.history response comes back with the same fields, pagination and per-document ACLs. A day gone, against seconds. Then the same three commands with a different base URL for one source after another, Gmail, Google Drive, Microsoft Teams, GitHub and the rest, each answering a real request. Last, a write on the Slack base URL: chat.postMessage posts a message and conversations.history reads it back; then Backlot's own endpoints at the server root: /_meta/overlay reports what was written, /_meta/overlay/reset puts the corpus back, and the report is empty again.](assets/demo.gif)
 
 ## Try it in 60 seconds
 
@@ -52,6 +52,7 @@ This repo is its own plugin marketplace, so the [agent skill](skills/backlot/SKI
 ```bash
 claude plugin marketplace add brekkylab/backlot && claude plugin install backlot@brekkylab
 codex plugin marketplace add brekkylab/backlot && codex plugin add backlot@brekkylab
+npx skills add brekkylab/backlot --skill backlot   # any agent skills.sh installs into
 pip install "backlot[mcp]" && claude mcp add backlot -- backlot mcp   # every source as MCP tools
 ```
 
@@ -85,9 +86,9 @@ It emulates the documented subset of each API it supports, not every vendor endp
 | Service | Base path | Example, on the official SDK |
 |---|---|---|
 | Slack | `/slack/api` | [`slack.py`](examples/using-official-sdk/slack.py) |
-| Microsoft Teams | `/msgraph/v1.0` | [`msteams.py`](examples/using-official-sdk/msteams.py) |
 | Gmail | `/gmail/v1` | [`gmail.py`](examples/using-official-sdk/gmail.py) |
 | Google Drive (Docs, Sheets, Slides) | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | [`gdrive.py`](examples/using-official-sdk/gdrive.py) |
+| Microsoft Teams | `/msgraph/v1.0` | [`msteams.py`](examples/using-official-sdk/msteams.py) |
 | GitHub | `/github` | [`github.py`](examples/using-official-sdk/github.py) |
 | Jira | `/atlassian/rest/api` | [`jira.py`](examples/using-official-sdk/jira.py) |
 | Confluence | `/atlassian/wiki/rest/api` | [`confluence.py`](examples/using-official-sdk/confluence.py) |

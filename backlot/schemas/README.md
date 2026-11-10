@@ -6,9 +6,9 @@ truth** for the JSONL record that `backlot/importer/byo.py` accepts:
 | File | `source_type` | grouping-unit field |
 |---|---|---|
 | `slack.schema.json` | `slack` | `channel` |
-| `msteams.schema.json` | `msteams` | `channel` |
 | `gmail.schema.json` | `gmail` | `mailbox` |
 | `google_drive.schema.json` | `google_drive` | `folder` |
+| `msteams.schema.json` | `msteams` | `channel` |
 | `github.schema.json` | `github` | `repo` |
 | `jira.schema.json` | `jira` | `project` |
 | `confluence.schema.json` | `confluence` | `space` |

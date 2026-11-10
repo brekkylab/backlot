@@ -2427,6 +2427,124 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         child_j = c.get(f"{api}/content/{cid}", headers=h, params={"expand": "ancestors"}).json()
         assert [a["title"] for a in child_j["ancestors"]] == ["probe"]
         assert "ancestors" not in child_j["_expandable"]
+        # `_expandable`'s names, links and order: the bare read's twelve, a listing row's fifteen
+        # in the order real gives thirteen or more, and a search row's set, with `extensions` and
+        # empty `container`, `children` and `descendants`.
+        bare = c.get(f"{api}/content/{pid}", headers=h).json()
+        assert list(bare["_expandable"]) == [
+            "childTypes",
+            "container",
+            "schedulePublishInfo",
+            "metadata",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "restrictions",
+            "ancestors",
+            "body",
+            "draftVersion",
+            "descendants",
+        ]
+        assert bare["_expandable"]["children"] == f"/rest/api/content/{pid}/child"
+        assert bare["_expandable"]["restrictions"] == (
+            f"/rest/api/content/{pid}/restriction/byOperation"
+        )
+        assert bare["_expandable"]["descendants"] == f"/rest/api/content/{pid}/descendant"
+        listed = c.get(api + "/content", headers=h).json()["results"]
+        listed_row = next(r for r in listed if str(r.get("id")) == str(pid))
+        assert list(listed_row["_expandable"]) == [
+            "container",
+            "metadata",
+            "restrictions",
+            "history",
+            "body",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        ]
+        # Twelve left after an `expand` keep the bare read's order, and thirteen take the listing
+        # row's.
+        twelve = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body,metadata,ancestors"}
+        ).json()
+        assert list(twelve["_expandable"]) == [
+            "childTypes",
+            "container",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "restrictions",
+            "history",
+            "version",
+            "draftVersion",
+            "descendants",
+            "space",
+        ]
+        thirteen = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body,metadata"}
+        ).json()
+        assert list(thirteen["_expandable"]) == [
+            "container",
+            "restrictions",
+            "history",
+            "version",
+            "descendants",
+            "space",
+            "childTypes",
+            "schedulePublishInfo",
+            "operations",
+            "schedulePublishDate",
+            "children",
+            "ancestors",
+            "draftVersion",
+        ]
+        hit = c.get(api + "/search", headers=h, params={"cql": f"id={pid}"}).json()["results"][0][
+            "content"
+        ]
+        assert list(hit["_expandable"]) == [
+            "container",
+            "metadata",
+            "extensions",
+            "operations",
+            "children",
+            "history",
+            "ancestors",
+            "body",
+            "version",
+            "descendants",
+            "space",
+        ]
+        assert hit["_expandable"]["container"] == ""
+        assert hit["_expandable"]["children"] == ""
+        assert hit["_expandable"]["descendants"] == ""
+        assert hit["_expandable"]["history"] == f"/rest/api/content/{pid}/history"
+        assert hit["_expandable"]["space"] == bare["_expandable"]["container"]
+        # The members each served body representation carries.
+        storage = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}
+        ).json()["body"]["storage"]
+        assert list(storage) == ["value", "representation", "embeddedContent", "_expandable"]
+        assert storage["embeddedContent"] == []
+        assert storage["_expandable"] == {"content": f"/rest/api/content/{pid}"}
+        for name in ("view", "export_view", "atlas_doc_format"):
+            rep = c.get(
+                f"{api}/content/{pid}", headers=h, params={"expand": f"body.{name}"}
+            ).json()["body"][name]
+            assert list(rep) == ["value", "representation", "_expandable"], name
+            assert rep["_expandable"] == {
+                "webresource": "",
+                "embeddedContent": "",
+                "mediaToken": "",
+                "content": f"/rest/api/content/{pid}",
+            }, name
 
 
 # --- Jira ------------------------------------------------------------------------
@@ -8116,6 +8234,15 @@ _SPRING_CHARSET = [
     # where real does not fail the request
     ("GET", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
     ("POST", "/wiki/rest/api/space/abc123/permission", _EMPTY_CHARSET, "Basic !!!", 401),
+    # a Basic value Tomcat cannot read is its 401 page where no operation answers
+    ("OPTIONS", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("DELETE", "/wiki/rest/api/space", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("OPTIONS", "/wiki/rest/api/user/current", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("DELETE", "/wiki/rest/api/user/current", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/space/ZZNOPE/nope", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, "Basic !!!", 401),
+    ("GET", "/wiki/api/v2/spaces", _EMPTY_CHARSET, "Basic !!!", 401),
     ("GET", "/wiki/rest/api/nosuch", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/api/", _EMPTY_CHARSET, None, 400),
     ("OPTIONS", "/wiki/rest/api/audit", _EMPTY_CHARSET, None, 400),
@@ -8193,6 +8320,7 @@ _LICENSE = "/atlassian/rest/api/3/license/approximateLicenseCount"
 #: real's carried in its `<title>` and its `<h1>`.
 _TOMCAT_PAGES = {
     400: (435, "HTTP Status 400 – Bad Request"),
+    401: (437, "HTTP Status 401 – Unauthorized"),
     403: (431, "HTTP Status 403 – Forbidden"),
     405: (449, "HTTP Status 405 – Method Not Allowed"),
     406: (441, "HTTP Status 406 – Not Acceptable"),
@@ -8595,6 +8723,32 @@ _ACCEPT_ROWS = [
     + ({"deprecation": None, "warning": None},),
     ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
     + (None, {}),
+    # -- Confluence: a Basic value Tomcat cannot read is its 401 page where no operation answers,
+    # under any `Accept`, and the gateway's `PATCH` 405 comes ahead of it
+    (
+        "GET",
+        "/atlassian/wiki/rest/api/nosuch",
+        "unparseable-basic",
+        _HTML,
+        None,
+        401,
+        _TOMCAT,
+        "page",
+    )
+    + (
+        {
+            "content-language": "en",
+            "www-authenticate": 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"',
+        },
+    ),
+    ("OPTIONS", _SPACES, "unparseable-basic", _HTML, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("OPTIONS", _SPACES, "unparseable-basic", _JSON, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("GET", "/atlassian/wiki/api/v2/spaces", "unparseable-basic", None, None, 401, _TOMCAT)
+    + ("page", {"content-language": "en", "www-authenticate": _PRESENT}),
+    ("PATCH", "/atlassian/wiki/rest/api/nosuch", "unparseable-basic", None, None, 405)
+    + ("text/html", None, {"www-authenticate": None}),
     ("GET", f"{_SPACES}?limit=x", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
     ("GET", f"{_SPACES}?limit=x", "admin", _JSON, None, 400, _JSON, None, {}),
     ("GET", f"{_LABELS}?prefix=bogus", "admin", _HTML, None, 406, _TOMCAT, "page", {}),
@@ -9885,11 +10039,51 @@ _CQL_PARSE_ROWS = [
                 "type=page and " + "(" * 1000 + "type=page",
                 "Missing closing parenthesis near field (()",
             ),
+            ("(type = page and type =", "Missing closing parenthesis near field (()"),
+            ("(type = and type = page", "Missing closing parenthesis near field (()"),
+            ("(type = page) and (type =", "Missing closing parenthesis near field (()"),
+            ("(type = page and title ~", "Missing closing parenthesis near field (()"),
+            ("(type = page type", "Missing closing parenthesis near field (()"),
+            ("(type = page b", "Missing closing parenthesis near field (()"),
+            ("(type = page) and (type = page", "Missing closing parenthesis near field (()"),
+            (
+                "((type = page) and type = page) and (type = page",
+                "Missing closing parenthesis near field (()",
+            ),
+            ("(type = page and (type =", "Missing closing parenthesis near field (()"),
+            ("(type in", "Missing closing parenthesis near field (()"),
+            ("(type not in", "Missing closing parenthesis near field (()"),
+            ("(type in (page", "Missing closing parenthesis near field (()"),
+            ("(type in (", "Missing closing parenthesis near field (()"),
+            ("(type in (page,", "Missing closing parenthesis near field (()"),
+            (
+                "type = )",
+                "Expecting a value for operator '=' after field 'type' but got ')'",
+            ),
+            ("(type = )", "Expecting a value for operator '=' after field 'type'"),
+            ("((type = ))", "Expecting a value for operator '=' after field 'type'"),
+            (
+                "(type= ) and type=page",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            ("(type in )", "Expecting a value for operator 'in' after field 'type'"),
+            ("(title ~ )", "Expecting a value for operator '~' after field 'title'"),
+            (
+                "(type = page) and type = )",
+                "Expecting a value for operator '=' after field 'type' but got ')'",
+            ),
             ("created>foo()", "Unable to find query function 'foo()'"),
             ("label = foo()", "Unable to find query function 'foo()'"),
             ("label = Foo()", "Unable to find query function 'Foo()'"),
             ("space.key = foo()", "Unable to find query function 'foo()'"),
             ("creator = foo()", "Unable to find query function 'foo()'"),
+            ("label = foo(x)", "Unable to find query function 'foo(x)'"),
+            ("label = foo(x, y)", "Unable to find query function 'foo(x,y)'"),
+            ('label = foo("a b")', "Unable to find query function 'foo(\"a b\")'"),
+            ("label = foo(select)", "Unable to find query function 'foo(select)'"),
+            ("label = foo(-1)", _CQL_NOT_PARSED),
+            ("type = and label = foo(-1)", _CQL_NOT_PARSED),
+            ("type = and created > startOfMonth(-1)", _CQL_NOT_PARSED),
             ("space = currentSpace()", _CQL_CURRENT_SPACE),
             ("label = currentSpace()", _CQL_CURRENT_SPACE),
             ("space.key = currentSpace()", _CQL_CURRENT_SPACE),
@@ -9909,10 +10103,55 @@ _CQL_PARSE_ROWS = [
             ("id in recentlyViewedContent(5, 6)", _CQL_NOT_PARSED),
             ('label = currentUser("x")', _CQL_NOT_PARSED),
             ('id in recentlyViewedContent("x")', _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(x)", "Invalid size limit : x"),
+            ("id in recentlyViewedContent(1.5)", "Invalid size limit : 1.5"),
+            ("id in recentlyViewedContent(-1)", _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(-1.5)", _CQL_NOT_PARSED),
+            ("id in recentlyViewedContent(a.b)", "Invalid size limit : a.b"),
+            ("id in recentlyViewedContent(x, 6)", "Invalid size limit : x"),
+            ("id in recentlyViewedContent(5.)", "Invalid size limit : 5."),
+            ("id in recentlyViewedContent(.5)", "Invalid size limit : .5"),
+            (
+                "type = and id in recentlyViewedContent(x)",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "id in recentlyViewedContent(x) and type =",
+                "Expecting a value for operator '=' after field 'type'",
+            ),
+            (
+                "id in recentlyViewedContent(x) and space = currentSpace()",
+                "Invalid size limit : x",
+            ),
+            (
+                "space = currentSpace() and id in recentlyViewedContent(x)",
+                _CQL_CURRENT_SPACE,
+            ),
+            (
+                'id in recentlyViewedContent(x) and created > now("x")',
+                "Invalid size limit : x",
+            ),
+            (
+                'created > now("x") and id in recentlyViewedContent(x)',
+                "Invalid relative date : x",
+            ),
             ("(label = foo()", _CQL_NOT_PARSED),
             ("(space = currentSpace()", _CQL_NOT_PARSED),
             ('(created > now("x")', _CQL_NOT_PARSED),
             ("(id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("((type = page)", _CQL_NOT_PARSED),
+            ("((type = page) and type = page", _CQL_NOT_PARSED),
+            ("(type = page and (type = page)", _CQL_NOT_PARSED),
+            ("(type = page) and ((type = page)", _CQL_NOT_PARSED),
+            ("((type = page) and type =", _CQL_NOT_PARSED),
+            ("((type = and type = page)", _CQL_NOT_PARSED),
+            ("((type = page) and (type =", _CQL_NOT_PARSED),
+            ("(type in (page)", _CQL_NOT_PARSED),
+            ("(type = page and type in (page)", _CQL_NOT_PARSED),
+            ('(created > now("-1d")', _CQL_NOT_PARSED),
+            ("(id in recentlyViewedContent(5)", _CQL_NOT_PARSED),
+            ("(id in recentlyViewedContent(x)", _CQL_NOT_PARSED),
+            ("(label = foo(x)", _CQL_NOT_PARSED),
             ('id in now("-1d")', _CQL_NOT_PARSED),
             ("label in currentUser()", _CQL_NOT_PARSED),
             ("id in currentContent()", _CQL_NOT_PARSED),

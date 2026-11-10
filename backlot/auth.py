@@ -332,9 +332,9 @@ def basic_credential_kind(request: Request) -> str:
     Confluence answers the three differently — a pair it read and rejected is its 403, a value it
     could not read is a 401, and no credential at all is the 403 again — so which one a request
     holds decides which refusal it draws. Measured against ecosystem.atlassian.net and
-    brekkylab.atlassian.net on 2026-09-04, which is where the split is observable at all: a single
-    colon with both halves non-empty is the pair; an empty user, an empty password, no colon, a
-    second colon, or a payload that is not base64 is unparseable; and a missing header, an unknown
+    a site with no public project on 2026-09-04, which is where the split is observable at all: a
+    single colon with both halves non-empty is the pair; an empty user, an empty password, no colon,
+    a second colon, or a payload that is not base64 is unparseable; and a missing header, an unknown
     scheme and a `Basic` with nothing after it are no credential.
     """
     if not _basic_value(request):
@@ -493,8 +493,8 @@ def atlassian_bearer_token(request: Request) -> str | None:
     """Parse the ``Authorization`` header the way a ``<site>.atlassian.net`` gateway does, which
     is stricter than :func:`bearer_token` and strict differently from :func:`slack_bearer_token`.
 
-    Measured against ecosystem.atlassian.net and brekkylab.atlassian.net on 2026-09-04 (a bogus
-    token is enough — a recognised credential is refused with a 403 and an unrecognised one is
+    Measured against ecosystem.atlassian.net and a site with no public project on 2026-09-04 (a
+    bogus token is enough — a recognised credential is refused with a 403 and an unrecognised one is
     served anonymously, so the answer says which the site read)::
 
         Bearer <t>      read            bearer <t>      not read

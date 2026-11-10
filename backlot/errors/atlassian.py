@@ -41,7 +41,7 @@ WIKI = f"{PREFIX}/wiki"
 _PACKAGE = Path(__file__).resolve().parent.parent
 
 # Jira answers a type-conversion failure as RFC 7807, with a charset real puts on it and FastAPI
-# does not. Measured on brekkylab.atlassian.net, 2026-09-14.
+# does not. Measured on Jira Cloud, 2026-09-14.
 PROBLEM_JSON = "application/problem+json;charset=UTF-8"
 
 # The two refusals Confluence gives a caller it will not serve, measured against two Atlassian Cloud
@@ -2187,8 +2187,8 @@ def failed_to_read_request(path: str) -> AtlassianError:
 
 def unbounded_jql() -> AtlassianError:
     """Jira's 400 for `search/jql` given no `jql` at all — on GET or POST, measured 2026-09-16
-    against `brekkylab.atlassian.net`. The sentence is Backlot's own: real answers in the
-    account's language, as it does the `nextPageToken` and `orderBy` refusals.
+    on Jira Cloud. The sentence is Backlot's own: real answers in the account's language, as it does
+    the `nextPageToken` and `orderBy` refusals.
     """
     return AtlassianError(
         400,
@@ -2275,7 +2275,7 @@ def bad_page_token() -> AtlassianError:
     )
 
 
-# What real answers in `Allow` on a Jira 405, per route. Measured on brekkylab.atlassian.net,
+# What real answers in `Allow` on a Jira 405, per route. Measured on Jira Cloud,
 # 2026-09-17, by sending a method the vendor defines on no route of that path. Both Jira mounts were
 # measured and agreed, which is why one row binds `{version}` to both: `PUT /rest/api/2/search/jql`
 # answers `GET, POST` and `POST /rest/api/2/serverInfo` answers `GET`, the sets their `/3` spellings

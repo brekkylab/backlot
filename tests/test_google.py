@@ -21355,8 +21355,29 @@ _TABLE_LAYOUT_ROWS = [
 ]  # fmt: skip
 
 
+_TABLE_ALIGNMENT_EXPORT_ROWS = [
+    (
+        "wr-table",
+        [_ps(index, index + 1, "alignment", alignment=alignment) for index, alignment in styles],
+        "export",
+        [
+            "\ufeffab\r\n\r\n\r\nc1\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd",
+            f"ab\n\n| c1 | c2 |\n| {marker} | :---- |\n| c3 | c4 |\n\ncd",
+        ],
+    )
+    for styles, marker in [
+        ([(8, "CENTER"), (17, "CENTER")], ":---:"),
+        ([(8, "END"), (17, "END")], "----:"),
+        ([(8, "CENTER")], "-----"),
+        ([(8, "CENTER"), (17, "END")], "-----"),
+        ([(8, "JUSTIFIED"), (17, "JUSTIFIED")], ":----"),
+    ]
+]
+
+
 @pytest.mark.parametrize(
-    "doc,requests,part,expected", _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS + _TABLE_LAYOUT_ROWS
+    "doc,requests,part,expected",
+    _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS + _TABLE_LAYOUT_ROWS + _TABLE_ALIGNMENT_EXPORT_ROWS,
 )
 def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
     wc, wh, doc, requests, part, expected

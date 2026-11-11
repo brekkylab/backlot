@@ -21,6 +21,7 @@ charset go unread: on 2026-10-19 a gzipped body drew the not-JSON 400, and ``cha
 from __future__ import annotations
 
 import email.utils
+import json
 import math
 import re
 import time
@@ -530,6 +531,39 @@ def _not_found(request: Request) -> Response:
     return _body_refusal(message, 404, "not_found")
 
 
+#: The methods Fastify has a route for, whose router refuses a path it cannot decode.
+_BAD_URL_METHODS = ("GET", "HEAD", "POST", "OPTIONS")
+
+
+def _undecodable(path: str) -> bool:
+    """Whether ``path`` is under `/graphql/` and holds an escape that does not decode to UTF-8,
+    `%FF`, `%E9`, a surrogate's `%ED%A0%80` and an overlong `/`'s `%C0%AF` among them."""
+    if not path.startswith("/graphql/"):
+        return False
+    try:
+        urllib.parse.unquote_to_bytes(path).decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def _bad_url(request: Request) -> Response:
+    """Fastify's `FST_ERR_BAD_URL` 400 for a path its router cannot decode, quoting the path and
+    query as sent, under `application/json` and :data:`_HSTS` with no `@fastify/cors` header, as
+    api.fireflies.ai answered on 2026-10-25 and 2026-11-11 (UTC)."""
+    query = request.scope["query_string"].decode("latin-1")
+    target = f"{sent_path(request.scope)}{'?' if query else ''}{query}"
+    message = json.dumps(f"'{target}' is not a valid url component")
+    body = (
+        '{"error":"Bad Request","code":"FST_ERR_BAD_URL","message":%s,"statusCode":400}' % message
+    )
+    return Response(
+        body,
+        status_code=400,
+        headers={"content-type": "application/json", "strict-transport-security": _HSTS},
+    )
+
+
 _NGINX_PAGE = (
     b"<html>\r\n<head><title>%s</title></head>\r\n<body>\r\n<center><h1>%s</h1></center>\r\n"
     b"<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
@@ -576,7 +610,10 @@ async def unrouted(request: Request):
     400 without :data:`_HSTS` and its 404 with it alone, and Fastify's where it passes it on:
     :func:`_preflight` to an `OPTIONS`, and to any other method, after reading the body of one of
     :data:`_BODIED` (:func:`_fastify_read`), its not-found handler's 404 (:func:`_not_found`), each
-    with what :func:`_from_fastify` adds."""
+    with what :func:`_from_fastify` adds. Ahead of those, a path under `/graphql/` holding an escape
+    that is not UTF-8 (:func:`_undecodable`) draws its router's 400 (:func:`_bad_url`) on a method
+    it has a route for, and on a `PUT` the 404 with neither its body read nor `@fastify/cors`'s
+    header: api.fireflies.ai on 2026-11-11 (UTC), where a `PUT` at `/graphql/nope` was read."""
     path = nginx_path(sent_path(request.scope))
     if path is None:
         return Response(_NGINX_400, status_code=400, headers={"content-type": "text/html"})
@@ -586,6 +623,13 @@ async def unrouted(request: Request):
             status_code=404,
             headers={"content-type": "text/html", "strict-transport-security": _HSTS},
         )
+    if _undecodable(sent_path(request.scope)):
+        if request.method in _BAD_URL_METHODS:
+            return _bad_url(request)
+        if request.method == "PUT":
+            response = _not_found(request)
+            response.headers["strict-transport-security"] = _HSTS
+            return response
     if request.method == "OPTIONS":
         return _from_fastify(_preflight(request))
     if request.method in _BODIED:

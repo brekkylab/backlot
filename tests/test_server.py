@@ -97,10 +97,10 @@ def test_readiness_waits_for_the_warm_up_but_not_for_a_failed_one(body, warm, mo
     import backlot.server as server_mod
 
     @ctx.contextmanager
-    def fake_urlopen(url, timeout=None):
+    def fake_open(url, timeout=None):
         yield SimpleNamespace(status=200, read=lambda: json_mod.dumps(body).encode())
 
-    monkeypatch.setattr(server_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(server_mod, "_NO_PROXY", SimpleNamespace(open=fake_open))
     assert server_mod._warm("http://x", timeout=0.5) is warm
 
 
@@ -271,6 +271,15 @@ def test_the_readiness_poll_dials_only_an_address_the_server_holds(monkeypatch):
         with backlot.serve(host=host) as s:
             status[host] = _health(f"{s.base_url}/health")["status"]
     assert (status, unheld) == ({host: "ok" for host in hosts}, {})
+
+
+def test_the_readiness_poll_sends_nothing_through_a_proxy(monkeypatch):
+    """``127.0.0.1:1``, where nothing listens, stands in for a proxy that cannot reach this
+    machine."""
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("no_proxy", "localhost")
+    with backlot.serve(host="localhost", telemetry=False) as s:
+        assert urllib.parse.urlsplit(s.base_url).hostname in ("127.0.0.1", "::1"), s.base_url
 
 
 def test_serve_or_connect_falls_back_when_the_url_is_unreachable():

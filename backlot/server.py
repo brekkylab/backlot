@@ -226,6 +226,9 @@ def _healthy(url: str, timeout: float = 10) -> bool:
         return False
 
 
+_NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _warm(url: str, timeout: float) -> bool:
     """Whether the server has finished warming its caches, not merely bound its port.
 
@@ -242,9 +245,13 @@ def _warm(url: str, timeout: float) -> bool:
 
     A recorded ``warm_error`` counts as warm: the caches will never fill, the server serves
     correctly without them, and waiting longer would only turn a reported failure into a timeout.
+
+    It sends nothing through a proxy: the server is on this machine, and urllib sends a request for
+    the ``127.0.0.1`` or ``::1`` that a ``localhost`` server is dialled at to ``http_proxy`` even
+    when ``no_proxy`` lists ``localhost`` (2026-11-11).
     """
     try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=timeout) as r:
+        with _NO_PROXY.open(f"{url.rstrip('/')}/health", timeout=timeout) as r:
             if r.status != 200:
                 return False
             body = json.loads(r.read().decode())

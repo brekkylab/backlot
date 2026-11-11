@@ -382,9 +382,13 @@ def _serve_writing_address(config, address_file: Path) -> None:
     """Run the server ``uvicorn.run`` runs for ``config``, and write the address and port it bound
     to ``address_file``, space-separated, once it accepts connections there.
 
-    ``uvicorn.run`` builds its server itself, so this builds the same one with the write added. A
-    server that never started exits with uvicorn's startup-failure code, as from ``uvicorn.run``:
-    uvicorn 0.29 returns from a failed lifespan startup rather than exiting.
+    ``uvicorn.run`` builds its server itself, so this builds one on the same ``config`` with the
+    write added and runs it in this process, which is what ``uvicorn.run`` runs when neither
+    ``--reload`` nor ``WEB_CONCURRENCY`` asks for more processes. It ends as the locked uvicorn
+    0.52.4's ``uvicorn.run`` ends: the ``KeyboardInterrupt`` uvicorn raises again after shutting
+    down on Ctrl+C ends it with 0, and a server that never started exits with uvicorn's
+    startup-failure code, which uvicorn 0.29 leaves to ``uvicorn.run`` after a failed lifespan
+    startup.
 
     A host name binds every address it resolves to, each with a bind to port 0 of its own, and
     those binds can draw different ports (``localhost`` on macOS, 2026-11-11: 127.0.0.1 and ::1 on
@@ -404,7 +408,10 @@ def _serve_writing_address(config, address_file: Path) -> None:
                 os.replace(partial, address_file)
 
     server = Server(config)
-    server.run()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
     if not server.started:
         sys.exit(STARTUP_FAILURE)
 

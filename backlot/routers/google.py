@@ -1452,6 +1452,17 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     # what `probe` answers, `NOT "" probe` what `-probe` answers, and `from:me <no-break space>`
     # what `from:me` answers. Negated words come out first, so a `-` on a word ending in a `+`
     # does not mark the whole search as matching nothing.
+    #
+    # Quotes around no letter, digit, `_` or `&` are no term either where they open one: alone, in a
+    # run, or after a `-` or a `NOT`. Measured on 2026-11-10 and 2026-11-11: `""`, `"()"`, `"( )"`,
+    # `"."`, `"(())"`, `"-"`, `" "`, `"$"`, `"()""."` and `"" ""` answered every message, and the
+    # first four every thread; `"( )" probe` and `"." probe` what `probe` answers; `NOT "()"`,
+    # `NOT "."` and `probe NOT "()"` nothing, `NOT NOT "()"`, `-"."` and `-""` every message, and
+    # `NOT "()" probe` what `-probe` answers. `"&"`, `"_"`, `"0"` and `"é"` were searched as terms.
+    free = re.sub(
+        r'("[^"]*[\w&][^"]*")|(?:^|(?<=[ -]))(?:"[^"\w&]*")+', lambda m: m[1] or " ", free
+    )
+    free = re.sub(" +", " ", free).strip(" ")
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
         words = [t for t in free.split(" ") if t.strip("\xa0") not in ("", "+", "-", '""')]
         words = ["not" if _GMAIL_NOT_GLUE.fullmatch(t) else t for t in words]

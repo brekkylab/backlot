@@ -2092,6 +2092,49 @@ def test_hubspot_wildcard_needle_with_many_stars_stays_fast():
     assert hs._match_one("a" * 20000 + "b", f) is True
 
 
+def _json_refusal(column: int, text: str, line: int = 1) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line {line}, column {column}: {text}",
+        "category": "VALIDATION_ERROR",
+    }
+
+
+def _not_a_list(kind: str, token: str) -> str:
+    return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
+
+
+def _no_creator(arg: str, shown: str) -> str:
+    return (
+        "Cannot construct instance of  (although at least one Creator exists): "
+        f"no {arg}-argument constructor/factory method to deserialize from {shown}"
+    )
+
+
+def _unreadable_field(field: str, value: str = "") -> dict:
+    return {
+        "status": "error",
+        "message": f'Invalid input JSON: unable to deserialize field "{field}". Invalid value: {value}',
+        "category": "VALIDATION_ERROR",
+    }
+
+
+def _mismatched(kind: str, token: str) -> str:
+    return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.{token}`)"
+
+
+def _past_int_refusal(column: int, digits: str) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON on line 1, column {column}: Numeric value ({digits}) out of "
+        "range of int (-2147483648 - 2147483647)",
+    }
+
+
+_ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
+_OBJECT = "Cannot deserialize value of type  from Object value (token `JsonToken.START_OBJECT`)"
+
+
 def _enum_refusal(line: int, column: int) -> dict:
     return {
         "status": "error",
@@ -2134,8 +2177,16 @@ def _op(id, raw, want, object_type="contacts", authed=True):
     return pytest.param(raw, want, object_type, authed, id=id)
 
 
-def _served_as(name):
-    return ("served as", _jobtitle([(name, "Salesperson")]))
+def _served_as(control: str, *, empty: bool = False) -> tuple:
+    """A 200 serving the page of `control`, a body naming the operator the row reads as, which is
+    empty on this corpus when `empty` is true."""
+    return ("served as", control, empty)
+
+
+_NEQ = _jobtitle([("NEQ", "Salesperson")])
+# One filter on `email` with its operator left to the row.
+_WITH_OPERATOR = '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": %s}]}]}'
+_OPERATOR_FIELD = "filterGroups[0].filters[0].operator"
 
 
 # fmt: off
@@ -2177,23 +2228,49 @@ _OPERATOR_ROWS = [
     _op("before-a-cursor-naming-no-record", _jobtitle([("neq", "x")], after="10000"), _enum_refusal(1, 68)),
     _op("after-an-unknown-type", _jobtitle([("neq", "Salesperson")]), {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
     _op("after-the-credential", _jobtitle([("neq", "Salesperson")]), 401, authed=False),
-    _op("space-before", _jobtitle([(" NEQ", "Salesperson")]), _served_as("NEQ")),
-    _op("tab-before", _jobtitle([("\tNEQ", "Salesperson")]), _served_as("NEQ")),
-    _op("u0001-before", _jobtitle([(chr(1) + "NEQ", "Salesperson")]), _served_as("NEQ")),
-    _op("space-after", _jobtitle([("NEQ ", "Salesperson")]), _served_as("NEQ")),
-    _op("index-0", _jobtitle([("0", "Salesperson")]), 200),
-    _op("index-12", _jobtitle([("12", "Salesperson")]), 200),
-    _op("index-1-after-a-space", _jobtitle([(" 1", "Salesperson")]), 200),
+    _op("space-before", _jobtitle([(" NEQ", "Salesperson")]), _served_as(_NEQ)),
+    _op("tab-before", _jobtitle([("\tNEQ", "Salesperson")]), _served_as(_NEQ)),
+    _op("u0001-before", _jobtitle([(chr(1) + "NEQ", "Salesperson")]), _served_as(_NEQ)),
+    _op("space-after", _jobtitle([("NEQ ", "Salesperson")]), _served_as(_NEQ)),
+    _op("index-0", _jobtitle([("0", "Salesperson")]), _served_as(_jobtitle([("EQ", "Salesperson")]), empty=True)),
+    _op("index-12", _jobtitle([("12", "Salesperson")]), _served_as(_jobtitle([("NOT_CONTAINS_TOKEN", "Salesperson")]))),
+    _op("index-1-after-a-space", _jobtitle([(" 1", "Salesperson")]), _served_as(_NEQ)),
+    _op("operator-integer-9", _WITH_OPERATOR % "9", _served_as(_WITH_OPERATOR % '"HAS_PROPERTY"')),
+    _op("operator-integer-10", _WITH_OPERATOR % "10", _served_as(_WITH_OPERATOR % '"NOT_HAS_PROPERTY"', empty=True)),
+    _op("operator-string-9", _WITH_OPERATOR % '"9"', _served_as(_WITH_OPERATOR % '"HAS_PROPERTY"')),
+    _op("operator-negative-zero", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": -0, "value": "ava@acme-health.com"}]}]}', _served_as('{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": "ava@acme-health.com"}]}]}')),
+    # an integer outside 0 to 12, a float, a boolean, an array or an object as the operator
+    _op("operator-13", _WITH_OPERATOR % "13", _unreadable_field(_OPERATOR_FIELD, "13")),
+    _op("operator-minus-1", _WITH_OPERATOR % "-1", _unreadable_field(_OPERATOR_FIELD, "-1")),
+    _op("operator-int-min", _WITH_OPERATOR % "-2147483648", _unreadable_field(_OPERATOR_FIELD, "-2147483648")),
+    _op("operator-int-max", _WITH_OPERATOR % "2147483647", _unreadable_field(_OPERATOR_FIELD, "2147483647")),
+    _op("operator-past-int", _WITH_OPERATOR % "2147483648", _past_int_refusal(80, "2147483648")),
+    _op("operator-past-int-negative", _WITH_OPERATOR % "-2147483649", _past_int_refusal(81, "-2147483649")),
+    _op("operator-past-long", _WITH_OPERATOR % "99999999999999999999", _past_int_refusal(90, "99999999999999999999")),
+    _op("operator-float", _WITH_OPERATOR % "1.5", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("operator-float-6.0", _WITH_OPERATOR % "6.0", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("operator-exponent", _WITH_OPERATOR % "1e1", _json_refusal(70, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("operator-true", _WITH_OPERATOR % "true", _json_refusal(70, _mismatched("Boolean", "VALUE_TRUE"))),
+    _op("operator-false", _WITH_OPERATOR % "false", _json_refusal(70, _mismatched("Boolean", "VALUE_FALSE"))),
+    _op("operator-empty-array", _WITH_OPERATOR % "[]", _json_refusal(70, _ARRAY)),
+    _op("operator-array", _WITH_OPERATOR % '["EQ"]', _json_refusal(70, _ARRAY)),
+    _op("operator-object", _WITH_OPERATOR % "{}", _json_refusal(70, _OBJECT)),
+    # an operator beside a second value real cannot read
+    _op("operator-float-then-propertyName-array", '{"filterGroups": [{"filters": [{"operator": 1.5, "propertyName": []}]}]}', _json_refusal(45, _mismatched("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _op("propertyName-array-then-operator-float", '{"filterGroups": [{"filters": [{"propertyName": [], "operator": 1.5}]}]}', _json_refusal(49, _ARRAY)),
+    _op("operator-13-then-query-array", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}], "query": ["x"]}', _unreadable_field(_OPERATOR_FIELD, "13")),
+    _op("query-array-then-operator-13", '{"query": ["x"], "filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}]}', _json_refusal(11, _ARRAY)),
+    _op("operator-13-then-null-filter", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}, null]}]}', _unreadable_field(_OPERATOR_FIELD, "13")),
+    _op("null-filter-then-operator-13", '{"filterGroups": [{"filters": [null, {"propertyName": "email", "operator": 13}]}]}', _unreadable_field("filterGroups[0].filters[1].operator", "13")),
 ]
 # fmt: on
 
 
 def test_hubspot_search_reads_a_filter_operator_as_real_does(client, admin_h):
-    """`_refuse_an_operator`'s rule, one body per row: the status and message real answered for each
-    operator it could not read, and a 200 for each it trims (`_TRIM`) or reads as an index
-    (`_OPERATOR_INDEXES`). The trimmed rows put real's trimmed spellings around `NEQ`, whose page on
-    this corpus is not empty, and compare that page with `NEQ`'s own; the index rows check only that
-    the body is served."""
+    """`_refuse_an_operator`'s rule, and `_unreadable_member`'s for an operator that is not a
+    string, one body per row: the status and message real answered for each operator it could not
+    read, and for each it trims (`_TRIM`) or reads as an index (`_OPERATORS_BY_INDEX`), the page of
+    a body naming the operator it reads as, and whether that page is empty on this corpus."""
     answered, expected = {}, {}
     for row in _OPERATOR_ROWS:
         raw, want, object_type, authed = row.values
@@ -2204,10 +2281,11 @@ def test_hubspot_search_reads_a_filter_operator_as_real_does(client, admin_h):
         if isinstance(want, dict):
             answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
         elif isinstance(want, tuple):
-            control = client.post(url, headers=headers, content=want[1].encode()).json()["results"]
+            _, body, empty = want
+            control = client.post(url, headers=headers, content=body.encode()).json()["results"]
             answered[row.id], expected[row.id] = (
-                (r.status_code, r.json()["results"], control != []),
-                (200, control, True),
+                (r.status_code, r.json()["results"], control == []),
+                (200, control, empty),
             )
         else:
             answered[row.id], expected[row.id] = r.status_code, want
@@ -2439,40 +2517,11 @@ def test_hubspot_batch_read(client, admin_h):
     assert {r["id"] for r in j["results"]} == set(ids)
 
 
-def _batch_refusal(column: int, text: str, line: int = 1) -> dict:
-    return {
-        "status": "error",
-        "message": f"Invalid input JSON on line {line}, column {column}: {text}",
-        "category": "VALIDATION_ERROR",
-    }
-
-
-def _not_a_list(kind: str, token: str) -> str:
-    return f"Cannot deserialize value of type <>` from {kind} value (token `JsonToken.{token}`)"
-
-
-def _no_creator(arg: str, shown: str) -> str:
-    return (
-        "Cannot construct instance of  (although at least one Creator exists): "
-        f"no {arg}-argument constructor/factory method to deserialize from {shown}"
-    )
-
-
-def _blank_field(field: str) -> dict:
-    return {
-        "status": "error",
-        "message": f'Invalid input JSON: unable to deserialize field "{field}". Invalid value: ',
-        "category": "VALIDATION_ERROR",
-    }
-
-
 def _br(id, raw, want, object_type="companies", authed=True):
     return pytest.param(raw, want, object_type, authed, id=id)
 
 
 _ONE = '{"inputs":[{"id":"1"}],'
-_ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.START_ARRAY`)"
-_OBJECT = "Cannot deserialize value of type  from Object value (token `JsonToken.START_OBJECT`)"
 
 
 def _no_id(column: int) -> dict:
@@ -2486,77 +2535,77 @@ def _no_id(column: int) -> dict:
 
 # fmt: off
 _BATCH_BODY_ROWS = [
-    _br("inputs-string", '{"inputs":"x"}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
-    _br("inputs-blank-string", '{"inputs":" "}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
-    _br("inputs-string-after-a-lone-cr", '{\r"inputs":"x"}', _batch_refusal(10, _not_a_list("String", "VALUE_STRING"), line=2)),
-    _br("inputs-string-after-crlf", '{\r\n"inputs":"x"}', _batch_refusal(10, _not_a_list("String", "VALUE_STRING"), line=2)),
-    _br("inputs-string-after-a-byte-order-mark", '\ufeff{"inputs":"x"}', _batch_refusal(14, _not_a_list("String", "VALUE_STRING"))),
-    _br("inputs-object", '{"inputs":{"id":"1"}}', _batch_refusal(11, _not_a_list("Object", "START_OBJECT"))),
-    _br("inputs-integer", '{"inputs":5}', _batch_refusal(11, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
-    _br("inputs-float", '{"inputs":1.5}', _batch_refusal(11, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
-    _br("inputs-true", '{"inputs":true}', _batch_refusal(11, _not_a_list("Boolean", "VALUE_TRUE"))),
-    _br("inputs-false", '{"inputs":false}', _batch_refusal(11, _not_a_list("Boolean", "VALUE_FALSE"))),
-    _br("int-element", '{"inputs":[7]}', _batch_refusal(12, _no_creator("int/Int", "Number value (7)"))),
-    _br("int-element-minus-2^31", '{"inputs":[-2147483648]}', _batch_refusal(12, _no_creator("int/Int", "Number value (-2147483648)"))),
-    _br("int-element-2^31", '{"inputs":[2147483648]}', _batch_refusal(12, _no_creator("long/Long", "Number value (2147483648)"))),
-    _br("int-element-minus-2^63", '{"inputs":[-9223372036854775808]}', _batch_refusal(12, _no_creator("long/Long", "Number value (-9223372036854775808)"))),
-    _br("int-element-2^63", '{"inputs":[9223372036854775808]}', _batch_refusal(12, _no_creator("BigInteger", "Number value (9223372036854775808)"))),
-    _br("float-element", '{"inputs":[1.5]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.5)"))),
-    _br("float-element-1e7", '{"inputs":[1e7]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.0E7)"))),
-    _br("float-element-mantissa", '{"inputs":[123456789.125]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.23456789125E8)"))),
-    _br("float-element-1e-3", '{"inputs":[0.001]}', _batch_refusal(12, _no_creator("double/Double", "Number value (0.001)"))),
-    _br("float-element-1e-4", '{"inputs":[1e-4]}', _batch_refusal(12, _no_creator("double/Double", "Number value (1.0E-4)"))),
-    _br("float-element-1e400", '{"inputs":[1e400]}', _batch_refusal(12, _no_creator("double/Double", "Number value (Infinity)"))),
-    _br("float-element-minus-1e400", '{"inputs":[-1e400]}', _batch_refusal(12, _no_creator("double/Double", "Number value (-Infinity)"))),
-    _br("float-element-minus-zero", '{"inputs":[-0.0]}', _batch_refusal(12, _no_creator("double/Double", "Number value (-0.0)"))),
-    _br("boolean-element", '{"inputs":[true]}', _batch_refusal(12, _no_creator("boolean/Boolean", "boolean value (true)"))),
-    _br("array-element", '{"inputs":[["1"]]}', _batch_refusal(12, _ARRAY)),
-    _br("int-after-a-string", '{"inputs":["1",7]}', _batch_refusal(16, _no_creator("int/Int", "Number value (7)"))),
-    _br("int-after-an-object", '{"inputs":[{"id":"1"},7]}', _batch_refusal(23, _no_creator("int/Int", "Number value (7)"))),
+    _br("inputs-string", '{"inputs":"x"}', _json_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _br("inputs-blank-string", '{"inputs":" "}', _json_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _br("inputs-string-after-a-lone-cr", '{\r"inputs":"x"}', _json_refusal(10, _not_a_list("String", "VALUE_STRING"), line=2)),
+    _br("inputs-string-after-crlf", '{\r\n"inputs":"x"}', _json_refusal(10, _not_a_list("String", "VALUE_STRING"), line=2)),
+    _br("inputs-string-after-a-byte-order-mark", '\ufeff{"inputs":"x"}', _json_refusal(14, _not_a_list("String", "VALUE_STRING"))),
+    _br("inputs-object", '{"inputs":{"id":"1"}}', _json_refusal(11, _not_a_list("Object", "START_OBJECT"))),
+    _br("inputs-integer", '{"inputs":5}', _json_refusal(11, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _br("inputs-float", '{"inputs":1.5}', _json_refusal(11, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _br("inputs-true", '{"inputs":true}', _json_refusal(11, _not_a_list("Boolean", "VALUE_TRUE"))),
+    _br("inputs-false", '{"inputs":false}', _json_refusal(11, _not_a_list("Boolean", "VALUE_FALSE"))),
+    _br("int-element", '{"inputs":[7]}', _json_refusal(12, _no_creator("int/Int", "Number value (7)"))),
+    _br("int-element-minus-2^31", '{"inputs":[-2147483648]}', _json_refusal(12, _no_creator("int/Int", "Number value (-2147483648)"))),
+    _br("int-element-2^31", '{"inputs":[2147483648]}', _json_refusal(12, _no_creator("long/Long", "Number value (2147483648)"))),
+    _br("int-element-minus-2^63", '{"inputs":[-9223372036854775808]}', _json_refusal(12, _no_creator("long/Long", "Number value (-9223372036854775808)"))),
+    _br("int-element-2^63", '{"inputs":[9223372036854775808]}', _json_refusal(12, _no_creator("BigInteger", "Number value (9223372036854775808)"))),
+    _br("float-element", '{"inputs":[1.5]}', _json_refusal(12, _no_creator("double/Double", "Number value (1.5)"))),
+    _br("float-element-1e7", '{"inputs":[1e7]}', _json_refusal(12, _no_creator("double/Double", "Number value (1.0E7)"))),
+    _br("float-element-mantissa", '{"inputs":[123456789.125]}', _json_refusal(12, _no_creator("double/Double", "Number value (1.23456789125E8)"))),
+    _br("float-element-1e-3", '{"inputs":[0.001]}', _json_refusal(12, _no_creator("double/Double", "Number value (0.001)"))),
+    _br("float-element-1e-4", '{"inputs":[1e-4]}', _json_refusal(12, _no_creator("double/Double", "Number value (1.0E-4)"))),
+    _br("float-element-1e400", '{"inputs":[1e400]}', _json_refusal(12, _no_creator("double/Double", "Number value (Infinity)"))),
+    _br("float-element-minus-1e400", '{"inputs":[-1e400]}', _json_refusal(12, _no_creator("double/Double", "Number value (-Infinity)"))),
+    _br("float-element-minus-zero", '{"inputs":[-0.0]}', _json_refusal(12, _no_creator("double/Double", "Number value (-0.0)"))),
+    _br("boolean-element", '{"inputs":[true]}', _json_refusal(12, _no_creator("boolean/Boolean", "boolean value (true)"))),
+    _br("array-element", '{"inputs":[["1"]]}', _json_refusal(12, _ARRAY)),
+    _br("int-after-a-string", '{"inputs":["1",7]}', _json_refusal(16, _no_creator("int/Int", "Number value (7)"))),
+    _br("int-after-an-object", '{"inputs":[{"id":"1"},7]}', _json_refusal(23, _no_creator("int/Int", "Number value (7)"))),
     _br("null-id", '{"inputs":[{"id":null}]}', _no_id(22)),
     _br("null-id-spaced", '{"inputs":[{"id":null }]}', _no_id(23)),
     _br("missing-id", '{"inputs":[{}]}', _no_id(13)),
     _br("null-id-in-the-second-input", '{"inputs":[{"id":"1"},{"id":null}]}', _no_id(33)),
-    _br("object-id", '{"inputs":[{"id":{}}]}', _batch_refusal(18, _OBJECT)),
-    _br("empty-array-id", '{"inputs":[{"id":[]}]}', _batch_refusal(18, _ARRAY)),
-    _br("array-id", '{"inputs":[{"id":["1"]}]}', _batch_refusal(18, _ARRAY)),
+    _br("object-id", '{"inputs":[{"id":{}}]}', _json_refusal(18, _OBJECT)),
+    _br("empty-array-id", '{"inputs":[{"id":[]}]}', _json_refusal(18, _ARRAY)),
+    _br("array-id", '{"inputs":[{"id":["1"]}]}', _json_refusal(18, _ARRAY)),
     _br("missing-id-before-an-int", '{"inputs":[{},7]}', _no_id(13)),
-    _br("int-before-a-missing-id", '{"inputs":[7,{}]}', _batch_refusal(12, _no_creator("int/Int", "Number value (7)"))),
-    _br("object-id-before-a-null-id", '{"inputs":[{"id":{}},{"id":null}]}', _batch_refusal(18, _OBJECT)),
+    _br("int-before-a-missing-id", '{"inputs":[7,{}]}', _json_refusal(12, _no_creator("int/Int", "Number value (7)"))),
+    _br("object-id-before-a-null-id", '{"inputs":[{"id":{}},{"id":null}]}', _json_refusal(18, _OBJECT)),
     _br("null-element", '{"inputs":[null]}', {"status": "error", "message": "Input IDs must be non-null."}),
-    _br("int-after-null", '{"inputs":[null,7]}', _batch_refusal(17, _no_creator("int/Int", "Number value (7)"))),
-    _br("properties-after-null", '{"inputs":[null],"properties":"x"}', _batch_refusal(31, _no_creator("String", "String value ('x')"))),
-    _br("properties-string", _ONE + '"properties":"name"}', _batch_refusal(37, _no_creator("String", "String value ('name')"))),
-    _br("properties-padded", _ONE + '"properties":" name\\t"}', _batch_refusal(37, _no_creator("String", "String value ('name')"))),
-    _br("properties-commas", _ONE + '"properties":"name,domain"}', _batch_refusal(37, _no_creator("String", "String value ('name,domain')"))),
-    _br("properties-no-break-space", _ONE + '"properties":"\\u00a0"}', _batch_refusal(37, _no_creator("String", "String value (' ')"))),
-    _br("properties-empty", _ONE + '"properties":""}', _blank_field("properties")),
-    _br("properties-blank", _ONE + '"properties":' + json.dumps(" \t\n\x01") + "}", _blank_field("properties")),
-    _br("properties-integer", _ONE + '"properties":5}', _batch_refusal(37, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
-    _br("properties-object", _ONE + '"properties":{}}', _batch_refusal(37, _not_a_list("Object", "START_OBJECT"))),
-    _br("properties-false", _ONE + '"properties":false}', _batch_refusal(37, _not_a_list("Boolean", "VALUE_FALSE"))),
-    _br("properties-null-element", _ONE + '"properties":[null]}', _batch_refusal(43, "properties element")),
-    _br("properties-null-element-then-spaces", _ONE + '"properties":[null]}   ', _batch_refusal(43, "properties element")),
-    _br("properties-null-between-strings", _ONE + '"properties":["email",null,"firstname"]}', _batch_refusal(63, "properties element")),
-    _br("properties-object-element", _ONE + '"properties":[{}]}', _batch_refusal(38, _OBJECT)),
-    _br("properties-array-element", _ONE + '"properties":[[]]}', _batch_refusal(38, _ARRAY)),
-    _br("properties-null-before-an-object", _ONE + '"properties":[null,{}]}', _batch_refusal(43, _OBJECT)),
-    _br("with-history-null-element", _ONE + '"propertiesWithHistory":[null]}', _batch_refusal(54, "propertiesWithHistory element")),
-    _br("with-history-object-element", _ONE + '"propertiesWithHistory":[{}]}', _batch_refusal(49, _OBJECT)),
-    _br("with-history-array-element", _ONE + '"propertiesWithHistory":[[]]}', _batch_refusal(49, _ARRAY)),
-    _br("null-elements-with-history-first", _ONE + '"propertiesWithHistory":[null],"properties":[null]}', _batch_refusal(74, "properties element")),
-    _br("null-property-after-a-null-input", '{"inputs":[null],"properties":[null]}', _batch_refusal(37, "properties element")),
-    _br("null-history-before-a-null-input", '{"propertiesWithHistory":[null],"inputs":[null]}', _batch_refusal(48, "propertiesWithHistory element")),
-    _br("null-property-before-a-string-inputs", '{"properties":[null],"inputs":"x"}', _batch_refusal(31, _not_a_list("String", "VALUE_STRING"))),
+    _br("int-after-null", '{"inputs":[null,7]}', _json_refusal(17, _no_creator("int/Int", "Number value (7)"))),
+    _br("properties-after-null", '{"inputs":[null],"properties":"x"}', _json_refusal(31, _no_creator("String", "String value ('x')"))),
+    _br("properties-string", _ONE + '"properties":"name"}', _json_refusal(37, _no_creator("String", "String value ('name')"))),
+    _br("properties-padded", _ONE + '"properties":" name\\t"}', _json_refusal(37, _no_creator("String", "String value ('name')"))),
+    _br("properties-commas", _ONE + '"properties":"name,domain"}', _json_refusal(37, _no_creator("String", "String value ('name,domain')"))),
+    _br("properties-no-break-space", _ONE + '"properties":"\\u00a0"}', _json_refusal(37, _no_creator("String", "String value (' ')"))),
+    _br("properties-empty", _ONE + '"properties":""}', _unreadable_field("properties")),
+    _br("properties-blank", _ONE + '"properties":' + json.dumps(" \t\n\x01") + "}", _unreadable_field("properties")),
+    _br("properties-integer", _ONE + '"properties":5}', _json_refusal(37, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _br("properties-object", _ONE + '"properties":{}}', _json_refusal(37, _not_a_list("Object", "START_OBJECT"))),
+    _br("properties-false", _ONE + '"properties":false}', _json_refusal(37, _not_a_list("Boolean", "VALUE_FALSE"))),
+    _br("properties-null-element", _ONE + '"properties":[null]}', _json_refusal(43, "properties element")),
+    _br("properties-null-element-then-spaces", _ONE + '"properties":[null]}   ', _json_refusal(43, "properties element")),
+    _br("properties-null-between-strings", _ONE + '"properties":["email",null,"firstname"]}', _json_refusal(63, "properties element")),
+    _br("properties-object-element", _ONE + '"properties":[{}]}', _json_refusal(38, _OBJECT)),
+    _br("properties-array-element", _ONE + '"properties":[[]]}', _json_refusal(38, _ARRAY)),
+    _br("properties-null-before-an-object", _ONE + '"properties":[null,{}]}', _json_refusal(43, _OBJECT)),
+    _br("with-history-null-element", _ONE + '"propertiesWithHistory":[null]}', _json_refusal(54, "propertiesWithHistory element")),
+    _br("with-history-object-element", _ONE + '"propertiesWithHistory":[{}]}', _json_refusal(49, _OBJECT)),
+    _br("with-history-array-element", _ONE + '"propertiesWithHistory":[[]]}', _json_refusal(49, _ARRAY)),
+    _br("null-elements-with-history-first", _ONE + '"propertiesWithHistory":[null],"properties":[null]}', _json_refusal(74, "properties element")),
+    _br("null-property-after-a-null-input", '{"inputs":[null],"properties":[null]}', _json_refusal(37, "properties element")),
+    _br("null-history-before-a-null-input", '{"propertiesWithHistory":[null],"inputs":[null]}', _json_refusal(48, "propertiesWithHistory element")),
+    _br("null-property-before-a-string-inputs", '{"properties":[null],"inputs":"x"}', _json_refusal(31, _not_a_list("String", "VALUE_STRING"))),
     _br("null-id-before-a-null-property", '{"inputs":[{"id":null}],"properties":[null]}', _no_id(22)),
-    _br("with-history-string", _ONE + '"propertiesWithHistory":"name"}', _batch_refusal(48, _no_creator("String", "String value ('name')"))),
-    _br("with-history-empty", _ONE + '"propertiesWithHistory":""}', _blank_field("propertiesWithHistory")),
-    _br("with-history-float", _ONE + '"propertiesWithHistory":1.5}', _batch_refusal(48, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
-    _br("properties-before-inputs", '{"properties":"name","inputs":"x"}', _batch_refusal(15, _no_creator("String", "String value ('name')"))),
-    _br("integer-properties-before-inputs", '{"properties":5,"inputs":"x"}', _batch_refusal(15, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
-    _br("inputs-before-properties", '{"inputs":1.5,"properties":"x"}', _batch_refusal(11, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
-    _br("with-history-before-properties", _ONE + '"propertiesWithHistory":"a","properties":"b"}', _batch_refusal(48, _no_creator("String", "String value ('a')"))),
-    _br("after-an-unknown-member", '{"bogus":1,"inputs":"x"}', _batch_refusal(21, _not_a_list("String", "VALUE_STRING"))),
+    _br("with-history-string", _ONE + '"propertiesWithHistory":"name"}', _json_refusal(48, _no_creator("String", "String value ('name')"))),
+    _br("with-history-empty", _ONE + '"propertiesWithHistory":""}', _unreadable_field("propertiesWithHistory")),
+    _br("with-history-float", _ONE + '"propertiesWithHistory":1.5}', _json_refusal(48, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _br("properties-before-inputs", '{"properties":"name","inputs":"x"}', _json_refusal(15, _no_creator("String", "String value ('name')"))),
+    _br("integer-properties-before-inputs", '{"properties":5,"inputs":"x"}', _json_refusal(15, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _br("inputs-before-properties", '{"inputs":1.5,"properties":"x"}', _json_refusal(11, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _br("with-history-before-properties", _ONE + '"propertiesWithHistory":"a","properties":"b"}', _json_refusal(48, _no_creator("String", "String value ('a')"))),
+    _br("after-an-unknown-member", '{"bogus":1,"inputs":"x"}', _json_refusal(21, _not_a_list("String", "VALUE_STRING"))),
     _br("after-an-unknown-type", '{"inputs":"x"}', {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
     _br("after-the-credential", '{"inputs":"x"}', 401, authed=False),
     _br("null-inputs", '{"inputs":null}', 200),
@@ -2715,13 +2764,13 @@ _TOKEN_ROWS = [
     _nt("a-byte-that-does-not-decode-behind", "search", b'{"limit":NaN,"query":"\xff"}', _token_refusal(13, "NaN")),
     _nt("a-byte-order-mark-and-a-byte-that-does-not-decode", "batch/read", b'\xef\xbb\xbf{\n"inputs":[NaN,"\xff"]}', _token_refusal(14, "NaN", line=2)),
     # the token and a value real refuses for its type: whichever starts first is named
-    _nt("inputs-ahead", "batch/read", '{"inputs":"x","properties":NaN}', _batch_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _nt("inputs-ahead", "batch/read", '{"inputs":"x","properties":NaN}', _json_refusal(11, _not_a_list("String", "VALUE_STRING"))),
     _nt("inputs-behind", "batch/read", '{"properties":NaN,"inputs":"x"}', _token_refusal(18, "NaN")),
-    _nt("an-input-ahead", "batch/read", '{"inputs":[5,NaN]}', _batch_refusal(12, _no_creator("int/Int", "Number value (5)"))),
+    _nt("an-input-ahead", "batch/read", '{"inputs":[5,NaN]}', _json_refusal(12, _no_creator("int/Int", "Number value (5)"))),
     _nt("an-input-behind", "batch/read", '{"inputs":[NaN,5]}', _token_refusal(15, "NaN")),
-    _nt("an-array-input-around-it", "batch/read", '{"inputs":[[NaN]]}', _batch_refusal(12, _ARRAY)),
-    _nt("properties-ahead", "batch/read", '{"properties":"x","inputs":[NaN]}', _batch_refusal(15, _no_creator("String", "String value ('x')"))),
-    _nt("blank-properties-ahead", "batch/read", '{"properties":" ","inputs":[NaN]}', _blank_field("properties")),
+    _nt("an-array-input-around-it", "batch/read", '{"inputs":[[NaN]]}', _json_refusal(12, _ARRAY)),
+    _nt("properties-ahead", "batch/read", '{"properties":"x","inputs":[NaN]}', _json_refusal(15, _no_creator("String", "String value ('x')"))),
+    _nt("blank-properties-ahead", "batch/read", '{"properties":" ","inputs":[NaN]}', _unreadable_field("properties")),
     _nt("blank-properties-behind", "batch/read", '{"inputs":[NaN],"properties":" "}', _token_refusal(15, "NaN")),
     _nt("a-null-input-ahead", "batch/read", '{"inputs":[null],"properties":NaN}', _token_refusal(34, "NaN")),
     _nt("a-null-input-and-an-unknown-member", "batch/read", '{"inputs":[null],"bogus":NaN}', _token_refusal(29, "NaN")),
@@ -2729,9 +2778,9 @@ _TOKEN_ROWS = [
     _nt("a-null-id-ahead", "batch/read", '{"inputs":[{"id":null}],"x":NaN}', _no_id(22)),
     _nt("a-null-id-behind", "batch/read", '{"x":NaN,"inputs":[{"id":null}]}', _token_refusal(9, "NaN")),
     _nt("the-token-before-a-null-ids-input-closes", "batch/read", '{"inputs":[{"id":null,"x":NaN}]}', _token_refusal(30, "NaN")),
-    _nt("an-object-id-ahead", "batch/read", '{"inputs":[{"id":{}}],"x":NaN}', _batch_refusal(18, _OBJECT)),
+    _nt("an-object-id-ahead", "batch/read", '{"inputs":[{"id":{}}],"x":NaN}', _json_refusal(18, _OBJECT)),
     _nt("an-object-id-behind", "batch/read", '{"x":NaN,"inputs":[{"id":{}}]}', _token_refusal(9, "NaN")),
-    _nt("an-object-id-around-it", "batch/read", '{"inputs":[{"id":{"a":NaN}}]}', _batch_refusal(18, _OBJECT)),
+    _nt("an-object-id-around-it", "batch/read", '{"inputs":[{"id":{"a":NaN}}]}', _json_refusal(18, _OBJECT)),
     _nt("an-object-element-behind", "batch/read", '{"x":NaN,"inputs":[{"id":"1"}],"properties":[{}]}', _token_refusal(9, "NaN")),
     _nt("a-null-element-ahead", "batch/read", '{"inputs":[{"id":"1"}],"properties":[null],"x":NaN}', _token_refusal(51, "NaN")),
     _nt("a-missing-id-ahead", "batch/read", '{"inputs":[{}],"x":NaN}', _no_id(13)),
@@ -2743,6 +2792,14 @@ _TOKEN_ROWS = [
     _nt("operator-ahead-of-filters", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]},{"filters":Infinity}]}', _enum_refusal(1, 64)),
     _nt("blank-operator-ahead", "search", "{" + _AN_OPERATOR % '" "' + ',"limit":NaN}', _empty_operator_refusal(0, 0)),
     _nt("blank-operator-behind", "search", '{"limit":NaN,' + _AN_OPERATOR % '" "' + "}", _token_refusal(13, "NaN")),
+    _nt("filterGroups-string-then-nan", "search", '{"filterGroups": "x", "query": NaN}', _json_refusal(18, _not_a_list("String", "VALUE_STRING")), object_type="contacts"),
+    _nt("nan-then-filterGroups-string", "search", '{"query": NaN, "filterGroups": "x"}', _token_refusal(14, "NaN"), object_type="contacts"),
+    _nt("blank-string-group-then-nan", "search", '{"filterGroups": [" "], "query": NaN}', _unreadable_field("filterGroups[0]"), object_type="contacts"),
+    _nt("operator-13-then-nan", "search", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}], "x": NaN}', _unreadable_field(_OPERATOR_FIELD, "13"), object_type="contacts"),
+    # a null element and the token, named where `_refuse_a_search_shape` says
+    _nt("null-group-then-nan", "search", '{"filterGroups": [null], "query": NaN}', _token_refusal(38, "NaN"), object_type="contacts"),
+    _nt("null-filter-then-nan", "search", '{"filterGroups": [{"filters": [null]}], "query": NaN}', _json_refusal(37, "filters element"), object_type="contacts"),
+    _nt("null-filter-then-nan-in-its-group", "search", '{"filterGroups": [{"filters": [null], "x": NaN}]}', _token_refusal(47, "NaN"), object_type="contacts"),
     # after the type and the credential
     _nt("after-an-unknown-type", "search", '{"limit":NaN}', {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
     _nt("after-the-credential", "batch/read", '{"inputs":[NaN]}', 401, authed=False),
@@ -2758,9 +2815,10 @@ _TOKEN_ROWS = [
 
 def test_hubspot_refuses_a_non_standard_number_token(client, admin_h):
     """`_non_standard_number`'s rule, one body per row: the status and body real answered,
-    including which value it names when the body also holds one `_refuse_a_batch_read_shape` or
-    `_refuse_an_operator` refuses, and the status for the three spellings inside a string, which
-    real reads as text (a 207 for batch/read because no company has those ids)."""
+    including which value it names when the body also holds one `_refuse_a_batch_read_shape`,
+    `_refuse_a_search_shape` or `_refuse_an_operator` refuses, and the status for the three
+    spellings inside a string, which real reads as text (a 207 for batch/read because no company
+    has those ids)."""
     answered, expected = {}, {}
     for row in _TOKEN_ROWS:
         route, raw, want, object_type, authed = row.values
@@ -2772,6 +2830,178 @@ def test_hubspot_refuses_a_non_standard_number_token(client, admin_h):
             answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
         else:
             answered[row.id], expected[row.id] = r.status_code, want
+    assert answered == expected
+
+
+def _sb(id, raw, want):
+    return pytest.param(raw, want, id=id)
+
+
+_A_GOOD_FILTER = (
+    '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": "x"}'
+)
+_A_BOGUS_OPERATOR = '{"filters": [{"propertyName": "email", "operator": "BOGUS"}]}'
+# One filter with one member left to the row.
+_WITH_PROPERTY_NAME = (
+    '{"filterGroups": [{"filters": [{"propertyName": %s, "operator": "HAS_PROPERTY"}]}]}'
+)
+_WITH_VALUE = (
+    '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": %s}]}]}'
+)
+_WITH_HIGH_VALUE = (
+    '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "BETWEEN", "value": "a", '
+    '"highValue": %s}]}]}'
+)
+_WITH_VALUES = (
+    '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "IN", "values": %s}]}]}'
+)
+
+# fmt: off
+_SEARCH_BODY_ROWS = [
+    _sb("filterGroups-string", '{"filterGroups": "x"}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("filterGroups-object", '{"filterGroups": {}}', _json_refusal(18, _not_a_list("Object", "START_OBJECT"))),
+    _sb("filterGroups-integer", '{"filterGroups": 5}', _json_refusal(18, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("filterGroups-float", '{"filterGroups": 1.5}', _json_refusal(18, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _sb("filterGroups-true", '{"filterGroups": true}', _json_refusal(18, _not_a_list("Boolean", "VALUE_TRUE"))),
+    _sb("string-group", '{"filterGroups": ["x"]}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
+    _sb("padded-string-group", '{"filterGroups": [" x "]}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
+    _sb("blank-string-group", '{"filterGroups": [" "]}', _unreadable_field("filterGroups[0]")),
+    _sb("integer-group", '{"filterGroups": [5]}', _json_refusal(19, _no_creator("int/Int", "Number value (5)"))),
+    _sb("true-group", '{"filterGroups": [true]}', _json_refusal(19, _no_creator("boolean/Boolean", "boolean value (true)"))),
+    _sb("float-group", '{"filterGroups": [1.5]}', _json_refusal(19, _no_creator("double/Double", "Number value (1.5)"))),
+    _sb("array-group", '{"filterGroups": [[]]}', _json_refusal(19, _ARRAY)),
+    _sb("null-group", '{"filterGroups": [null]}', _json_refusal(24, "filterGroups element")),
+    _sb("filters-string", '{"filterGroups": [{"filters": "x"}]}', _json_refusal(31, _not_a_list("String", "VALUE_STRING"))),
+    _sb("filters-object", '{"filterGroups": [{"filters": {}}]}', _json_refusal(31, _not_a_list("Object", "START_OBJECT"))),
+    _sb("filters-integer", '{"filterGroups": [{"filters": 5}]}', _json_refusal(31, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("string-filter", '{"filterGroups": [{"filters": ["x"]}]}', _json_refusal(32, _no_creator("String", "String value ('x')"))),
+    _sb("padded-string-filter", '{"filterGroups": [{"filters": [" x "]}]}', _json_refusal(32, _no_creator("String", "String value ('x')"))),
+    _sb("blank-string-filter", '{"filterGroups": [{"filters": [" "]}]}', _unreadable_field("filterGroups[0].filters[0]")),
+    _sb("integer-filter", '{"filterGroups": [{"filters": [5]}]}', _json_refusal(32, _no_creator("int/Int", "Number value (5)"))),
+    _sb("array-filter", '{"filterGroups": [{"filters": [[]]}]}', _json_refusal(32, _ARRAY)),
+    _sb("null-filter", '{"filterGroups": [{"filters": [null]}]}', _json_refusal(37, "filters element")),
+    _sb("query-array", '{"query": ["x"]}', _json_refusal(11, _ARRAY)),
+    _sb("query-object", '{"query": {}}', _json_refusal(11, _OBJECT)),
+    # bodies with a second value real cannot read
+    _sb("query-array-then-filterGroups-string", '{"query": ["x"], "filterGroups": "x"}', _json_refusal(11, _ARRAY)),
+    _sb("filterGroups-string-then-query-array", '{"filterGroups": "x", "query": ["x"]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("bad-operator-then-string-group", '{"filterGroups": [' + _A_BOGUS_OPERATOR + ', "x"]}', _enum_refusal(1, 70)),
+    _sb("string-group-then-bad-operator", '{"filterGroups": ["x", ' + _A_BOGUS_OPERATOR + ']}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
+    _sb("filter-then-string-filter", _A_GOOD_FILTER + ', "y"]}]}', _json_refusal(91, _no_creator("String", "String value ('y')"))),
+    _sb("group-then-integer-group", _A_GOOD_FILTER + ']}, 5]}', _json_refusal(93, _no_creator("int/Int", "Number value (5)"))),
+    _sb("after-then-filterGroups-string", '{"after": "10000", "filterGroups": "x"}', _json_refusal(36, _not_a_list("String", "VALUE_STRING"))),
+    _sb("after-then-query-array", '{"after": "10000", "query": ["x"]}', _json_refusal(29, _ARRAY)),
+    _sb("blank-string-group-then-bad-operator", '{"filterGroups": [" ", ' + _A_BOGUS_OPERATOR + ']}', _unreadable_field("filterGroups[0]")),
+    # a list real reads, ahead of the value it cannot
+    _sb("properties-then-filterGroups-string", '{"properties": ["email"], "filterGroups": "x"}', _json_refusal(43, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-string-then-filterGroups-string", '{"sorts": ["email"], "filterGroups": "x"}', _json_refusal(38, _not_a_list("String", "VALUE_STRING"))),
+    # bodies with a null element, named where `_refuse_a_search_shape` says
+    _sb("null-group-then-string-group", '{"filterGroups": [null, "x"]}', _json_refusal(25, _no_creator("String", "String value ('x')"))),
+    _sb("null-group-then-query-array", '{"filterGroups": [null], "query": ["x"]}', _json_refusal(35, _ARRAY)),
+    _sb("null-filter-then-string-group", '{"filterGroups": [{"filters": [null]}, "x"]}', _json_refusal(37, "filters element")),
+    _sb("null-filter-then-query-array", '{"filterGroups": [{"filters": [null]}], "query": ["x"]}', _json_refusal(37, "filters element")),
+    _sb("null-filter-then-null-group", '{"filterGroups": [{"filters": [null]}, null]}', _json_refusal(37, "filters element")),
+    _sb("null-group-then-null-filter", '{"filterGroups": [null, {"filters": [null]}]}', _json_refusal(43, "filters element")),
+    _sb("null-group-then-bad-operator", '{"filterGroups": [null, ' + _A_BOGUS_OPERATOR + ']}', _enum_refusal(1, 76)),
+    _sb("null-filter-then-bad-operator", '{"filterGroups": [{"filters": [null, {"propertyName": "email", "operator": "BOGUS"}]}]}', _enum_refusal(1, 76)),
+    # filter members
+    _sb("propertyName-empty-array", _WITH_PROPERTY_NAME % "[]", _json_refusal(49, _ARRAY)),
+    _sb("propertyName-array", _WITH_PROPERTY_NAME % '["email"]', _json_refusal(49, _ARRAY)),
+    _sb("propertyName-object", _WITH_PROPERTY_NAME % "{}", _json_refusal(49, _OBJECT)),
+    _sb("value-empty-array", _WITH_VALUE % "[]", _json_refusal(85, _ARRAY)),
+    _sb("value-array", _WITH_VALUE % '["x"]', _json_refusal(85, _ARRAY)),
+    _sb("value-object", _WITH_VALUE % "{}", _json_refusal(85, _OBJECT)),
+    _sb("highValue-empty-array", _WITH_HIGH_VALUE % "[]", _json_refusal(108, _ARRAY)),
+    _sb("highValue-object", _WITH_HIGH_VALUE % "{}", _json_refusal(108, _OBJECT)),
+    _sb("values-string", _WITH_VALUES % '"x"', _json_refusal(86, _no_creator("String", "String value ('x')"))),
+    _sb("values-padded-string", _WITH_VALUES % '" x "', _json_refusal(86, _no_creator("String", "String value ('x')"))),
+    _sb("values-blank-string", _WITH_VALUES % '" "', _unreadable_field("filterGroups[0].filters[0].values")),
+    _sb("values-empty-string", _WITH_VALUES % '""', _unreadable_field("filterGroups[0].filters[0].values")),
+    _sb("values-object", _WITH_VALUES % "{}", _json_refusal(86, _not_a_list("Object", "START_OBJECT"))),
+    _sb("values-integer", _WITH_VALUES % "5", _json_refusal(86, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("values-float", _WITH_VALUES % "1.5", _json_refusal(86, _not_a_list("Floating-point", "VALUE_NUMBER_FLOAT"))),
+    _sb("values-true", _WITH_VALUES % "true", _json_refusal(86, _not_a_list("Boolean", "VALUE_TRUE"))),
+    _sb("values-array-element", _WITH_VALUES % "[[]]", _json_refusal(87, _ARRAY)),
+    _sb("values-object-element", _WITH_VALUES % "[{}]", _json_refusal(87, _OBJECT)),
+    _sb("values-string-then-array-element", _WITH_VALUES % '["x", ["y"]]', _json_refusal(92, _ARRAY)),
+    # bodies with a second member or value real cannot read
+    _sb("value-array-then-bad-operator", '{"filterGroups": [{"filters": [{"propertyName": "email", "value": [], "operator": "BOGUS"}]}]}', _json_refusal(67, _ARRAY)),
+    _sb("bad-operator-then-value-array", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "BOGUS", "value": []}]}]}', _enum_refusal(1, 70)),
+    # bodies real reads: (body answering the same page, is that page narrower than `{}`'s)
+    _sb("query-integer", '{"query": 5}', ('{"query": "5"}', True)),
+    _sb("query-float", '{"query": 1.5}', ('{"query": "1.5"}', True)),
+    _sb("query-true", '{"query": true}', ('{"query": "true"}', True)),
+    _sb("query-zero", '{"query": 0}', ('{"query": "0"}', True)),
+    _sb("query-false", '{"query": false}', ('{"query": "false"}', True)),
+    _sb("query-float-1.50", '{"query": 1.50}', ('{"query": "1.50"}', True)),
+    _sb("filterGroups-null", '{"filterGroups": null}', ("{}", False)),
+    _sb("filterGroups-empty", '{"filterGroups": []}', ("{}", False)),
+    _sb("query-null", '{"query": null}', ("{}", False)),
+    _sb("group-without-filters", '{"filterGroups": [{}]}', ("{}", False)),
+    _sb("filters-null", '{"filterGroups": [{"filters": null}]}', ("{}", False)),
+    # real refuses a number `propertyName` with the 400 it gives its text, a property the portal
+    # does not have, which this router does not send
+    _sb("propertyName-integer", _WITH_PROPERTY_NAME % "5", (_WITH_PROPERTY_NAME % '"5"', True)),
+    _sb("propertyName-float", _WITH_PROPERTY_NAME % "1.5", (_WITH_PROPERTY_NAME % '"1.5"', True)),
+    _sb("value-integer", _WITH_VALUE % "5", (_WITH_VALUE % '"5"', True)),
+    _sb("value-float", _WITH_VALUE % "1.5", (_WITH_VALUE % '"1.5"', True)),
+    _sb("value-true", _WITH_VALUE % "true", (_WITH_VALUE % '"true"', True)),
+    _sb("highValue-integer", _WITH_HIGH_VALUE % "5", (_WITH_HIGH_VALUE % '"5"', True)),
+    _sb("highValue-true", _WITH_HIGH_VALUE % "true", (_WITH_HIGH_VALUE % '"true"', False)),
+    _sb("values-integer-element", _WITH_VALUES % "[5]", (_WITH_VALUES % '["5"]', True)),
+    _sb("values-float-element", _WITH_VALUES % "[1.5]", (_WITH_VALUES % '["1.5"]', True)),
+    _sb("values-true-element", _WITH_VALUES % "[true]", (_WITH_VALUES % '["true"]', True)),
+    _sb("values-float-element-1.50", '{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": [1.50]}]}]}', ('{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": ["1.50"]}]}]}', True)),
+    _sb("values-null", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "values": null}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
+    _sb("member-not-read", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "x": []}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
+]
+# fmt: on
+
+# The contacts `_SEARCH_BODY_ROWS` are answered over. Bo's texts hold `1.5`, `1.50` and `true`, so
+# `1.50` read as `1.5`, or `true` and `false` read as each other, answers another page.
+_SEARCH_BODY_CONTACTS = [
+    {
+        "source_type": "hubspot",
+        "doc_id": "hs-c-ava",
+        "object_type": "contacts",
+        "title": "Ava Stone",
+        "content": "VP Platform.",
+        "properties": {"email": "ava@acme-health.com"},
+    },
+    {
+        "source_type": "hubspot",
+        "doc_id": "hs-c-bo",
+        "object_type": "contacts",
+        "title": "Bo Lin",
+        "content": "Rated 1.5, opted in: true.",
+        "properties": {"email": "bo@lin.example", "firstname": "1.50"},
+    },
+]
+
+
+def test_hubspot_search_refuses_a_body_real_cannot_read(tmp_path):
+    """One body per row: for a body real refuses, the status and body it answered, including which
+    value it names when a second cannot be read (`_refuse_a_search_shape`); for a body it reads, a
+    body that answers the same page, such as one with a number or boolean as its text
+    (`_scalars_as_text`), and whether that page is narrower than `{}`'s."""
+    from tests._helpers import client_for
+
+    s = tiny_corpus(tmp_path, _SEARCH_BODY_CONTACTS)
+    headers = {"Authorization": f"Bearer {s.admin_token}", "Content-Type": "application/json"}
+    url = "/hubspot/crm/v3/objects/contacts/search"
+    answered, expected = {}, {}
+    with client_for(s) as client:
+        everything = client.post(url, headers=headers, content=b"{}").json()["results"]
+        for row in _SEARCH_BODY_ROWS:
+            raw, want = row.values
+            r = client.post(url, headers=headers, content=raw.encode())
+            if isinstance(want, dict):
+                answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
+            else:
+                page = client.post(url, headers=headers, content=want[0].encode()).json()
+                control = page["results"]
+                answered[row.id] = (r.status_code, r.json()["results"], control != everything)
+                expected[row.id] = (200, control, want[1])
     assert answered == expected
 
 

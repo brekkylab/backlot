@@ -113,6 +113,15 @@ def owns(path: str) -> bool:
 #: What real's JSON responses declare, 200 and error alike, on every GitHub route measured but one.
 JSON_MEDIA_TYPE = "application/json; charset=utf-8"
 
+#: The body of the 400 api.github.com's Varnish front gives a path holding a broken escape when no
+#: `Authorization` is sent, 159 bytes ending in a newline and two spaces after the closing brace
+#: (``backlot.main.refuse_a_broken_escape_in_a_github_path`` holds the measurement).
+INVALID_REQUEST = (
+    b'{\n    "documentation_url": "https://developer.github.com/v3/",\n'
+    b'    "message": "You have sent an invalid request. '
+    b'Please do not send this request again."\n  }\n  '
+)
+
 #: The statuses the code search backend answers itself, and so without the charset. Its 400 is
 #: text/plain and never a JSON body; the 401 and the 405 this server answers on the path are the
 #: gateway's kind and keep the charset.

@@ -1724,20 +1724,64 @@ def test_build_fts_builds_each_source_in_one_transaction(tmp_path):
         conn.close()
 
 
-def test_the_fts5_probe_raises_the_error_that_rolled_its_transaction_back(tmp_path):
-    """SQLite answers an interrupted statement by rolling the whole transaction back, the probe's
-    savepoint with it, and the probe raises that interruption. The progress handler interrupts
-    whichever statement the trace callback last saw start, when that is the probe's CREATE."""
-    conn = store.connect_rw(tmp_path / "fresh.sqlite")
-    try:
-        creating = [False]
-        conn.set_trace_callback(lambda sql: creating.append(sql.startswith("CREATE VIRTUAL")))
-        conn.set_progress_handler(lambda: creating[-1], 1)
-        with pytest.raises(sqlite3.OperationalError, match="^interrupted$"):
-            store._fts5_ok(conn)
-        assert not conn.in_transaction
-    finally:
-        conn.close()
+class _WithoutFts5:
+    """A connection whose `CREATE VIRTUAL TABLE` raises `no such module: fts5`, the answer of a
+    SQLite built without FTS5; the SQLite this suite runs on has FTS5 and never gives it."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, *args):
+        if sql.startswith("CREATE VIRTUAL TABLE"):
+            raise sqlite3.OperationalError("no such module: fts5")
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _interrupting_the_probe(conn):
+    """The progress handler interrupts whichever statement the trace callback last saw start, when
+    that is the probe's CREATE. SQLite answers an interrupted statement by rolling the whole
+    transaction back, the probe's savepoint with it."""
+    creating = [False]
+    conn.set_trace_callback(lambda sql: creating.append(sql.startswith("CREATE VIRTUAL")))
+    conn.set_progress_handler(lambda: creating[-1], 1)
+    return conn
+
+
+def _unable_to_grow(conn):
+    """A file held at its page count: a write that needs a new page answers SQLITE_FULL."""
+    conn.execute(f"PRAGMA max_page_count={conn.execute('PRAGMA page_count').fetchone()[0]}")
+    return conn
+
+
+# (name, also the database file's stem; what turns a fresh connection into the one `build_fts`
+# gets; what `build_fts` answers: the SQLite result code of the error it raises, or the value it
+# returns)
+_FTS5_PROBE_ROWS = [
+    ("interrupted", _interrupting_the_probe, ("raised", "SQLITE_INTERRUPT")),
+    ("full", _unable_to_grow, ("raised", "SQLITE_FULL")),
+    ("no-fts5", _WithoutFts5, ("returned", False)),
+]
+
+
+def test_build_fts_tells_a_missing_fts5_module_from_a_failed_write(tmp_path):
+    """`_fts5_ok`'s rule, one connection per row: `build_fts` returns False on the one error that
+    means a SQLite without FTS5, raises the error its probe meets otherwise, and leaves no
+    transaction open either way."""
+    answered, expected = {}, {}
+    for name, prepare, want in _FTS5_PROBE_ROWS:
+        conn = store.connect_rw(tmp_path / f"{name}.sqlite")
+        try:
+            try:
+                got = ("returned", store.build_fts(prepare(conn)))
+            except sqlite3.OperationalError as e:
+                got = ("raised", e.sqlite_errorname)
+            answered[name], expected[name] = (got, conn.in_transaction), (want, False)
+        finally:
+            conn.close()
+    assert answered == expected
 
 
 # --- incremental FTS indexing --------------------------------------------------

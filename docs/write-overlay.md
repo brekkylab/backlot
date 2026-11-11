@@ -71,21 +71,23 @@ message and every message it holds, a map's entries included, and dropped.
 
 `documents.batchUpdate` applies the requests [the endpoint table](supported-sources.md) lists, to a
 Doc's text and its text and paragraph styles, its lists, its named ranges, its headers, footers,
-footnotes and page breaks, and its tabs, each request applied to the Doc the ones before it left,
-and all of them or none kept. A location or range names its tab and its header, footer or footnote
-as real's do, the first tab when it names none, and `replaceAllText` replaces in every tab and every
-segment of each unless `tabsCriteria` lists the tabs. Inserted text takes the style of the text
-beside it as real gives it, a heading a newline splits gives the new part a `headingId` of its own,
-and every write moves the Doc's `revisionId`, which `requiredRevisionId` is checked against, but for
-a batch holding only tab updates that each leave a tab's title, index and parent as they were and
-name no `iconEmoji`, and `replaceAllText` requests whose `tabsCriteria` lists no tab. A Doc whose
-corpus record states only `content` reads as one paragraph per line, and its first write stores that
-reading. `replaceAllText` compares text as real folds it (a letter with a mark as its base letter,
-`æ` as `ae`, `ß` as `ss`), and reads a regular expression with `java.util.regex`'s syntax, classes
-and properties, refusing what Java refuses; an insert inside a grapheme cluster, by Unicode's text
-segmentation, is refused. Drive reads what the write left: `files.export` and fullText search see
-the new text, `modifiedTime` moves to the write's time, and `version` moves by one while `size`
-stays what it was, a blank Doc's first write taking it from 1 to 1024 as real's does.
+footnotes and page breaks, its tables, their cells' styles and merged cells, its section breaks and
+section styles, each tab's document and named styles, and its tabs, each request applied to the Doc
+the ones before it left, and all of them or none kept. A location or range names its tab and its
+header, footer or footnote as real's do, the first tab when it names none, and `replaceAllText`
+replaces in every tab and every segment of each unless `tabsCriteria` lists the tabs. Inserted text
+takes the style of the text beside it as real gives it, a heading a newline splits gives the new
+part a `headingId` of its own, and every write moves the Doc's `revisionId`, which
+`requiredRevisionId` is checked against, but for a batch holding only tab updates that each leave a
+tab's title, index and parent as they were and name no `iconEmoji`, and `replaceAllText` requests
+whose `tabsCriteria` lists no tab. A Doc whose corpus record states only `content` reads as one
+paragraph per line, and its first write stores that reading. `replaceAllText` compares text as real
+folds it (a letter with a mark as its base letter, `æ` as `ae`, `ß` as `ss`), and reads a regular
+expression with `java.util.regex`'s syntax, classes and properties, refusing what Java refuses; an
+insert inside a grapheme cluster, by Unicode's text segmentation, is refused. Drive reads what the
+write left: `files.export` and fullText search see the new text, `modifiedTime` moves to the write's
+time, and `version` moves by one while `size` stays what it was, a blank Doc's first write taking it
+from 1 to 1024 as real's does.
 
 A style is kept as real keeps it: a colour to the nearest 255th, a font size from 1 to 512 points, a
 weight of 700 as bold, bold at 400 over a weight up to 700 and not over a heavier one, the weight
@@ -98,6 +100,20 @@ the fewest any paragraph of the request opened with, at most 8, and a named rang
 text written around it, as real moves one, until a delete or a replacement leaves it empty.
 `files.export` writes each list item's marker and, in Markdown, an anchor on each heading a link
 goes to.
+
+A merge moves the text of the cells it covers into the first, which spans them, and gives a merged
+row of no height one 10 PT taller than its largest font; an unmerge splits it again and leaves the
+text where it is, and a merge inside one merged cell changes nothing. A row or column added or
+deleted beside a merged cell grows, shrinks or takes it as real's does, a merged cell whose first
+row or column goes moving with its text to the first one left; text, a table, a style or a list
+written at a cell a merged cell covers goes to the merged cell; header rows reach to the end of a
+merged cell among them, a border set on a cell is set on the cell across that edge too, and
+`files.export` leaves out what a merged cell covers. A section break stands after the newline it
+inserts, which at the start of a list item is in no list, and is deleted only with that newline.
+Margins that leave too little of the page are cut as real cuts them, a page near a paper size takes
+that size, a section's columns are as wide as real's for the page and margins they sit between, the
+last column's padding dropped, and a named style a write changed is what Markdown marks that style's
+text with and what a text style set over it is compared with.
 
 A table is made as `insertTable` makes one, after a newline it inserts, and a row or a column takes
 the style of the cells it is made beside; the last row or column deleted takes the table with it.
@@ -173,11 +189,17 @@ field list, so the ordering divergence below has no entry to live in and is stat
   data sources, and every cell format but a number format are read and not kept.
 - **`spreadsheets.batchUpdate`.** Not served, so a workbook's sheets change only by
   `spreadsheets.create` and `sheets.copyTo`.
-- **Docs requests past text, styles, lists, named ranges, segments, tabs and tables.**
-  `documents.batchUpdate` applies the text, style, bullet, named-range, header, footer, footnote,
-  page-break, tab and table requests above. Every other request kind, a cell's, a row's and a
-  column's style and merging cells among them, and the `SUGGEST` write mode, is refused naming
-  itself, where real applies it.
+- **Suggestions, comments, dropdowns, smart chips and images in Docs.** Nothing here makes one, so a
+  request naming one (`acceptSuggestion`, `addCommentReply`, `deleteDropdownDefinition`,
+  `replaceImage` and the rest) is refused as real refuses an id naming nothing, and the requests and
+  write mode that make one (`insertComment`, `createDropdownDefinition`, `insertDate`,
+  `insertPerson`, `insertRichLink`, `insertInlineImage`, `SUGGEST`) are refused naming themselves,
+  where real applies them. `replaceImage` checks only its URL's scheme and host before the object
+  id, where real fetches the image first and refuses one it cannot fetch
+  (`The provided image was not found.`), measured 2026-11-09.
+- **A heading a merge empties.** A merge leaves a heading it moves out of a cell as an empty normal
+  paragraph of the heading's style, where real also states normal text's spacing and indents on
+  it, measured 2026-11-09.
 - **The order of a Doc's named ranges.** Real serves `namedRanges` in the order a Java `HashMap`
   iterates their names, and Backlot fills one in the order the ranges were made: of 28 reads
   measured, one served two names that share a bucket the other way round, and so did both of two

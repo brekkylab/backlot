@@ -1265,6 +1265,9 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
     ).json()
     assert {r["title"] for r in narrowed["results"]} == {"Engineering Handbook"}
     assert narrowed["totalSize"] == 1
+    content = narrowed["results"][0]["content"]
+    names = ("childTypes", "macroRenderedOutput", "restrictions")
+    assert {name: content.get(name) for name in names} == dict.fromkeys(names, {})
 
     other_space = client.get(
         "/atlassian/wiki/rest/api/search",

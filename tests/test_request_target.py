@@ -1031,8 +1031,9 @@ def _rows():
     yield pytest.param(
         b"HEAD", "/github/", b"repos/acme/pipeline%00", "github nul", 1, b"", b"x", id="HEAD nul"
     )
-    # and on a write Backlot does not serve (``backlot.routers.github.is_an_unserved_operation``),
-    # which real answered so on 2026-11-11 to a `PATCH` with `Content-Length: 0` and no body
+    # GitHub's `%00` 400 on a write Backlot does not serve
+    # (``backlot.routers.github.is_an_unserved_operation``), as real answered a `PATCH` with
+    # `Content-Length: 0` and no body on 2026-11-11
     yield pytest.param(
         b"PATCH",
         "/github/",

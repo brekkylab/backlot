@@ -7941,3 +7941,33 @@ def test_github_an_unparseable_callers_spent_window_403_carries_the_tokens_sente
         r = c.get(path, headers={"Authorization": value})
         assert r.status_code == 403
         _assert_unparseable_refusal(r, anonymous, getattr(gh, docs))
+
+
+def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
+    """Measured (api.github.com, 2026-11-10): `/repositories/{id}` followed by other characters
+    reads the id's leading integer and answers the repository (`{id}x`, `{id}.5`,
+    `{id}%2Fbranches`), where paths under it (`{id}x/branches/main`, `{id}%2Fx/branches/main`)
+    answer the 404 of a path no route matches. A prefix of other characters (`x{id}`) is the
+    repository route's 404."""
+    c, _ = gh_client
+    rid = synth.github_user_id("codebase")
+    expected = c.get(f"/github/repositories/{rid}", headers=gh_admin_h).json()
+    assert expected["name"] == "codebase"
+
+    for rest in (f"{rid}x", f"{rid}.5", f"{rid}%2Fbranches"):
+        r = c.get(f"/github/repositories/{rest}", headers=gh_admin_h)
+        assert r.status_code == 200, rest
+        assert r.json() == expected, rest
+
+    for rest in (f"{rid}x/branches/main", f"{rid}%2Fx/branches/main"):
+        r = c.get(f"/github/repositories/{rest}", headers=gh_admin_h)
+        assert r.status_code == 404, rest
+        assert r.json() == {
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest",
+            "status": "404",
+        }, rest
+
+    r = c.get(f"/github/repositories/x{rid}", headers=gh_admin_h)
+    assert r.status_code == 404
+    assert r.json()["documentation_url"].endswith("#get-a-repository")

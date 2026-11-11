@@ -1775,6 +1775,11 @@ def canonical_id_path(conn, org: str, path: str) -> str | None:
     holds (401) from one it does not (404) — and since the id is ``github_user_id(name)``, confirm
     a guessed name that way.
 
+    Real reads the leading integer of `/repositories/{id}` when hitting the repository endpoint
+    directly (`{id}x`, `{id}.5` and `{id}%2Fbranches` all answer as `{id}`), but paths under it
+    (`{id}x/branches/main`) only route when `{id}` is strictly digits, answering the unrouted 404
+    when extra characters trail the id.
+
     An id TWO repositories share names neither. `github_user_id` is `1000 + digest % 9_000_000` and
     so not injective — `repo485` and `repo4107` both hash to 7755679 — and answering with whichever
     name sorts first would walk a client onto another repository's page with nothing in the response
@@ -1791,10 +1796,14 @@ def canonical_id_path(conn, org: str, path: str) -> str | None:
     if parts[1] == "organizations":
         named = org if str(synth.github_user_id(org)) == parts[2] else parts[2]
         return "/".join(["/github/orgs", named, *tail]) + slash
+    if tail and not parts[2].isdigit():
+        return None
+    m = re.match(r"^(\d+)", parts[2])
+    target_id = m.group(1) if m is not None else parts[2]
     hits = [
         r["name"]
         for r in store.list_containers(conn, "github")
-        if str(synth.github_user_id(r["name"])) == parts[2]
+        if str(synth.github_user_id(r["name"])) == target_id
     ]
     named = hits[0] if len(hits) == 1 else parts[2]
     return "/".join(["/github/repos", org, named, *tail]) + slash

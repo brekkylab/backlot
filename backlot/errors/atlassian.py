@@ -2908,12 +2908,12 @@ def jaxrs_not_found(url: str, *, as_json: bool) -> tuple[str, str]:
     )
 
 
-#: Confluence answers the product's own HTML page, not the API 404, for a path that extends a
-#: resource it serves (which ones is ``backlot.routers.atlassian._CONFLUENCE_HTML_RESOURCES``) and
-#: for `/wiki/rest/nope` outside the API mount, with `Accept: application/json` and without it
-#: alike, measured 2026-09-22. Real's body is a ~30KB build-specific shell whose script tags name
-#: the deploy; this is a stub with the status and the media type, which is the part a client
-#: branches on.
+#: Confluence answers the product's own HTML page, not the API 404, for some of the paths it serves
+#: nothing at, the ones ``backlot.routers.atlassian._confluence_serves_html`` picks, with
+#: `Accept: application/json` and without it alike below `space` and `content` and at
+#: `/wiki/rest/nope`, measured 2026-09-22. Real's body is a ~30KB build-specific shell whose script
+#: tags name the deploy; this is a stub with the status and the media type, which is the part a
+#: client branches on.
 HTML_MEDIA_TYPE = "text/html;charset=UTF-8"
 #: Jira's own site page for a path it serves nothing at — `/foo`, `/ex/jira/x`, `/restx/api/3/…`,
 #: titled "Oops, you've found a dead link." — spells the charset in lower case, measured 2026-09-30.

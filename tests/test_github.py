@@ -2637,6 +2637,7 @@ _ESCAPED_SLASH_ROWS = [
     ("/repos/{org}%2Fgateway", "/nope", 404),
     ("/orgs/{org}%2Frepos", "/orgs/nope", 404),
     ("/search%2Fcode?q=x", "/nope", 404),
+    ("/agents%2Frepos/{org}/gateway/nosuch", "/nope", 404),
     ("{diffable}/statuses%2F", "/nope", 404),
     ("{gateway}/issues%2F{issue}", "/nope", 404),
     ("{gateway}/issues/{issue}%2F1", "{gateway}/issues/{issue}x", 404),
@@ -2659,8 +2660,8 @@ _ESCAPED_SLASH_ROWS = [
 
 
 def test_github_an_escaped_slash_is_read_where_real_reads_it(gh_client, gh_admin_h, gh_org):
-    """Each row's path answers here with the row's status and, byte for byte, the body of the path
-    beside it."""
+    """Each row's path answers here with the row's status, byte for byte the body of the path
+    beside it, and the header names of that path that ``layered`` keeps."""
     c, _ = gh_client
     names = {
         **{
@@ -2677,14 +2678,17 @@ def test_github_an_escaped_slash_is_read_where_real_reads_it(gh_client, gh_admin
             path = path.replace(name, value)
         return f"/github{path}"
 
+    def layered(response):
+        return [n for n in response.headers if n.startswith(("x-ratelimit-", "x-github-api-v"))]
+
     answered, expected = {}, {}
     for sent, control, status in _ESCAPED_SLASH_ROWS:
         r = c.get(filled(sent), headers=gh_admin_h)
         same = c.get(filled(control), headers=gh_admin_h)
         # the row is what went on the wire, not a spelling the client normalised first
         wire = r.request.url.raw_path.decode()
-        answered[sent] = (wire, r.status_code, same.status_code, r.content)
-        expected[sent] = (filled(sent), status, status, same.content)
+        answered[sent] = (wire, r.status_code, same.status_code, r.content, layered(r))
+        expected[sent] = (filled(sent), status, status, same.content, layered(same))
     assert answered == expected
 
 

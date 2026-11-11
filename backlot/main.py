@@ -1259,18 +1259,21 @@ async def route_a_github_path_the_way_github_does(request: Request, call_next):
     (:func:`_github_path_as_real_routes_it`): a `%2F` is part of the segment that holds it, but in
     the branch, ref, commit or file a route reads as the rest of the path it stands for a `/`.
 
-    Measured against api.github.com on 2026-11-10 with a token, each request with its own
-    cache-buster. `repos/octocat/Hello-World%2Fissues%2F1` was the 404 of a repository that does
+    Measured against api.github.com on 2026-11-10 and 2026-11-11 with a token, each request with its
+    own cache-buster. `repos/octocat/Hello-World%2Fissues%2F1` was the 404 of a repository that does
     not exist, `orgs/psf%2Frepos` the organization route's 404, and `search%2Fcode`,
-    `repos/psf/requests/statuses%2F` and `repos/octocat/Hello-World/issues%2F1` the 404 of a path
-    no route matches. On Hello-World, `issues/1%2F1`, `issues/1%2F`, `issues/1%2Fx`,
-    `issues/1%252F1`, `issues/1%2F1/comments` and `pulls/1%2F1` answered as `issues/1x`,
-    `issues/1x/comments` and `pulls/1x` do. On psf/requests, `branches/`, `commits/`,
+    `repos/psf/requests/statuses%2F`, `repos/octocat/Hello-World/issues%2F1` and
+    `agents%2Frepos/psf/gateway/nosuch` the 404 of a path no route matches, the last with no
+    credential and with `Bearer nope` too. On Hello-World, `issues/1%2F1`, `issues/1%2F`,
+    `issues/1%2Fx`, `issues/1%252F1`, `issues/1%2F1/comments` and `pulls/1%2F1` answered as
+    `issues/1x`, `issues/1x/comments` and `pulls/1x` do. On psf/requests, `branches/`, `commits/`,
     `git/ref/heads/`, `git/trees/` and `statuses/` followed by `proposed%2F3.0.0`,
     `git/ref/heads%2Fproposed%2F3.0.0` and `contents/src%2Frequests%2Fapi.py` answered as the
     spelling with a `/` does, as `branches/`, `git/trees/` and `contents/` did under
     `repositories/{id}`, while `branches/proposed%252F3.0.0` and
-    `git/ref/heads%2Fproposed%252F3.0.0` answered as a branch the repository does not have.
+    `git/ref/heads%2Fproposed%252F3.0.0` answered as a branch the repository does not have. On
+    2026-11-11 each of these paths carried the same `x-ratelimit-*` and
+    `x-github-api-version-selected` header names as the answer named for it.
 
     Registered after :func:`resolve_github_id_paths`, which makes it the outer of the two, so an
     id-keyed path is routed with its `%2F` intact before the id is resolved to its login-keyed

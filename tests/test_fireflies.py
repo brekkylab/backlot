@@ -1170,40 +1170,77 @@ def test_fireflies_unknown_scope_is_a_field_error_not_a_silent_widening(client, 
     assert ok.content.startswith(b'{"data":')
 
 
-def test_fireflies_email_filter_with_lone_surrogate_is_an_internal_error(client, admin_h):
-    """An email filter holding a lone surrogate draws real's INTERNAL_SERVER_ERROR at 200 rather
-    than invalid_arguments: measured against api.fireflies.ai on 2026-10-27 (UTC) for host_email,
-    organizer_email and participant_email."""
+def test_fireflies_an_email_filter_holding_a_lone_surrogate_answers_as_real(client, admin_h):
+    """Each address, sent as `$x` since a document cannot spell a lone surrogate, draws what real
+    answered it with, its `correlationId` eight letters and digits."""
+
+    def thrown(column=21):
+        return (
+            '{"errors":[{"friendly":false,"message":"Something unexpected happened. Please try '
+            'again","locations":[{"line":1,"column":%d}],"path":["transcripts"],'
+            '"code":"INTERNAL_SERVER_ERROR","extensions":{"correlationId":"<8>"}}],'
+            '"data":{"transcripts":null}}\n' % column
+        )
+
+    def refused(name="hostEmail"):
+        message = f"{name} must be a valid email address"
+        return (
+            '{"errors":[{"friendly":true,"message":"Invalid argument(s) were provided",'
+            '"locations":[{"line":1,"column":21}],"path":["transcripts"],"code":"invalid_arguments",'
+            '"extensions":{"code":"invalid_arguments","correlationId":"<8>","status":400,'
+            '"metadata":{"fields":[{"name":"%s","message":"%s","constraints":[{"type":"IsEmailOnly",'
+            '"message":"%s"}]}]},"helpUrls":'
+            '["https://docs.fireflies.ai/miscellaneous/error-codes#invalid_arguments"]}}],'
+            '"data":{"transcripts":null}}\n' % (name, message, message)
+        )
+
+    high, low = "\ud800", "\udc00"
+    one = "query($x: String) { transcripts(%s: $x, limit: 2) { id } }"
+    some = "query($x: [String!]) { transcripts(%s: $x, limit: 2) { id } }"
+    served = '{"data":{"transcripts":[]}}\n'
+    wanted = {
+        (one % "host_email", f"x{high}@example.com"): thrown(),
+        (one % "host_email", "x\ufffd@example.com"): refused(),
+        (one % "host_email", "x@example.com"): served,
+        (one % "organizer_email", f"x{high}@example.com"): thrown(),
+        (one % "organizer_email", "x\ufffd@example.com"): refused("organizerEmail"),
+        (one % "organizer_email", "x@example.com"): served,
+        (one % "participant_email", f"x{high}@example.com"): thrown(),
+        (one % "participant_email", "x\ufffd@example.com"): refused("participantEmail"),
+        (one % "participant_email", "x@example.com"): served,
+        (one % "host_email", f"x{low}@example.com"): thrown(),
+        (one % "host_email", high): thrown(),
+        (one % "host_email", f"x@exa{high}mple.com"): thrown(),
+        (one % "host_email", f"x{high}@" + "a" * 250 + ".com"): refused(),
+        (one % "host_email", "a" * 64 + f"@exa{high}mple.com"): thrown(),
+        (one % "host_email", "a" * 65 + f"@exa{high}mple.com"): refused(),
+        (one % "host_email", "a" * 65 + f"{high}@example.com"): thrown(),
+        (one % "host_email", "x\U0001f600@example.com"): refused(),
+        (some % "participants", (f"x{high}@example.com",)): thrown(24),
+        (some % "organizers", (f"x{high}@example.com",)): thrown(24),
+        (some % "participants", ("bad", f"x{high}@example.com")): thrown(24),
+        (some % "participants", (f"x{high}@example.com", "bad")): thrown(24),
+        (
+            "query($x: String) { transcripts(host_email: $x, limit: 0) { id } }",
+            f"x{high}@example.com",
+        ): thrown(),
+        (
+            'query($x: String) { transcripts(host_email: $x, participant_email: "x@example.com", '
+            "limit: 2) { id } }",
+            f"x{high}@example.com",
+        ): thrown(),
+    }
     headers = {**admin_h, "Content-Type": "application/json"}
-    for field in ("host_email", "organizer_email", "participant_email"):
-        doc = f"query($x: String) {{ transcripts({field}: $x, limit: 2) {{ id }} }}"
-        body = json.dumps({"query": doc, "variables": {"x": "x\ud800@example.com"}}).encode()
+    answered = {}
+    for query, x in wanted:
+        variables = {"x": list(x) if isinstance(x, tuple) else x}
+        body = json.dumps({"query": query, "variables": variables}).encode()
         r = client.post("/fireflies/graphql", content=body, headers=headers)
-        assert r.status_code == 200
-        payload = r.json()
-        assert payload["data"] == {"transcripts": None}
-        err = payload["errors"][0]
-        assert err["code"] == "INTERNAL_SERVER_ERROR"
-        assert err["friendly"] is False
-        assert err["message"] == "Something unexpected happened. Please try again"
-        assert err["path"] == ["transcripts"]
-
-        # An address with U+FFFD in its place is the invalid_arguments field error
-        body_invalid = json.dumps(
-            {"query": doc, "variables": {"x": "x\ufffd@example.com"}}
-        ).encode()
-        r_invalid = client.post("/fireflies/graphql", content=body_invalid, headers=headers)
-        assert r_invalid.status_code == 200
-        err_invalid = r_invalid.json()["errors"][0]
-        assert err_invalid["code"] == "invalid_arguments"
-        assert err_invalid["friendly"] is True
-
-        # A valid address executes cleanly with no errors
-        body_ok = json.dumps({"query": doc, "variables": {"x": "x@example.com"}}).encode()
-        r_ok = client.post("/fireflies/graphql", content=body_ok, headers=headers)
-        assert r_ok.status_code == 200
-        assert r_ok.json()["data"] == {"transcripts": []}
-        assert "errors" not in r_ok.json()
+        answered[query, x] = (
+            r.status_code,
+            re.sub(r'"correlationId":"[A-Za-z0-9]{8}"', '"correlationId":"<8>"', r.text),
+        )
+    assert answered == {row: (200, text) for row, text in wanted.items()}
 
 
 def test_fireflies_request_errors_are_400_with_no_data_key(client, admin_h):

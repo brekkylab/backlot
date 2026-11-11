@@ -26,6 +26,7 @@ import string
 from graphql import GraphQLError
 
 from backlot import store, synth
+from backlot.graphql import node_utf8
 
 # Fireflies' own page size and its documented hard cap.
 PAGE_DEFAULT = 25
@@ -353,6 +354,15 @@ def _internal_error(context) -> GraphQLError:
     )
 
 
+def _thrown_error(context) -> GraphQLError:
+    """Real's ``INTERNAL_SERVER_ERROR`` for an argument its validation throws on, a field error at
+    200 that ``backlot.routers.fireflies._envelope`` writes."""
+    return GraphQLError(
+        "Something unexpected happened. Please try again",
+        extensions={"correlationId": _correlation_id(context)},
+    )
+
+
 def _not_in_team(context) -> GraphQLError:
     """Real's answer to a `user` id that names nobody, an email address among them, the caller's
     own too: the null stands and a ``not_in_team`` field error goes beside it, the id read as
@@ -413,19 +423,27 @@ _TLD = re.compile(
     "[a-zA-Z\u00a1-\u00a8\u00aa-\ud7ff\uf900-\ufdcf\ufdf0-\uffef]{2,}|[xX][nN][a-zA-Z0-9-]{2,}"
 )
 _LABEL = re.compile("[a-zA-Z0-9_\u00a1-\uffff-]+")
-_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
-def _is_email(value: str) -> bool:
+def _is_email(value: str) -> bool | None:
     """validator.js 13.15.15's ``isEmail`` with its default options, which answered as
-    api.fireflies.ai's ``IsEmailOnly`` did for each address sent on 2026-10-21. The address is read
-    as JavaScript reads it, in UTF-16 code units, but for the local part's and domain's byte limits,
-    which count UTF-8."""
+    api.fireflies.ai's ``IsEmailOnly`` did for each address sent on 2026-10-21, or None where it
+    throws. The address is read as JavaScript reads it, in UTF-16 code units, but for the local
+    part's and domain's byte limits, which count UTF-8 and are checked in that order. Counting
+    throws on a lone surrogate: real answered an address holding one with :func:`_thrown_error`
+    but for one over 254 units and one whose local part, ahead of the surrogate, is over 64 bytes,
+    which it refused (2026-10-27, 2026-11-10 and 2026-11-11)."""
     raw = value.encode("utf-16-le", "surrogatepass")
     s = "".join(chr(int.from_bytes(raw[i : i + 2], "little")) for i in range(0, len(raw), 2))
     user, _, domain = s.rpartition("@")
-    if len(s) > 254 or _utf8_len(user) > 64 or _utf8_len(domain) > 254:
+    if len(s) > 254:
         return False
+    for part, limit in ((user, 64), (domain, 254)):
+        size = _utf8_len(part)
+        if size is None:
+            return None
+        if size > limit:
+            return False
     labels = domain.split(".")
     if (
         len(labels) < 2
@@ -446,9 +464,12 @@ def _is_email(value: str) -> bool:
     return all(_LOCAL_PART.fullmatch(p) for p in user.split("."))
 
 
-def _utf8_len(units: str) -> int:
+def _utf8_len(units: str) -> int | None:
+    """How many bytes of UTF-8 ``units`` encode to, or None where they hold a lone surrogate."""
     text = units.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "surrogatepass")
-    return len(text.encode("utf-8", "surrogatepass"))
+    if node_utf8.holds_a_lone_surrogate(text):
+        return None
+    return len(text.encode("utf-8"))
 
 
 def _not_a_js_date(value) -> bool:
@@ -482,7 +503,10 @@ def _validate_transcripts(arguments):
     holds a value (``""`` does not) needs a ``keyword`` holding a character outside ``_JS_SPACE``,
     and a ``scope`` spelled other than ``title``, ``sentences`` or ``all`` is refused, ``""``
     included; real lists ``scope`` ahead of the other arguments it refuses (api.fireflies.ai,
-    2026-10-21 and 2026-10-22)."""
+    2026-10-21 and 2026-10-22). An address in a singular filter, or anywhere in a plural one, that
+    :func:`_is_email` answers None for raises :func:`_thrown_error` instead, as real answered one
+    beside ``limit: 0``, beside a second singular filter and after a refused address
+    (2026-11-10)."""
     fields = {}
 
     def add(name, kind, message):
@@ -521,8 +545,11 @@ def _validate_transcripts(arguments):
         value = arguments[key]
         if value is None:
             continue
-        if key.endswith("_email") and value and _SURROGATE.search(value):
-            raise _internal_error(arguments["info"].context)
+        addresses = (
+            value if name in _PLURAL else [value] if key.endswith("_email") and value else []
+        )
+        if None in map(_is_email, addresses):
+            raise _thrown_error(arguments["info"].context)
         if name in _PLURAL:
             if held:
                 add(name, "exclusiveFields", f"{_EXCLUSIVE}, {name}.")

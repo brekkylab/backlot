@@ -20847,6 +20847,644 @@ _TABLE_STYLE_ROWS = [
 ]
 
 
+def _indent(start, end, first, rest):
+    """A paragraph's `indentFirstLine` and `indentStart`, in points."""
+    return _ps(
+        start, end, "indentStart,indentFirstLine", indentStart=_PT(rest), indentFirstLine=_PT(first)
+    )
+
+
+def _unbullet(start, end):
+    return {"deleteParagraphBullets": {"range": {"startIndex": start, "endIndex": end}}}
+
+
+def _in_segment(segment, request):
+    """``request`` with ``segment`` as the `segmentId` of its range or location."""
+    ((kind, body),) = request.items()
+    where = "range" if "range" in body else "location"
+    return {kind: body | {where: {"segmentId": segment, **body[where]}}}
+
+
+# Paragraphs in no list after list items (`gdocs._Nesting`), each row's Doc read back as the
+# `text/markdown` export (`markdown`) real gave of it
+_NESTED_MARKDOWN_ROWS = [
+    # a paragraph in no list 36 PT in, one step, after an item goes under the item and joins it, and
+    # a paragraph at no indent after it stands apart
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 5, 18, 36)],
+        ],
+        "markdown",
+        "1. aa  \n   bb\n\ncc",
+    ),
+    # `bb` goes under the item and joins it with its first line 36 PT in, not 18
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 5, 36, 36)],
+        ],
+        "markdown",
+        "1. aa  \n   bb",
+    ),
+    # `* cc` joins `bb`, which went under `* aa` and joined it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 8)],
+            [_unbullet(4, 5)],
+            [_indent(4, 5, 18, 36)],
+        ],
+        "markdown",
+        "* aa  \n  bb  \n* cc",
+    ),
+    # a paragraph 36 PT in after no item goes under none
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_indent(4, 5, 18, 36)],
+        ],
+        "markdown",
+        "aa  \nbb",
+    ),
+    # 30 PT past the items it goes under, here none, is a quote, `> `, apart from `1. aa`
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 5, 10, 30)],
+        ],
+        "markdown",
+        "1. aa\n\n> bb",
+    ),
+    # a line of two spaces before an item it does not join is nothing, and the breaks either side of
+    # it three newlines
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n  \nbb")],
+            [_bullets(7, 8)],
+        ],
+        "markdown",
+        "aa\n\n\n* bb",
+    ),
+    # 60 PT is `> > `, and a paragraph under no item joins one under none before it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_indent(4, 5, 0, 60)],
+        ],
+        "markdown",
+        "aa  \n> > bb",
+    ),
+    # 101 PT, two steps, goes under the one item open, 65 PT past it, which is no quote, and stands
+    # apart from an item it is not one step past
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 5, 0, 101)],
+        ],
+        "markdown",
+        "1. aa\n\n   bb",
+    ),
+    # 66 PT, one step, goes under the first of two items open, 30 PT past it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\tcc\nbb")],
+            [_bullets(1, 6)],
+            [_indent(7, 8, 0, 66)],
+        ],
+        "markdown",
+        "* aa  \n  * cc\n\n  > bb",
+    ),
+    # `dd` joins `cc`, both four steps in under `1. aa`, as `> bb`, one step in, joined `1. aa`;
+    # `cc` stands apart from `> bb`, at another step
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc\ndd")],
+            [_bullets(1, 12, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_unbullet(4, 5), _unbullet(7, 8), _unbullet(10, 11)],
+            [_indent(4, 5, 66, 66), _indent(7, 8, 144, 144), _indent(10, 11, 144, 144)],
+        ],
+        "markdown",
+        "1. aa  \n   > bb\n\n   cc  \n   dd",
+    ),
+    # a paragraph two or four steps in after an item under another goes under both
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\tbb\ncc\ndd\nee")],
+            [_bullets(1, 16, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_unbullet(7, 8), _unbullet(10, 11), _unbullet(13, 14)],
+            [_indent(7, 8, 72, 72), _indent(10, 11, 144, 144), _indent(13, 14, 150, 150)],
+        ],
+        "markdown",
+        "1. aa  \n   1. bb  \n      cc\n\n      dd  \n      ee",
+    ),
+    # `ff` joins `ee`, both one step in under `1. aa`, as `dd` joined `1. cc`, the last item, where
+    # `bb` did not join `1. aa`; in the row after, `ff` stands apart from `ee` as `dd` did not join
+    # `1. cc`, where `bb` joined `1. aa`
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\n\tcc\ndd\nee\nff")],
+            [_bullets(1, 19, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_unbullet(4, 5), _unbullet(10, 11), _unbullet(13, 14), _unbullet(16, 17)],
+            [
+                _indent(4, 5, 72, 72),
+                _indent(10, 11, 72, 72),
+                _indent(13, 14, 36, 36),
+                _indent(16, 17, 36, 36),
+            ],
+        ],
+        "markdown",
+        "1. aa\n\n   bb\n\n   1. cc  \n      dd\n\n   ee  \n   ff",
+    ),
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\n\tcc\ndd\nee\nff")],
+            [_bullets(1, 19, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_unbullet(4, 5), _unbullet(10, 11), _unbullet(13, 14), _unbullet(16, 17)],
+            [
+                _indent(4, 5, 36, 36),
+                _indent(10, 11, 144, 144),
+                _indent(13, 14, 36, 36),
+                _indent(16, 17, 36, 36),
+            ],
+        ],
+        "markdown",
+        "1. aa  \n   bb  \n   1. cc\n\n      dd\n\n   ee\n\n   ff",
+    ),
+    # `bb` and `cc`, under the item at one step after a table, stand apart
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertTable": {"rows": 1, "columns": 1, "location": {"index": 4}}}],
+        ],
+        "markdown",
+        "* aa\n\n\n|  |\n| :---- |\n\n  bb\n\n  cc",
+    ),
+    # `cc`, under the item after a table, stands apart from the item after it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc\nee")],
+            [_bullets(1, 12)],
+            [_unbullet(4, 8)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertTable": {"rows": 1, "columns": 1, "location": {"index": 7}}}],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n\n|  |\n| :---- |\n\n  cc\n\n* ee",
+    ),
+    # with a heading in a table's place, `cc` and `dd` after it, under the item at one step, join
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\nhh\ncc\ndd")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 15, 36, 36)],
+            [_ps(7, 8, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "1. aa  \n   bb\n\n   ## hh\n\n   cc  \n   dd",
+    ),
+    # `xx`, in the paragraph a section break after `bb` made, stands apart from `bb`, and `cc`
+    # from `xx`, all three under the item at one step
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+            [_ins(8, "xx")],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n  xx\n\n  cc",
+    ),
+    # after a section break after `bb`, under the item, the empty paragraph the break made stands
+    # apart, a line of three spaces, and `cc` apart from it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 8, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+        ],
+        "markdown",
+        "1. aa  \n   bb\n\n   \n\n   cc",
+    ),
+    # under a `*` item that empty paragraph is a line of two spaces, and so nothing before `cc`
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 8, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n\n  cc",
+    ),
+    # an item after a section break after `bb`, under an item, stands apart from `bb`
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 2)],
+            [_indent(4, 6, 36, 36)],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+            [_ins(8, "cc")],
+            [_bullets(8, 10)],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\n* cc",
+    ),
+    # an empty paragraph after an item does not stop the next going under it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\nbb")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(5, 6, 18, 36)],
+        ],
+        "markdown",
+        "1. aa\n\n   bb",
+    ),
+    # a paragraph with text under no item, at no indent here, stops the next going under the item
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\ncc\nbb")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(7, 8, 18, 36)],
+        ],
+        "markdown",
+        "1. aa\n\ncc  \nbb",
+    ),
+    # a heading one step in goes under the item and stands apart from it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_ps(4, 5, "namedStyleType", namedStyleType="HEADING_2")],
+            [_indent(4, 5, 18, 36)],
+        ],
+        "markdown",
+        "1. aa\n\n   ## bb",
+    ),
+    # `* ee` stands apart from `dd`, under no item, though `bb` joined `* aa`
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ndd\nee")],
+            [_bullets(1, 12)],
+            [_unbullet(4, 5), _unbullet(7, 8)],
+            [_indent(4, 5, 18, 36), _indent(7, 8, 0, 0)],
+        ],
+        "markdown",
+        "* aa  \n  bb\n\ndd\n\n* ee",
+    ),
+    # a paragraph under no item stops the next going under the item with an empty paragraph between
+    # them
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\n\ndd")],
+            [_bullets(1, 2)],
+            [_indent(8, 9, 18, 36)],
+        ],
+        "markdown",
+        "* aa\n\nbb\n\ndd",
+    ),
+    # an empty paragraph 30 PT in is `> ` and does not stop the next going under the item
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\ncc")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 5, 30, 30), _indent(5, 6, 18, 36)],
+        ],
+        "markdown",
+        "1. aa\n\n> \n\n   cc",
+    ),
+    # nor does an empty heading
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\ncc")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_ps(4, 5, "namedStyleType", namedStyleType="HEADING_2")],
+            [_indent(5, 6, 18, 36)],
+        ],
+        "markdown",
+        "1. aa\n\n## \n\n   cc",
+    ),
+    # an empty paragraph under no item right after a section break stops the next going under the
+    # item
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [{"insertSectionBreak": {"location": {"index": 3}, "sectionType": "NEXT_PAGE"}}],
+            [_bullets(1, 2)],
+            [_indent(6, 8, 36, 36)],
+        ],
+        "markdown",
+        "* aa\n\nbb",
+    ),
+    # one not right after a section break does not
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\ncc")],
+            [{"insertSectionBreak": {"location": {"index": 3}, "sectionType": "NEXT_PAGE"}}],
+            [_bullets(1, 2)],
+            [_ins(5, "xx")],
+            [_indent(5, 7, 36, 36), _indent(9, 11, 36, 36)],
+        ],
+        "markdown",
+        "* aa\n\n  xx\n\n  cc",
+    ),
+    # a footnote's content is written as a body is: a paragraph under its item, its lines after the
+    # first four spaces further in
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "ab")],
+            [_fn(2)],
+            [_in_segment("$3.0", _ins(1, "xx\nyy"))],
+            [_in_segment("$3.0", _del(0, 1))],
+            [_in_segment("$3.0", _bullets(0, 6))],
+            [_in_segment("$3.0", _unbullet(3, 4))],
+            [_in_segment("$3.0", _indent(3, 4, 18, 36))],
+        ],
+        "markdown",
+        "a[^1]b\n\n[^1]: * xx  \n      yy",
+    ),
+    # in a footnote, a quote after a numbered item
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "ab")],
+            [_fn(2)],
+            [_in_segment("$3.0", _ins(1, "xx\nyy"))],
+            [_in_segment("$3.0", _del(0, 1))],
+            [_in_segment("$3.0", _bullets(0, 3, "NUMBERED_DECIMAL_ALPHA_ROMAN"))],
+            [_in_segment("$3.0", _indent(3, 4, 10, 30))],
+        ],
+        "markdown",
+        "a[^1]b\n\n[^1]: 1. xx\n\n    > yy",
+    ),
+    # a paragraph 36 PT in, one step, in a footnote after the body's items goes under none of them
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 6)],
+            [_fn(6)],
+            [_in_segment("$4.0", _ins(1, "yy"))],
+            [_in_segment("$4.0", _del(0, 1))],
+            [_in_segment("$4.0", _indent(0, 1, 36, 36))],
+        ],
+        "markdown",
+        "* aa  \n* bb[^1]\n\n[^1]: yy",
+    ),
+    # `cc`, 36 PT in, goes under no item after `> bb`, a quote under none; the line after the
+    # vertical tab in `gg`, a quote under `* dd`, starts with its `> ` and the width of `* dd` and
+    # `* ff`, both open
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc\ndd\n\t  \n\tff\ngg\x0bz")],
+            [_bullets(1, 25)],
+            [_unbullet(4, 5), _unbullet(7, 8), _unbullet(19, 20)],
+            [_indent(4, 5, 0, 30), _indent(7, 8, 36, 36), _indent(19, 20, 0, 66)],
+        ],
+        "markdown",
+        "* aa\n\n> bb  \ncc\n\n* dd  \n  *     \n  * ff\n\n  > gg  \n>     z",
+    ),
+    # an empty line between two vertical tabs is nothing, and the hard breaks either side of it one
+    # blank line
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\x0b\x0bcc")],
+            [_bullets(1, 2, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+            [_indent(4, 5, 36, 36)],
+        ],
+        "markdown",
+        "1. aa  \n   bb\n\n   cc",
+    ),
+    # the line after a vertical tab in a quote under an item starts with its `> ` and then the
+    # item's width
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\x0b\x0bcc")],
+            [_bullets(1, 2)],
+            [_indent(4, 5, 66, 66)],
+        ],
+        "markdown",
+        "* aa  \n  > bb\n\n>   cc",
+    ),
+    # a paragraph under an item that is only a vertical tab is a line of two spaces, kept, as a hard
+    # break and not a blank line comes after it
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\x0b\ncc")],
+            [_bullets(1, 2)],
+            [_indent(4, 5, 36, 36)],
+        ],
+        "markdown",
+        "* aa  \n  \n\ncc",
+    ),
+    # a paragraph before any item goes under none, and an empty paragraph goes under items as one
+    # with text does
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\ncc\n\tdd\nee\x0bz\n\n  ")],
+            [_bullets(1, 22, "BULLET_ARROW_DIAMOND_DISC")],
+            [
+                _unbullet(1, 2),
+                _unbullet(7, 8),
+                _unbullet(13, 14),
+                _unbullet(18, 19),
+                _unbullet(19, 20),
+            ],
+            [
+                _indent(1, 2, 138, 138),
+                _indent(7, 8, 36, 36),
+                _indent(13, 14, 72, 72),
+                _indent(18, 19, 36, 36),
+                _indent(19, 20, 36, 36),
+            ],
+        ],
+        "markdown",
+        "aa\n\n- bb  \n  cc  \n  * dd  \n    ee  \n    z\n\n    \n    ",
+    ),
+    # an empty paragraph under a `*` item is a line of two spaces, and so nothing before an item it
+    # does not join
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\ncc\n\nbb")],
+            [_bullets(1, 10)],
+            [_unbullet(4, 5), _unbullet(7, 8)],
+            [_indent(4, 5, 72, 72), _indent(7, 8, 36, 36)],
+        ],
+        "markdown",
+        "* aa\n\n  cc\n\n\n* bb",
+    ),
+    # a first paragraph of two spaces is written before a heading
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "  \nhh")],
+            [_ps(4, 5, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "  \n\n## hh",
+    ),
+    # a line of two spaces before a table, not the first, is nothing
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n  ")],
+            [{"insertTable": {"rows": 1, "columns": 1, "endOfSegmentLocation": {}}}],
+        ],
+        "markdown",
+        "aa\n\n\n|  |\n| :---- |\n\n",
+    ),
+    # in a footnote, a line of two spaces before a list item
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "ab")],
+            [_fn(2)],
+            [_in_segment("$3.0", _ins(1, "xx\n  \nyy"))],
+            [_in_segment("$3.0", _del(0, 1))],
+            [_in_segment("$3.0", _bullets(6, 7))],
+        ],
+        "markdown",
+        "a[^1]b\n\n[^1]: xx\n\n\n    * yy",
+    ),
+    # of empty paragraphs under a `*` item each a blank line from the next, the first and the third
+    # are nothing
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\n\n\n\nbb")],
+            [_bullets(1, 2)],
+            [
+                _indent(4, 5, 36, 36),
+                _indent(5, 6, 72, 72),
+                _indent(6, 7, 36, 36),
+                _indent(7, 8, 72, 72),
+            ],
+        ],
+        "markdown",
+        "* aa\n\n\n  \n\n\n  \n\nbb",
+    ),
+    # a vertical tab's line of two spaces before a heading is nothing
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb\x0b  \nhh")],
+            [_ps(10, 11, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "aa  \nbb\n\n\n## hh",
+    ),
+    # a line ending in two spaces before a heading is written as it is
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb  \nhh")],
+            [_ps(9, 10, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "aa  \nbb  \n\n## hh",
+    ),
+    # a first line of two spaces before a heading is written as it is
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "  \nhh")],
+            [_ps(4, 5, "namedStyleType", namedStyleType="HEADING_2")],
+        ],
+        "markdown",
+        "  \n\n## hh",
+    ),
+]
+
+
 def _docs_served(wc, h, doc: str, part: str):
     """What a row of `_STYLE_DOC_ROWS` reads of a Doc. `grid` is each table's cells, row by row,
     as their text and spans; `moved` is not read here but by the test, as whether each batch moved
@@ -20883,6 +21521,10 @@ def _docs_served(wc, h, doc: str, part: str):
             wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": m}).text
             for m in ("text/plain", "text/markdown")
         ]
+    if part == "markdown":
+        return wc.get(
+            f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/markdown"}
+        ).text
     if part == "plain":
         return wc.get(
             f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/plain"}
@@ -21381,7 +22023,8 @@ _TABLE_LAYOUT_ROWS = [
 
 
 @pytest.mark.parametrize(
-    "doc,requests,part,expected", _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS + _TABLE_LAYOUT_ROWS
+    "doc,requests,part,expected",
+    _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS + _TABLE_LAYOUT_ROWS + _NESTED_MARKDOWN_ROWS,
 )
 def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
     wc, wh, doc, requests, part, expected

@@ -2629,6 +2629,69 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     assert answers == dict.fromkeys(numbers, (404, unknown.content)) | {"4301 digits": long}
 
 
+#: A `/github` path holding an escaped slash, a path real answers alike
+#: (``backlot.main.route_a_github_path_the_way_github_does``), and the status of the two here.
+_ESCAPED_SLASH_ROWS = [
+    ("{gateway}%2Fissues%2F{issue}", "/repos/{org}/nope", 404),
+    ("{gateway}%2Fbranches", "/repos/{org}/nope", 404),
+    ("/repos/{org}%2Fgateway", "/nope", 404),
+    ("/orgs/{org}%2Frepos", "/orgs/nope", 404),
+    ("/search%2Fcode?q=x", "/nope", 404),
+    ("/agents%2Frepos/{org}/gateway/nosuch", "/nope", 404),
+    ("{diffable}/statuses%2F", "/nope", 404),
+    ("{gateway}/issues%2F{issue}", "/nope", 404),
+    ("{gateway}/issues/{issue}%2F1", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2F", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2Fx", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2F1/comments", "{gateway}/issues/{issue}x/comments", 404),
+    ("{gateway}/pulls/{pr}%2F1", "{gateway}/pulls/{pr}x", 404),
+    ("{gateway}/issues/x%2F1", "{gateway}/issues/x", 404),
+    ("{diffable}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/branches/chore%2frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/commits/chore%2Frename", "{diffable}/commits/chore/rename", 200),
+    ("{diffable}/git/ref/heads/chore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
+    ("{diffable}/git/ref/heads%2Fchore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
+    ("{diffable}/git/ref/heads%2Fchore%252Frename", "{diffable}/git/ref/heads/nope", 404),
+    ("{diffable}/git/trees/chore%2Frename", "{diffable}/git/trees/chore/rename", 200),
+    ("{diffable}/statuses/chore%2Frename", "{diffable}/statuses/chore/rename", 200),
+    ("{codebase}/contents/src%2Fmain.py", "{codebase}/contents/src/main.py", 200),
+    ("/repositories/{id}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
+]
+
+
+def test_github_an_escaped_slash_is_read_where_real_reads_it(gh_client, gh_admin_h, gh_org):
+    """Each row's path answers here with the row's status, byte for byte the body of the path
+    beside it, and the header names of that path that ``layered`` keeps."""
+    c, _ = gh_client
+    names = {
+        **{
+            f"{{{repo}}}": f"/repos/{gh_org}/{repo}" for repo in ("gateway", "diffable", "codebase")
+        },
+        "{org}": gh_org,
+        "{issue}": str(synth.github_number("gh-issue-1")),
+        "{pr}": str(synth.github_number("gh-pr-1")),
+        "{id}": str(synth.github_user_id("diffable")),
+    }
+
+    def filled(path):
+        for name, value in names.items():
+            path = path.replace(name, value)
+        return f"/github{path}"
+
+    def layered(response):
+        return [n for n in response.headers if n.startswith(("x-ratelimit-", "x-github-api-v"))]
+
+    answered, expected = {}, {}
+    for sent, control, status in _ESCAPED_SLASH_ROWS:
+        r = c.get(filled(sent), headers=gh_admin_h)
+        same = c.get(filled(control), headers=gh_admin_h)
+        # the row is what went on the wire, not a spelling the client normalised first
+        wire = r.request.url.raw_path.decode()
+        answered[sent] = (wire, r.status_code, same.status_code, r.content, layered(r))
+        expected[sent] = (filled(sent), status, status, same.content, layered(same))
+    assert answered == expected
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which
@@ -4827,7 +4890,7 @@ _LONG_TARGET_ROWS = [
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "admin", "path"),
     *(
         ("GET", "/repos/{org}/gateway/issues/" + escape * 100 + "{pad}", "path", n, "admin", a)
-        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9")
+        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9", "%2F", "%2f")
         for n, a in ((4_096, 404), (4_097, "path"))
     ),
     ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),

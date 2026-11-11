@@ -2629,49 +2629,63 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     assert answers == dict.fromkeys(numbers, (404, unknown.content)) | {"4301 digits": long}
 
 
-def test_github_escaped_slash_in_path_stays_in_its_segment(gh_client, gh_admin_h, gh_org):
-    """An escaped slash (`%2F` or `%2f`) in a `/github` path stays in its segment rather than
-    splitting it (``backlot.main.route_a_github_path_the_way_github_does`` dates the measurement):
-    `repos/{owner}/{repo}%2Fissues%2F{number}` is the repository's 404 `#get-a-repository`, not the
-    issue at 200; on `issues/{number}%2F1`, `issues/{number}%2F`, `issues/{number}%2Fx` and
-    `issues/{number}%252F1` real reads the segment's leading integer and answers 200 with the issue,
-    its `url` ending `/issues/{number}`; `issues/{number}%2F1/comments` is 200 with comments, and
-    `pulls/{number}%2F1` is 200 with the pull. An `issues/x%2F1` with no leading integer is the
-    issue route's 404 `#get-an-issue`.
-    """
+#: A `/github` path holding an escaped slash, a path real answers alike
+#: (``backlot.main.route_a_github_path_the_way_github_does``), and the status of the two here.
+_ESCAPED_SLASH_ROWS = [
+    ("{gateway}%2Fissues%2F{issue}", "/repos/{org}/nope", 404),
+    ("{gateway}%2Fbranches", "/repos/{org}/nope", 404),
+    ("/repos/{org}%2Fgateway", "/nope", 404),
+    ("/orgs/{org}%2Frepos", "/orgs/nope", 404),
+    ("/search%2Fcode?q=x", "/nope", 404),
+    ("{diffable}/statuses%2F", "/nope", 404),
+    ("{gateway}/issues%2F{issue}", "/nope", 404),
+    ("{gateway}/issues/{issue}%2F1", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2F", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2Fx", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2F1/comments", "{gateway}/issues/{issue}x/comments", 404),
+    ("{gateway}/pulls/{pr}%2F1", "{gateway}/pulls/{pr}x", 404),
+    ("{gateway}/issues/x%2F1", "{gateway}/issues/x", 404),
+    ("{diffable}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/branches/chore%2frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/commits/chore%2Frename", "{diffable}/commits/chore/rename", 200),
+    ("{diffable}/git/ref/heads/chore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
+    ("{diffable}/git/ref/heads%2Fchore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
+    ("{diffable}/git/ref/heads%2Fchore%252Frename", "{diffable}/git/ref/heads/nope", 404),
+    ("{diffable}/git/trees/chore%2Frename", "{diffable}/git/trees/chore/rename", 200),
+    ("{diffable}/statuses/chore%2Frename", "{diffable}/statuses/chore/rename", 200),
+    ("{codebase}/contents/src%2Fmain.py", "{codebase}/contents/src/main.py", 200),
+    ("/repositories/{id}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
+]
+
+
+def test_github_an_escaped_slash_is_read_where_real_reads_it(gh_client, gh_admin_h, gh_org):
+    """Each row's path answers here with the row's status and, byte for byte, the body of the path
+    beside it."""
     c, _ = gh_client
-    issue_num = synth.github_number("gh-issue-1")
-    pr_num = synth.github_number("gh-pr-1")
-    base = f"/github/repos/{gh_org}/gateway"
+    names = {
+        **{
+            f"{{{repo}}}": f"/repos/{gh_org}/{repo}" for repo in ("gateway", "diffable", "codebase")
+        },
+        "{org}": gh_org,
+        "{issue}": str(synth.github_number("gh-issue-1")),
+        "{pr}": str(synth.github_number("gh-pr-1")),
+        "{id}": str(synth.github_user_id("diffable")),
+    }
 
-    # %2F in a repo segment stays in the repo name: 404 #get-a-repository
-    r = c.get(f"{base}%2Fissues%2F{issue_num}", headers=gh_admin_h)
-    assert r.status_code == 404
-    assert r.json()["documentation_url"].endswith("repos/repos#get-a-repository")
+    def filled(path):
+        for name, value in names.items():
+            path = path.replace(name, value)
+        return f"/github{path}"
 
-    # %2F in an issue or pull number segment reads the leading integer: 200
-    for path in (
-        f"{base}/issues/{issue_num}%2F1",
-        f"{base}/issues/{issue_num}%2F",
-        f"{base}/issues/{issue_num}%2Fx",
-        f"{base}/issues/{issue_num}%252F1",
-    ):
-        r = c.get(path, headers=gh_admin_h)
-        assert r.status_code == 200
-        assert r.json()["number"] == issue_num
-        assert r.json()["url"].endswith(f"/issues/{issue_num}")
-
-    r = c.get(f"{base}/issues/{issue_num}%2F1/comments", headers=gh_admin_h)
-    assert r.status_code == 200
-
-    r = c.get(f"{base}/pulls/{pr_num}%2F1", headers=gh_admin_h)
-    assert r.status_code == 200
-    assert r.json()["number"] == pr_num
-
-    # A segment without a leading integer is the issue route's 404 #get-an-issue
-    r = c.get(f"{base}/issues/x%2F1", headers=gh_admin_h)
-    assert r.status_code == 404
-    assert r.json()["documentation_url"].endswith("issues/issues#get-an-issue")
+    answered, expected = {}, {}
+    for sent, control, status in _ESCAPED_SLASH_ROWS:
+        r = c.get(filled(sent), headers=gh_admin_h)
+        same = c.get(filled(control), headers=gh_admin_h)
+        # the row is what went on the wire, not a spelling the client normalised first
+        wire = r.request.url.raw_path.decode()
+        answered[sent] = (wire, r.status_code, same.status_code, r.content)
+        expected[sent] = (filled(sent), status, status, same.content)
+    assert answered == expected
 
 
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):

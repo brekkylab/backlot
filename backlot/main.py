@@ -1223,66 +1223,60 @@ async def resolve_github_id_paths(request: Request, call_next):
     return await call_next(request)
 
 
-_ESCAPED_SLASH = re.compile(r"%2[Ff]")
-_ESCAPED_PERCENT_SLASH = re.compile(r"%252[Ff]", re.I)
-
-
-def _github_routed_path(scope: Scope) -> str:
-    raw = scope.get("raw_path") or scope["path"].encode()
-    text = raw.decode("latin-1")
-    text = _ESCAPED_PERCENT_SLASH.sub(lambda m: "%25252" + m.group(0)[4:], text)
-    text = _ESCAPED_SLASH.sub(lambda m: "%252" + m.group(0)[2:], text)
-    path = urllib.parse.unquote(text)
-
-    if "/contents/" in path:
-        prefix, _, rest = path.partition("/contents/")
-        rest = _ESCAPED_SLASH.sub("/", rest)
-        path = f"{prefix}/contents/{rest}"
-
-    def _read_leading_int(m: re.Match) -> str:
-        prefix = m.group(1)
-        seg = m.group(2)
-        rest = m.group(3)
-        digits_match = re.match(r"^(\d+)", seg)
-        if digits_match:
-            return prefix + digits_match.group(1) + rest
-        return prefix + seg + rest
-
-    return re.sub(
-        r"(/issues/comments/|/pulls/comments/|/issues/|/pulls/|/pull/)([^/]*(?:%2[Ff]|%252[Ff])[^/]*)(/|$)",
-        _read_leading_int,
-        path,
-        flags=re.I,
-    )
-
-
 def _a_github_path_holding_an_escaped_slash(scope: Scope) -> bool:
     raw = scope.get("raw_path") or b""
-    path = _url_path(scope)
-    return _at_or_under(path, ("/github",)) and (
-        bool(re.search(rb"%2[Ff]|%252[Ff]", raw)) or bool(re.search(r"%2[Ff]|%252[Ff]", path))
+    return raw.startswith(b"/github/") and re.search(rb"%2[Ff]", raw) is not None
+
+
+def _github_path_as_real_routes_it(scope: Scope) -> str:
+    """This scope's raw path with each segment decoded on its own and a `/` it decodes to kept as
+    `%2F`, but for the segments the route that matches reads as one ``path`` parameter, which are
+    decoded together. An id-keyed path is matched as the login-keyed one it stands for
+    (:func:`resolve_github_id_paths`)."""
+    raw = scope["raw_path"].decode("latin-1").split("/")
+    kept = [urllib.parse.unquote(segment).replace("/", "%2F") for segment in raw]
+    shift = 1 if kept[2] == "repositories" else 0
+    named = [*kept[:2], "repos", "-", *kept[3:]] if shift else kept
+    route = next(
+        (
+            r
+            for r in github.router.routes
+            if r.matches({**scope, "path": "/".join(named)})[0] is not Match.NONE
+        ),
+        None,
     )
+    pattern = getattr(route, "path", "").split("/")
+    at = next((i - shift for i, part in enumerate(pattern) if part.endswith(":path}")), None)
+    if at is None:
+        return "/".join(kept)
+    end = len(raw) - (len(pattern) - shift - at - 1)
+    return "/".join([*kept[:at], urllib.parse.unquote("/".join(raw[at:end])), *kept[end:]])
 
 
 @_middleware(_a_github_path_holding_an_escaped_slash)
 async def route_a_github_path_the_way_github_does(request: Request, call_next):
-    """Route a `/github` request whose path holds an escaped slash as real routes it: the `%2F`
-    stays in the segment it is in, rather than splitting it as the server's decoded path does.
+    """Route a `/github` path holding an escaped slash as real routes it
+    (:func:`_github_path_as_real_routes_it`): a `%2F` is part of the segment that holds it, but in
+    the branch, ref, commit or file a route reads as the rest of the path it stands for a `/`.
 
-    Measured on 2026-11-02 against api.github.com: `repos/{owner}/{repo}%2Fissues%2F{number}` is
-    the repository's 404, where splitting on `%2F` would reach the issue at 200; and on the routes
-    that read an issue, pull or comment number (`issues/{number}%2F1`, `issues/{number}%2F`,
-    `issues/{number}%2Fx`, `issues/{number}%252F1`, `issues/{number}%2F1/comments`,
-    `pulls/{number}%2F1`), the segment stays in that position and real reads its leading integer,
-    answering 200, where splitting on `%2F` was a path no route matches. An `issues/x%2F1` whose
-    segment has no leading integer keeps the route's 404.
+    Measured against api.github.com on 2026-11-10 with a token, each request with its own
+    cache-buster. `repos/octocat/Hello-World%2Fissues%2F1` was the 404 of a repository that does
+    not exist, `orgs/psf%2Frepos` the organization route's 404, and `search%2Fcode`,
+    `repos/psf/requests/statuses%2F` and `repos/octocat/Hello-World/issues%2F1` the 404 of a path
+    no route matches. On Hello-World, `issues/1%2F1`, `issues/1%2F`, `issues/1%2Fx`,
+    `issues/1%252F1`, `issues/1%2F1/comments` and `pulls/1%2F1` answered as `issues/1x`,
+    `issues/1x/comments` and `pulls/1x` do. On psf/requests, `branches/`, `commits/`,
+    `git/ref/heads/`, `git/trees/` and `statuses/` followed by `proposed%2F3.0.0`,
+    `git/ref/heads%2Fproposed%2F3.0.0` and `contents/src%2Frequests%2Fapi.py` answered as the
+    spelling with a `/` does, as `branches/`, `git/trees/` and `contents/` did under
+    `repositories/{id}`, while `branches/proposed%252F3.0.0` and
+    `git/ref/heads%2Fproposed%252F3.0.0` answered as a branch the repository does not have.
 
     Registered after :func:`resolve_github_id_paths`, which makes it the outer of the two, so an
     id-keyed path is routed with its `%2F` intact before the id is resolved to its login-keyed
     spelling.
     """
-    routed = _github_routed_path(request.scope)
-    request.scope["path"] = routed
+    request.scope["path"] = _github_path_as_real_routes_it(request.scope)
     return await call_next(request)
 
 

@@ -276,6 +276,7 @@ _ESCAPES = [
             *(b"repos/acme%00/pipeline", b"repos/acme/pipeline%00", b"repos/acme/pipe%00line"),
             *(b"orgs/acme%00", b"users/nope%00", b"users/nope%00/repos"),
             *(b"repos/acme/pipeline/issues/1%00", b"repos/acme/pipeline/pulls/1%00"),
+            b"repos/acme/pipeline/issues/1%2F1%00",
             *(b"repos/acme/pipeline/git/ref/heads/main%00", b"repos/acme/pipeline/git/blobs/a1%00"),
             *(b"repos/acme/pipeline/contents/README.md%00", b"repos/acme/pipeline/contents/a%00/b"),
             b"repos/acme/pipeline/dependabot/alerts/1%00",

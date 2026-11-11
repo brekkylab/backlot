@@ -4641,8 +4641,38 @@ _UNMATCHED_METHODS = [m for m in errors_atlassian.SERVED_METHODS if m != "HEAD"]
 #: `search/nope`, `settings/nope`, `audit/nope` and a first segment no resource claims
 #: (`nopesuchroute`, `nope/deeper/still`) are the JAX-RS 404. The split is which Java service owns
 #: the prefix, not whether the resource exists — a space key no site has is the page too — so the
-#: two families Backlot serves are named here and everything else takes the API's own 404.
-_CONFLUENCE_HTML_RESOURCES = ("space", "content")
+#: families Spring owns are named here and everything else takes the API's own 404. On 2026-11-10
+#: `user/nope`, `group/nope`, `label/nope`, `contentbody/nope` and one segment below each were the
+#: page too, and `User/nope` and `SPACE/nope/x` the JAX-RS 404.
+_CONFLUENCE_HTML_RESOURCES = ("space", "content", "contentbody", "user", "group", "label")
+
+#: The prefixes below those resources that Jersey answers, each a prefix of the path as written
+#: rather than of its segments, measured 2026-11-10: `user/watch/nope`, `user/watchx/nope`,
+#: `content/archive/nope`, `content/archivex/nope`, `content/blueprint/instance/1/nope`,
+#: `content/blueprint/instancex/nope`, `contentbody/convert/nope/x` and `contentbody/convertx/nope`
+#: were the JAX-RS 404 with no `Content-Type` and Tomcat's 400 page with `text/plain;charset=`,
+#: where `user/watc/nope`, `content/blueprint/nope` and `content/blueprintx/nope` were the page and
+#: the empty 500.
+_CONFLUENCE_JAXRS_PREFIXES = (
+    "user/watch",
+    "content/archive",
+    "content/blueprint/instance",
+    "contentbody/convert",
+)
+
+#: A Confluence REST plugin mount under `/wiki/rest/`, whose paths Jersey answers rather than the
+#: product's page: one of these plugins' names, then a version it is mounted at or `latest`, then a
+#: slash, the name and `latest` in any ASCII case. Measured 2026-11-10 with `text/plain;charset=`:
+#: a path below each name with each of its versions and with `latest`, `applinks/1.0/`,
+#: `prototype/latest/`, `APPLINKS/1.0/x` and `Prototype/LATEST/x` were Tomcat's 400 page, and the
+#: page's empty 500 answered the name with nothing after its version (`applinks/1.0`,
+#: `atlassian-connect/latest`), another version (`applinks/1/x`, `applinks/4.0/x`,
+#: `prototype/1.0/x`, `atlassian-connect/1.0/x`, `plugins/1/x`), a name not here (`nope/1/x`,
+#: `tinymce/1/x`, `likes/1.0/x`, `quickreload/latest/x`) and `applinks` spelt with the Kelvin sign.
+_CONFLUENCE_PLUGIN_MOUNT = re.compile(
+    r"^/wiki/rest/(?ai:applinks/(?:1\.0|2\.0|3\.0|latest)|atlassian-connect/(?:1|latest)"
+    r"|plugins/(?:1\.0|latest)|prototype/(?:1|latest))/"
+)
 
 unmatched_router = APIRouter(prefix="/atlassian", include_in_schema=False)
 
@@ -5102,10 +5132,11 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     (``errors.atlassian.refuse_a_confluence_charset``) wherever its Spring application answers the
     path, or None. That is each path an operation is published at (the baseline's and
     :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT`), whichever method reaches it (`OPTIONS` and the 405s
-    among them), and the product's page under `/wiki/rest/` (:func:`_confluence_serves_html`).
-    Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`, :data:`_CONFLUENCE_JAXRS_GETS` and
-    its 404) answer the header with Tomcat's 400 page instead, and a Basic value Tomcat cannot read
-    is left alone, since real answers it with Tomcat's 401 first.
+    among them), every path below `/wiki/api/v2/`, and the product's page under `/wiki/rest/`
+    (:func:`_confluence_serves_html`). Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`,
+    :data:`_CONFLUENCE_JAXRS_GETS` and its 404) answer the header with Tomcat's 400 page instead,
+    and a Basic value Tomcat cannot read is left alone, since real answers it with Tomcat's 401
+    first.
 
     Measured on Confluence Cloud on 2026-10-31 with `text/plain;charset=` and no credential: of the
     147 operations the baseline lists or :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT` names, the 102
@@ -5113,20 +5144,25 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     their 97 paths, and a method none of them publishes at the 95 paths that have one, answered as
     the path's operations did. Of the paths no operation names, `space/{key}/nope`,
     `content/{id}/nope`, `/wiki/rest/api`, `/wiki/rest/` and `/wiki/rest/nope` answered the 500, and
-    `/wiki/rest/api/` and `/wiki/rest/api/nosuch` the 400 page. With `Basic !!!` beside it, `GET`,
-    `HEAD`, `OPTIONS` and `DELETE` at `space`, `POST space/{key}/permission` and
-    `GET space/{key}/nope` answered the 401.
+    `/wiki/rest/api/` and `/wiki/rest/api/nosuch` the 400 page. `GET` and `POST` at `spaces` and
+    `pages` below `/wiki/api/v2/` answered the 500, and on 2026-11-10 so did `GET` at
+    `/wiki/api/v2/` and at `nope`, `spaces/1/nope` and `pages/1` below it, `PUT`, `DELETE` and
+    `HEAD` at `pages/1` and `OPTIONS` at `spaces`, where `GET /wiki/api/v2`, with no slash after it,
+    answered the v2 API's JSON 404. With `Basic !!!` beside `text/plain;charset=`, `GET`, `HEAD`,
+    `OPTIONS` and `DELETE` at `space`, `POST space/{key}/permission` and `GET space/{key}/nope`
+    answered the 401.
     """
     vendor_path = _vendor_path(request.scope["path"])
     # with its trailing slash, which the routed path has lost: `/wiki/rest/api/` is Jersey's 404
     # where `/wiki/rest/api` is the page
     sent = _vendor_path(_echoed_path(request))
-    if not sent.startswith("/wiki/rest/"):
+    if not (sent.startswith("/wiki/rest/") or sent.startswith("/wiki/api/v2/")):
         return None
     if _is(_CONFLUENCE_JAXRS, None, vendor_path) or _is(_CONFLUENCE_JAXRS_GETS, None, vendor_path):
         return None
     spring = (
-        _is(_CONFLUENCE_PUBLISHED, None, vendor_path)
+        sent.startswith("/wiki/api/v2/")
+        or _is(_CONFLUENCE_PUBLISHED, None, vendor_path)
         or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, None, vendor_path)
         or _confluence_serves_html(sent)
     )
@@ -5366,16 +5402,24 @@ def _wants_json(request: Request) -> bool:
 def _confluence_serves_html(vendor_path: str) -> bool:
     """Whether real answers this unmatched Confluence path with the product's page.
 
-    Anything under `/wiki` that is not under `/wiki/rest/api/` is the page (`/wiki/rest/nope`,
-    `/wiki/nope`, and `/wiki/rest/api` itself, where `/wiki/rest/api/` with the slash is the API's
-    404). Under the API mount it is the page only below one of :data:`_CONFLUENCE_HTML_RESOURCES`.
+    Anything under `/wiki` that is not under `/wiki/rest/api/` and is not a plugin mount
+    (:data:`_CONFLUENCE_PLUGIN_MOUNT`) is the page (`/wiki/rest/nope`, `/wiki/nope`, and
+    `/wiki/rest/api` itself, where `/wiki/rest/api/` with the slash is the API's 404). Under the
+    API mount it is the page only below one of :data:`_CONFLUENCE_HTML_RESOURCES` and outside
+    :data:`_CONFLUENCE_JAXRS_PREFIXES`.
     """
+    if _CONFLUENCE_PLUGIN_MOUNT.match(vendor_path):
+        return False
     api = f"{errors_atlassian.WIKI[len(errors_atlassian.PREFIX) :]}/rest/api"
     if not vendor_path.startswith(f"{api}/"):
         return True
     rest = vendor_path[len(api) + 1 :]
     head, _, tail = rest.partition("/")
-    return bool(tail) and head in _CONFLUENCE_HTML_RESOURCES
+    return (
+        bool(tail)
+        and head in _CONFLUENCE_HTML_RESOURCES
+        and not rest.startswith(_CONFLUENCE_JAXRS_PREFIXES)
+    )
 
 
 def _confluence_not_found(request: Request) -> Response:

@@ -657,7 +657,10 @@ def _envelope(result: engine.Result) -> dict:
     code beside the message and ``extensions`` empty. The errors a resolver raises with a code in
     ``_FRIENDLY`` keep the extensions it gave them, ``friendly`` as ``_FRIENDLY`` has it, as
     api.fireflies.ai answered ``invalid_arguments`` on 2026-10-21, ``INTERNAL_SERVER_ERROR`` on
-    2026-10-22, and ``not_in_team`` and ``object_not_found`` on 2026-10-27."""
+    2026-10-22, and ``not_in_team`` and ``object_not_found`` on 2026-10-27. An error a resolver
+    raises with the ``correlationId`` alone in its ``extensions`` keeps them, with
+    ``INTERNAL_SERVER_ERROR`` beside the message and ``friendly: false``, as api.fireflies.ai
+    answered, on 2026-11-10, an argument its validation throws on."""
     if result.refusals:
         errors = []
         for refusal in result.refusals:
@@ -676,6 +679,8 @@ def _envelope(result: engine.Result) -> dict:
             shaped.append(_entry(error, code, False, {}))
         elif code in _FRIENDLY:
             shaped.append(_entry(error, code, _FRIENDLY[code], error["extensions"]))
+        elif list(error.get("extensions", {})) == ["correlationId"]:
+            shaped.append(_entry(error, engine.INTERNAL_SERVER_ERROR, False, error["extensions"]))
         else:
             shaped.append(error)
     return {**result.payload, "errors": shaped}

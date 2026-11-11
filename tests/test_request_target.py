@@ -1031,6 +1031,19 @@ def _rows():
     yield pytest.param(
         b"HEAD", "/github/", b"repos/acme/pipeline%00", "github nul", 1, b"", b"x", id="HEAD nul"
     )
+    # GitHub's `%00` 400 on a write Backlot does not serve
+    # (``backlot.routers.github.is_an_unserved_operation``), as real answered a `PATCH` with
+    # `Content-Length: 0` and no body on 2026-11-11
+    yield pytest.param(
+        b"PATCH",
+        "/github/",
+        b"user/issue-fields/1%00",
+        "github nul",
+        1,
+        b"Content-Length: 0\r\n",
+        b"x",
+        id="PATCH nul",
+    )
     for host, method, base, rest, answer, *header in _HOSTS:
         authorizations = 0 if base.startswith(_UNCREDENTIALED) else 1
         name = (host or b"(in the lines)").decode()

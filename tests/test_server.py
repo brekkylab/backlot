@@ -246,7 +246,8 @@ def test_the_readiness_poll_dials_only_an_address_the_server_holds(monkeypatch):
     """A request to a port nothing holds can reach whatever binds there next, and another
     process's 200 there reads as this server being ready. Every address the poll is about to dial
     gets a bind of its own first, and a bind that succeeds is an address the server did not hold.
-    ``localhost`` resolves to 127.0.0.1 and ::1."""
+    ``localhost`` is a host name that can resolve to more than one address, and
+    ``backlot.cli._serve_writing_address`` says what that does to a bind to port 0."""
     hosts = ["127.0.0.1", "localhost"]
     unheld = {}
     warm = backlot.server._warm

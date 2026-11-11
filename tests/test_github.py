@@ -2629,6 +2629,69 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     assert answers == dict.fromkeys(numbers, (404, unknown.content)) | {"4301 digits": long}
 
 
+#: A `/github` path holding an escaped slash, a path real answers alike
+#: (``backlot.main.route_a_github_path_the_way_github_does``), and the status of the two here.
+_ESCAPED_SLASH_ROWS = [
+    ("{gateway}%2Fissues%2F{issue}", "/repos/{org}/nope", 404),
+    ("{gateway}%2Fbranches", "/repos/{org}/nope", 404),
+    ("/repos/{org}%2Fgateway", "/nope", 404),
+    ("/orgs/{org}%2Frepos", "/orgs/nope", 404),
+    ("/search%2Fcode?q=x", "/nope", 404),
+    ("/agents%2Frepos/{org}/gateway/nosuch", "/nope", 404),
+    ("{diffable}/statuses%2F", "/nope", 404),
+    ("{gateway}/issues%2F{issue}", "/nope", 404),
+    ("{gateway}/issues/{issue}%2F1", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2F", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2Fx", "{gateway}/issues/{issue}x", 404),
+    ("{gateway}/issues/{issue}%2F1/comments", "{gateway}/issues/{issue}x/comments", 404),
+    ("{gateway}/pulls/{pr}%2F1", "{gateway}/pulls/{pr}x", 404),
+    ("{gateway}/issues/x%2F1", "{gateway}/issues/x", 404),
+    ("{diffable}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/branches/chore%2frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/commits/chore%2Frename", "{diffable}/commits/chore/rename", 200),
+    ("{diffable}/git/ref/heads/chore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
+    ("{diffable}/git/ref/heads%2Fchore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
+    ("{diffable}/git/ref/heads%2Fchore%252Frename", "{diffable}/git/ref/heads/nope", 404),
+    ("{diffable}/git/trees/chore%2Frename", "{diffable}/git/trees/chore/rename", 200),
+    ("{diffable}/statuses/chore%2Frename", "{diffable}/statuses/chore/rename", 200),
+    ("{codebase}/contents/src%2Fmain.py", "{codebase}/contents/src/main.py", 200),
+    ("/repositories/{id}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
+]
+
+
+def test_github_an_escaped_slash_is_read_where_real_reads_it(gh_client, gh_admin_h, gh_org):
+    """Each row's path answers here with the row's status, byte for byte the body of the path
+    beside it, and the header names of that path that ``layered`` keeps."""
+    c, _ = gh_client
+    names = {
+        **{
+            f"{{{repo}}}": f"/repos/{gh_org}/{repo}" for repo in ("gateway", "diffable", "codebase")
+        },
+        "{org}": gh_org,
+        "{issue}": str(synth.github_number("gh-issue-1")),
+        "{pr}": str(synth.github_number("gh-pr-1")),
+        "{id}": str(synth.github_user_id("diffable")),
+    }
+
+    def filled(path):
+        for name, value in names.items():
+            path = path.replace(name, value)
+        return f"/github{path}"
+
+    def layered(response):
+        return [n for n in response.headers if n.startswith(("x-ratelimit-", "x-github-api-v"))]
+
+    answered, expected = {}, {}
+    for sent, control, status in _ESCAPED_SLASH_ROWS:
+        r = c.get(filled(sent), headers=gh_admin_h)
+        same = c.get(filled(control), headers=gh_admin_h)
+        # the row is what went on the wire, not a spelling the client normalised first
+        wire = r.request.url.raw_path.decode()
+        answered[sent] = (wire, r.status_code, same.status_code, r.content, layered(r))
+        expected[sent] = (filled(sent), status, status, same.content, layered(same))
+    assert answered == expected
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which
@@ -2655,11 +2718,13 @@ _COUNTED_TOKEN_SHAPED = [
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: eleven are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the tenth as the `/orgs/{}` path
-#: `/organizations/{id}` is rewritten to and the eleventh on a path whose slash-terminated spelling
-#: a route matches; the next five are in it too, but the last two, in `_ROUTED_UNPUBLISHED`; the
-#: next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep out of it; the two after
-#: them are no operation, though a parsed URL ends the first at its decoded `#` and a
+#: twenty-four are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the tenth as the `/orgs/{}`
+#: path `/organizations/{id}` is rewritten to, the eleventh on a path whose slash-terminated
+#: spelling a route matches, and the ten after `security-advisories` on `contents`, `git/refs`,
+#: `git/matching-refs`, `tarball` and `zipball`, whose parameters span segments; the next two are in
+#: `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep
+#: out of it, and the three after them a second segment where the operation's parameter takes one;
+#: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
 #: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
 #: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; the
 #: two after it are paths under `/agents/automations/{}` that real answered 404 for every
@@ -2686,12 +2751,25 @@ _UNSERVED_ROWS = [
         True,
         404,
     ),
+    ("PUT", "/github/repos/{org}/codebase/contents/a", True, 405),
+    ("PUT", "/github/repos/{org}/codebase/contents/a/b", True, 405),
+    ("DELETE", "/github/repos/{org}/codebase/git/refs/x", True, 404),
+    ("DELETE", "/github/repos/{org}/codebase/git/refs/heads/x", True, 404),
+    ("GET", "/github/repos/{org}/codebase/zipball/a", True, 404),
+    ("GET", "/github/repos/{org}/codebase/zipball/a/b", True, 404),
+    ("DELETE", "/github/repos/{org}/codebase/contents/a/b", True, 405),
+    ("PATCH", "/github/repos/{org}/codebase/git/refs/heads/x", True, 404),
+    ("GET", "/github/repos/{org}/codebase/git/matching-refs/heads/x", True, 404),
+    ("GET", "/github/repos/{org}/codebase/tarball/a/b", True, 404),
     ("GET", "/github/agents/automations/available-tools", True, 404),
     ("GET", "/github/agents/automations/1/tasks", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
     ("POST", "/github/repos/{org}/codebase/releases/1/assets", False, 404),
     ("GET", "/github/repos/{org}/codebase/dependabot/runner-settings", False, 404),
     ("PUT", "/github/repos/{org}/codebase/dependabot/runner-settings", False, 404),
+    ("DELETE", "/github/repos/{org}/codebase/hooks/1/2", False, 404),
+    ("DELETE", "/github/gists/1/2", False, 404),
+    ("DELETE", "/github/repos/{org}/codebase/releases/1/2", False, 404),
     ("GET", "/github/zen%23", False, 404),
     ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
     ("PUT", "/github/orgs/{org}", False, 405),
@@ -2716,13 +2794,16 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     records of real: the credential's 401 with no header, with or without a version, and for each
     header that carries no credential, then for a token that does not resolve, then the version's
     400, counted, ahead of the router's answer to the admin token and of the refusal of a `Basic`
-    value that names no token, each carrying the version echo. A row not refused is the
-    router's answer for any caller. Real was measured on each row but the last with a bad bearer, an
-    unknown scheme and a bearer after a tab, on each refused row with each header below, and with no
-    header on the first eight. On the five refused rows after `git/trees`, two of those headers have
-    no answer of real's: a bearer after a tab that resolves was not sent on the three writes, and
+    value that names no token, each carrying the version echo. A row not refused is the router's
+    answer for any caller. Real was measured on each row but the last with a bad bearer, an unknown
+    scheme and a bearer after a tab, on each refused row but the ten after `security-advisories`
+    with each header below, and with no header on the first eight. On the three refused rows after
+    `git/trees` and the two under `/agents/automations`, two of those headers have no answer of
+    real's: a bearer after a tab that resolves was not sent on the three writes, and
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
-    with no `x-ratelimit-*`.
+    with no `x-ratelimit-*`. On `git/matching-refs`, `tarball` and `zipball` real answered
+    `Digest x` with the public repository's 200 list of refs or 302 to the archive, and a bearer
+    after a tab with 401 "Bad credentials"; here both are 401 "Requires authentication".
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
@@ -4809,7 +4890,7 @@ _LONG_TARGET_ROWS = [
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "admin", "path"),
     *(
         ("GET", "/repos/{org}/gateway/issues/" + escape * 100 + "{pad}", "path", n, "admin", a)
-        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9")
+        for escape in ("%31", "%7e", "%20", "%25", "%C3%A9", "%c3%a9", "%2F", "%2f")
         for n, a in ((4_096, 404), (4_097, "path"))
     ),
     ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),

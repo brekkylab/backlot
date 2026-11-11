@@ -762,7 +762,7 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         ("-(NOT)", ("", {})),
         ("-(NOT NOT)", ("", {})),
         ("NOT -", ("", {"": ["NOT -"]})),
-        ('NOT ""', ("", {"": ['NOT ""']})),
+        ('NOT ""', ("", {"": ["NOT"]})),
         ('NOT NOT ""', ("", {})),
         ("probe NOT", ("probe", {"": ["probe NOT"]})),
         ("NOT NOT probe", ("probe", {})),

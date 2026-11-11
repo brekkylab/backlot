@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-11-07",
+  "measured": "2026-11-11",
   "operations": [
     {
       "operation": "DELETE /agents/repos/{}/{}/automations/{}",
@@ -1230,6 +1230,22 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "DELETE /user/issue-fields/{}",
+      "id": "users/delete-issue-field-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
+    },
+    {
+      "operation": "DELETE /user/issue-types/{}",
+      "id": "users/delete-issue-type-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
     },
     {
       "operation": "DELETE /user/keys/{}",
@@ -5583,6 +5599,22 @@
       "severity": "gap"
     },
     {
+      "operation": "GET /user/issue-fields",
+      "id": "users/list-issue-fields-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
+    },
+    {
+      "operation": "GET /user/issue-types",
+      "id": "users/list-issue-types-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
+    },
+    {
       "operation": "GET /user/issues",
       "id": "issues/list-for-authenticated-user",
       "status": "missing",
@@ -6630,6 +6662,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "PATCH /user/issue-fields/{}",
+      "id": "users/update-issue-field-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
     },
     {
       "operation": "PATCH /user/memberships/orgs/{}",
@@ -7915,6 +7955,22 @@
       "severity": "gap"
     },
     {
+      "operation": "POST /user/issue-fields",
+      "id": "users/create-issue-field-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
+    },
+    {
+      "operation": "POST /user/issue-types",
+      "id": "users/create-issue-type-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
+    },
+    {
       "operation": "POST /user/keys",
       "id": "users/create-public-ssh-key-for-authenticated-user",
       "status": "missing",
@@ -8996,6 +9052,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "PUT /user/issue-types/{}",
+      "id": "users/update-issue-type-for-authenticated-user",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue type or an issue field, so nothing is served for these eight, the issue types and issue fields of the authenticated user's personal account (`GET` and `POST` of its issue types and of its issue fields, `PUT` and `DELETE` of one issue type, `PATCH` and `DELETE` of one issue field). Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-11. On 2026-11-11 api.github.com answered each with 401 \"Requires authentication\" with no credential and \"Bad credentials\" for `Bearer nope`. With an OAuth token that has neither the `user` nor the `read:user` scope, both lists, the `POST` of an issue type and the `DELETE` of an issue field were 403, so the shape of an answer is not known."
     },
     {
       "operation": "PUT /user/starred/{}/{}",

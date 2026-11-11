@@ -598,14 +598,16 @@ def test_version_reports_the_installed_distribution(capsys, monkeypatch):
     assert plain(capsys.readouterr().out) == "backlot unknown"
 
 
-def test_serve_help_leaves_out_the_option_only_serve_passes(capsys):
-    """`backlot serve --help` lists the options a person types and leaves out the hidden one (its
-    comment in `backlot/cli.py` says why); `test_serve_stops_at_stdin_eof_only_when_asked` passes
-    it and requires that it still works."""
+def test_serve_help_leaves_out_the_options_only_serve_passes(capsys):
+    """`backlot serve --help` lists the options a person types and leaves out the hidden ones
+    (their comment in `backlot/cli.py` says why); `test_serve_stops_at_stdin_eof_only_when_asked`
+    passes `--exit-on-stdin-close` and requires that it still works, and `backlot.serve()` passes
+    both on every start."""
     assert cli.main(["serve", "--help"]) == 0
     out = plain(capsys.readouterr().out)
     assert "--data-dir" in out and "--log-level" in out, out
     assert "exit-on-stdin" not in out, out
+    assert "address-file" not in out, out
 
 
 def test_help_shows_every_command(capsys):

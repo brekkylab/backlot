@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from types import SimpleNamespace
 
@@ -239,6 +240,36 @@ def test_a_narrow_bind_is_dialled_at_the_address_it_bound(resolve, url_form):
 def test_two_servers_get_different_ports():
     with backlot.serve() as a, backlot.serve() as b:
         assert a.base_url != b.base_url
+
+
+def test_the_readiness_poll_dials_only_an_address_the_server_holds(monkeypatch):
+    """A request to a port nothing holds can reach whatever binds there next, and another
+    process's 200 there reads as this server being ready. Every address the poll is about to dial
+    gets a bind of its own first, and a bind that succeeds is an address the server did not hold.
+    ``localhost`` resolves to 127.0.0.1 and ::1."""
+    hosts = ["127.0.0.1", "localhost"]
+    unheld = {}
+    warm = backlot.server._warm
+
+    def warm_where_held(base, **kwargs):
+        url = urllib.parse.urlsplit(base)
+        for family, _, _, _, address in socket.getaddrinfo(
+            url.hostname, url.port, type=socket.SOCK_STREAM
+        ):
+            with socket.socket(family) as probe:
+                try:
+                    probe.bind(address)
+                except OSError:
+                    continue
+            unheld.setdefault(host, []).append(address[:2])
+        return warm(base, **kwargs)
+
+    monkeypatch.setattr(backlot.server, "_warm", warm_where_held)
+    status = {}
+    for host in hosts:
+        with backlot.serve(host=host) as s:
+            status[host] = _health(f"{s.base_url}/health")["status"]
+    assert (status, unheld) == ({host: "ok" for host in hosts}, {})
 
 
 def test_serve_or_connect_falls_back_when_the_url_is_unreachable():
@@ -548,7 +579,7 @@ def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_pa
     with pytest.raises(RuntimeError) as e:
         with backlot.serve(data_dir=settings.data_dir):
             pass
-    assert "exited with code 3 " in str(e.value)
+    assert "exited with code 3 before becoming ready:\n" in str(e.value)
     assert "gdrive_sheets" in str(e.value)
     assert "Fatal Python error" not in str(e.value)
 

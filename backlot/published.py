@@ -26,11 +26,15 @@ _BASELINES = Path(__file__).resolve().parent / "fidelity" / "baseline"
 
 
 def operations(rows: Iterable[str]) -> Operations:
-    """(method, vendor-path pattern) for each row, each ``{}`` one path segment."""
+    """(method, vendor-path pattern) for each row, each ``{}`` one path segment and each ``{+}``
+    one or more segments."""
     ops = []
     for row in rows:
         method, path = row.split(" ", 1)
-        pattern = "[^/]+".join(re.escape(part) for part in path.split("{}"))
+        pattern = ".+".join(
+            "[^/]+".join(re.escape(segment) for segment in part.split("{}"))
+            for part in path.split("{+}")
+        )
         ops.append((method, re.compile(pattern)))
     return tuple(ops)
 

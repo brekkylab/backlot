@@ -647,6 +647,10 @@ HUBSPOT_ERROR_PAGE = (
 
 #: The printable characters but `%` that Graph's front door refuses in a path.
 _GRAPH_REFUSED_PRINTABLE = re.compile(rb'["#<>]')
+#: The printable characters Fireflies refuses in a path under `/graphql/`, measured alone.
+_FIREFLIES_REFUSED_IN_PATH = re.compile(rb"[<>`]")
+#: The printable characters Fireflies refuses in the query at `/graphql/`.
+_FIREFLIES_REFUSED_IN_QUERY = re.compile(rb'["<>]')
 #: The paths under which HubSpot's Jetty refuses a `{` and a `}` (:func:`printable_answer`).
 _HUBSPOT_JETTY_BRACES = (b"/hubspot/crm/v3/objects/", b"/hubspot/crm/v4/objects/")
 #: The paths under which HubSpot's Jetty reads a `;` (:func:`printable_reading`).
@@ -686,8 +690,8 @@ def _backslash_first(path: bytes) -> bytes | None:
 
 def printable_answer(scope: Scope) -> Response | None:
     """The front door's answer to a target holding a `#` (:data:`WITH_A_FRAGMENT`), a `%` two hex
-    digits do not follow (:data:`_BROKEN_ESCAPE`), a `\\` as its first byte, or on Graph and HubSpot
-    another printable character it refuses, or ``None`` where it reads the target on.
+    digits do not follow (:data:`_BROKEN_ESCAPE`), a `\\` as its first byte, or on Graph, HubSpot
+    and Fireflies another printable character it refuses, or ``None`` where it reads the target on.
 
     A `\\` right after a mount of :data:`_MOUNTS_AHEAD_OF_THE_TARGET` is the CDN's 400 page on Jira
     and Confluence, Google's 1,555-byte page on Docs, Sheets and Slides, :data:`GITHUB_PAGE` on
@@ -730,6 +734,11 @@ def printable_answer(scope: Scope) -> Response | None:
     with :data:`HUBSPOT_ERROR_PAGE` and Notion reads on (``notion.undecodable_url``); and on HubSpot
     Jetty's page for a `{` or a `}` in a path under `/crm/v3/objects/` or `/crm/v4/objects/`; on
     2026-11-04 one under `/crm/v4/associations/` was read on to the route.
+
+    On Fireflies an empty 400 with no `Content-Type` for a `<`, a `>` or a backtick in a path
+    under `/graphql/`, and for a `"`, a `<` or a `>` in the query at `/graphql/`: measured on
+    2026-10-25 (UTC) with no credential, where a `"` in a path was sent only beside a `\\`, a `<`
+    and a `>`, and a backtick only in a path.
 
     Measured on 2026-10-31 (UTC) over raw HTTP/1.1 on TLS sockets, with the vendors' credentials but
     S3's and Graph's, for each byte from 0x21 to 0x7E sent as itself and as its escape at a path no
@@ -791,6 +800,14 @@ def printable_answer(scope: Scope) -> Response | None:
             return _page(CLOUDFLARE_PAGE, "text/html")
         if raw_path.startswith(_HUBSPOT_JETTY_BRACES) and (b"{" in raw_path or b"}" in raw_path):
             return _page(HUBSPOT_JETTY_PAGE, "text/html;charset=iso-8859-1", close=False)
+    if raw_path.startswith(b"/fireflies/graphql/") and (
+        _FIREFLIES_REFUSED_IN_PATH.search(raw_path)
+        or (
+            raw_path == b"/fireflies/graphql/"
+            and _FIREFLIES_REFUSED_IN_QUERY.search(scope["query_string"])
+        )
+    ):
+        return _page(b"", None)
     return None
 
 

@@ -3605,6 +3605,18 @@ _FIREFLIES_SENT_RAW = [
         )
         for p in ("/../graphql", "/./../graphql")
     ),
+    *(
+        pytest.param(m, p, 400, b"", {"content-type": None}, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/graphql/a<b"),
+            ("POST", "/graphql/a>b"),
+            ("POST", "/graphql/a`b"),
+            ("GET", '/graphql/?a"b'),
+            ("GET", "/graphql/?a<b"),
+            ("GET", "/graphql/?a>b"),
+            ("GET", '/graphql/a"b\\c<d>'),
+        )
+    ),
 ]
 
 

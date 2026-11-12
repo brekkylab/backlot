@@ -9249,6 +9249,9 @@ def sheet_id(base, admin_h):
 
 
 def _values(base, headers, sheet_id, rng, **params):
+    """Percent-encoded, as google-api-python-client sends it; a hand-written URL's literal `!` and
+    `:` are legal in a path segment and must read the same, as the one
+    `test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off` sends does."""
     return httpx.get(
         f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/{quote(rng, safe='')}",
         headers=headers,

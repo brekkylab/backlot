@@ -280,7 +280,7 @@ def serve(
     resolve to this machine — a Docker container on Linux, where ``--add-host=…:host-gateway``
     resolves to the bridge address. A single interface's address works too. ``base_url`` follows:
     loopback for a wildcard bind, otherwise the address bound, since that is where the server
-    answers.
+    answers. A host name gets one of the addresses it resolves to, not the name.
 
     ``telemetry=False`` starts the server with usage telemetry off (docs/telemetry.md). A test
     suite or CI job passes it: its calls are not anyone's use of Backlot. A server started with it

@@ -1666,7 +1666,7 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
     else:
         # No free text. If the query pins a date range (after:/before:), filter created_ts in SQL —
         # a date-dir listing otherwise materialized the whole mailbox (~100k rows) then date-filtered
-        # in Python. after: -> ts >= d (inclusive lo), before: -> ts < d (exclusive hi), matching
+        # in Python. after: -> ts >= lo (inclusive), before: -> ts < hi (exclusive), matching
         # _gmail_op_match; the remaining ops still filter the (now small) candidate set below.
         lo = max((int(v) for v in ops.get("after", [])), default=None)
         hi = min((int(v) for v in ops.get("before", [])), default=None)
@@ -4115,15 +4115,15 @@ async def drive_files_list(request: Request):
         if scoped
         else _drive_folder_candidates(conn, ids, query, me, _drive_q_fulltext_ids(hits))
     )
+    # The files at the root are the ones a write created there (`_DRIVE_ROOT_FOLDER`): every corpus
+    # file lives in a folder.
+    folder = _DRIVE_ROOT_FOLDER if in_root else container
 
     # The row stream as (count, fetch) so the SQL paths stay SQL-paginated: a crawl costs one page
     # of rows per request, not a full-corpus scan re-run for every page.
-    folder = _DRIVE_ROOT_FOLDER if in_root else container
     if in_root and scoped:
         total_rows, fetch = 0, lambda o, n: []  # a file is at the root or in a folder, not both
     elif folder is not None and (scope := _drive_q_plain_folder(query)):
-        # The files at the root are the ones a write created there (`_DRIVE_ROOT_FOLDER`): every
-        # corpus file lives in a folder.
         trash = _drive_listed_trash(ids, me) if scope == "all" else False
         total_rows = store.count_drive_folder(conn, folder, ids, trash)
         fetch = lambda o, n: store.list_drive_folder(  # noqa: E731

@@ -161,10 +161,8 @@ def _numeric_section(section: str) -> _Numeric | None:
         literal = None
         if ch == '"':
             end = section.find('"', i + 1)
-            literal, i = (
-                section[i + 1 : end if end >= 0 else len(section)],
-                (end if end >= 0 else len(section)),
-            )
+            end = end if end >= 0 else len(section)
+            literal, i = section[i + 1 : end], end
         elif ch == "\\" and i + 1 < len(section):
             literal, i = section[i + 1], i + 1
         elif ch == "_" and i + 1 < len(section):
@@ -228,35 +226,30 @@ def _numeric_section(section: str) -> _Numeric | None:
 def _digits(d: Decimal, spec: _Numeric) -> str:
     """``|d|`` under ``spec``, without its sign."""
     places = spec.frac_zeros + spec.frac_optional
+    step = Decimal(1).scaleb(-places)
     if spec.exp_sign is not None:
         width = max(spec.int_zeros, 1)
         if d == 0:
             mantissa, exp = Decimal(0), 0
         else:
             exp = d.adjusted() - (width - 1)
-            mantissa = d.scaleb(-exp).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+            mantissa = d.scaleb(-exp).quantize(step, rounding=ROUND_HALF_UP)
             if mantissa >= Decimal(10) ** width:
                 exp += 1
-                mantissa = d.scaleb(-exp).quantize(
-                    Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP
-                )
+                mantissa = d.scaleb(-exp).quantize(step, rounding=ROUND_HALF_UP)
         body = _decimal_text(abs(mantissa), spec, places)
         sign = "-" if exp < 0 else ("+" if spec.exp_sign == "+" else "")
         return f"{body}E{sign}{abs(exp):0{max(spec.exp_zeros, 1)}d}"
-    return _decimal_text(
-        abs(d).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP), spec, places
-    )
+    return _decimal_text(abs(d).quantize(step, rounding=ROUND_HALF_UP), spec, places)
 
 
 def _decimal_text(d: Decimal, spec: _Numeric, places: int) -> str:
     whole, _, frac = format(d, "f").partition(".")
-    whole = whole.lstrip("0")
-    whole = whole.rjust(spec.int_zeros, "0")
+    whole = whole.lstrip("0").rjust(spec.int_zeros, "0")
     if spec.grouping and whole:
         whole = f"{int(whole):,}".rjust(len(whole), "0") if whole.lstrip("0") else whole
     frac = frac.ljust(places, "0")[:places]
-    keep = spec.frac_zeros + len(frac[spec.frac_zeros :].rstrip("0"))
-    frac = frac[:keep]
+    frac = frac[: spec.frac_zeros + len(frac[spec.frac_zeros :].rstrip("0"))]
     return whole + ("." + frac if spec.point and (frac or spec.frac_optional) else "")
 
 
@@ -460,7 +453,7 @@ def written(c: Cell) -> bool:
     return isinstance(c, dict) or (c is not None and c != "")
 
 
-def _scalar(v):
+def collapse(v):
     """One cell as it is stored. An integral float collapses to an int: measured, writing 3.0 to a
     real sheet stores ``numberValue: 3`` and formats as ``"3"``, so keeping the float would serve a
     value the real API cannot hold.
@@ -472,16 +465,13 @@ def _scalar(v):
     return int(v) if v.is_integer() else v
 
 
-collapse = _scalar
-
-
 def normalise_grid(grid: list[list]) -> list[list[Cell]]:
     """A rectangular grid: short rows padded with empty cells to the width of the widest row.
 
     Everything downstream may assume rectangularity, which is what lets the serving layer index a
     row by column without a bounds check on every cell."""
     width = max((len(r) for r in grid), default=0)
-    return [[_scalar(r[i]) if i < len(r) else None for i in range(width)] for r in grid]
+    return [[collapse(r[i]) if i < len(r) else None for i in range(width)] for r in grid]
 
 
 def formatted(c: Cell) -> str:
@@ -642,8 +632,7 @@ def _number(text: str):
         d /= 100
     if neg:
         d = -d
-    value = float(d)
-    value = int(value) if value.is_integer() and abs(value) < 2**53 else value
+    value = _number_value(d)
     places = ".00" if frac else ""
     if exp:
         fmt = _nf("SCIENTIFIC", "0.00E+00")
@@ -719,34 +708,21 @@ def _numeric_date(s: str, today: date):
             serial = _serial(y, int(mo), 1)
             mtok = "mm" if mo.startswith("0") else "m"
             return (serial, f"yyyy{sep}{mtok}") if serial is not None else None
-        pad = mo.startswith("0") or dd.startswith("0")
-        serial = _serial(y, int(mo), int(dd))
-        return (
-            (serial, f"yyyy{sep}{'mm' if pad else 'm'}{sep}{'dd' if pad else 'd'}")
-            if serial is not None
-            else None
-        )
-    if c is None and len(b) == 4:  # m/yyyy
-        serial = _serial(int(b), int(a), 1)
-        return (
-            (serial, f"{'mm' if a.startswith('0') else 'm'}{sep}yyyy")
-            if serial is not None
-            else None
-        )
-    if c is None:  # m/d, this year
-        serial = _serial(today.year, int(a), int(b))
-        pad = a.startswith("0") or b.startswith("0")
-        return (
-            (serial, f"{'mm' if pad else 'm'}{sep}{'dd' if pad else 'd'}")
-            if serial is not None
-            else None
-        )
-    y, ytok = _year(c, today)
-    pad = a.startswith("0") or b.startswith("0")
-    serial = _serial(y, int(a), int(b))
-    if serial is None:
-        return None
-    return serial, f"{'mm' if pad else 'm'}{sep}{'dd' if pad else 'd'}{sep}{ytok}"
+        serial, pattern = _serial(y, int(mo), int(dd)), f"yyyy{sep}{_month_day(mo, dd, sep)}"
+    elif c is None and len(b) == 4:  # m/yyyy
+        serial, pattern = _serial(int(b), int(a), 1), f"{'mm' if a[0] == '0' else 'm'}{sep}yyyy"
+    elif c is None:  # m/d, this year
+        serial, pattern = _serial(today.year, int(a), int(b)), _month_day(a, b, sep)
+    else:
+        y, ytok = _year(c, today)
+        serial, pattern = _serial(y, int(a), int(b)), f"{_month_day(a, b, sep)}{sep}{ytok}"
+    return None if serial is None else (serial, pattern)
+
+
+def _month_day(month: str, day: str, sep: str) -> str:
+    """A typed month and day as their tokens, both zero-padded when either was typed so."""
+    pad = month.startswith("0") or day.startswith("0")
+    return f"{'mm' if pad else 'm'}{sep}{'dd' if pad else 'd'}"
 
 
 _WEEKDAYS = {w.casefold() for w in WEEKDAYS}
@@ -814,17 +790,11 @@ def _wordy_date(s: str, today: date):
                 return None
             year = _year(text, today)
             tokens.append(year[1])
-    out, k = [], 0
-    for piece in pattern:
-        if piece and piece[0].isdigit():
-            out.append(tokens[k])
-            k += 1
-        else:
-            out.append(piece)
+    left = iter(tokens)
     serial = _serial(year[0] if year else today.year, month, day or 1)
     if serial is None:
         return None
-    return serial, "".join(out)
+    return serial, "".join(next(left) if piece[:1].isdigit() else piece for piece in pattern)
 
 
 _TIME = re.compile(
@@ -1156,7 +1126,6 @@ class Workbook:
         """Put ``sheet`` at ``index`` (last when None), renumbering the sheets after it, and return
         it as placed. Its id and title are the caller's to have checked."""
         at = len(self.sheets) if index is None else index
-        placed = sheet._replace(index=at)
-        self.sheets.insert(at, placed)
+        self.sheets.insert(at, sheet._replace(index=at))
         self.sheets = [s._replace(index=i) for i, s in enumerate(self.sheets)]
         return self.sheets[at]

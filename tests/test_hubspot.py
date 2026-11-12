@@ -2468,6 +2468,103 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
         assert emails({"sorts": [{"propertyName": "email"}]}) == sorted(oldest_first)
 
 
+def test_hubspot_listing_refuses_a_limit_real_refuses(client, admin_h):
+    """Real refuses the listing `limit`s Backlot clamped or defaulted, reads a repeated one from
+    its first value, and serves `limit=100` and an empty `limit` (measured against api.hubapi.com
+    2026-09-30, #379)."""
+    url = "/hubspot/crm/v3/objects/companies"
+
+    def at(params):
+        return client.get(url, headers=admin_h, params=params)
+
+    r = at({"limit": "0"})
+    assert r.status_code == 400
+    assert _body(r) == {
+        "status": "error",
+        "message": "Limit must be greater than or equal to 1.",
+        "context": {"limit": ["0"]},
+        "category": "VALIDATION_ERROR",
+    }
+    assert _body(at({"limit": "-1"}))["context"] == {"limit": ["-1"]}
+    r = at({"limit": "101"})
+    assert r.status_code == 400
+    assert _body(r) == {
+        "status": "error",
+        "message": "You can only request at most 100 objects in one request.",
+        "context": {"limit": ["101"]},
+        "category": "VALIDATION_ERROR",
+    }
+    # a value that does not parse: a 400 with no category at all
+    r = at({"limit": "abc"})
+    assert r.status_code == 400
+    assert _body(r) == {
+        "status": "error",
+        "message": "Unable to parse value for query parameter: limit",
+    }
+    assert _body(at({"limit": "1.5"})) == _body(at({"limit": "abc"}))
+    # a repeated limit is read from its first value
+    assert len(at({"limit": ["1", "2"]}).json()["results"]) == 1
+    # `limit=100` and an empty `limit` are served, as real serves them
+    served = at({"limit": "100"}).json()["results"]
+    assert at({"limit": ""}).json()["results"] == served
+    assert at({}).json()["results"] == served
+
+
+def test_hubspot_associations_refuse_a_limit_real_refuses(client, admin_h, ava):
+    """Real refuses the associations `limit=501` with API_LIMIT and a `limit` that does not parse
+    with the no-category 400, and serves `limit=0` as an empty page (#378) — measured against
+    api.hubapi.com 2026-09-30 (#379)."""
+    url = f"/hubspot/crm/v4/objects/contacts/{ava}/associations/companies"
+
+    def at(params):
+        return client.get(url, headers=admin_h, params=params)
+
+    r = at({"limit": "501"})
+    assert r.status_code == 400
+    assert _body(r) == {
+        "status": "error",
+        "message": "Limit must be between 0 and 500.",
+        "context": {"limit": ["501"]},
+        "category": "API_LIMIT",
+    }
+    r = at({"limit": "abc"})
+    assert r.status_code == 400
+    assert _body(r) == {
+        "status": "error",
+        "message": "Unable to parse value for query parameter: limit",
+    }
+    assert at({"limit": "0"}).json()["results"] == []
+
+
+def test_hubspot_search_refuses_a_body_limit_real_refuses(client, admin_h):
+    """Real refuses a search-body `limit` outside [0..200] and one it cannot deserialize, where
+    Backlot clamped and defaulted (measured against api.hubapi.com 2026-09-30, #379)."""
+    url = "/hubspot/crm/v3/objects/contacts/search"
+
+    def search(body):
+        return client.post(url, headers=admin_h, json=body)
+
+    r = search({"limit": 201})
+    assert r.status_code == 400
+    assert _body(r) == {
+        "status": "error",
+        "message": "limit must be in range [0..200] (actual value: 201)",
+        "category": "VALIDATION_ERROR",
+    }
+    assert (
+        _body(search({"limit": -1}))["message"]
+        == "limit must be in range [0..200] (actual value: -1)"
+    )
+    r = search({"limit": "abc"})
+    assert r.status_code == 400
+    assert _body(r) == {
+        "status": "error",
+        "message": 'Invalid input JSON: unable to deserialize field "limit". Invalid value: abc',
+        "category": "VALIDATION_ERROR",
+    }
+    assert search({"limit": 150}).status_code == 200
+
+
 def test_hubspot_search_is_acl_scoped(client, tokens_yaml):
     """Search must filter by the caller like every other read — not only the plain listing."""
     users = {u["email"]: u["token"] for u in tokens_yaml["users"]}

@@ -48,6 +48,7 @@ router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 # `hubspot/utils/objects.py` in the official client pages at 100 (PAGE_MAX_SIZE); a larger `limit`
 # is clamped rather than rejected, matching how HubSpot itself caps a page.
 _PAGE_MAX = 100
+_SEARCH_PAGE_MAX = 200
 # The associations endpoint pages at 500 per request, like the vendor's.
 _ASSOC_PAGE_MAX = 500
 
@@ -517,12 +518,77 @@ def _existing_id(request: Request, record_id: str) -> str | None:
     return row["id"] if row is not None else None
 
 
-def _clamp(raw, default: int, cap: int) -> int:
-    try:
-        n = int(raw)
-    except (TypeError, ValueError):
-        return default
-    return max(1, min(n, cap))
+def _unparseable_limit() -> JSONResponse:
+    """Real's no-category 400 for a `limit` query parameter that does not parse — `abc`, `1.5` —
+    on the object and the associations listing (measured against api.hubapi.com 2026-09-30, #379)."""
+    return JSONResponse(
+        status_code=400,
+        content={"status": "error", "message": "Unable to parse value for query parameter: limit"},
+    )
+
+
+def _listing_limit(request: Request) -> int | JSONResponse:
+    """The object listing's `limit`, or real's 400 for one it refuses.
+
+    Measured against api.hubapi.com on 2026-09-30 (#379): `0` and `-1` answer VALIDATION_ERROR
+    "Limit must be greater than or equal to 1." with the value as sent in `context`; `101` answers
+    "You can only request at most 100 objects in one request." the same way; a value that does not
+    parse answers `_unparseable_limit`'s 400. `limit=100` and an empty `limit` are served on both
+    sides, and a repeated `limit` is read from its first value (`_first_query`)."""
+    raw = _first_query(request.query_params, "limit")
+    if raw is None or raw == "":
+        return 10
+    if not re.fullmatch(r"-?[0-9]+", raw):
+        return _unparseable_limit()
+    n = int(raw)
+    if n < 1:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": "Limit must be greater than or equal to 1.",
+                "context": {"limit": [raw]},
+                "category": "VALIDATION_ERROR",
+            },
+        )
+    if n > _PAGE_MAX:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": "You can only request at most 100 objects in one request.",
+                "context": {"limit": [raw]},
+                "category": "VALIDATION_ERROR",
+            },
+        )
+    return n
+
+
+def _assoc_limit(request: Request) -> int | JSONResponse:
+    """The associations listing's `limit`, or real's 400 for one it refuses.
+
+    Measured against api.hubapi.com on 2026-09-30 (#379): `501` answers API_LIMIT "Limit must be
+    between 0 and 500." with the value as sent in `context`; a value that does not parse answers
+    `_unparseable_limit`'s 400. `0` is served — an empty page (#378) — and an absent or empty
+    `limit` keeps the default page. Below the range was not measured; the message's own range
+    refuses it."""
+    raw = _first_query(request.query_params, "limit")
+    if raw is None or raw == "":
+        return _ASSOC_PAGE_MAX
+    if not re.fullmatch(r"-?[0-9]+", raw):
+        return _unparseable_limit()
+    n = int(raw)
+    if not 0 <= n <= _ASSOC_PAGE_MAX:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": f"Limit must be between 0 and {_ASSOC_PAGE_MAX}.",
+                "context": {"limit": [raw]},
+                "category": "API_LIMIT",
+            },
+        )
+    return n
 
 
 def _flag(raw) -> bool:
@@ -550,7 +616,7 @@ def _first_query(qp, name: str):
     Real reads a repeated `archived` on an object listing from its first value, where Starlette's
     `QueryParams.get` returns the last. Measured against api.hubapi.com (2026-10-07, 2026-10-08):
     `archived=true&archived=false` answers like `archived=true`, and `archived=false&archived=true`,
-    `archived=&archived=true` and `archived=yes&archived=true` like `archived=false`."""
+    `archived=&archived=true` and `archived=yes&archived=true` like `archived=false`. A repeated `limit` is read from its first value too (2026-09-30, #379): `limit=1&limit=2` answers like `limit=1`."""
     values = qp.getlist(name)
     return values[0] if values else None
 
@@ -1987,7 +2053,9 @@ async def list_objects(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     qp = request.query_params
-    limit = _clamp(qp.get("limit"), 10, _PAGE_MAX)
+    limit = _listing_limit(request)
+    if isinstance(limit, JSONResponse):
+        return limit
     after_doc, err = _resolve_cursor(request, qp.get("after"))
     if err is not None:
         return err
@@ -2061,7 +2129,25 @@ async def search_objects(object_type: str, request: Request):
     if refused is not None:
         return refused
     body = _scalars_as_text(raw, body)
-    limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
+    raw_limit = body.get("limit")
+    if raw_limit is None:
+        limit = 10
+    elif not isinstance(raw_limit, int) or isinstance(raw_limit, bool):
+        # Real's deserialize 400 for a `limit` it cannot read (measured against api.hubapi.com
+        # 2026-09-30, #379, on `{"limit":"abc"}`); the message spells the value as the body does.
+        shown = raw_limit if isinstance(raw_limit, str) else json.dumps(raw_limit)
+        return _error(
+            400,
+            f'Invalid input JSON: unable to deserialize field "limit". Invalid value: {shown}',
+        )
+    elif not 0 <= raw_limit <= _SEARCH_PAGE_MAX:
+        # Real's range 400 (measured 2026-09-30, #379, on 201 and -1).
+        return _error(
+            400,
+            f"limit must be in range [0..{_SEARCH_PAGE_MAX}] (actual value: {raw_limit})",
+        )
+    else:
+        limit = raw_limit
     visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)
     after_doc, err = _resolve_cursor(request, body.get("after"))
@@ -2199,7 +2285,9 @@ async def list_associations(
     if isinstance(record_id, JSONResponse):
         return record_id
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
-    limit = _clamp(request.query_params.get("limit"), _ASSOC_PAGE_MAX, _ASSOC_PAGE_MAX)
+    limit = _assoc_limit(request)
+    if isinstance(limit, JSONResponse):
+        return limit
     after_to, err = _resolve_cursor(request, request.query_params.get("after"))
     if err is not None:
         return err
@@ -2240,7 +2328,11 @@ async def list_associations(
             for r in rows
         ]
     }
-    if has_more:
+    # An empty page carries no `paging.next`: there is no result to take a cursor from. Real
+    # serves `limit=0` as an empty page (measured 2026-09-30, #378); whether it sends a `paging`
+    # there was not measured, and an empty terminal page is what `paging.next`'s absence already
+    # means to the official clients.
+    if has_more and out["results"]:
         after = out["results"][-1]["toObjectId"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
     return out

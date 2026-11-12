@@ -22022,9 +22022,77 @@ _TABLE_LAYOUT_ROWS = [
 ]  # fmt: skip
 
 
+_TABLE_ALIGNMENT_EXPORT_ROWS = [
+    (
+        "wr-table",
+        [_ps(index, index + 1, "alignment", alignment=alignment) for index, alignment in styles],
+        "export",
+        [
+            "\ufeffab\r\n\r\n\r\nc1\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd",
+            f"ab\n\n| c1 | c2 |\n| {marker} | :---- |\n| c3 | c4 |\n\ncd",
+        ],
+    )
+    for styles, marker in [
+        ([(8, "CENTER"), (17, "CENTER")], ":---:"),
+        ([(8, "END"), (17, "END")], "----:"),
+        ([(8, "CENTER")], "-----"),
+        ([(8, "CENTER"), (17, "END")], "-----"),
+        ([(8, "JUSTIFIED"), (17, "JUSTIFIED")], ":----"),
+    ]
+] + [
+    # c1 split into `c1` and `x`, then `c1` and c3 centred
+    (
+        "wr-table",
+        [[_ins(10, "\nx")], [_ps(i, i + 1, "alignment", alignment="CENTER") for i in (8, 19)]],
+        "export",
+        [
+            "\ufeffab\r\n\r\n\r\nc1\r\nx\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd",
+            "ab\n\n| c1 x | c2 |\n| ----- | :---- |\n| c3 | c4 |\n\ncd",
+        ],
+    ),
+    # c1 and c3 emptied, then both centred
+    (
+        "wr-table",
+        [
+            [_del(17, 19), _del(8, 10)],
+            [_ps(i, i + 1, "alignment", alignment="CENTER") for i in (8, 15)],
+        ],
+        "export",
+        [
+            "\ufeffab\r\n\r\n\r\n\r\n\r\n\tc2\r\n\t\r\n\r\n\tc4\r\n\tcd",
+            "ab\n\n|  | c2 |\n| :---: | :---- |\n|  | c4 |\n\ncd",
+        ],
+    ),
+    # a table put in c1, then each paragraph of c1 and c3 centred but the inner table's, empty
+    (
+        "wr-table",
+        [[_table(8)], [_ps(i, i + 1, "alignment", alignment="CENTER") for i in (8, 14, 23)]],
+        "export",
+        [
+            "\ufeffab\r\n\r\n\r\n\r\n\r\n\r\n\r\n\tc1\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd",
+            "ab\n\n|  c1 | c2 |\n| ----- | :---- |\n| c3 | c4 |\n\ncd",
+        ],
+    ),
+    # a table put in c1, `in` typed in it, then that paragraph alone centred
+    (
+        "wr-table",
+        [[_table(8)], [_ins(12, "in")], [_ps(12, 13, "alignment", alignment="CENTER")]],
+        "export",
+        [
+            "\ufeffab\r\n\r\n\r\n\r\n\r\nin\r\n\tc1\r\n\tc2\r\n\tc3\r\n\tc4\r\n\tcd",
+            "ab\n\n|  in c1 | c2 |\n| ----- | :---- |\n| c3 | c4 |\n\ncd",
+        ],
+    ),
+]
+
+
 @pytest.mark.parametrize(
     "doc,requests,part,expected",
-    _STYLE_DOC_ROWS + _TABLE_STYLE_ROWS + _TABLE_LAYOUT_ROWS + _NESTED_MARKDOWN_ROWS,
+    _STYLE_DOC_ROWS
+    + _TABLE_STYLE_ROWS
+    + _TABLE_LAYOUT_ROWS
+    + _TABLE_ALIGNMENT_EXPORT_ROWS
+    + _NESTED_MARKDOWN_ROWS,
 )
 def test_a_paragraph_list_or_named_range_write_is_served_as_real_serves_it(
     wc, wh, doc, requests, part, expected

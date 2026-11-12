@@ -5308,10 +5308,7 @@ def _typed_query(request: Request, readers: dict) -> dict[str, list]:
         try:
             parsed[name].append(readers[name](raw))
         except gerr.GoogleError as exc:
-            violations = gerr.field_violations(exc)
-            if not violations:
-                raise
-            refused.setdefault(name, []).extend(violations)
+            refused.setdefault(name, []).extend(gerr.field_violations(exc))
     if refused:
         raise gerr.invalid_field_values([v for group in refused.values() for v in group])
     return parsed

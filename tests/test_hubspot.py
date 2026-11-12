@@ -2415,6 +2415,59 @@ def test_hubspot_search_sorts(client, admin_h):
     assert names("DESCENDING") == ["Borealis Clinics", "Acme Health"]
 
 
+def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
+    """Real answers a search with no sort oldest `createdate` first — over `{}`, `{"sorts": []}`
+    and `{"sorts": null}` alike (measured against api.hubapi.com 2026-11-12, #1350) — where
+    Backlot answered in id order, which `after` pages on. With a sort given, the sort decides.
+    `created` is whole seconds here, so no two createdates tie."""
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": doc_id,
+            "object_type": "contacts",
+            "title": email,
+            "properties": {"email": email},
+            "created": created,
+        }
+        for doc_id, email, created in (
+            ("hs-c-maria", "emailmaria@hubspot.com", "2026-09-30T09:42:39Z"),
+            ("hs-c-ava", "ava@example.com", "2026-09-30T09:47:03Z"),
+            ("hs-c-bh", "bh@hubspot.com", "2026-09-30T09:42:40Z"),
+            ("hs-c-bob", "bob@example.com", "2026-09-30T09:47:44Z"),
+            ("hs-c-cara", "cara@example.org", "2026-09-30T09:48:26Z"),
+        )
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as client:
+        headers = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def emails(body):
+            return [
+                r["properties"]["email"]
+                for r in client.post(
+                    "/hubspot/crm/v3/objects/contacts/search",
+                    headers=headers,
+                    json=body,
+                ).json()["results"]
+            ]
+
+        oldest_first = [
+            "emailmaria@hubspot.com",
+            "bh@hubspot.com",
+            "ava@example.com",
+            "bob@example.com",
+            "cara@example.org",
+        ]
+        # The two oldest createdates carry the 1st and 3rd ids, so this is not id order.
+        assert emails({}) == oldest_first
+        assert emails({"sorts": []}) == oldest_first
+        assert emails({"sorts": None}) == oldest_first
+        # A sort still decides the order.
+        assert emails({"sorts": [{"propertyName": "email"}]}) == sorted(oldest_first)
+
+
 def test_hubspot_search_is_acl_scoped(client, tokens_yaml):
     """Search must filter by the caller like every other read — not only the plain listing."""
     users = {u["email"]: u["token"] for u in tokens_yaml["users"]}

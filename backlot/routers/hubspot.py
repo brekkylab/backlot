@@ -2098,7 +2098,18 @@ async def search_objects(object_type: str, request: Request):
         cursor = batch[-1]["id"]
         hits += [r for r in batch if _matches(r, body)]
     total = len(hits)
-    hits = _sorted(hits, body.get("sorts"))
+    sorts = body.get("sorts")
+    if sorts:
+        hits = _sorted(hits, sorts)
+    else:
+        # No sort asked for — real answers oldest `createdate` first, not in id order
+        # (measured against api.hubapi.com 2026-11-12, #1350, over `{}`, `{"sorts": []}` and
+        # `{"sorts": null}` alike). Ties keep ascending id, the same order a sorted search
+        # leaves its ties in; real's tie order here was not measured. `created_ts` is what the
+        # record's `createdAt` — real's `createdate` — is served from, in whole seconds, so
+        # createdates that differ only below the second tie. `after` pages on id over this same
+        # list, so the cursor keeps working unchanged.
+        hits.sort(key=lambda r: r["created_ts"])
 
     if after_doc is not None:
         ids = [r["id"] for r in hits]

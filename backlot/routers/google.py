@@ -4122,9 +4122,8 @@ async def drive_files_list(request: Request):
     if in_root and scoped:
         total_rows, fetch = 0, lambda o, n: []  # a file is at the root or in a folder, not both
     elif folder is not None and (scope := _drive_q_plain_folder(query)):
-        # The common case: a client walking the tree wants just this folder's files. The files at
-        # the root are the ones a write created there (`_DRIVE_ROOT_FOLDER`): every corpus file
-        # lives in a folder.
+        # The files at the root are the ones a write created there (`_DRIVE_ROOT_FOLDER`): every
+        # corpus file lives in a folder.
         trash = _drive_listed_trash(ids, me) if scope == "all" else False
         total_rows = store.count_drive_folder(conn, folder, ids, trash)
         fetch = lambda o, n: store.list_drive_folder(  # noqa: E731

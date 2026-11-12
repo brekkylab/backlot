@@ -717,7 +717,7 @@ def _numeric_date(s: str, today: date):
 
 
 def _month_day(month: str, day: str, sep: str) -> str:
-    """A typed month and day as their tokens, both zero-padded when either was typed so."""
+    """A typed month and day as the pattern's month and day tokens."""
     pad = month.startswith("0") or day.startswith("0")
     return f"{'mm' if pad else 'm'}{sep}{'dd' if pad else 'd'}"
 

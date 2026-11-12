@@ -3950,11 +3950,16 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     so an unknown field answers before the shape of its value (`foo = bar` is the unknown field);
     then the value's shape, then the operator against the field's list, so a shape rule answers
     where the operator is not listed either (`creator.fullname = x` is unparsed, `user ~ 1` is the
-    expecting-value refusal). A value real refuses for another reason, and a cell real answers with
+    expecting-value refusal). An operator a field does not take is recorded and answered only once
+    the whole query is read, so a shape rule in a later clause answers first (Confluence Cloud,
+    2026-11-06: `created > 20260910 and created > "x"` answered `Could not parse cql : `). A value
+    real refuses for another reason, and a cell real answers with
     a 500, are left standing here. An escaped end quote, `title ~ "a\\"`, is not refused here: it is
     read after this walk, beside a function that cannot run (``_cql_cannot_run``)."""
     at = 0
     reserved = None  # the place and the text, as sent, of the first reserved word read as a value
+    deferred = None  # (place, refusal) of the first operator a field does not take, answered
+    # only once the whole query is read, so a shape rule in a later clause answers first
     groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
 
     def peek(offset=0):
@@ -3996,6 +4001,17 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         nonlocal reserved
         if reserved is None:
             reserved = (place, text)
+
+    def defer_operator(operator, field, listing):
+        """Record the first operator a field does not take, to be answered once the whole
+        query is read: a shape rule in a later clause answers first (Confluence Cloud,
+        2026-11-06: `created > 20260910 and created > "x"` answered `Could not parse cql : `)."""
+        nonlocal deferred
+        if deferred is None:
+            deferred = (
+                at,
+                errors_atlassian.cql_operator_not_supported(operator, field, listing),
+            )
 
     def value(operator, field, in_list=False):
         nonlocal at
@@ -4059,7 +4075,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
 
     def structural(field, operator, read):
         """Raise the `_Stop` real answers the clause `field` under `operator` with the value
-        `read` as ``(kind, text, is_function)``, or return None for one real serves or refuses
+        `read` as ``(kind, text, is_function)``, record an operator the field does not take to
+        be answered once the whole query is read, or return None for one real serves or refuses
         for another reason. The field is looked up first, then the value's shape, then the
         operator against the field's list, as the docstring above has it."""
         kind, text, is_function = read
@@ -4071,29 +4088,26 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             if not is_function and kind in ("NUMBER", "DATE"):
                 raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
             if "~" not in ops:
-                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+                defer_operator(operator, field, listing)
             return None
         if operator in (">", ">=", "<", "<="):
             if not is_function and kind in ("WORD", "QUOTED"):
                 if _cql_value_is_date(kind, text):
                     if shape != "date":
-                        raise _Stop(
-                            errors_atlassian.cql_operator_not_supported(operator, field, listing)
-                        )
+                        defer_operator(operator, field, listing)
+                        return None
                 else:
                     raise not_parsed()
             elif kind == "NUMBER":
                 if shape != "number":
-                    raise _Stop(
-                        errors_atlassian.cql_operator_not_supported(operator, field, listing)
-                    )
+                    defer_operator(operator, field, listing)
+                    return None
             elif kind == "DATE":
                 if shape != "date":
-                    raise _Stop(
-                        errors_atlassian.cql_operator_not_supported(operator, field, listing)
-                    )
+                    defer_operator(operator, field, listing)
+                    return None
             elif is_function and shape not in ("date", "number"):
-                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+                defer_operator(operator, field, listing)
             return None
         # `=` and `!=`: a word, a quoted word or an empty value is unparsed unless the field
         # takes any value, and a date or a number is the operator refusal unless the field
@@ -4101,23 +4115,25 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         if not is_function and kind in ("WORD", "QUOTED"):
             if _cql_value_is_date(kind, text):
                 if shape not in ("date", "string"):
-                    raise _Stop(
-                        errors_atlassian.cql_operator_not_supported(operator, field, listing)
-                    )
+                    defer_operator(operator, field, listing)
+                    return None
             elif shape != "string":
                 raise not_parsed()
         elif kind == "NUMBER":
             if shape not in ("number", "string"):
-                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+                defer_operator(operator, field, listing)
+                return None
         elif kind == "DATE":
             if shape not in ("date", "string"):
-                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+                defer_operator(operator, field, listing)
+                return None
         elif is_function and shape not in ("date", "number", "string"):
-            raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+            defer_operator(operator, field, listing)
         return None
 
     def structural_list(field, operator):
-        """Raise the `_Stop` real answers the clause `field` under `in` or `not in` with, or
+        """Raise the `_Stop` real answers the clause `field` under `in` or `not in` with, record
+        an operator the field does not list to be answered once the whole query is read, or
         return None for one real serves or refuses for another reason: an unknown field, or an
         operator the field does not list. A list's values carry no shape rule of their own."""
         info = _CQL_FIELD_INFO.get(field.lower())
@@ -4125,7 +4141,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             raise _Stop(errors_atlassian.cql_unknown_field(field, _cql_suggest(field)))
         ops, listing, _ = info
         if "in" not in ops:
-            raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+            defer_operator(operator, field, listing)
         return None
 
     def clause():
@@ -4241,6 +4257,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 at += 1
             if at < len(tokens):
                 raise not_parsed()
+        if deferred is not None:
+            raise _Stop(deferred[1], place=deferred[0])
     except _Stop as stop:
         # Measured on Confluence Cloud: `label = and and type` answered the reserved word
         # (2026-11-04), and so did `label = select and type =`, `label = select and label = foo()`

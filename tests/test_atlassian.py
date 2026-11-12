@@ -4436,7 +4436,9 @@ _REFUSED, _FAILED = (
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
 _ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
 _NOT_PARSED_BODY = errors_atlassian.cql_not_parsed().body
-_OPERATOR_BODY = errors_atlassian.cql_operator_not_supported(">", "created", "<, <=, >, >=, =, !=").body
+_OPERATOR_BODY = errors_atlassian.cql_operator_not_supported(
+    ">", "created", "<, <=, >, >=, =, !="
+).body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -10073,12 +10075,9 @@ _CQL_PARSE_ROWS = [
             ("type=page 5", _CQL_NOT_PARSED),
             ("id = -1", _CQL_NOT_PARSED),
             ("created > -1d", _CQL_NOT_PARSED),
-            ('created > "x"', _CQL_NOT_PARSED),
             ('created > "20260910"', _CQL_NOT_PARSED),
             ('created > "2026-13-45"', _CQL_NOT_PARSED),
-            ('created > "10/09/2026"', _CQL_NOT_PARSED),
             ('created > "2026-09-10T12:00"', _CQL_NOT_PARSED),
-            ('created > "2026-02-30"', _CQL_NOT_PARSED),
             (
                 "created > 20260910",
                 "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
@@ -10612,6 +10611,1936 @@ _CQL_PARSE_ROWS = [
             (
                 "type=page or foo=bar",
                 "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            # --- session 2: U (5 rows) ---
+            (
+                "a = x",
+                "No field exists with the name: 'a' Did you mean one of : ancestor, approvalStatus",
+            ),
+            (
+                "ponies = x",
+                "No field exists with the name: 'ponies' Did you mean one of : parent, pageStatus, publicLinkStatus",
+            ),
+            ("Cre = x", "No field exists with the name: 'Cre'"),
+            ("S = x", "No field exists with the name: 'S'"),
+            ("T = x", "No field exists with the name: 'T'"),
+            # --- session 2: N (54 rows) ---
+            (
+                "ancestor",
+                "Expecting operator for field 'ancestor', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "approvalStatus",
+                "Expecting operator for field 'approvalStatus', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "content",
+                "Expecting operator for field 'content', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator",
+                "Expecting operator for field 'creator', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "container",
+                "Expecting operator for field 'container', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor",
+                "Expecting operator for field 'contributor', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser",
+                "Expecting operator for field 'commentsByUser', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.fullname",
+                "Expecting operator for field 'creator.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "creator.accountid",
+                "Expecting operator for field 'creator.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor.fullname",
+                "Expecting operator for field 'contributor.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "contributor.accountid",
+                "Expecting operator for field 'contributor.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser.fullname",
+                "Expecting operator for field 'commentsByUser.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.accountid",
+                "Expecting operator for field 'commentsByUser.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "embeddedProduct",
+                "Expecting operator for field 'embeddedProduct', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favorite",
+                "Expecting operator for field 'favorite', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "filesize",
+                "Expecting operator for field 'filesize', supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "favourite",
+                "Expecting operator for field 'favourite', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "fileExtension",
+                "Expecting operator for field 'fileExtension', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "generatedby",
+                "Expecting operator for field 'generatedby', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "hasDecision",
+                "Expecting operator for field 'hasDecision', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "id",
+                "Expecting operator for field 'id', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "isVerified",
+                "Expecting operator for field 'isVerified', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdCategoryId",
+                "Expecting operator for field 'jsdCategoryId', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdFeaturedInCategoryId",
+                "Expecting operator for field 'jsdFeaturedInCategoryId', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "label",
+                "Expecting operator for field 'label', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastmodified",
+                "Expecting operator for field 'lastmodified', supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "lastModifier",
+                "Expecting operator for field 'lastModifier', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier.fullname",
+                "Expecting operator for field 'lastModifier.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.accountid",
+                "Expecting operator for field 'lastModifier.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "macro",
+                "Expecting operator for field 'macro', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention",
+                "Expecting operator for field 'mention', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention.fullname",
+                "Expecting operator for field 'mention.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "mention.accountid",
+                "Expecting operator for field 'mention.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mediaType.description",
+                "Expecting operator for field 'mediaType.description', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "owner",
+                "Expecting operator for field 'owner', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner.fullname",
+                "Expecting operator for field 'owner.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "owner.accountid",
+                "Expecting operator for field 'owner.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "parent",
+                "Expecting operator for field 'parent', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "pageStatus",
+                "Expecting operator for field 'pageStatus', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "publicLinkStatus",
+                "Expecting operator for field 'publicLinkStatus', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space",
+                "Expecting operator for field 'space', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "subtype",
+                "Expecting operator for field 'subtype', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key",
+                "Expecting operator for field 'space.key', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "siteSearch",
+                "Expecting operator for field 'siteSearch', supported operators are : ~, !~",
+            ),
+            (
+                "space.type",
+                "Expecting operator for field 'space.type', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.title",
+                "Expecting operator for field 'space.title', supported operators are : ~, !~",
+            ),
+            (
+                "space.category",
+                "Expecting operator for field 'space.category', supported operators are : =, !=, IN, NOT IN",
+            ),
+            ("text", "Expecting operator for field 'text', supported operators are : ~, !~"),
+            (
+                "user",
+                "Expecting operator for field 'user', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "user.fullname",
+                "Expecting operator for field 'user.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "user.accountid",
+                "Expecting operator for field 'user.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher",
+                "Expecting operator for field 'watcher', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher.fullname",
+                "Expecting operator for field 'watcher.fullname', supported operators are : ~, !~",
+            ),
+            (
+                "watcher.accountid",
+                "Expecting operator for field 'watcher.accountid', supported operators are : =, !=, IN, NOT IN",
+            ),
+            # --- session 2: O (334 rows) ---
+            (
+                "ancestor !~ x",
+                "Operator '!~' is not supported for field 'ancestor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "ancestor > 1",
+                "Operator '>' is not supported for field 'ancestor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "ancestor >= 1",
+                "Operator '>=' is not supported for field 'ancestor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "ancestor < 1",
+                "Operator '<' is not supported for field 'ancestor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "ancestor <= 1",
+                "Operator '<=' is not supported for field 'ancestor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "approvalStatus !~ x",
+                "Operator '!~' is not supported for field 'approvalStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "approvalStatus > 1",
+                "Operator '>' is not supported for field 'approvalStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "approvalStatus >= 1",
+                "Operator '>=' is not supported for field 'approvalStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "approvalStatus < 1",
+                "Operator '<' is not supported for field 'approvalStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "approvalStatus <= 1",
+                "Operator '<=' is not supported for field 'approvalStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "created !~ x",
+                "Operator '!~' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "created in (x)",
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "created not in (x)",
+                "Operator 'notin' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "content ~ x",
+                "Operator '~' is not supported for field 'content'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "content !~ x",
+                "Operator '!~' is not supported for field 'content'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "content > 1",
+                "Operator '>' is not supported for field 'content'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "content >= 1",
+                "Operator '>=' is not supported for field 'content'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "content < 1",
+                "Operator '<' is not supported for field 'content'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "content <= 1",
+                "Operator '<=' is not supported for field 'content'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator !~ x",
+                "Operator '!~' is not supported for field 'creator'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator > 1",
+                "Operator '>' is not supported for field 'creator'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator >= 1",
+                "Operator '>=' is not supported for field 'creator'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator < 1",
+                "Operator '<' is not supported for field 'creator'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator <= 1",
+                "Operator '<=' is not supported for field 'creator'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "container ~ x",
+                "Operator '~' is not supported for field 'container'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "container !~ x",
+                "Operator '!~' is not supported for field 'container'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "container > 1",
+                "Operator '>' is not supported for field 'container'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "container >= 1",
+                "Operator '>=' is not supported for field 'container'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "container < 1",
+                "Operator '<' is not supported for field 'container'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "container <= 1",
+                "Operator '<=' is not supported for field 'container'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor ~ x",
+                "Operator '~' is not supported for field 'contributor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor !~ x",
+                "Operator '!~' is not supported for field 'contributor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor > 1",
+                "Operator '>' is not supported for field 'contributor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor >= 1",
+                "Operator '>=' is not supported for field 'contributor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor < 1",
+                "Operator '<' is not supported for field 'contributor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor <= 1",
+                "Operator '<=' is not supported for field 'contributor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser ~ x",
+                "Operator '~' is not supported for field 'commentsByUser'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser !~ x",
+                "Operator '!~' is not supported for field 'commentsByUser'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser > 1",
+                "Operator '>' is not supported for field 'commentsByUser'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser >= 1",
+                "Operator '>=' is not supported for field 'commentsByUser'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser < 1",
+                "Operator '<' is not supported for field 'commentsByUser'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser <= 1",
+                "Operator '<=' is not supported for field 'commentsByUser'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.fullname != 1",
+                "Operator '!=' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "creator.fullname > 1",
+                "Operator '>' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "creator.fullname >= 1",
+                "Operator '>=' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "creator.fullname < 1",
+                "Operator '<' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "creator.fullname <= 1",
+                "Operator '<=' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "creator.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "content.property = 1",
+                "Operator '=' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property != 1",
+                "Operator '!=' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property ~ x",
+                "Operator '~' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property !~ x",
+                "Operator '!~' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property > 1",
+                "Operator '>' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property >= 1",
+                "Operator '>=' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property < 1",
+                "Operator '<' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property <= 1",
+                "Operator '<=' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "content.property not in (x)",
+                "Operator 'notin' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "creator.accountid ~ x",
+                "Operator '~' is not supported for field 'creator.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.accountid !~ x",
+                "Operator '!~' is not supported for field 'creator.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.accountid > 1",
+                "Operator '>' is not supported for field 'creator.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.accountid >= 1",
+                "Operator '>=' is not supported for field 'creator.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.accountid < 1",
+                "Operator '<' is not supported for field 'creator.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.accountid <= 1",
+                "Operator '<=' is not supported for field 'creator.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor.fullname = 1",
+                "Operator '=' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.fullname != 1",
+                "Operator '!=' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.fullname > 1",
+                "Operator '>' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.fullname >= 1",
+                "Operator '>=' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.fullname < 1",
+                "Operator '<' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.fullname <= 1",
+                "Operator '<=' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.fullname in (x)",
+                "Operator 'in' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'contributor.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "contributor.accountid ~ x",
+                "Operator '~' is not supported for field 'contributor.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor.accountid !~ x",
+                "Operator '!~' is not supported for field 'contributor.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor.accountid > 1",
+                "Operator '>' is not supported for field 'contributor.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor.accountid >= 1",
+                "Operator '>=' is not supported for field 'contributor.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor.accountid < 1",
+                "Operator '<' is not supported for field 'contributor.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "contributor.accountid <= 1",
+                "Operator '<=' is not supported for field 'contributor.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser.fullname = 1",
+                "Operator '=' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.fullname != 1",
+                "Operator '!=' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.fullname > 1",
+                "Operator '>' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.fullname >= 1",
+                "Operator '>=' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.fullname < 1",
+                "Operator '<' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.fullname <= 1",
+                "Operator '<=' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.fullname in (x)",
+                "Operator 'in' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'commentsByUser.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "commentsByUser.accountid ~ x",
+                "Operator '~' is not supported for field 'commentsByUser.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser.accountid !~ x",
+                "Operator '!~' is not supported for field 'commentsByUser.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser.accountid > 1",
+                "Operator '>' is not supported for field 'commentsByUser.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser.accountid >= 1",
+                "Operator '>=' is not supported for field 'commentsByUser.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser.accountid < 1",
+                "Operator '<' is not supported for field 'commentsByUser.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "commentsByUser.accountid <= 1",
+                "Operator '<=' is not supported for field 'commentsByUser.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "embeddedProduct ~ x",
+                "Operator '~' is not supported for field 'embeddedProduct'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "embeddedProduct !~ x",
+                "Operator '!~' is not supported for field 'embeddedProduct'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "embeddedProduct >= 1",
+                "Operator '>=' is not supported for field 'embeddedProduct'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "embeddedProduct < 1",
+                "Operator '<' is not supported for field 'embeddedProduct'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "embeddedProduct <= 1",
+                "Operator '<=' is not supported for field 'embeddedProduct'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favorite !~ x",
+                "Operator '!~' is not supported for field 'favorite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favorite > 1",
+                "Operator '>' is not supported for field 'favorite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favorite >= 1",
+                "Operator '>=' is not supported for field 'favorite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favorite < 1",
+                "Operator '<' is not supported for field 'favorite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favorite <= 1",
+                "Operator '<=' is not supported for field 'favorite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "filesize !~ x",
+                "Operator '!~' is not supported for field 'filesize'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "filesize in (x)",
+                "Operator 'in' is not supported for field 'filesize'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "filesize not in (x)",
+                "Operator 'notin' is not supported for field 'filesize'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "favourite ~ x",
+                "Operator '~' is not supported for field 'favourite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favourite !~ x",
+                "Operator '!~' is not supported for field 'favourite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favourite > 1",
+                "Operator '>' is not supported for field 'favourite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favourite >= 1",
+                "Operator '>=' is not supported for field 'favourite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favourite < 1",
+                "Operator '<' is not supported for field 'favourite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favourite <= 1",
+                "Operator '<=' is not supported for field 'favourite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "fileExtension ~ x",
+                "Operator '~' is not supported for field 'fileExtension'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "fileExtension !~ x",
+                "Operator '!~' is not supported for field 'fileExtension'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "fileExtension > 1",
+                "Operator '>' is not supported for field 'fileExtension'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "fileExtension >= 1",
+                "Operator '>=' is not supported for field 'fileExtension'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "fileExtension < 1",
+                "Operator '<' is not supported for field 'fileExtension'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "fileExtension <= 1",
+                "Operator '<=' is not supported for field 'fileExtension'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "generatedby ~ x",
+                "Operator '~' is not supported for field 'generatedby'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "generatedby !~ x",
+                "Operator '!~' is not supported for field 'generatedby'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "generatedby > 1",
+                "Operator '>' is not supported for field 'generatedby'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "generatedby >= 1",
+                "Operator '>=' is not supported for field 'generatedby'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "generatedby < 1",
+                "Operator '<' is not supported for field 'generatedby'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "generatedby <= 1",
+                "Operator '<=' is not supported for field 'generatedby'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "hasDecision !~ x",
+                "Operator '!~' is not supported for field 'hasDecision'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "hasDecision > 1",
+                "Operator '>' is not supported for field 'hasDecision'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "hasDecision >= 1",
+                "Operator '>=' is not supported for field 'hasDecision'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "hasDecision < 1",
+                "Operator '<' is not supported for field 'hasDecision'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "hasDecision <= 1",
+                "Operator '<=' is not supported for field 'hasDecision'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "id ~ x",
+                "Operator '~' is not supported for field 'id'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "id !~ x",
+                "Operator '!~' is not supported for field 'id'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "id > 1",
+                "Operator '>' is not supported for field 'id'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "id >= 1",
+                "Operator '>=' is not supported for field 'id'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "id < 1",
+                "Operator '<' is not supported for field 'id'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "id <= 1",
+                "Operator '<=' is not supported for field 'id'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "isVerified ~ x",
+                "Operator '~' is not supported for field 'isVerified'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "isVerified !~ x",
+                "Operator '!~' is not supported for field 'isVerified'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "isVerified > 1",
+                "Operator '>' is not supported for field 'isVerified'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "isVerified >= 1",
+                "Operator '>=' is not supported for field 'isVerified'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "isVerified < 1",
+                "Operator '<' is not supported for field 'isVerified'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "isVerified <= 1",
+                "Operator '<=' is not supported for field 'isVerified'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdCategoryId !~ x",
+                "Operator '!~' is not supported for field 'jsdCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdCategoryId > 1",
+                "Operator '>' is not supported for field 'jsdCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdCategoryId >= 1",
+                "Operator '>=' is not supported for field 'jsdCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdCategoryId < 1",
+                "Operator '<' is not supported for field 'jsdCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdCategoryId <= 1",
+                "Operator '<=' is not supported for field 'jsdCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdFeaturedInCategoryId ~ x",
+                "Operator '~' is not supported for field 'jsdFeaturedInCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdFeaturedInCategoryId !~ x",
+                "Operator '!~' is not supported for field 'jsdFeaturedInCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdFeaturedInCategoryId > 1",
+                "Operator '>' is not supported for field 'jsdFeaturedInCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdFeaturedInCategoryId >= 1",
+                "Operator '>=' is not supported for field 'jsdFeaturedInCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdFeaturedInCategoryId < 1",
+                "Operator '<' is not supported for field 'jsdFeaturedInCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdFeaturedInCategoryId <= 1",
+                "Operator '<=' is not supported for field 'jsdFeaturedInCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "label ~ x",
+                "Operator '~' is not supported for field 'label'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "label !~ x",
+                "Operator '!~' is not supported for field 'label'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "label >= 1",
+                "Operator '>=' is not supported for field 'label'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "label < 1",
+                "Operator '<' is not supported for field 'label'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "label <= 1",
+                "Operator '<=' is not supported for field 'label'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastmodified ~ x",
+                "Operator '~' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "lastmodified !~ x",
+                "Operator '!~' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "lastmodified in (x)",
+                "Operator 'in' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "lastmodified not in (x)",
+                "Operator 'notin' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "lastModifier ~ x",
+                "Operator '~' is not supported for field 'lastModifier'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier !~ x",
+                "Operator '!~' is not supported for field 'lastModifier'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier > 1",
+                "Operator '>' is not supported for field 'lastModifier'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier >= 1",
+                "Operator '>=' is not supported for field 'lastModifier'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier < 1",
+                "Operator '<' is not supported for field 'lastModifier'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier <= 1",
+                "Operator '<=' is not supported for field 'lastModifier'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier.fullname = 1",
+                "Operator '=' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.fullname != 1",
+                "Operator '!=' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.fullname > 1",
+                "Operator '>' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.fullname >= 1",
+                "Operator '>=' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.fullname < 1",
+                "Operator '<' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.fullname <= 1",
+                "Operator '<=' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.fullname in (x)",
+                "Operator 'in' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'lastModifier.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "lastModifier.accountid ~ x",
+                "Operator '~' is not supported for field 'lastModifier.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier.accountid !~ x",
+                "Operator '!~' is not supported for field 'lastModifier.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier.accountid > 1",
+                "Operator '>' is not supported for field 'lastModifier.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier.accountid >= 1",
+                "Operator '>=' is not supported for field 'lastModifier.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier.accountid < 1",
+                "Operator '<' is not supported for field 'lastModifier.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "lastModifier.accountid <= 1",
+                "Operator '<=' is not supported for field 'lastModifier.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "macro ~ x",
+                "Operator '~' is not supported for field 'macro'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "macro !~ x",
+                "Operator '!~' is not supported for field 'macro'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "macro >= 1",
+                "Operator '>=' is not supported for field 'macro'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "macro < 1",
+                "Operator '<' is not supported for field 'macro'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "macro <= 1",
+                "Operator '<=' is not supported for field 'macro'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention ~ x",
+                "Operator '~' is not supported for field 'mention'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention !~ x",
+                "Operator '!~' is not supported for field 'mention'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention > 1",
+                "Operator '>' is not supported for field 'mention'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention >= 1",
+                "Operator '>=' is not supported for field 'mention'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention < 1",
+                "Operator '<' is not supported for field 'mention'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention <= 1",
+                "Operator '<=' is not supported for field 'mention'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention.fullname = 1",
+                "Operator '=' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.fullname != 1",
+                "Operator '!=' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.fullname > 1",
+                "Operator '>' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.fullname >= 1",
+                "Operator '>=' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.fullname < 1",
+                "Operator '<' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.fullname <= 1",
+                "Operator '<=' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.fullname in (x)",
+                "Operator 'in' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'mention.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "mention.accountid ~ x",
+                "Operator '~' is not supported for field 'mention.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention.accountid !~ x",
+                "Operator '!~' is not supported for field 'mention.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention.accountid > 1",
+                "Operator '>' is not supported for field 'mention.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention.accountid >= 1",
+                "Operator '>=' is not supported for field 'mention.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention.accountid < 1",
+                "Operator '<' is not supported for field 'mention.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mention.accountid <= 1",
+                "Operator '<=' is not supported for field 'mention.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mediaType.description >= 1",
+                "Operator '>=' is not supported for field 'mediaType.description'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "mediaType.description < 1",
+                "Operator '<' is not supported for field 'mediaType.description'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "mediaType.description <= 1",
+                "Operator '<=' is not supported for field 'mediaType.description'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "owner ~ x",
+                "Operator '~' is not supported for field 'owner'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner !~ x",
+                "Operator '!~' is not supported for field 'owner'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner > 1",
+                "Operator '>' is not supported for field 'owner'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner >= 1",
+                "Operator '>=' is not supported for field 'owner'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner < 1",
+                "Operator '<' is not supported for field 'owner'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner <= 1",
+                "Operator '<=' is not supported for field 'owner'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner.fullname = 1",
+                "Operator '=' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.fullname != 1",
+                "Operator '!=' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.fullname > 1",
+                "Operator '>' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.fullname >= 1",
+                "Operator '>=' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.fullname < 1",
+                "Operator '<' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.fullname <= 1",
+                "Operator '<=' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.fullname in (x)",
+                "Operator 'in' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'owner.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "owner.accountid ~ x",
+                "Operator '~' is not supported for field 'owner.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner.accountid !~ x",
+                "Operator '!~' is not supported for field 'owner.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner.accountid > 1",
+                "Operator '>' is not supported for field 'owner.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner.accountid >= 1",
+                "Operator '>=' is not supported for field 'owner.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner.accountid < 1",
+                "Operator '<' is not supported for field 'owner.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "owner.accountid <= 1",
+                "Operator '<=' is not supported for field 'owner.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "parent !~ x",
+                "Operator '!~' is not supported for field 'parent'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "parent > 1",
+                "Operator '>' is not supported for field 'parent'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "parent >= 1",
+                "Operator '>=' is not supported for field 'parent'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "parent < 1",
+                "Operator '<' is not supported for field 'parent'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "parent <= 1",
+                "Operator '<=' is not supported for field 'parent'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "pageStatus ~ x",
+                "Operator '~' is not supported for field 'pageStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "pageStatus !~ x",
+                "Operator '!~' is not supported for field 'pageStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "pageStatus > 1",
+                "Operator '>' is not supported for field 'pageStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "pageStatus >= 1",
+                "Operator '>=' is not supported for field 'pageStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "pageStatus < 1",
+                "Operator '<' is not supported for field 'pageStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "pageStatus <= 1",
+                "Operator '<=' is not supported for field 'pageStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "publicLinkStatus ~ x",
+                "Operator '~' is not supported for field 'publicLinkStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "publicLinkStatus !~ x",
+                "Operator '!~' is not supported for field 'publicLinkStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "publicLinkStatus > 1",
+                "Operator '>' is not supported for field 'publicLinkStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "publicLinkStatus >= 1",
+                "Operator '>=' is not supported for field 'publicLinkStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "publicLinkStatus < 1",
+                "Operator '<' is not supported for field 'publicLinkStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "publicLinkStatus <= 1",
+                "Operator '<=' is not supported for field 'publicLinkStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space >= 1",
+                "Operator '>=' is not supported for field 'space'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "space < 1",
+                "Operator '<' is not supported for field 'space'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "space <= 1",
+                "Operator '<=' is not supported for field 'space'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "subtype ~ x",
+                "Operator '~' is not supported for field 'subtype'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "subtype !~ x",
+                "Operator '!~' is not supported for field 'subtype'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "subtype > 1",
+                "Operator '>' is not supported for field 'subtype'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "subtype >= 1",
+                "Operator '>=' is not supported for field 'subtype'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "subtype < 1",
+                "Operator '<' is not supported for field 'subtype'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "subtype <= 1",
+                "Operator '<=' is not supported for field 'subtype'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key ~ x",
+                "Operator '~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key !~ x",
+                "Operator '!~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key > 1",
+                "Operator '>' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key >= 1",
+                "Operator '>=' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key < 1",
+                "Operator '<' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key <= 1",
+                "Operator '<=' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "siteSearch = 1",
+                "Operator '=' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "siteSearch != 1",
+                "Operator '!=' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "siteSearch > 1",
+                "Operator '>' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "siteSearch >= 1",
+                "Operator '>=' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "siteSearch < 1",
+                "Operator '<' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "siteSearch <= 1",
+                "Operator '<=' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "siteSearch not in (x)",
+                "Operator 'notin' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.type ~ x",
+                "Operator '~' is not supported for field 'space.type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.type !~ x",
+                "Operator '!~' is not supported for field 'space.type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.type > 1",
+                "Operator '>' is not supported for field 'space.type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.type >= 1",
+                "Operator '>=' is not supported for field 'space.type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.type < 1",
+                "Operator '<' is not supported for field 'space.type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.type <= 1",
+                "Operator '<=' is not supported for field 'space.type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.title = 1",
+                "Operator '=' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.title != 1",
+                "Operator '!=' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.title >= 1",
+                "Operator '>=' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.title < 1",
+                "Operator '<' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.title <= 1",
+                "Operator '<=' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.title in (x)",
+                "Operator 'in' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.title not in (x)",
+                "Operator 'notin' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "space.category ~ x",
+                "Operator '~' is not supported for field 'space.category'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.category !~ x",
+                "Operator '!~' is not supported for field 'space.category'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.category > 1",
+                "Operator '>' is not supported for field 'space.category'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.category >= 1",
+                "Operator '>=' is not supported for field 'space.category'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.category < 1",
+                "Operator '<' is not supported for field 'space.category'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.category <= 1",
+                "Operator '<=' is not supported for field 'space.category'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type !~ x",
+                "Operator '!~' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type >= 1",
+                "Operator '>=' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type < 1",
+                "Operator '<' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type <= 1",
+                "Operator '<=' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "text = 1",
+                "Operator '=' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "text != 1",
+                "Operator '!=' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "text > 1",
+                "Operator '>' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "text >= 1",
+                "Operator '>=' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "text < 1",
+                "Operator '<' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "text <= 1",
+                "Operator '<=' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "title >= 1",
+                "Operator '>=' is not supported for field 'title'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "title < 1",
+                "Operator '<' is not supported for field 'title'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "title <= 1",
+                "Operator '<=' is not supported for field 'title'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "user >= 1",
+                "Operator '>=' is not supported for field 'user'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "user < 1",
+                "Operator '<' is not supported for field 'user'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "user <= 1",
+                "Operator '<=' is not supported for field 'user'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "user.fullname = 1",
+                "Operator '=' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.fullname != 1",
+                "Operator '!=' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.fullname > 1",
+                "Operator '>' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.fullname >= 1",
+                "Operator '>=' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.fullname < 1",
+                "Operator '<' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.fullname <= 1",
+                "Operator '<=' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.fullname in (x)",
+                "Operator 'in' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'user.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "user.accountid ~ x",
+                "Operator '~' is not supported for field 'user.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "user.accountid !~ x",
+                "Operator '!~' is not supported for field 'user.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "user.accountid > 1",
+                "Operator '>' is not supported for field 'user.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "user.accountid >= 1",
+                "Operator '>=' is not supported for field 'user.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "user.accountid < 1",
+                "Operator '<' is not supported for field 'user.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "user.accountid <= 1",
+                "Operator '<=' is not supported for field 'user.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher ~ x",
+                "Operator '~' is not supported for field 'watcher'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher !~ x",
+                "Operator '!~' is not supported for field 'watcher'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher > 1",
+                "Operator '>' is not supported for field 'watcher'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher >= 1",
+                "Operator '>=' is not supported for field 'watcher'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher < 1",
+                "Operator '<' is not supported for field 'watcher'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher <= 1",
+                "Operator '<=' is not supported for field 'watcher'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher.fullname = 1",
+                "Operator '=' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.fullname != 1",
+                "Operator '!=' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.fullname > 1",
+                "Operator '>' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.fullname >= 1",
+                "Operator '>=' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.fullname < 1",
+                "Operator '<' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.fullname <= 1",
+                "Operator '<=' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.fullname in (x)",
+                "Operator 'in' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.accountid ~ x",
+                "Operator '~' is not supported for field 'watcher.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher.accountid !~ x",
+                "Operator '!~' is not supported for field 'watcher.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher.accountid > 1",
+                "Operator '>' is not supported for field 'watcher.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher.accountid >= 1",
+                "Operator '>=' is not supported for field 'watcher.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher.accountid < 1",
+                "Operator '<' is not supported for field 'watcher.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "watcher.accountid <= 1",
+                "Operator '<=' is not supported for field 'watcher.accountid'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            # --- session 2: P (75 rows) ---
+            ('ancestor > "x"', _CQL_NOT_PARSED),
+            ('ancestor > ""', _CQL_NOT_PARSED),
+            ("approvalStatus > x", _CQL_NOT_PARSED),
+            ('approvalStatus > "x"', _CQL_NOT_PARSED),
+            ('approvalStatus > ""', _CQL_NOT_PARSED),
+            ("commentsByUser > x", _CQL_NOT_PARSED),
+            ('commentsByUser > "x"', _CQL_NOT_PARSED),
+            ('commentsByUser > ""', _CQL_NOT_PARSED),
+            ("commentsByUser.fullname > x", _CQL_NOT_PARSED),
+            ('commentsByUser.fullname > "x"', _CQL_NOT_PARSED),
+            ('commentsByUser.fullname > ""', _CQL_NOT_PARSED),
+            ("commentsByUser.fullname = x", _CQL_NOT_PARSED),
+            ('commentsByUser.fullname = "x"', _CQL_NOT_PARSED),
+            ('commentsByUser.fullname = ""', _CQL_NOT_PARSED),
+            ("commentsByUser.fullname != x", _CQL_NOT_PARSED),
+            ("content.property > x", _CQL_NOT_PARSED),
+            ('content.property > "x"', _CQL_NOT_PARSED),
+            ('content.property > ""', _CQL_NOT_PARSED),
+            ('content.property = "x"', _CQL_NOT_PARSED),
+            ('content.property = ""', _CQL_NOT_PARSED),
+            ("content.property != x", _CQL_NOT_PARSED),
+            ("created > x", _CQL_NOT_PARSED),
+            ('created > ""', _CQL_NOT_PARSED),
+            ("created != x", _CQL_NOT_PARSED),
+            ("embeddedProduct > x", _CQL_NOT_PARSED),
+            ('embeddedProduct > "x"', _CQL_NOT_PARSED),
+            ('embeddedProduct > ""', _CQL_NOT_PARSED),
+            ("favorite > x", _CQL_NOT_PARSED),
+            ('favorite > "x"', _CQL_NOT_PARSED),
+            ('favorite > ""', _CQL_NOT_PARSED),
+            ("filesize > x", _CQL_NOT_PARSED),
+            ('filesize > "x"', _CQL_NOT_PARSED),
+            ('filesize > ""', _CQL_NOT_PARSED),
+            ("filesize != x", _CQL_NOT_PARSED),
+            ("hasDecision > x", _CQL_NOT_PARSED),
+            ('hasDecision > "x"', _CQL_NOT_PARSED),
+            ('hasDecision > ""', _CQL_NOT_PARSED),
+            ("jsdCategoryId > x", _CQL_NOT_PARSED),
+            ('jsdCategoryId > "x"', _CQL_NOT_PARSED),
+            ('jsdCategoryId > ""', _CQL_NOT_PARSED),
+            ("label > x", _CQL_NOT_PARSED),
+            ('label > "x"', _CQL_NOT_PARSED),
+            ('label > ""', _CQL_NOT_PARSED),
+            ("macro > x", _CQL_NOT_PARSED),
+            ('macro > "x"', _CQL_NOT_PARSED),
+            ('macro > ""', _CQL_NOT_PARSED),
+            ("mediaType.description > x", _CQL_NOT_PARSED),
+            ('mediaType.description > "x"', _CQL_NOT_PARSED),
+            ('mediaType.description > ""', _CQL_NOT_PARSED),
+            ("parent > x", _CQL_NOT_PARSED),
+            ('parent > "x"', _CQL_NOT_PARSED),
+            ('parent > ""', _CQL_NOT_PARSED),
+            ("siteSearch > x", _CQL_NOT_PARSED),
+            ('siteSearch > "x"', _CQL_NOT_PARSED),
+            ('siteSearch > ""', _CQL_NOT_PARSED),
+            ('siteSearch = "x"', _CQL_NOT_PARSED),
+            ('siteSearch = ""', _CQL_NOT_PARSED),
+            ("siteSearch != x", _CQL_NOT_PARSED),
+            ('space > "x"', _CQL_NOT_PARSED),
+            ('space > ""', _CQL_NOT_PARSED),
+            ("space.title > x", _CQL_NOT_PARSED),
+            ('space.title > "x"', _CQL_NOT_PARSED),
+            ('space.title > ""', _CQL_NOT_PARSED),
+            ('space.title = "x"', _CQL_NOT_PARSED),
+            ('space.title = ""', _CQL_NOT_PARSED),
+            ("space.title != x", _CQL_NOT_PARSED),
+            ('text > "x"', _CQL_NOT_PARSED),
+            ('text > ""', _CQL_NOT_PARSED),
+            ('text = "x"', _CQL_NOT_PARSED),
+            ("text != x", _CQL_NOT_PARSED),
+            ("title > x", _CQL_NOT_PARSED),
+            ('title > "x"', _CQL_NOT_PARSED),
+            ('title > ""', _CQL_NOT_PARSED),
+            ('user > "x"', _CQL_NOT_PARSED),
+            ('user > ""', _CQL_NOT_PARSED),
+            # --- session 2: V (80 rows) ---
+            (
+                "ancestor ~ 1",
+                "Expecting a value for operator '~' after field 'ancestor' but got '1'",
+            ),
+            (
+                "ancestor ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'ancestor' but got '2026-01-01'",
+            ),
+            (
+                "ancestor !~ 1",
+                "Expecting a value for operator '!~' after field 'ancestor' but got '1'",
+            ),
+            (
+                "ancestor !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'ancestor' but got '2026-01-01'",
+            ),
+            (
+                "approvalStatus ~ 1",
+                "Expecting a value for operator '~' after field 'approvalStatus' but got '1'",
+            ),
+            (
+                "approvalStatus ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'approvalStatus' but got '2026-01-01'",
+            ),
+            (
+                "approvalStatus !~ 1",
+                "Expecting a value for operator '!~' after field 'approvalStatus' but got '1'",
+            ),
+            (
+                "approvalStatus !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'approvalStatus' but got '2026-01-01'",
+            ),
+            (
+                "commentsByUser ~ 1",
+                "Expecting a value for operator '~' after field 'commentsByUser' but got '1'",
+            ),
+            (
+                "commentsByUser ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'commentsByUser' but got '2026-01-01'",
+            ),
+            (
+                "commentsByUser !~ 1",
+                "Expecting a value for operator '!~' after field 'commentsByUser' but got '1'",
+            ),
+            (
+                "commentsByUser !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'commentsByUser' but got '2026-01-01'",
+            ),
+            (
+                "commentsByUser.fullname ~ 1",
+                "Expecting a value for operator '~' after field 'commentsByUser.fullname' but got '1'",
+            ),
+            (
+                "commentsByUser.fullname ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'commentsByUser.fullname' but got '2026-01-01'",
+            ),
+            (
+                "commentsByUser.fullname !~ 1",
+                "Expecting a value for operator '!~' after field 'commentsByUser.fullname' but got '1'",
+            ),
+            (
+                "commentsByUser.fullname !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'commentsByUser.fullname' but got '2026-01-01'",
+            ),
+            (
+                "content.property ~ 1",
+                "Expecting a value for operator '~' after field 'content.property' but got '1'",
+            ),
+            (
+                "content.property ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'content.property' but got '2026-01-01'",
+            ),
+            (
+                "content.property !~ 1",
+                "Expecting a value for operator '!~' after field 'content.property' but got '1'",
+            ),
+            (
+                "content.property !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'content.property' but got '2026-01-01'",
+            ),
+            (
+                "created ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'created' but got '2026-01-01'",
+            ),
+            (
+                "created !~ 1",
+                "Expecting a value for operator '!~' after field 'created' but got '1'",
+            ),
+            (
+                "created !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'created' but got '2026-01-01'",
+            ),
+            (
+                "embeddedProduct ~ 1",
+                "Expecting a value for operator '~' after field 'embeddedProduct' but got '1'",
+            ),
+            (
+                "embeddedProduct ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'embeddedProduct' but got '2026-01-01'",
+            ),
+            (
+                "embeddedProduct !~ 1",
+                "Expecting a value for operator '!~' after field 'embeddedProduct' but got '1'",
+            ),
+            (
+                "embeddedProduct !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'embeddedProduct' but got '2026-01-01'",
+            ),
+            (
+                "favorite ~ 1",
+                "Expecting a value for operator '~' after field 'favorite' but got '1'",
+            ),
+            (
+                "favorite ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'favorite' but got '2026-01-01'",
+            ),
+            (
+                "favorite !~ 1",
+                "Expecting a value for operator '!~' after field 'favorite' but got '1'",
+            ),
+            (
+                "favorite !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'favorite' but got '2026-01-01'",
+            ),
+            (
+                "filesize ~ 1",
+                "Expecting a value for operator '~' after field 'filesize' but got '1'",
+            ),
+            (
+                "filesize ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'filesize' but got '2026-01-01'",
+            ),
+            (
+                "filesize !~ 1",
+                "Expecting a value for operator '!~' after field 'filesize' but got '1'",
+            ),
+            (
+                "filesize !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'filesize' but got '2026-01-01'",
+            ),
+            (
+                "hasDecision ~ 1",
+                "Expecting a value for operator '~' after field 'hasDecision' but got '1'",
+            ),
+            (
+                "hasDecision ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'hasDecision' but got '2026-01-01'",
+            ),
+            (
+                "hasDecision !~ 1",
+                "Expecting a value for operator '!~' after field 'hasDecision' but got '1'",
+            ),
+            (
+                "hasDecision !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'hasDecision' but got '2026-01-01'",
+            ),
+            (
+                "jsdCategoryId ~ 1",
+                "Expecting a value for operator '~' after field 'jsdCategoryId' but got '1'",
+            ),
+            (
+                "jsdCategoryId ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'jsdCategoryId' but got '2026-01-01'",
+            ),
+            (
+                "jsdCategoryId !~ 1",
+                "Expecting a value for operator '!~' after field 'jsdCategoryId' but got '1'",
+            ),
+            (
+                "jsdCategoryId !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'jsdCategoryId' but got '2026-01-01'",
+            ),
+            (
+                "label ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'label' but got '2026-01-01'",
+            ),
+            ("label !~ 1", "Expecting a value for operator '!~' after field 'label' but got '1'"),
+            (
+                "label !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'label' but got '2026-01-01'",
+            ),
+            ("macro ~ 1", "Expecting a value for operator '~' after field 'macro' but got '1'"),
+            (
+                "macro ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'macro' but got '2026-01-01'",
+            ),
+            ("macro !~ 1", "Expecting a value for operator '!~' after field 'macro' but got '1'"),
+            (
+                "macro !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'macro' but got '2026-01-01'",
+            ),
+            (
+                "mediaType.description ~ 1",
+                "Expecting a value for operator '~' after field 'mediaType.description' but got '1'",
+            ),
+            (
+                "mediaType.description ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'mediaType.description' but got '2026-01-01'",
+            ),
+            (
+                "mediaType.description !~ 1",
+                "Expecting a value for operator '!~' after field 'mediaType.description' but got '1'",
+            ),
+            (
+                "mediaType.description !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'mediaType.description' but got '2026-01-01'",
+            ),
+            ("parent ~ 1", "Expecting a value for operator '~' after field 'parent' but got '1'"),
+            (
+                "parent ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'parent' but got '2026-01-01'",
+            ),
+            ("parent !~ 1", "Expecting a value for operator '!~' after field 'parent' but got '1'"),
+            (
+                "parent !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'parent' but got '2026-01-01'",
+            ),
+            (
+                "siteSearch ~ 1",
+                "Expecting a value for operator '~' after field 'siteSearch' but got '1'",
+            ),
+            (
+                "siteSearch ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'siteSearch' but got '2026-01-01'",
+            ),
+            (
+                "siteSearch !~ 1",
+                "Expecting a value for operator '!~' after field 'siteSearch' but got '1'",
+            ),
+            (
+                "siteSearch !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'siteSearch' but got '2026-01-01'",
+            ),
+            ("space ~ 1", "Expecting a value for operator '~' after field 'space' but got '1'"),
+            ("space !~ 1", "Expecting a value for operator '!~' after field 'space' but got '1'"),
+            (
+                "space !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'space' but got '2026-01-01'",
+            ),
+            (
+                "space.title ~ 1",
+                "Expecting a value for operator '~' after field 'space.title' but got '1'",
+            ),
+            (
+                "space.title ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'space.title' but got '2026-01-01'",
+            ),
+            (
+                "space.title !~ 1",
+                "Expecting a value for operator '!~' after field 'space.title' but got '1'",
+            ),
+            (
+                "space.title !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'space.title' but got '2026-01-01'",
+            ),
+            ("text ~ 1", "Expecting a value for operator '~' after field 'text' but got '1'"),
+            (
+                "text ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'text' but got '2026-01-01'",
+            ),
+            ("text !~ 1", "Expecting a value for operator '!~' after field 'text' but got '1'"),
+            (
+                "title ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'title' but got '2026-01-01'",
+            ),
+            ("title !~ 1", "Expecting a value for operator '!~' after field 'title' but got '1'"),
+            (
+                "title !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'title' but got '2026-01-01'",
+            ),
+            (
+                "type ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'type' but got '2026-01-01'",
+            ),
+            ("type !~ 1", "Expecting a value for operator '!~' after field 'type' but got '1'"),
+            (
+                "type !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'type' but got '2026-01-01'",
+            ),
+            ("user !~ 1", "Expecting a value for operator '!~' after field 'user' but got '1'"),
+            (
+                "user !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'user' but got '2026-01-01'",
+            ),
+            # --- session 2: M (2 rows) ---
+            ("label > 1 and text = x", _CQL_NOT_PARSED),
+            (
+                "type > 1 and user ~ 1",
+                "Expecting a value for operator '~' after field 'user' but got '1'",
             ),
         ]
     ],

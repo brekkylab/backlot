@@ -565,7 +565,7 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
         headers=admin_h,
         params={"format": "full"},
     ).json()
-    assert "labelIds" in m and "snippet" in m
+    assert {"labelIds", "snippet", "sizeEstimate"} <= set(m)
     body = base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode()
     assert body == doc["content"]
     subj = next(h["value"] for h in m["payload"]["headers"] if h["name"] == "Subject")
@@ -5994,6 +5994,25 @@ def _drive_find(client, admin_h, name_substr, fields=None):
     return j["files"][0] if j.get("files") else None
 
 
+def test_drive_responses_unchanged_by_enrichment(client, admin_h):
+    doc = _drive_find(client, admin_h, "Brand")
+    full = client.get(
+        f"/drive/v3/files/{doc['id']}", headers=admin_h, params={"fields": "*"}
+    ).json()
+    for k in (
+        "kind",
+        "id",
+        "name",
+        "mimeType",
+        "createdTime",
+        "modifiedTime",
+        "owners",
+        "webViewLink",
+        "capabilities",
+    ):
+        assert k in full, f"drive file missing {k} (fidelity regression)"
+
+
 # Real's 503 body for a download carrying a `callback`, to the byte: measured 2026-10-07 over the
 # thirteen request shapes that reach one, the `errors[]` entry is written INLINE and the body ends
 # with the closing brace and no trailing newline -- which is not the shape `respond`, the serializer
@@ -7661,7 +7680,10 @@ def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, 
     files = client.get(
         "/drive/v3/files",
         headers=admin_h,
-        params={"q": f"mimeType='{mime}'", "fields": "files(id,size,quotaBytesUsed,exportLinks)"},
+        params={
+            "q": f"mimeType='{mime}'",
+            "fields": "files(id,size,quotaBytesUsed,exportLinks,md5Checksum)",
+        },
     ).json()["files"]
     formats = _about(client, admin_h, "exportFormats").json()["exportFormats"][mime]
     assert files
@@ -7669,6 +7691,7 @@ def test_drive_native_files_carry_export_links_and_quota(client, admin_h, mime, 
         assert list(f["exportLinks"]) == formats
         assert f["exportLinks"][export] == link.format(id=f["id"])
         assert f["quotaBytesUsed"] == f["size"] == "1024"  # every SAMPLE native file is under 1 KiB
+        assert "md5Checksum" not in f
     folder = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -9249,9 +9272,8 @@ def sheet_id(base, admin_h):
 
 
 def _values(base, headers, sheet_id, rng, **params):
-    """Percent-encoded, as google-api-python-client sends it; a hand-written URL's literal `!` and
-    `:` are legal in a path segment and must read the same, as the one
-    `test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off` sends does."""
+    """Percent-encoded, as google-api-python-client sends it. A hand-written `!` and `:` are legal
+    in a path segment and must read the same (the pretty-print test sends one)."""
     return httpx.get(
         f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/{quote(rng, safe='')}",
         headers=headers,
@@ -9972,7 +9994,7 @@ def test_sheets_values_get_rejects_a_start_outside_the_grid(base, admin_h, sheet
 
 def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, sheet_id):
     """Measured: a range inside the grid but past the data answers 200 with the range echoed and no
-    `values` key, not `[]` — distinct from a range that starts outside the grid, which 400s."""
+    `values` key — distinct from a range that starts outside the grid, which 400s."""
     for rng in ("A100:B101", "A100", "Z1:Z5", "Sheet1!D1:E2"):
         r = _values(base, admin_h, sheet_id, rng)
         assert r.status_code == 200, rng
@@ -9985,7 +10007,6 @@ def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, 
 # other two (`A1`, `'Sheet1'!A1:A1`) differ only because that spreadsheet's A1 is blank while the
 # SAMPLE's is not — same status, same echo. Pinned here so the parser cannot drift back.
 MEASURED_ECHO = [
-    # an unbounded edge is the grid's, not the data's: a 14-row real sheet echoed `A1:Z1000`
     ("Sheet1", "Sheet1!A1:Z1000"),
     ("Sheet1!A1:A2", "Sheet1!A1:A2"),
     ("A1:A2", "Sheet1!A1:A2"),

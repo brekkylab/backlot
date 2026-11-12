@@ -9982,6 +9982,7 @@ def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, 
 # other two (`A1`, `'Sheet1'!A1:A1`) differ only because that spreadsheet's A1 is blank while the
 # SAMPLE's is not — same status, same echo. Pinned here so the parser cannot drift back.
 MEASURED_ECHO = [
+    # an unbounded edge is the grid's, not the data's: a 14-row real sheet echoed `A1:Z1000`
     ("Sheet1", "Sheet1!A1:Z1000"),
     ("Sheet1!A1:A2", "Sheet1!A1:A2"),
     ("A1:A2", "Sheet1!A1:A2"),

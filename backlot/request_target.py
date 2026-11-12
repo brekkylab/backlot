@@ -31,7 +31,7 @@ from fastapi import Request, Response
 from starlette.types import Scope
 
 from backlot import auth, errors, utf8_escapes
-from backlot.routers import atlassian, s3
+from backlot.routers import atlassian, fireflies, s3
 
 #: The scope key :mod:`backlot.protocol` leaves the request target on, as sent, where it
 #: percent-encoded a byte of it or, for a `\` first, put a `/` ahead of it (:func:`encode_line`).

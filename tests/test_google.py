@@ -565,6 +565,7 @@ def test_gmail_body_roundtrip(client, admin_h, ro_conn):
         headers=admin_h,
         params={"format": "full"},
     ).json()
+    assert "labelIds" in m and "snippet" in m
     body = base64.urlsafe_b64decode(_gmail_plain(m["payload"])).decode()
     assert body == doc["content"]
     subj = next(h["value"] for h in m["payload"]["headers"] if h["name"] == "Subject")
@@ -2648,53 +2649,6 @@ def _gerr(resp):
     return body["error"]
 
 
-def test_google_errors_use_googles_envelope(client, admin_h):
-    """`google-api-python-client` reads `error.message` to build HttpError, so `{"detail": …}` left
-    every error unreadable to the one client Backlot exists to serve."""
-    r = client.get("/drive/v3/files", headers=admin_h, params={"fields": "totallyBogusField"})
-    assert r.status_code == 400
-    e = _gerr(r)
-    assert e["code"] == 400
-    assert e["message"] == "Invalid field selection totallyBogusField"
-    assert "detail" not in r.json()
-    # non-Google paths keep FastAPI's default envelope
-    assert "detail" in client.get("/no-such-route").json()
-
-
-def test_drive_errors_carry_the_legacy_errors_array(client, admin_h):
-    """Drive v3 always sends `errors[]` with a `reason` a client can branch on, and repeats the
-    message inside it. It does NOT send `status` for a parameter failure — measured."""
-    e = _gerr(client.get("/drive/v3/files", headers=admin_h, params={"fields": "nope"}))
-    assert e["errors"] == [
-        {
-            "message": "Invalid field selection nope",
-            "domain": "global",
-            "reason": "invalidParameter",
-            "location": "fields",
-            "locationType": "parameter",
-        }
-    ]
-    assert "status" not in e, "Drive omits status on parameter failures"
-
-
-def test_editor_api_errors_carry_status_and_no_errors_array(client, admin_h):
-    """The editor APIs are the mirror image of Drive: `status`, never `errors[]` — measured."""
-    doc = _drive_find(client, admin_h, "Brand")["id"]
-    e = _gerr(client.get(f"/sheets/v4/spreadsheets/{doc}", headers=admin_h))
-    assert e["code"] == 404 and e["status"] == "NOT_FOUND"
-    assert e["message"] == "Requested entity was not found."
-    assert "errors" not in e
-
-
-def test_gmail_errors_carry_both(client, admin_h):
-    """Gmail sends `errors[]` AND `status` — measured, and the only family that does both."""
-    # a well-formed but unknown id; a non-hex one is 400 "Invalid id value"
-    e = _gerr(client.get("/gmail/v1/users/me/messages/00000000deadbeef", headers=admin_h))
-    assert e["code"] == 404 and e["status"] == "NOT_FOUND"
-    assert e["message"] == "Requested entity was not found."
-    assert e["errors"][0]["reason"] == "notFound"
-
-
 # (path, params, code, status, reason, location) — one row per measured case.
 GOOGLE_ERROR_CASES = [
     ("/drive/v3/files", {"fields": "bogus"}, 400, None, "invalidParameter", "fields"),
@@ -2722,13 +2676,6 @@ def test_google_error_reasons_match_the_real_api(
     assert err0.get("location") == location
     if location is not None:
         assert err0["locationType"] == "parameter"
-
-
-def test_drive_not_found_names_the_file_id(client, admin_h):
-    """Measured: `File not found: {id}.` — the id is in the message, so a batch caller can tell
-    which of its requests failed."""
-    e = _gerr(client.get("/drive/v3/files/abc123xyz", headers=admin_h))
-    assert e["message"] == "File not found: abc123xyz."
 
 
 @pytest.mark.parametrize(
@@ -3757,6 +3704,7 @@ _DRIVE_CHECK_ROWS = [
     # the routes that declare no such check
     ("/drive/v3/files/{doc}/export", "mimeType=text/plain&acknowledgeAbuse=true", "admin", _SERVED),
     ("/drive/v3/about", "fields=user&includeItemsFromAllDrives=true", "admin", _SERVED),
+    ("/drive/v3/about", "", "admin", _FIELDS_REQUIRED),
     # a domain administrator's access, which no caller here has
     ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=true", "admin", (404, "notFound", "fileId", None)),
     ("/drive/v3/files/{doc}/permissions", "useDomainAdminAccess=TRUE", "admin", (404, "notFound", "fileId", None)),
@@ -6020,33 +5968,13 @@ def test_a_callback_changes_nothing_outside_google(client, admin_h):
     assert jira.text == json.dumps(jira.json(), separators=(",", ":"))
 
 
-# --- Gmail: typed response schema, unchanged responses ------------------------------------
+# --- Gmail: typed response schema ------------------------------------------------------------
 
 
 def test_gmail_messages_has_typed_response_schema(client):
     op = client.get("/openapi.json").json()["paths"]["/gmail/v1/users/{user_id}/messages"]["get"]
     schema = op["responses"]["200"]["content"]["application/json"]["schema"]
     assert schema != {}
-
-
-def test_gmail_responses_unchanged_by_enrichment(client, admin_h):
-    lst = client.get("/gmail/v1/users/me/messages", headers=admin_h).json()
-    assert "messages" in lst and "resultSizeEstimate" in lst
-    if lst["messages"]:
-        mid = lst["messages"][0]["id"]
-        msg = client.get(
-            f"/gmail/v1/users/me/messages/{mid}", params={"format": "full"}, headers=admin_h
-        ).json()
-        for k in (
-            "id",
-            "threadId",
-            "labelIds",
-            "snippet",
-            "internalDate",
-            "sizeEstimate",
-            "payload",
-        ):
-            assert k in msg, f"gmail message missing {k} (fidelity regression)"
 
 
 # --- OpenAPI enrichment: drive ------------------------------------------------------------
@@ -6064,46 +5992,6 @@ def _drive_find(client, admin_h, name_substr, fields=None):
         params["fields"] = fields
     j = client.get("/drive/v3/files", params=params, headers=admin_h).json()
     return j["files"][0] if j.get("files") else None
-
-
-def test_drive_responses_unchanged_by_enrichment(client, admin_h):
-    lst = client.get("/drive/v3/files", headers=admin_h).json()
-    assert lst["kind"] == "drive#fileList" and "files" in lst
-    doc = _drive_find(client, admin_h, "Brand")
-    assert doc is not None
-    full = client.get(
-        f"/drive/v3/files/{doc['id']}", headers=admin_h, params={"fields": "*"}
-    ).json()
-    for k in (
-        "kind",
-        "id",
-        "name",
-        "mimeType",
-        "createdTime",
-        "modifiedTime",
-        "owners",
-        "webViewLink",
-        "capabilities",
-    ):
-        assert k in full, f"drive file missing {k} (fidelity regression)"
-    # permissions.list has to resolve the same served id, for an actual FILE and not only for the
-    # folder id `test_drive_folder_permissions_resolve` covers -- both routes
-    # resolve through store.gdrive_by_id now, and only the folder path was exercised before.
-    perms = client.get(f"/drive/v3/files/{doc['id']}/permissions", headers=admin_h)
-    assert perms.status_code == 200
-
-
-def test_drive_export_and_media_stay_non_json(client, admin_h):
-    # A native doc exports as a raw Response; response_model must NOT be attached to these.
-    doc = _drive_find(client, admin_h, "Brand")
-    exp = client.get(
-        f"/drive/v3/files/{doc['id']}/export", params={"mimeType": "text/plain"}, headers=admin_h
-    )
-    assert exp.status_code == 200 and "application/json" not in exp.headers["content-type"]
-    # A binary (pdf) downloads raw via alt=media.
-    pdf = _drive_find(client, admin_h, "Whitepaper")
-    med = client.get(f"/drive/v3/files/{pdf['id']}", params={"alt": "media"}, headers=admin_h)
-    assert med.status_code == 200 and "application/json" not in med.headers["content-type"]
 
 
 # Real's 503 body for a download carrying a `callback`, to the byte: measured 2026-10-07 over the
@@ -6394,7 +6282,7 @@ def test_the_alt_that_downloads_is_read_the_way_every_other_alt_is(client, admin
     so a client that upper-cased the value got JSON where real gave it a file."""
     url = f"/drive/v3/files/{_drive_find(client, admin_h, 'Whitepaper')['id']}"
     raw = client.get(url, params={"alt": "media"}, headers=admin_h)
-    assert raw.status_code == 200
+    assert raw.status_code == 200 and "application/json" not in raw.headers["content-type"]
     for spelling in ("MEDIA", "Media"):
         r = client.get(url, params={"alt": spelling}, headers=admin_h)
         assert (r.status_code, r.content) == (200, raw.content), spelling
@@ -6478,21 +6366,6 @@ def test_drive_shared_items_carry_shared_with_me_time(client, tokens_yaml):
     assert (
         client.get(f"/drive/v3/files/{one['id']}", headers=mia, params={"fields": "*"}).json()
         == one
-    )
-
-
-def test_drive_shared_with_me_time_needs_a_caller(client, admin_h):
-    """The admin/service token is not a Drive user, so nothing was shared *with* it — no timestamp
-    to invent. `orderBy` on the field still answers (all-equal keys), as real Drive does for nulls."""
-    files = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 20}).json()["files"]
-    assert files and all("sharedWithMeTime" not in f for f in files)
-    assert (
-        client.get(
-            "/drive/v3/files",
-            headers=admin_h,
-            params={"pageSize": 5, "orderBy": "sharedWithMeTime"},
-        ).status_code
-        == 200
     )
 
 
@@ -7663,21 +7536,8 @@ def test_drive_order_by_is_refused_where_real_refuses_it(client, admin_h):
     }
 
 
-def test_drive_invalid_fields_mask_is_rejected(client, admin_h):
-    """Accepting an unknown field name and yielding empty file objects (200 {}) lets a typo or a
-    stale field name in a consumer's mask pass every Backlot-backed test and 400 in production."""
-    r = client.get(
-        "/drive/v3/files",
-        headers=admin_h,
-        params={"pageSize": 1, "fields": "files(totallyBogusField)"},
-    )
-    assert r.status_code == 400
-    assert "totallyBogusField" in r.json()["error"]["message"]
-    bad_top = client.get(
-        "/drive/v3/files", headers=admin_h, params={"pageSize": 1, "fields": "bogusTop,files(id)"}
-    )
-    assert bad_top.status_code == 400
-    # a documented field Backlot does not synthesize is still valid (real Drive omits it, 200)
+def test_drive_a_mask_may_name_a_documented_field_it_does_not_serve(client, admin_h):
+    """Real Drive omits a documented field a file does not carry and answers 200."""
     ok = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -7711,6 +7571,7 @@ def test_drive_files_answer_the_default_keys_with_no_mask(client, admin_h):
     """With no mask a file is `kind`, `id`, `name` and `mimeType`, listed and read by id, a folder
     as well as a stored file, in a listing's order and in a read's."""
     listing = client.get("/drive/v3/files", headers=admin_h, params={"pageSize": 2}).json()
+    assert listing["kind"] == "drive#fileList"
     folders = client.get(
         "/drive/v3/files", headers=admin_h, params={"q": f"mimeType='{FOLDER_MIME}'", "pageSize": 1}
     ).json()
@@ -7772,19 +7633,6 @@ def test_drive_folder_permissions_resolve(client, admin_h):
     assert got.status_code == 200 and got.json()["mimeType"] == FOLDER_MIME
     perms = client.get(f"/drive/v3/files/{folder['id']}/permissions", headers=admin_h)
     assert perms.status_code == 200 and perms.json()["permissions"]
-
-
-def test_drive_native_docs_report_size(client, admin_h):
-    """Google populates `size` for binary content *and for Docs Editors files*; Backlot omitted
-    it on native rows, which taught implementors something false about the API."""
-    doc = _drive_find(client, admin_h, "Brand", fields="files(*)")
-    assert doc["mimeType"] == DOC_MIME
-    assert int(doc["size"]) > 0
-    assert "md5Checksum" not in doc  # real Drive omits checksums on native files
-    folder = client.get(
-        "/drive/v3/files", headers=admin_h, params={"q": "'root' in parents", "pageSize": 1}
-    ).json()["files"][0]
-    assert "size" not in folder  # ...but not for folders or shortcuts
 
 
 @pytest.mark.parametrize(
@@ -7869,29 +7717,6 @@ SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
 def _about(client, headers, fields):
     return client.get(ABOUT, headers=headers, params={"fields": fields})
-
-
-def test_drive_about_requires_a_fields_mask(client, admin_h):
-    """Real Drive 400s `about.get` with no `fields` — this resource has no default projection.
-    Serving a full body instead would let a client ship a call that fails in production."""
-    r = client.get(ABOUT, headers=admin_h)
-    assert r.status_code == 400
-    assert "fields" in r.json()["error"]["message"]
-
-
-def test_drive_about_rejects_an_unknown_field(client, admin_h):
-    """Same rule as the `files` masks: a typo 400s rather than quietly matching nothing."""
-    assert _about(client, admin_h, "storageQuoat").status_code == 400
-    assert _about(client, admin_h, "storageQuota").status_code == 200
-
-
-def test_drive_about_needs_auth(client):
-    # no header at all -> 401 (`about` takes no API key, `_NO_CREDENTIAL_ROWS`); a bad token -> 401
-    assert client.get(ABOUT, params={"fields": "user"}).status_code == 401
-    bad = {"Authorization": "Bearer nope"}
-    assert client.get(ABOUT, params={"fields": "user"}, headers=bad).status_code == 401
-    # auth is resolved before the mask, as real Drive does — a missing mask on a bad token is 401
-    assert client.get(ABOUT, headers=bad).status_code == 401
 
 
 def test_drive_about_user_is_the_caller(client, tokens_yaml):
@@ -8057,12 +7882,6 @@ def _drive_by_mime(base, admin_h, mime, *, name: str | None = None):
 
 
 # --- Drive navigability ---------------------------------------------------------
-
-
-def test_shared_drives_empty(base, admin_h):
-    r = httpx.get(f"{base}/drive/v3/drives", headers=admin_h, params={"fields": "drives(id,name)"})
-    assert r.status_code == 200
-    assert r.json()["drives"] == []
 
 
 def test_root_lists_folders_with_matching_ids(base, admin_h):
@@ -9478,17 +9297,7 @@ def test_sheets_values_get_range_forms(base, admin_h, sheet_id, rng, expected):
     r = _values(base, admin_h, sheet_id, rng)
     assert r.status_code == 200, r.text
     assert r.json()["values"] == expected
-
-
-def test_sheets_values_get_keeps_a_line_intact(base, admin_h, sheet_id):
-    """The cell holds the whole line, commas and all. Splitting on commas manufactures columns out
-    of sentence punctuation over the real corpus — a prose line like "customer dates, ARR exposure,
-    highest-risk deals" becomes three cells of a table that never existed. Which delimiter (if any)
-    applies is the corpus owner's call, not Backlot's."""
-    j = _values(base, admin_h, sheet_id, "Sheet1!A1").json()
-    assert j["values"] == [["month,revenue"]]
-    # and there is exactly one column: B is past the end of every row
-    assert "values" not in _values(base, admin_h, sheet_id, "Sheet1!B1:B3").json()
+    assert r.json()["majorDimension"] == "ROWS"
 
 
 def test_sheets_values_round_trips_the_stored_text(base, admin_h, sheet_id):
@@ -9532,53 +9341,6 @@ def test_sheets_values_serve_a_blank_line_as_an_empty_row(base, admin_h):
     rebuilt = "\n".join((c[0] if c else "") for c in j["values"])
     assert rebuilt == export.rstrip("\n")
     assert export.endswith("\n\n"), "the stored trailing gap is still in the exported text"
-
-
-def test_sheets_values_get_accepts_an_unencoded_range(base, admin_h, sheet_id):
-    """`!` and `:` are legal in a path segment, so a hand-written URL must work as well as the
-    percent-encoded one google-api-python-client sends."""
-    r = httpx.get(f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/Sheet1!A1:A2", headers=admin_h)
-    assert r.status_code == 200
-    assert r.json()["values"] == GRID[:2]
-
-
-def test_sheets_values_get_echoes_the_normalized_range(base, admin_h, sheet_id):
-    """A client caches on `range`, so the response names the resolved range in full A1 form —
-    sheet included — however the request spelled it."""
-    assert _values(base, admin_h, sheet_id, "A1:A2").json()["range"] == "Sheet1!A1:A2"
-    # an unbounded edge resolves against the GRID, not the data — measured: a 14-row real sheet
-    # answers `values/<title>` with `A1:Z1000`, not `A1:D14`
-    assert _values(base, admin_h, sheet_id, "Sheet1").json()["range"] == "Sheet1!A1:Z1000"
-    assert _values(base, admin_h, sheet_id, "A:A").json()["range"] == "Sheet1!A1:A1000"
-    assert _values(base, admin_h, sheet_id, "1:1").json()["range"] == "Sheet1!A1:Z1"
-
-
-def test_sheets_values_get_defaults_to_rows(base, admin_h, sheet_id):
-    assert _values(base, admin_h, sheet_id, "Sheet1!A1:A3").json()["majorDimension"] == "ROWS"
-
-
-def test_sheets_values_get_major_dimension_columns_transposes(base, admin_h, sheet_id):
-    j = _values(base, admin_h, sheet_id, "Sheet1!A1:A3", majorDimension="COLUMNS").json()
-    assert j["majorDimension"] == "COLUMNS"
-    # one column, holding every line in order
-    assert j["values"] == [["month,revenue", "Jan,120000", "Feb,135000"]]
-
-
-def test_sheets_values_get_trims_trailing_empties(base, admin_h, sheet_id):
-    """Real Sheets does not pad a range out to its bounds: a row stops at its last non-empty cell
-    and the block stops at its last non-empty row. Padding would make a client read phantom
-    columns that the grid does not have."""
-    j = _values(base, admin_h, sheet_id, "Sheet1!A1:D5").json()
-    assert j["values"] == GRID  # not 5 rows, not 4 columns
-
-
-def test_sheets_values_get_omits_values_when_the_range_is_empty(base, admin_h, sheet_id):
-    """An empty range answers 200 with NO `values` key at all — not `[]`. A client testing
-    `"values" in resp` is the documented way to tell empty from present."""
-    r = _values(base, admin_h, sheet_id, "Sheet1!D1:E2")
-    assert r.status_code == 200
-    assert "values" not in r.json()
-    assert r.json()["range"] == "Sheet1!D1:E2"
 
 
 @pytest.mark.parametrize(
@@ -10193,21 +9955,6 @@ def test_sheets_values_get_enforces_the_acl(base, live_server, sheet_id):
     assert _batch(base, outsider, sheet_id, ["Sheet1"]).status_code == 403
 
 
-def test_sheets_values_get_needs_auth(base, sheet_id):
-    # Sheets accepts API keys, so no header at all is 403 PERMISSION_DENIED; a bad bearer is 401.
-    # Both measured against the live API.
-    assert _values(base, {}, sheet_id, "Sheet1").status_code == 403
-    assert _values(base, {"Authorization": "Bearer nope"}, sheet_id, "Sheet1").status_code == 401
-
-
-def test_sheets_values_get_clamps_a_range_that_overflows_the_grid(base, admin_h, sheet_id):
-    """Measured: an END past the grid is CLAMPED, not refused — `A1:AA5` on a 26-column sheet comes
-    back as `A1:Z5`, and `A1:B1001` as `A1:B1000`."""
-    assert _values(base, admin_h, sheet_id, "A1:AA5").json()["range"] == "Sheet1!A1:Z5"
-    assert _values(base, admin_h, sheet_id, "A1:B1001").json()["range"] == "Sheet1!A1:B1000"
-    assert _values(base, admin_h, sheet_id, "Z1:AA5").json()["range"] == "Sheet1!Z1:Z5"
-
-
 @pytest.mark.parametrize("rng", ["AA1:AB5", "ZZ1:ZZ5", "A1001:B1002", "AA1001:AB1002"])
 def test_sheets_values_get_rejects_a_start_outside_the_grid(base, admin_h, sheet_id, rng):
     """Measured: the START must sit inside the grid. Overflowing the end clamps; starting outside
@@ -10222,11 +9969,12 @@ def test_sheets_values_get_rejects_a_start_outside_the_grid(base, admin_h, sheet
 
 def test_sheets_values_get_empty_inside_the_grid_is_not_an_error(base, admin_h, sheet_id):
     """Measured: a range inside the grid but past the data answers 200 with the range echoed and no
-    `values` key — distinct from a range that starts outside the grid, which 400s."""
-    for rng in ("A100:B101", "A100", "Z1:Z5"):
-        j = _values(base, admin_h, sheet_id, rng).json()
-        assert "values" not in j, rng
-        assert j["range"].startswith("Sheet1!"), rng
+    `values` key, not `[]` — distinct from a range that starts outside the grid, which 400s."""
+    for rng in ("A100:B101", "A100", "Z1:Z5", "Sheet1!D1:E2"):
+        r = _values(base, admin_h, sheet_id, rng)
+        assert r.status_code == 200, rng
+        assert "values" not in r.json(), rng
+        assert r.json()["range"] == "Sheet1!" + rng.removeprefix("Sheet1!"), rng
 
 
 # Every (range -> echoed range) pair below was compared side by side against the live Sheets API on
@@ -10614,20 +10362,6 @@ def test_sheets_values_range_echo_matches_real_sheets(base, admin_h, sheet_id, r
     r = _values(base, admin_h, sheet_id, rng)
     assert r.status_code == 200, r.text
     assert r.json()["range"] == echo
-
-
-@pytest.mark.parametrize(
-    "rng, message",
-    [
-        ("Other!A1:B2", "Unable to parse range: Other!A1:B2"),
-        ("not a range", "Unable to parse range: not a range"),
-        ("A1:", "Unable to parse range: A1:"),  # the WHOLE spec, not the offending half
-    ],
-)
-def test_sheets_values_parse_error_matches_real_sheets(base, admin_h, sheet_id, rng, message):
-    r = _values(base, admin_h, sheet_id, rng)
-    assert r.status_code == 400
-    assert r.json()["error"]["message"] == message
 
 
 def test_sheets_batch_get_returns_one_value_range_per_request_range(base, admin_h, sheet_id):

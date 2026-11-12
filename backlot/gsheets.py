@@ -84,13 +84,10 @@ def _strip(s: str) -> str:
 def _sci(d: Decimal, places: int, *, strip: bool) -> str:
     """Scientific notation with a ``places``-decimal mantissa and an exponent of at least two
     digits — ``1.23E+05``, ``1.00E+100`` — or the mantissa's trailing zeros removed (``1E+15``)."""
-    if d == 0:
-        mantissa, exp = Decimal(0), 0
-    else:
-        exp = d.adjusted()
-        mantissa = (d.scaleb(-exp)).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
-        if abs(mantissa) >= 10:
-            mantissa, exp = mantissa / 10, exp + 1
+    exp = d.adjusted()
+    mantissa = (d.scaleb(-exp)).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+    if abs(mantissa) >= 10:
+        mantissa, exp = mantissa / 10, exp + 1
     m = _fixed(mantissa, places)
     if strip:
         m = _strip(m)

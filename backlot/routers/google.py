@@ -3360,8 +3360,6 @@ def _drive_entry_keys(paths, under: str, defaults: frozenset) -> set[str] | None
     a projection, and an empty set when the wrapper is not named at all. A bare wrapper, an empty
     group on a default key, a `*` at entry level, or a top-level `*` that reaches in each answer
     the whole entry."""
-    if paths is None:
-        return None
     if any(len(p) == 1 and p[0] == "*" for p in paths):
         return None
     under_paths = [p[1:] for p in paths if p[0] == under]
@@ -3843,10 +3841,7 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
     _check_mask(paths, _DRIVE_ABOUT_FIELDS, subfields=_DRIVE_ABOUT_SUBFIELDS)
     if any(len(p) > 1 and p[-1] == _MASK_EMPTY for p in paths):
         raise gerr.required("fields", "The 'fields' parameter is required for this method.")
-    keys = _mask_keys(paths)
-    if keys is not None and not keys:
-        raise gerr.required("fields", "The 'fields' parameter is required for this method.")
-    return keys
+    return _mask_keys(paths)
 
 
 # The conversion tables below describe the *API's* capabilities, not this account's, so they carry
@@ -5045,9 +5040,7 @@ _DRIVE_EXPORT_NAME = {
 def _drive_export_links(file_id: str, mime: str) -> dict[str, str]:
     """The `exportLinks` a native Docs Editors file carries, one per MIME `about.exportFormats`
     gives its type, in that order, at the address real's use with the format's short name."""
-    base = _DRIVE_EXPORT_LINK.get(mime)
-    if base is None:
-        return {}
+    base = _DRIVE_EXPORT_LINK[mime]
     return {
         out: f"{base}?id={file_id}&exportFormat={_DRIVE_EXPORT_NAME[out]}"
         for out in _DRIVE_EXPORT_FORMATS[mime]

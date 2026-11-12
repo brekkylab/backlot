@@ -101,8 +101,6 @@ def value_text(piece: tuple[str, object]) -> str:
         return _dtoa(value)  # type: ignore[arg-type]
     if kind == "bool":
         return "true" if value else "false"
-    if kind == "null":
-        return "null"
     return str(value)
 
 

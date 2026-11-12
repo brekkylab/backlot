@@ -10513,3 +10513,27 @@ def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, ad
         answered[path] = (r.status_code, r.json()["limit"] if r.status_code == 200 else r.json())
     assert len(answered) == len(rows)
     assert answered == dict(rows)
+
+
+def test_confluence_content_object_ends_with_expandable_then_links(client, admin_h):
+    """`_confluence_page`: `_expandable` and then `_links` are a content object's last two members,
+    with `history` and `version` right after `space`, on each read measured."""
+    api = "/atlassian/wiki/rest/api"
+    row = client.get(f"{api}/content", headers=admin_h, params={"type": "page"}).json()["results"][
+        0
+    ]
+    cid = row["id"]
+    reads = [
+        client.get(f"{api}/content/{cid}", headers=admin_h).json(),
+        client.get(
+            f"{api}/content/{cid}", headers=admin_h, params={"expand": "space,version"}
+        ).json(),
+        row,
+        client.get(f"{api}/search", headers=admin_h, params={"cql": "type=page"}).json()["results"][
+            0
+        ]["content"],
+    ]
+    for got in reads:
+        assert list(got)[-2:] == ["_expandable", "_links"], list(got)
+    bare = list(reads[0])
+    assert bare[bare.index("space") + 1 : bare.index("space") + 3] == ["history", "version"], bare

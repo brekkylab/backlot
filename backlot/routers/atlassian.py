@@ -2999,8 +2999,12 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
         expandable.pop("ancestors")
-    # `_expandable` is assigned last, so a property served above has already left it.
+    # `_expandable` is assigned after every property, so a property served above has already left
+    # it, and `_links` is moved after it: real serves the two last, `_expandable` then `_links`, on
+    # `content/{id}` (bare and with `expand=space,version`), a `content` row and a search row's
+    # `content`, measured on Confluence Cloud on 2026-11-12.
     page["_expandable"] = expandable
+    page["_links"] = page.pop("_links")
     return page
 
 

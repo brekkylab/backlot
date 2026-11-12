@@ -2415,9 +2415,6 @@ def test_hubspot_search_sorts(client, admin_h):
     assert names("DESCENDING") == ["Borealis Clinics", "Acme Health"]
 
 
-
-
-
 def test_hubspot_listing_refuses_a_limit_real_refuses(client, admin_h):
     """Real refuses the listing `limit`s Backlot clamped or defaulted, reads a repeated one from
     its first value, and serves `limit=100` and an empty `limit` (measured against api.hubapi.com

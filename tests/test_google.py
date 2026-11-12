@@ -6010,7 +6010,7 @@ def test_drive_responses_unchanged_by_enrichment(client, admin_h):
         "webViewLink",
         "capabilities",
     ):
-        assert k in full, f"drive file missing {k} (fidelity regression)"
+        assert k in full, k
 
 
 # Real's 503 body for a download carrying a `callback`, to the byte: measured 2026-10-07 over the
@@ -7556,7 +7556,8 @@ def test_drive_order_by_is_refused_where_real_refuses_it(client, admin_h):
 
 
 def test_drive_a_mask_may_name_a_documented_field_it_does_not_serve(client, admin_h):
-    """Real Drive omits a documented field a file does not carry and answers 200."""
+    """A documented field Backlot does not synthesize (`thumbnailLink`) is a valid mask name,
+    omitted, 200, as real Drive answers."""
     ok = client.get(
         "/drive/v3/files",
         headers=admin_h,
@@ -9272,8 +9273,8 @@ def sheet_id(base, admin_h):
 
 
 def _values(base, headers, sheet_id, rng, **params):
-    """Percent-encoded, as google-api-python-client sends it. A hand-written `!` and `:` are legal
-    in a path segment and must read the same (the pretty-print test sends one)."""
+    """Percent-encoded, as google-api-python-client sends it; a hand-written `!` and `:` must read
+    the same."""
     return httpx.get(
         f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/{quote(rng, safe='')}",
         headers=headers,

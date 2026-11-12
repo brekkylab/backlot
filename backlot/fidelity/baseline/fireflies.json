@@ -337,49 +337,49 @@
           "type": "SchedulerSlotPage!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_available_slots(cursor: String, limit: Int, start: String!, end: String!, booking_link_id: ID!): SchedulerSlotPage!`, and the root answered a query with a one-day range and booking link `nope` with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
+          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_available_slots(cursor: String, limit: Int, start: String!, end: String!, booking_link_id: ID!)`, and the root answered a query with a one-day range and booking link `nope` with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
         },
         "scheduler_booking": {
           "status": "missing",
           "type": "SchedulerBooking",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_booking(id: ID!): SchedulerBooking`, and the root answered a query with id `nope` with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
+          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_booking(id: ID!)`, and the root answered a query with id `nope` with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
         },
         "scheduler_booking_link": {
           "status": "missing",
           "type": "SchedulerBookingLink",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_booking_link(id: ID!): SchedulerBookingLink`, and the root answered a query with id `nope` with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
+          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_booking_link(id: ID!)`, and the root answered a query with id `nope` with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
         },
         "scheduler_booking_links": {
           "status": "missing",
           "type": "SchedulerBookingLinkPage!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_booking_links(cursor: String, limit: Int, enabled: Boolean): SchedulerBookingLinkPage!`, and the root answered a query with no arguments with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
+          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_booking_links(cursor: String, limit: Int, enabled: Boolean)`, and the root answered a query with no arguments with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
         },
         "scheduler_bookings": {
           "status": "missing",
           "type": "SchedulerBookingPage!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_bookings(cursor: String, limit: Int, range_start: String, range_end: String, scope: SchedulerBookingsScope, status: SchedulerBookingStatus, booking_link_id: ID, guest_email: String): SchedulerBookingPage!`, and the root answered a query with no arguments with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
+          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_bookings(cursor: String, limit: Int, range_start: String, range_end: String, scope: SchedulerBookingsScope, status: SchedulerBookingStatus, booking_link_id: ID, guest_email: String)`, and the root answered a query with no arguments with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
         },
         "scheduler_busy_times": {
           "status": "missing",
           "type": "SchedulerBusyTimePage!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_busy_times(cursor: String, limit: Int, start: String!, end: String!): SchedulerBusyTimePage!`, and the root answered a query with a one-day range with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
+          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_busy_times(cursor: String, limit: Int, start: String!, end: String!)`, and the root answered a query with a one-day range with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
         },
         "scheduler_profile": {
           "status": "missing",
           "type": "SchedulerProfile!",
           "kind": "missing_field",
           "severity": "gap",
-          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_profile: SchedulerProfile!`, and the root answered a query with no arguments with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
+          "note": "Fireflies' scheduler is a calendar-booking product outside the meeting corpus Backlot serves. Measured against api.fireflies.ai on 2026-11-12: introspection gives `scheduler_profile` with no arguments, and the root answered a query with no arguments with a 200 whose one error is `This feature has been disabled by your organization admin`, code `feature_disabled` and `extensions.status` 403, on a workspace with scheduling turned off, so no record shape could be read."
         },
         "transcript": {
           "status": "implemented",

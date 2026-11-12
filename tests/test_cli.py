@@ -449,19 +449,24 @@ def test_serve_stops_at_stdin_eof_only_when_asked(
         stdin.close()
 
 
-def test_serve_with_an_address_file_ends_with_0_after_a_ctrl_c(
-    monkeypatch, tmp_path, a_data_dir_with_a_corpus
+@pytest.mark.parametrize(
+    ("method", "code"), [("run", 0), ("startup", 3)], ids=["ctrl-c", "never-started"]
+)
+def test_serve_with_an_address_file_ends_with_0_after_a_ctrl_c_and_3_if_never_started(
+    monkeypatch, tmp_path, a_data_dir_with_a_corpus, method, code
 ):
-    """uvicorn shuts down on Ctrl+C and then raises the ``KeyboardInterrupt`` again out of
-    ``Server.run``; `backlot serve --address-file` ends with 0 after it."""
     import uvicorn
 
-    def served_then_interrupted(self, sockets=None):
+    def run(self, sockets=None):
         self.started = True
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(uvicorn.Server, "run", served_then_interrupted)
-    assert cli.main(["serve", "--address-file", str(tmp_path / "address")]) == 0
+    async def startup(self, sockets=None):
+        # What uvicorn 0.29's `Server.startup` does after a failed lifespan startup
+        self.should_exit = True
+
+    monkeypatch.setattr(uvicorn.Server, method, {"run": run, "startup": startup}[method])
+    assert cli.main(["serve", "--address-file", str(tmp_path / "address")]) == code
 
 
 @pytest.mark.parametrize(

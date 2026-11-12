@@ -357,12 +357,8 @@ class _Writer:
 
     def _invalid_name(self, location: str, name: str, message: str) -> None:
         at = f" at '{location}'" if location else ""
-        self.errors.append(
-            (
-                location or None,
-                f'Invalid JSON payload received. Unknown name "{name}"{at}: {message}',
-            )
-        )
+        text = f'Invalid JSON payload received. Unknown name "{name}"{at}: {message}'
+        self.errors.append((location or None, text))
 
     def _invalid_value(self, location: str, type_name: str, value: str) -> None:
         at = f" at '{location}'" if location else ""
@@ -547,9 +543,6 @@ class _Writer:
             return
         out = top.out.setdefault(field.name, [])
         self.stack.append(_Frame(top, None, field, out, is_list=True))
-
-    def end_list(self) -> None:
-        self.end_object()
 
     def render(self, name: str, piece: tuple[str, object]) -> None:
         if self.invalid_depth:
@@ -849,7 +842,7 @@ def _walk(writer: _Writer, tree) -> None:
             pending.append((((_text(k), v) for k, v in value), writer.end_object))
         elif isinstance(value, list):
             writer.start_list(name)
-            pending.append(((("", v) for v in value), writer.end_list))
+            pending.append(((("", v) for v in value), writer.end_object))
         else:
             writer.render(name, _piece(value))
 

@@ -2718,8 +2718,8 @@ _COUNTED_TOKEN_SHAPED = [
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: twenty-four are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the tenth as the `/orgs/{}`
-#: path `/organizations/{id}` is rewritten to, the eleventh on a path whose slash-terminated
+#: twenty-six are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the twelfth as the `/orgs/{}`
+#: path `/organizations/{id}` is rewritten to, the thirteenth on a path whose slash-terminated
 #: spelling a route matches, and the ten after `security-advisories` on `contents`, `git/refs`,
 #: `git/matching-refs`, `tarball` and `zipball`, whose parameters span segments; the next two are in
 #: `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep
@@ -2740,6 +2740,8 @@ _UNSERVED_ROWS = [
     ("PUT", "/github/teams/1/repos/{org}/codebase", True, 404),
     ("GET", "/github/repos/{org}/codebase/copilot/code-review/settings", True, 404),
     ("POST", "/github/repos/{org}/codebase/pulls/1/copilot-code-review", True, 404),
+    ("POST", "/github/user/issue-types", True, 404),
+    ("DELETE", "/github/user/issue-fields/1", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
     ("GET", "/github/organizations/1/settings/billing/usage", True, 404),
     ("POST", "/github/repos/{org}/codebase/git/trees", True, 404),
@@ -2797,7 +2799,7 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     value that names no token, each carrying the version echo. A row not refused is the router's
     answer for any caller. Real was measured on each row but the last with a bad bearer, an unknown
     scheme and a bearer after a tab, on each refused row but the ten after `security-advisories`
-    with each header below, and with no header on the first eight. On the three refused rows after
+    with each header below, and with no header on the first ten. On the three refused rows after
     `git/trees` and the two under `/agents/automations`, two of those headers have no answer of
     real's: a bearer after a tab that resolves was not sent on the three writes, and
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"

@@ -3519,15 +3519,11 @@ def plain_text(doc: dict) -> str:
     return "\ufeff" + _served_text("\r\n".join(lines).strip(_TRIMMED))
 
 
-# Markdown. A paragraph is a line, and two lines of NORMAL_TEXT are joined by a hard break (two
-# spaces and a newline), as a vertical tab is; a paragraph with a `#` heading stands apart by a
-# blank line. Two hard breaks in a row, or one beside a blank line, with nothing but empty
-# paragraphs between them, are one blank line.
+# Markdown. A paragraph is a line, a vertical tab in it a hard break (two spaces and a newline),
+# and each paragraph or table is joined to the one before it by a hard break or stands apart from
+# it by a blank line. Two or more breaks with nothing but empty lines between them are one blank
+# line.
 _BREAK, _BLOCK = object(), object()
-
-# A paragraph of exactly two spaces before a heading: written as nothing, and the breaks on both
-# sides of it as three newlines (real's answers on 2026-11-01).
-_GAP = object()
 
 # Escaped wherever they stand. `+`, `-` and `=` are escaped at a word's start, after a space, a tab
 # or the start of a run; a run of digits there is escaped at the `.` or `)` that ends it before a
@@ -3895,60 +3891,175 @@ def _anchored(style: dict, anchors: dict[str, str]) -> dict:
     return style
 
 
+class _Nesting:
+    """Where a Markdown export writes each paragraph in no list, and what joins each block to the
+    one before. Measured 2026-11-09 on paragraphs indented up to 150 points, after no item and
+    after numbered, bulleted and checkbox items nested up to three levels deep:
+
+    - A paragraph indented `s` points (`indentStart`) goes under the first `s // 36` items the
+      last list holds open (`_Items.markers`), or all of them when fewer, its first line
+      indented by their markers as `_list_marker` indents an item under them. It goes under none
+      once a paragraph with text went under none since the last item, or an empty one right after
+      a section break. An empty paragraph under none did not stop the next one going under the
+      items, and on 2026-11-10 neither did an empty quote, `> `, or an empty heading, `## `; an
+      empty one right after a section break did.
+    - It is a quote, a `> ` for each 30 points it stands past the items it goes under, when that
+      is a whole multiple of 30: under no item 30 points were `> ` and 60 `> > `, where 29, 31, 65
+      and 66 were nothing; under one item 66 points were `> `.
+    - A line with text after a vertical tab in it starts with its `> `s and, when it is under
+      items, the width of every item open, those it is not under among them. An empty line there
+      was written as nothing on 2026-11-10, its hard breaks either side one blank line.
+    """
+
+    def __init__(self, items: _Items):
+        self.items = items
+        self.list_id: str | None = None  # the list of the last item
+        self.closed = False  # whether paragraphs go under no item until the next item
+        # whether the first block after the last item joined it, with no table or section break
+        # since
+        self.tight: bool | None = None
+        self.before = ("", 0)  # the kind and step of the block before
+
+    def open(self) -> list[tuple[int, str, list[int]]]:
+        """The items the last list holds open, outermost first."""
+        return self.items.markers[self.list_id][1:] if self.list_id else []
+
+    def place(self, paragraph: dict) -> tuple[str, int, str, str]:
+        """A paragraph in no list: `under` items, or under none `alone` with text or `empty`;
+        its step, `s // 36`; and what its first line and each line with text after a vertical tab
+        start with."""
+        start = paragraph["paragraphStyle"].get("indentStart", {}).get("magnitude") or 0
+        step = int(start // 36)
+        under = [] if self.closed else self.open()[:step]
+        past = start - 36 * len(under)
+        quote = "> " * int(past // 30) if past % 30 == 0 else ""
+        if under:
+            return "under", step, " " * _width(under) + quote, quote + " " * _width(self.open())
+        return "alone" if _spans(paragraph) else "empty", step, quote, quote
+
+    def joins(self, kind: str, step: int, apart: bool, broken: bool) -> bool:
+        """Whether a block of ``kind`` at ``step`` joins the block before by a hard break, rather
+        than standing apart by a blank line; ``apart`` when a heading or a table is either side,
+        ``broken`` when a section break stands between them. A section break after an item or a
+        paragraph under items sets the block after it apart: measured 2026-11-09, items of one
+        list or of two either side of a break were a blank line apart, and plain paragraphs either
+        side of one a hard break; on 2026-11-10 a paragraph under an item and the paragraph or item
+        after a break were too. A paragraph under items joins the item before it when one step (36
+        points) past the item's level, and a paragraph before it under the same items at its own
+        step when `tight`; a list item joins an item before it, and a paragraph under items before
+        it when `tight`; and a paragraph under no item joins the block before unless that is an
+        item or under items."""
+        before, before_step = self.before
+        if apart or broken and before in ("item", "under"):
+            return False
+        if kind == "under":
+            if before == "item":
+                return step == self.open()[-1][0] + 1
+            return before == "under" and before_step == step and bool(self.tight)
+        if kind == "item":
+            return before == "item" or (before == "under" and bool(self.tight))
+        return before not in ("item", "under")
+
+    def went(self, kind: str, step: int, joined: bool, paragraph: dict, broken: bool) -> None:
+        """Take a block once placed, whether it ``joined`` the block before, and whether a
+        section break stands before it (``broken``). Measured 2026-11-10: after a table or a
+        section break among paragraphs under an item, two paragraphs under it at one step were a
+        blank line apart, and after a table a paragraph under it and the next item too, where with
+        a heading in the table's place two such paragraphs were joined."""
+        if kind == "item":
+            self.list_id, self.closed, self.tight = paragraph["bullet"]["listId"], False, None
+        else:
+            self.closed = self.closed or kind == "alone" or kind == "empty" and broken
+            if kind == "table" or broken:
+                self.tight = False
+            elif self.tight is None:
+                self.tight = joined
+        self.before = (kind, step)
+
+
+def _width(markers: list[tuple[int, str, list[int]]]) -> int:
+    """The indent of a line under ``markers``: each one's first word and a space."""
+    return sum(len(marker.split(" ")[0]) + 1 for _, marker, _ in markers)
+
+
 def _markdown(
     content: list[dict], notes: Iterator[int], items: _Items, anchors: dict[str, str]
 ) -> str:
     """Stored content as Markdown: TITLE as `#`, SUBTITLE as `##` and HEADING_n as n `#`s, a
     heading's vertical tab a space; bold, italic, strikethrough and links in a paragraph's named
     style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
-    paragraph after its marker (`_list_marker`), its items apart from the paragraphs either side
-    of the list as a heading is, and a table as `_table` writes it, apart from what is either side
-    of it as a heading is. A section break after a list paragraph sets what follows it apart as
-    well: measured 2026-11-09, items of one list or of two either side of a break were a blank
-    line apart, and plain paragraphs either side of one a hard break. Nothing is trimmed, and
-    nothing ends the last line."""
+    paragraph after its marker (`_list_marker`), a paragraph in no list where `_Nesting` puts it,
+    each block joined to the one before or apart from it as `_Nesting.joins` says, and a table as
+    `_table` writes it. A line of exactly two spaces, its prefix included, after another line and
+    with a blank line rather than a hard break first after it, is written as nothing, and the
+    breaks either side of it as three newlines, the line after it then written as it is: real
+    wrote a paragraph of two spaces so before a heading on 2026-11-01 and before a table, a list
+    item and a paragraph on 2026-11-09, and on 2026-11-10 a vertical tab's line of two spaces
+    before a heading, and of four paragraphs of two spaces each a blank line from the next, the
+    first and the third. Real kept a first line of two spaces, and one with a hard break first
+    after it, on 2026-11-10. Nothing is trimmed, and nothing ends the last line."""
     at = [k for k, el in enumerate(content) if "paragraph" in el or "table" in el]
     blocks = [content[k].get("paragraph", content[k]) for k in at]
     levels = ["table" if "table" in b else _MARKDOWN_LEVEL.get(_named(b)) for b in blocks]
     listed = ["bullet" in b for b in blocks]
     tokens: list = []
+    nesting = _Nesting(items)
     for i, (paragraph, level) in enumerate(zip(blocks, levels)):
+        prefix = rest = ""
+        if level == "table":
+            kind, step = "table", 0
+        elif listed[i]:
+            kind, step = "item", 0
+        else:
+            kind, step, prefix, rest = nesting.place(paragraph)
+        joined = broken = False
         if i:
             broken = any("sectionBreak" in el for el in content[at[i - 1] + 1 : at[i]])
-            apart = level or levels[i - 1] or listed[i] != listed[i - 1] or broken and listed[i - 1]
-            tokens.append(_BLOCK if apart else _BREAK)
+            joined = nesting.joins(kind, step, bool(level or levels[i - 1]), broken)
+            tokens.append(_BREAK if joined else _BLOCK)
+        nesting.went(kind, step, joined, paragraph, broken)
         if level == "table":
             tokens.append(_table(paragraph["table"], notes, anchors))
             continue
         runs = [(text, _anchored(style, anchors)) for text, style in _spans(paragraph)]
         named = _named_text(paragraph)
-        marker = _list_marker(items, paragraph["bullet"]) if listed[i] else ""
+        if listed[i]:
+            prefix = _list_marker(items, paragraph["bullet"])
         if level:
             heading = "".join(_inline(runs, named, notes, heading=True))
             anchor = anchors.get(paragraph["paragraphStyle"].get("headingId"))
             tokens.append(
-                marker + "#" * level + " " + heading + (f" {{#{anchor}}}" if anchor else "")
+                prefix + "#" * level + " " + heading + (f" {{#{anchor}}}" if anchor else "")
             )
             continue
-        line = _inline(runs, named, notes)
-        line[0] = marker + line[0]
-        if line == ["  "] and i + 1 < len(blocks) and levels[i + 1]:
-            tokens.append(_GAP)
-        else:
-            tokens += line
-    out, pending = "", []
+        tokens += [
+            (rest if n else prefix) + x if isinstance(x, str) and (x or not n) else x
+            for n, x in enumerate(_inline(runs, named, notes))
+        ]
+    lines, pending = [], []  # each line with the breaks before it
     for t in tokens:
-        if t is _BREAK or t is _BLOCK or t is _GAP:
+        if t is _BREAK or t is _BLOCK:
             pending.append(t)
         elif t:
-            out += _separator(pending) + t
+            lines.append((pending, t))
             pending = []
-    return out + _separator(pending)
+    lines.append((pending, ""))
+    out, k = "", 0
+    while k < len(lines):
+        before, line = lines[k]
+        after = lines[k + 1][0] if k + 1 < len(lines) else []
+        if line == "  " and before and after[:1] == [_BLOCK]:
+            out += "\n\n\n" + lines[k + 1][1]
+            k += 2
+        else:
+            out += _separator(before) + line
+            k += 1
+    return out
 
 
 def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
-    """A table as Markdown: a row of `|`s per row, its first row the header, each column aligned
-    `:----`, and each cell its paragraphs' runs, a table's in it among them, one after another
+    """A table as Markdown: a row of `|`s per row, its first row the header, and
+    each cell its paragraphs' runs, a table's in it among them, one after another
     with a space between, as no list marker, heading or line break, the first row's bold left out.
     Measured 2026-11-03: a cell of `Head` as HEADING_1 and `body` was `Head body`, a list item
     `item1 item2`, a vertical tab and a tab were written as themselves, a cell's trailing spaces
@@ -3956,15 +4067,26 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
     second `**` and `[**…**]`, and italic and struck-through text in the first row was marked.
     Measured 2026-11-05: an empty paragraph of a table inside a cell was left out, where the
     cell's own empty paragraph was kept. Measured 2026-11-09: a cell a merged cell covers was
-    written empty, and a column every cell of which a merged cell covers was aligned `-----`."""
+    written empty, and a column every cell of which a merged cell covers was aligned `-----`.
+    Measured 2026-11-10: a column was aligned `:----` where every paragraph of its cells was START
+    or JUSTIFIED, `:---:` where every one was CENTER, `----:` where every one was END and `-----`
+    where any two differed, an empty paragraph counting, a merged cell's in its first column and a
+    covered cell's in none. Measured 2026-11-11: each paragraph of a table inside a cell counted in
+    that cell's column, an empty one among them."""
+    covered = _covered(table)
+    markers = {"CENTER": ":---:", "END": "----:"}
+    column_markers: list[set[str]] = [set() for _ in table["tableStyle"]["tableColumnProperties"]]
     rows = []
     for n, row in enumerate(table["tableRows"]):
         cells = []
-        for cell in row["tableCells"]:
+        for c, cell in enumerate(row["tableCells"]):
             lines = []
             for el in cell["content"]:
                 own = "paragraph" in el
                 for paragraph in [el["paragraph"]] if own else paragraphs_of([el]):
+                    if (n, c) not in covered:
+                        alignment = paragraph.get("paragraphStyle", {}).get("alignment")
+                        column_markers[c].add(markers.get(alignment, ":----"))
                     named = _named_text(paragraph)
                     pieces = []
                     for text, style in _spans(paragraph):
@@ -3976,12 +4098,7 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
                         lines.append(line)
             cells.append(" ".join(lines))
         rows.append("| " + " | ".join(cells) + " |")
-    columns = len(table["tableStyle"]["tableColumnProperties"])
-    covered = _covered(table)
-    aligned = [
-        ":----" if any((r, c) not in covered for r in range(len(rows))) else "-----"
-        for c in range(columns)
-    ]
+    aligned = [next(iter(values)) if len(values) == 1 else "-----" for values in column_markers]
     return "\n".join([rows[0], "| " + " | ".join(aligned) + " |", *rows[1:]])
 
 
@@ -4011,16 +4128,13 @@ def _list_marker(items: _Items, bullet: dict) -> str:
         marker = "- [ ]"
     else:
         marker = "-" if glyphs["glyphSymbol"] in _DASHED else "*"
-    indent = sum(len(m.split(" ")[0]) + 1 for _, m, _ in above[1:])
+    indent = _width(above[1:])
     above.append((level, marker, [0]))
     return " " * indent + marker + " "
 
 
 def _separator(breaks: list) -> str:
-    """What the breaks between two lines, with only empty paragraphs between them, are
-    written as."""
+    """What the breaks between two lines, with only empty lines between them, are written as."""
     if not breaks:
         return ""
-    if _GAP in breaks:
-        return "\n\n\n"
     return "  \n" if breaks == [_BREAK] else "\n\n"

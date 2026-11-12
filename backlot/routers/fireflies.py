@@ -531,15 +531,13 @@ def _not_found(request: Request) -> Response:
     return _body_refusal(message, 404, "not_found")
 
 
-#: The methods Fastify has a route for, whose router refuses a path it cannot decode.
-_BAD_URL_METHODS = ("GET", "HEAD", "POST", "OPTIONS")
+#: The methods under which Fastify's router refuses a path it cannot decode (:func:`_bad_url`).
+_BAD_URL_METHODS = ("GET", "HEAD", "POST", "OPTIONS", "DELETE")
 
 
 def _undecodable(path: str) -> bool:
-    """Whether ``path`` is under `/graphql/` and holds an escape that does not decode to UTF-8,
-    `%FF`, `%E9`, a surrogate's `%ED%A0%80` and an overlong `/`'s `%C0%AF` among them."""
-    if not path.startswith("/graphql/"):
-        return False
+    """Whether ``path`` holds an escape that does not decode to UTF-8, `%FF`, `%E9`, a surrogate's
+    `%ED%A0%80` and an overlong `/`'s `%C0%AF` among them."""
     try:
         urllib.parse.unquote_to_bytes(path).decode("utf-8")
     except UnicodeDecodeError:
@@ -562,6 +560,33 @@ def _bad_url(request: Request) -> Response:
         status_code=400,
         headers={"content-type": "application/json", "strict-transport-security": _HSTS},
     )
+
+
+# The printable characters :func:`printable_refusal` refuses in a path, and in a query.
+_REFUSED_IN_PATH = re.compile(r"[<>`]")
+_REFUSED_IN_QUERY = re.compile(r'["<>]')
+
+
+def printable_refusal(request: Request) -> Response | None:
+    """Fireflies' empty 400 for a `<`, a `>` or a backtick in the path, as a client sent it
+    (:func:`~backlot.routers.sent_path`), or a `"`, a `<` or a `>` in the query, where nginx passes
+    the path on (:func:`nginx_path`, :func:`nginx_passes`), ahead of Fastify: no `Content-Type`,
+    :data:`_HSTS` and no `@fastify/cors` header, keeping the connection open; or ``None``.
+    api.fireflies.ai answered so on 2026-11-12 (UTC), with no credential, a `GET` with each byte
+    from 0x21 to 0x7E but `#`, `%`, `/` and `?` in a path under `/graphql/` and in a query value at
+    `/graphql/` and at `/graphql`; a `<` at `/GRAPHQL/…`, `//graphql/…`, `/x/../graphql/…` and
+    `/graphql%2F…`, under `/graphql/` by `HEAD`, `OPTIONS` and `PUT`, in the query at `/graphql/x`
+    and at `/GRAPHQL`, and in the query of a path ending in `%FF`, which :func:`_bad_url` answers
+    otherwise. It answered a second request on the same connection after one, and `/nope/…a<b` and
+    `/nope?…=a<b` with :data:`_NGINX_404`."""
+    path = sent_path(request.scope)
+    query = request.scope["query_string"].decode("latin-1")
+    if _REFUSED_IN_PATH.search(path) is None and _REFUSED_IN_QUERY.search(query) is None:
+        return None
+    read = nginx_path(path)
+    if read is None or not nginx_passes(read):
+        return None
+    return Response(status_code=400, headers={"strict-transport-security": _HSTS})
 
 
 _NGINX_PAGE = (
@@ -610,10 +635,14 @@ async def unrouted(request: Request):
     400 without :data:`_HSTS` and its 404 with it alone, and Fastify's where it passes it on:
     :func:`_preflight` to an `OPTIONS`, and to any other method, after reading the body of one of
     :data:`_BODIED` (:func:`_fastify_read`), its not-found handler's 404 (:func:`_not_found`), each
-    with what :func:`_from_fastify` adds. Ahead of those, a path under `/graphql/` holding an escape
-    that is not UTF-8 (:func:`_undecodable`) draws its router's 400 (:func:`_bad_url`) on a method
-    it has a route for, and on a `PUT` the 404 with neither its body read nor `@fastify/cors`'s
-    header: api.fireflies.ai on 2026-11-11 (UTC), where a `PUT` at `/graphql/nope` was read."""
+    with what :func:`_from_fastify` adds. Ahead of those, a path holding an escape that is not UTF-8
+    (:func:`_undecodable`) draws its router's 400 (:func:`_bad_url`) under one of
+    :data:`_BAD_URL_METHODS`, and under any other method the 404 with neither its body read nor
+    `@fastify/cors`'s header. api.fireflies.ai answered so on 2026-11-12 (UTC), with no credential,
+    each method of :data:`apollo_http.METHODS` but Cloudflare's three at a path under `/graphql/`
+    ending in `%FF`, and there `PUT` and `PATCH` with `{` as JSON, which drew the not-JSON 400 at a
+    path with no such escape; and `POST`, `GET` and `PUT` at `/GRAPHQL/…%FF` and `//graphql/…%FF`,
+    and `POST` at `/Graphql/…%FF`, `/x/../graphql/…%FF` and `/graphql%2F…%FF`."""
     path = nginx_path(sent_path(request.scope))
     if path is None:
         return Response(_NGINX_400, status_code=400, headers={"content-type": "text/html"})
@@ -626,10 +655,9 @@ async def unrouted(request: Request):
     if _undecodable(sent_path(request.scope)):
         if request.method in _BAD_URL_METHODS:
             return _bad_url(request)
-        if request.method == "PUT":
-            response = _not_found(request)
-            response.headers["strict-transport-security"] = _HSTS
-            return response
+        response = _not_found(request)
+        response.headers["strict-transport-security"] = _HSTS
+        return response
     if request.method == "OPTIONS":
         return _from_fastify(_preflight(request))
     if request.method in _BODIED:

@@ -2394,7 +2394,7 @@ def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeyp
     assert with_pushdown == without
 
 
-def test_hubspot_search_sorts(client, admin_h):
+def test_hubspot_search_sorts(client, admin_h, tmp_path):
     """`sorts` is advertised, so it has to order the whole match set — not just whatever landed on
     the page. Numeric properties sort numerically, which string ordering would get wrong."""
 
@@ -2413,6 +2413,50 @@ def test_hubspot_search_sorts(client, admin_h):
 
     assert names("ASCENDING") == ["Acme Health", "Borealis Clinics"]  # 150 then 400
     assert names("DESCENDING") == ["Borealis Clinics", "Acme Health"]
+
+    from tests._helpers import corpus_client
+
+    contacts = [
+        ("maria", "Johnson"),
+        ("brian", "Halligan"),
+        ("ava", "Chen"),
+        ("bob", "iyer"),
+        ("cara", "diaz"),
+    ]
+    records = [
+        {
+            "source_type": "hubspot",
+            "object_type": "contacts",
+            "doc_id": name,
+            "title": lastname,
+            "content": lastname,
+            "properties": {"email": f"{name}@example.com", "lastname": lastname},
+        }
+        for name, lastname in contacts
+    ]
+    email_order = ["ava", "bob", "brian", "cara", "maria"]
+    lastname_order = ["ava", "cara", "brian", "bob", "maria"]
+    cases = [
+        (["email"], email_order),
+        (["-email"], email_order[::-1]),
+        (["lastname"], lastname_order),
+        (["-lastname"], lastname_order[::-1]),
+        ([{"propertyName": "lastname"}], lastname_order),
+        ([{"propertyName": "lastname", "direction": "DESCENDING"}], lastname_order[::-1]),
+    ]
+    with corpus_client(tmp_path, records) as (contacts_client, settings):
+        url = "/hubspot/crm/v3/objects/contacts/search"
+        headers = {"Authorization": f"Bearer {settings.admin_token}"}
+        served = []
+        for sorts, _ in cases:
+            response = contacts_client.post(url, headers=headers, json={"sorts": sorts})
+            assert response.status_code == 200, response.text
+            served.append([row["properties"]["email"] for row in response.json()["results"]])
+        too_many = contacts_client.post(url, headers=headers, json={"sorts": ["email", "lastname"]})
+    assert served == [[f"{name}@example.com" for name in order] for _, order in cases]
+    assert too_many.status_code == 400
+    assert too_many.json()["category"] == "VALIDATION_ERROR"
+    assert too_many.json()["message"] == "too many sorts (count: 2, max allowed: 1)"
 
 
 def test_hubspot_search_is_acl_scoped(client, tokens_yaml):

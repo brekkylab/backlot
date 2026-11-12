@@ -115,7 +115,11 @@ _B_SEARCH = {
                                 },
                             },
                         },
-                        "sorts": {"type": "array", "items": {"type": "object"}},
+                        "sorts": {
+                            "type": "array",
+                            "maxItems": 1,
+                            "items": {"anyOf": [{"type": "string"}, {"type": "object"}]},
+                        },
                         "query": {"type": "string"},
                         "properties": {"type": "array", "items": {"type": "string"}},
                         "limit": {"type": "integer"},
@@ -1558,14 +1562,23 @@ def _match_one(prop, f: dict) -> bool:
 
 
 def _sorted(rows, sorts):
-    """Apply `sorts` (first entry wins, as HubSpot documents). Numeric when every value on that
-    property parses as a number, else lexicographic — Backlot is not told property types."""
-    if not sorts:
+    """Apply the requested sort to the full match set. HubSpot's contacts search on
+    2026-11-10 accepted a property string, descending with a leading hyphen, and ordered
+    mixed-case last names by their lowercase forms. Backlot keeps its numeric ordering when
+    every present value parses as a number."""
+    if not isinstance(sorts, list) or not sorts:
         return rows
-    spec = sorts[0] if isinstance(sorts, list) and sorts else None
-    if not isinstance(spec, dict) or not spec.get("propertyName"):
+    spec = sorts[0]
+    if isinstance(spec, str):
+        name = spec.removeprefix("-")
+        descending = spec.startswith("-")
+    elif isinstance(spec, dict):
+        name = spec.get("propertyName")
+        descending = str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING"
+    else:
         return rows
-    name = spec["propertyName"]
+    if not isinstance(name, str) or not name:
+        return rows
     # Decorate once: the properties JSON is parsed per row here, and re-parsing it inside the sort
     # key would double that over the whole match set (15k+ rows at the scale measured).
     decorated = [(_props(r).get(name), r) for r in rows]
@@ -1578,9 +1591,9 @@ def _sorted(rows, sorts):
         v = pair[0]
         if v is None:  # absent sorts last in both directions
             return (1, 0.0 if numeric else "")
-        return (0, _num(v) if numeric else str(v))
+        return (0, _num(v) if numeric else str(v).lower())
 
-    decorated.sort(key=key, reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
+    decorated.sort(key=key, reverse=descending)
     return [r for _, r in decorated]
 
 
@@ -2068,6 +2081,11 @@ async def search_objects(object_type: str, request: Request):
     if err is not None:
         return err
 
+    sorts = body.get("sorts")
+    # HubSpot's contacts search answered this validation error for two sort strings on 2026-11-10.
+    if isinstance(sorts, list) and len(sorts) > 1:
+        return _error(400, f"too many sorts (count: {len(sorts)}, max allowed: 1)")
+
     # Filters may name ANY property, so they are evaluated over the JSON column rather than compiled
     # to SQL; the object-type and ACL predicates stay in SQL. The whole object type is matched on
     # every request, NOT just the rows past the cursor: `total` is a property of the query, so it
@@ -2098,7 +2116,7 @@ async def search_objects(object_type: str, request: Request):
         cursor = batch[-1]["id"]
         hits += [r for r in batch if _matches(r, body)]
     total = len(hits)
-    hits = _sorted(hits, body.get("sorts"))
+    hits = _sorted(hits, sorts)
 
     if after_doc is not None:
         ids = [r["id"] for r in hits]

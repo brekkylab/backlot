@@ -4436,7 +4436,7 @@ _REFUSED, _FAILED = (
 _NEXT_PAST_INT = errors_atlassian.search_next_out_of_range().body
 _ESCAPED_END_QUOTE = errors_atlassian.cql_escaped_end_quote('"a\\\\"').body
 _NOT_PARSED_BODY = errors_atlassian.cql_not_parsed().body
-_OPERATOR_BODY = errors_atlassian.cql_operator_not_supported(">", "created").body
+_OPERATOR_BODY = errors_atlassian.cql_operator_not_supported(">", "created", "<, <=, >, >=, =, !=").body
 
 # The CQL search's page over `searchable`'s four matches, by the rules `_cql_position`,
 # `_cql_cursor`, `_cql_search_after`, `errors_atlassian.search_next_out_of_range` and the comment on
@@ -10311,6 +10311,308 @@ _CQL_PARSE_ROWS = [
                 'Escaped end quote in phrase query near : "a\\"',
             ),
             ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
+        ]
+    ],
+    # A clause real refuses for its field, its operator or the shape of its value, as
+    # `_cql_refusal` in `backlot.routers.atlassian` records it: an unknown field with up to
+    # five suggestions in the order real offers them, a field with no operator, an operator the
+    # field does not list, a value no shape reads, and a bare number or date after `~` or `!~`.
+    # The multi-clause rows pin the order the walk refuses in: the first unrefusable clause,
+    # in groups and after `not`.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            (
+                "foo=bar",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "foo = x",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            ("x", "No field exists with the name: 'x'"),
+            ("C", "No field exists with the name: 'C'"),
+            ("Foo=bar", "No field exists with the name: 'Foo'"),
+            (
+                "c = x",
+                "No field exists with the name: 'c' Did you mean one of : created, content, creator, container, contributor",
+            ),
+            (
+                "cre = x",
+                "No field exists with the name: 'cre' Did you mean one of : created, creator, creator.fullname, creator.accountid, content",
+            ),
+            (
+                "craetor = x",
+                "No field exists with the name: 'craetor' Did you mean one of : created, creator, creator.fullname, creator.accountid, content",
+            ),
+            (
+                "cREA = x",
+                "No field exists with the name: 'cREA' Did you mean one of : created, content, creator, container, contributor",
+            ),
+            (
+                "contianer = x",
+                "No field exists with the name: 'contianer' Did you mean one of : content, container, contributor, content.property, contributor.fullname",
+            ),
+            (
+                "commentsbyuserq = x",
+                "No field exists with the name: 'commentsbyuserq' Did you mean one of : commentsByUser, commentsByUser.fullname, commentsByUser.accountid, content, container",
+            ),
+            (
+                "s = x",
+                "No field exists with the name: 's' Did you mean one of : space, subtype, space.key, siteSearch, space.type",
+            ),
+            (
+                "sitesearc = x",
+                "No field exists with the name: 'sitesearc' Did you mean one of : siteSearch, space, subtype, space.key, space.type",
+            ),
+            (
+                "lastmod = x",
+                "No field exists with the name: 'lastmod' Did you mean one of : lastmodified, lastModifier, lastModifier.fullname, lastModifier.accountid, label",
+            ),
+            (
+                "mentio = x",
+                "No field exists with the name: 'mentio' Did you mean one of : mention, mention.fullname, mention.accountid, mediaType.description, macro",
+            ),
+            (
+                "ti = x",
+                "No field exists with the name: 'ti' Did you mean one of : title, type, text",
+            ),
+            (
+                "title",
+                "Expecting operator for field 'title', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "type",
+                "Expecting operator for field 'type', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type page",
+                "Expecting operator for field 'type', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type=page and title",
+                "Expecting operator for field 'title', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                'text ~ "the" and title ~ "type=blogpost" and title',
+                "Expecting operator for field 'title', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                'text ~ "the" and text ~ "id=7681443" and title',
+                "Expecting operator for field 'title', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "created",
+                "Expecting operator for field 'created', supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "content.property",
+                "Expecting operator for field 'content.property', supported operators are : ",
+            ),
+            ("currentUser()", _CQL_NOT_PARSED),
+            ("title is null", _CQL_NOT_PARSED),
+            (
+                "ancestor ~ x",
+                "Operator '~' is not supported for field 'ancestor'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "approvalStatus ~ x",
+                "Operator '~' is not supported for field 'approvalStatus'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator ~ x",
+                "Operator '~' is not supported for field 'creator'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "creator.fullname = 1",
+                "Operator '=' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "creator.fullname in (x)",
+                "Operator 'in' is not supported for field 'creator.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "watcher.fullname not in (x)",
+                "Operator 'notin' is not supported for field 'watcher.fullname'. Supported operators are : ~, !~",
+            ),
+            (
+                "content.property in (x)",
+                "Operator 'in' is not supported for field 'content.property'. Supported operators are : ",
+            ),
+            (
+                "created ~ x",
+                "Operator '~' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "created in (2026-01-01)",
+                "Operator 'in' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "lastmodified in (2026-01-01)",
+                "Operator 'in' is not supported for field 'lastmodified'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "embeddedProduct > 1",
+                "Operator '>' is not supported for field 'embeddedProduct'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "favorite ~ x",
+                "Operator '~' is not supported for field 'favorite'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "filesize ~ x",
+                "Operator '~' is not supported for field 'filesize'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "filesize in (1)",
+                "Operator 'in' is not supported for field 'filesize'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "hasDecision ~ x",
+                "Operator '~' is not supported for field 'hasDecision'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "jsdCategoryId ~ x",
+                "Operator '~' is not supported for field 'jsdCategoryId'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "label > 1",
+                "Operator '>' is not supported for field 'label'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "macro > 1",
+                "Operator '>' is not supported for field 'macro'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "mediaType.description > 1",
+                "Operator '>' is not supported for field 'mediaType.description'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "parent ~ x",
+                "Operator '~' is not supported for field 'parent'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "siteSearch in (x)",
+                "Operator 'in' is not supported for field 'siteSearch'. Supported operators are : ~, !~",
+            ),
+            (
+                "space > 1",
+                "Operator '>' is not supported for field 'space'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "space.title > 1",
+                "Operator '>' is not supported for field 'space.title'. Supported operators are : ~, !~",
+            ),
+            (
+                "text in (x)",
+                "Operator 'in' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "text not in (x)",
+                "Operator 'notin' is not supported for field 'text'. Supported operators are : ~, !~",
+            ),
+            (
+                "title > 1",
+                "Operator '>' is not supported for field 'title'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "type ~ x",
+                "Operator '~' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                'type > "2026-01-01"',
+                "Operator '>' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type > 1",
+                "Operator '>' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "user > 1",
+                "Operator '>' is not supported for field 'user'. Supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            ("type > x", _CQL_NOT_PARSED),
+            ('type > "x"', _CQL_NOT_PARSED),
+            ('type > ""', _CQL_NOT_PARSED),
+            ("label > page", _CQL_NOT_PARSED),
+            ("ancestor > x", _CQL_NOT_PARSED),
+            ("text > x", _CQL_NOT_PARSED),
+            ("user > x", _CQL_NOT_PARSED),
+            ("space > x", _CQL_NOT_PARSED),
+            ('title > "Guide"', _CQL_NOT_PARSED),
+            ("creator.fullname = x", _CQL_NOT_PARSED),
+            ('creator.fullname = "x"', _CQL_NOT_PARSED),
+            ('creator.fullname = ""', _CQL_NOT_PARSED),
+            ("text = x", _CQL_NOT_PARSED),
+            ('text = ""', _CQL_NOT_PARSED),
+            ("siteSearch = x", _CQL_NOT_PARSED),
+            ("space.title = x", _CQL_NOT_PARSED),
+            ("content.property = x", _CQL_NOT_PARSED),
+            ("created = x", _CQL_NOT_PARSED),
+            ('created = "x"', _CQL_NOT_PARSED),
+            ('created = ""', _CQL_NOT_PARSED),
+            ("filesize = x", _CQL_NOT_PARSED),
+            ('filesize = "x"', _CQL_NOT_PARSED),
+            ('filesize = ""', _CQL_NOT_PARSED),
+            ('created > "x"', _CQL_NOT_PARSED),
+            ('created > "2026-02-30"', _CQL_NOT_PARSED),
+            ('created > "10/09/2026"', _CQL_NOT_PARSED),
+            (
+                "user ~ 1",
+                "Expecting a value for operator '~' after field 'user' but got '1'",
+            ),
+            (
+                "user ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'user' but got '2026-01-01'",
+            ),
+            (
+                "title ~ 1",
+                "Expecting a value for operator '~' after field 'title' but got '1'",
+            ),
+            (
+                "type ~ 1",
+                "Expecting a value for operator '~' after field 'type' but got '1'",
+            ),
+            (
+                "label ~ 1",
+                "Expecting a value for operator '~' after field 'label' but got '1'",
+            ),
+            (
+                "space ~ 2026-01-01",
+                "Expecting a value for operator '~' after field 'space' but got '2026-01-01'",
+            ),
+            (
+                "id !~ 1",
+                "Expecting a value for operator '!~' after field 'id' but got '1'",
+            ),
+            (
+                "text !~ 2026-01-01",
+                "Expecting a value for operator '!~' after field 'text' but got '2026-01-01'",
+            ),
+            (
+                "created ~ 1",
+                "Expecting a value for operator '~' after field 'created' but got '1'",
+            ),
+            (
+                "type=page and foo=bar",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "foo=bar and type=page",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "(foo=bar)",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "type=page and not foo=bar",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "type=page or foo=bar",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
         ]
     ],
     # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record

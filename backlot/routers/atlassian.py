@@ -3478,6 +3478,226 @@ _CQL_DATE_FUNCTIONS = frozenset(
 _CQL_RELATIVE_DATE = re.compile(r"([+-]?[0-9]+)([wdMyhm])")
 
 
+# The 58 fields CQL has, in the 22 row-groups of the grid measured on Confluence Cloud on
+# 2026-10-31: each group the fields, the operators real lists for them, the list as real spells
+# it in a refusal, and how a value is judged. `string` takes any word, quoted value, number,
+# date or function under `=` and `!=`; `date` takes a date or a date function under `=` and the
+# comparators, and a word, a quoted word, an empty value or a bare number is refused;
+# `number` takes a bare number under `=` and the comparators, and a word, a quoted word, an
+# empty value or a date is refused; `tilde` lists only `~` and `!~`; `none` lists no operator.
+_CQL_FIELD_GROUPS = (
+    (("ancestor", "container", "content", "id"), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("approvalStatus",), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (
+        (
+            "commentsByUser",
+            "commentsByUser.accountid",
+            "contributor",
+            "contributor.accountid",
+            "creator",
+            "creator.accountid",
+            "lastModifier",
+            "lastModifier.accountid",
+            "mention",
+            "mention.accountid",
+            "owner",
+            "owner.accountid",
+            "space.key",
+            "watcher",
+            "watcher.accountid",
+        ),
+        ("=", "in"),
+        "=, !=, IN, NOT IN",
+        "string",
+    ),
+    (
+        (
+            "commentsByUser.fullname",
+            "contributor.fullname",
+            "creator.fullname",
+            "lastModifier.fullname",
+            "mention.fullname",
+            "owner.fullname",
+            "user.fullname",
+            "watcher.fullname",
+        ),
+        ("~",),
+        "~, !~",
+        "tilde",
+    ),
+    (("content.property",), (), "", "none"),
+    (("created", "lastmodified"), ("<", "<=", ">", ">=", "="), "<, <=, >, >=, =, !=", "date"),
+    (
+        (
+            "embeddedProduct",
+            "fileExtension",
+            "generatedby",
+            "pageStatus",
+            "publicLinkStatus",
+            "space.category",
+            "subtype",
+        ),
+        ("=", "in"),
+        "=, !=, IN, NOT IN",
+        "string",
+    ),
+    (("favorite", "favourite"), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("filesize",), ("<", "<=", ">", ">=", "="), "<, <=, >, >=, =, !=", "number"),
+    (("hasDecision", "isVerified"), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("jsdCategoryId", "jsdFeaturedInCategoryId"), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("label",), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("macro", "space.type", "user.accountid"), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("mediaType.description",), ("~", "=", "in"), "~, !~, =, !=, IN, NOT IN", "string"),
+    (("parent",), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("siteSearch",), ("~",), "~, !~", "tilde"),
+    (("space",), ("~", "=", "in"), "~, !~, =, !=, IN, NOT IN", "string"),
+    (("space.title",), ("~",), "~, !~", "tilde"),
+    (("text",), ("~",), "~, !~", "tilde"),
+    (("title",), ("~", "=", "in"), "~, !~, =, !=, IN, NOT IN", "string"),
+    (("type",), ("=", "in"), "=, !=, IN, NOT IN", "string"),
+    (("user",), ("~", "=", "in"), "~, !~, =, !=, IN, NOT IN", "string"),
+)
+# The same 58 by their lower-case spelling, since CQL reads a field name case-blind: the
+# operators, the list as real spells it, and the value shape above.
+_CQL_FIELD_INFO = {
+    field.lower(): (frozenset(ops), listing, shape)
+    for fields, ops, listing, shape in _CQL_FIELD_GROUPS
+    for field in fields
+}
+# The 58 fields in the fixed order the Did-you-mean tie-break reads: by first letter, then
+# shorter first, with the same-length ties in the order real offers them (measured on
+# Confluence Cloud on 2026-11-04): `created, content, creator`, `favorite, filesize`,
+# `lastmodified, lastModifier`, `siteSearch, space.type` and `type, text`. Those five are the
+# only same-letter, same-length ties among the 58.
+_CQL_FIELD_ORDER = (
+    "ancestor",
+    "approvalStatus",
+    "created",
+    "content",
+    "creator",
+    "container",
+    "contributor",
+    "commentsByUser",
+    "creator.fullname",
+    "content.property",
+    "creator.accountid",
+    "contributor.fullname",
+    "contributor.accountid",
+    "commentsByUser.fullname",
+    "commentsByUser.accountid",
+    "embeddedProduct",
+    "favorite",
+    "filesize",
+    "favourite",
+    "fileExtension",
+    "generatedby",
+    "hasDecision",
+    "id",
+    "isVerified",
+    "jsdCategoryId",
+    "jsdFeaturedInCategoryId",
+    "label",
+    "lastmodified",
+    "lastModifier",
+    "lastModifier.fullname",
+    "lastModifier.accountid",
+    "macro",
+    "mention",
+    "mention.fullname",
+    "mention.accountid",
+    "mediaType.description",
+    "owner",
+    "owner.fullname",
+    "owner.accountid",
+    "parent",
+    "pageStatus",
+    "publicLinkStatus",
+    "space",
+    "subtype",
+    "space.key",
+    "siteSearch",
+    "space.type",
+    "space.title",
+    "space.category",
+    "type",
+    "text",
+    "title",
+    "user",
+    "user.fullname",
+    "user.accountid",
+    "watcher",
+    "watcher.fullname",
+    "watcher.accountid",
+)
+_CQL_FIELD_INDEX = {field: at for at, field in enumerate(_CQL_FIELD_ORDER)}
+
+
+def _cql_common_prefix(left: str, right: str) -> int:
+    """The length of the longest common prefix of `left` and `right`, case-sensitive."""
+    length = 0
+    for a, b in zip(left, right):
+        if a != b:
+            break
+        length += 1
+    return length
+
+
+def _cql_suggest(name: str) -> tuple[str, ...]:
+    """Up to five of the 58 fields for an unknown `name`, in the order real offers them
+    (measured on Confluence Cloud on 2026-11-04 over 31 names): only fields whose first
+    character equals the name's, case-sensitive; longest common prefix first, also
+    case-sensitive; then shorter first; then the fixed order of `_CQL_FIELD_ORDER`; at most
+    five."""
+    if not name:
+        return ()
+    first = name[0]
+    ranked = sorted(
+        (field for field in _CQL_FIELD_ORDER if field[0] == first),
+        key=lambda field: (
+            -_cql_common_prefix(name, field),
+            len(field),
+            _CQL_FIELD_INDEX[field],
+        ),
+    )
+    return tuple(ranked[:5])
+
+
+_CQL_DATE_TEXT = re.compile(r"^(\d{4})[-/](\d{2})[-/](\d{2})$")
+_CQL_DATETIME_TEXT = re.compile(r"^(\d{4})[-/](\d{2})[-/](\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$")
+
+
+def _cql_is_date_text(text: str) -> bool:
+    """Whether `text` is a date or a datetime: a year first, then month and day, in dashes or
+    slashes, and for a datetime hours and minutes with seconds optional. A quoted value of one
+    is read as a date where a quoted word is not, as the grid behind `_CQL_FIELD_INFO` has it:
+    `created > "2026-01-01"` is served and `created > "x"` is refused as unparsed. A shape that
+    is no calendar date, `2026-02-30`, and a day first, `10/09/2026`, are not dates."""
+    match = _CQL_DATETIME_TEXT.match(text)
+    if match:
+        year, month, day, hour, minute, second = match.groups()
+        try:
+            datetime(int(year), int(month), int(day), int(hour), int(minute), int(second or 0))
+        except ValueError:
+            return False
+        return True
+    match = _CQL_DATE_TEXT.match(text)
+    if match is None:
+        return False
+    year, month, day = match.groups()
+    try:
+        datetime(int(year), int(month), int(day))
+    except ValueError:
+        return False
+    return True
+
+
+def _cql_value_is_date(kind: str, text: str) -> bool:
+    """Whether a value token is a date: a DATE token, or a quoted value naming a real date."""
+    if kind == "DATE":
+        return True
+    return kind == "QUOTED" and _cql_is_date_text(text[1:-1])
+
+
 class _CQLFunctionError(Exception):
     """A function call whose arguments are not comma-separated values, or whose closing
     parenthesis never comes; the callers answer it as a CQL the grammar cannot read."""
@@ -3720,11 +3940,19 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     parenthesis. Where a reserved word is a clause's whole value outside an `in` list, what follows
     it decides whether it is that value (see :func:`value` and :func:`clause_starts`). A query read
     to its end is ``cql_not_parsed`` when a `space.key` value holds a single quote. A field CQL does
-    not have, a field with no operator, and an operator or a value the field does not take (`foo`,
-    `type`, `type<page`, `type=PAGE`) are refused on real with messages of their own, and answered
-    at 200 here when no reserved word came before them. An escaped end quote, `title ~ "a\\"`, is
-    not refused here: it is read after this walk, beside a function that cannot run
-    (``_cql_cannot_run``)."""
+    not have is ``errors.atlassian.cql_unknown_field`` with up to five suggestions in the order
+    real offers them, a field with no operator ``errors.atlassian.cql_expecting_operator`` naming
+    the operators it takes, and an operator a field does not take
+    ``errors.atlassian.cql_operator_not_supported`` naming the operator as sent and the operators
+    the field takes. A value no shape reads is ``cql_not_parsed``, and a bare number or date after
+    `~` or `!~` is ``cql_expecting_value`` with the value as sent. A clause is read whole before it
+    is judged, so a fault in the reading answers before any of these; the field is then looked up,
+    so an unknown field answers before the shape of its value (`foo = bar` is the unknown field);
+    then the value's shape, then the operator against the field's list, so a shape rule answers
+    where the operator is not listed either (`creator.fullname = x` is unparsed, `user ~ 1` is the
+    expecting-value refusal). A value real refuses for another reason, and a cell real answers with
+    a 500, are left standing here. An escaped end quote, `title ~ "a\\"`, is not refused here: it is
+    read after this walk, beside a function that cannot run (``_cql_cannot_run``)."""
     at = 0
     reserved = None  # the place and the text, as sent, of the first reserved word read as a value
     groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
@@ -3822,10 +4050,83 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 call = f"{name}({','.join(text for _, text in args)})"
                 raise _Stop(errors_atlassian.cql_unknown_function(call))
             # `now(select)`: the arguments follow the `(`, one comma between each two.
-            for i, (kind, text) in enumerate(args):
-                if kind == "WORD" and text.lower() in _CQL_KEYWORDS:
-                    reserve(at + 1 + 2 * i, text)
+            for i, (arg_kind, arg_text) in enumerate(args):
+                if arg_kind == "WORD" and arg_text.lower() in _CQL_KEYWORDS:
+                    reserve(at + 1 + 2 * i, arg_text)
             at = after
+            return kind, text, True
+        return kind, text, False
+
+    def structural(field, operator, read):
+        """Raise the `_Stop` real answers the clause `field` under `operator` with the value
+        `read` as ``(kind, text, is_function)``, or return None for one real serves or refuses
+        for another reason. The field is looked up first, then the value's shape, then the
+        operator against the field's list, as the docstring above has it."""
+        kind, text, is_function = read
+        info = _CQL_FIELD_INFO.get(field.lower())
+        if info is None:
+            raise _Stop(errors_atlassian.cql_unknown_field(field, _cql_suggest(field)))
+        ops, listing, shape = info
+        if operator in ("~", "!~"):
+            if not is_function and kind in ("NUMBER", "DATE"):
+                raise _Stop(errors_atlassian.cql_expecting_value(operator, field, text))
+            if "~" not in ops:
+                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+            return None
+        if operator in (">", ">=", "<", "<="):
+            if not is_function and kind in ("WORD", "QUOTED"):
+                if _cql_value_is_date(kind, text):
+                    if shape != "date":
+                        raise _Stop(
+                            errors_atlassian.cql_operator_not_supported(operator, field, listing)
+                        )
+                else:
+                    raise not_parsed()
+            elif kind == "NUMBER":
+                if shape != "number":
+                    raise _Stop(
+                        errors_atlassian.cql_operator_not_supported(operator, field, listing)
+                    )
+            elif kind == "DATE":
+                if shape != "date":
+                    raise _Stop(
+                        errors_atlassian.cql_operator_not_supported(operator, field, listing)
+                    )
+            elif is_function and shape not in ("date", "number"):
+                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+            return None
+        # `=` and `!=`: a word, a quoted word or an empty value is unparsed unless the field
+        # takes any value, and a date or a number is the operator refusal unless the field
+        # takes that shape.
+        if not is_function and kind in ("WORD", "QUOTED"):
+            if _cql_value_is_date(kind, text):
+                if shape not in ("date", "string"):
+                    raise _Stop(
+                        errors_atlassian.cql_operator_not_supported(operator, field, listing)
+                    )
+            elif shape != "string":
+                raise not_parsed()
+        elif kind == "NUMBER":
+            if shape not in ("number", "string"):
+                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+        elif kind == "DATE":
+            if shape not in ("date", "string"):
+                raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+        elif is_function and shape not in ("date", "number", "string"):
+            raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+        return None
+
+    def structural_list(field, operator):
+        """Raise the `_Stop` real answers the clause `field` under `in` or `not in` with, or
+        return None for one real serves or refuses for another reason: an unknown field, or an
+        operator the field does not list. A list's values carry no shape rule of their own."""
+        info = _CQL_FIELD_INFO.get(field.lower())
+        if info is None:
+            raise _Stop(errors_atlassian.cql_unknown_field(field, _cql_suggest(field)))
+        ops, listing, _ = info
+        if "in" not in ops:
+            raise _Stop(errors_atlassian.cql_operator_not_supported(operator, field, listing))
+        return None
 
     def clause():
         """A clause that is not a group: :func:`sequence` reads the groups."""
@@ -3841,6 +4142,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             if peek()[0] == "WORD" and peek(1) == ("PUNCT", "("):
                 # a function in place of the list: `id in recentlyViewedContent(5)`
                 value(operator, field)
+                structural_list(field, operator)
                 return
             if peek() != ("PUNCT", "("):
                 after, got = peek()
@@ -3870,13 +4172,24 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
             if peek() != ("PUNCT", ")"):
                 raise not_parsed()
             at += 1
+            structural_list(field, operator)
             return
         if peek()[0] != "OP":
-            # A field and no operator: refused on real with a message of its own.
-            raise _Stop(None)
+            # A field and no operator: refused on real with a message of its own, naming the
+            # field or, where CQL has no such field, the unknown field. A call in place of a
+            # clause, and `is` in place of an operator, are unparsed instead: a bare
+            # `currentUser()` and `title is null` are both `Could not parse cql : `.
+            if peek() == ("PUNCT", "(") or (
+                peek()[0] == "WORD" and peek()[1].lower() in ("is", "isnull")
+            ):
+                raise not_parsed()
+            info = _CQL_FIELD_INFO.get(field.lower())
+            if info is None:
+                raise _Stop(errors_atlassian.cql_unknown_field(field, _cql_suggest(field)))
+            raise _Stop(errors_atlassian.cql_expecting_operator(field, info[1]))
         operator = peek()[1]
         at += 1
-        value(operator, field)
+        structural(field, operator, value(operator, field))
 
     def sequence():
         """Clauses joined by `and` and `or`, any of them inside groups, read in one loop (the depths
@@ -4121,15 +4434,17 @@ def _cql_function_value(name: str, args: list[tuple[str, str]], current_user: st
     return name
 
 
-# The fields :func:`confluence_cql_search` reads, and the operators each takes. Anything else (a
-# field this route does not read, or an operator the field does not take) passes. `siteSearch ~`
-# is read as `text ~` is. On 2026-10-28 real answered the two with the same pages for each of two
-# words of the site's page bodies, but not over a chain of three pages whose last alone held a
-# word: `siteSearch ~` for the word answered all three, and the same clause in an `or` beside the
-# first page's `id` answered that page alone (Confluence Cloud). A bare date is its whole day in
-# UTC: this server carries no site time zone, where the measurement read it in the site's
-# (Asia/Seoul). A date field under `in (...)` or `not in (...)` does not pass: `_cql_parse`
-# refuses it.
+# The fields :func:`confluence_cql_search` reads, and the operators each takes. A clause on a
+# field this route does not read, or under an operator the field does not take, is refused in
+# :func:`_cql_refusal` before this is read, where the grid behind `_CQL_FIELD_INFO` says real
+# refuses it; what that walk leaves standing but this table does not read still passes, as a value
+# real refuses for another reason does. `siteSearch ~` is read as `text ~` is. On 2026-10-28 real
+# answered the two with the same pages for each of two words of the site's page bodies, but not
+# over a chain of three pages whose last alone held a word: `siteSearch ~` for the word answered
+# all three, and the same clause in an `or` beside the first page's `id` answered that page alone
+# (Confluence Cloud). A bare date is its whole day in UTC: this server carries no site time zone,
+# where the measurement read it in the site's (Asia/Seoul). A date field under `in (...)` or
+# `not in (...)` does not pass: `_cql_parse` refuses it.
 _CQL_READABLE = {
     "text": {"~"},
     "title": {"~", "=", "in"},
@@ -4157,14 +4472,14 @@ def _cql_parse(
 
     An atom is ``("atom", field, op, values, negated, readable)``: `op` is `=`, `in` or `~`,
     `negated` covers `!=`, `!~` and `not in (...)`, and `readable` says whether the field takes
-    the operator (see `_CQL_READABLE`). A date field carries date specs, not strings: a day spec
-    is a whole UTC day, an instant spec is one second, and a never spec matches nothing (a
-    function the date reader does not know, whose 400 belongs to the function validation).
-    `current_user` is the caller's account id, which `currentUser()` on a person field resolves to,
-    or None for the admin token. Raises `_CQLParseError` for anything else, including a field with
-    no operator, which real refuses with a message of its own and this server answers at 200 through
-    the clause readers, and raises `_CQLRefusal` for a date value real refuses with a 400 of its
-    own.
+    the operator (see `_CQL_READABLE`). A function value is read as :func:`_cql_function_value`
+    reads it, and `recentlyViewedContent` in place of an `in` list as its one value. A date field
+    carries date specs, not strings: a day spec is a whole UTC day, an instant spec is one second,
+    and a never spec matches nothing (a function the date reader does not know, whose 400 belongs
+    to the function validation). `current_user` is the caller's account id, which `currentUser()`
+    on a person field resolves to, or None for the admin token. Raises `_CQLParseError` for
+    anything else, including a field with no operator, which :func:`_cql_refusal` refuses before
+    this runs, and raises `_CQLRefusal` for a date value real refuses with a 400 of its own.
 
     A date value real cannot parse is refused where the reading meets it. An operator a date field
     does not take with its value, and `in` or `not in` before a list of values, is refused once the
@@ -4221,7 +4536,9 @@ def _cql_parse(
             raise _CQLParseError()
         at += 1
         if kind == "NUMBER":  # a bare integer is not a date: `created > 20260910` is a 400
-            operator_refusals.append(errors_atlassian.cql_operator_not_supported(op, field))
+            operator_refusals.append(
+                errors_atlassian.cql_operator_not_supported(op, field, "<, <=, >, >=, =, !=")
+            )
             return ("never",)
         if kind == "DATE":
             return _cql_parsed_date(text)
@@ -4332,7 +4649,9 @@ def _cql_parse(
         at += 1
         if field in _CQL_DATE_FIELDS:
             refused = "notin" if negated else "in"
-            operator_refusals.append(errors_atlassian.cql_operator_not_supported(refused, field))
+            operator_refusals.append(
+                errors_atlassian.cql_operator_not_supported(refused, field, "<, <=, >, >=, =, !=")
+            )
         values = []
         while True:
             values.append(value(field))

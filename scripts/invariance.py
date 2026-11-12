@@ -31,7 +31,10 @@ Two runs of one commit differ: S3 signatures and rate-limit counters follow the 
 array-conversion error carries a Java identity hash, and a generated service-account key is random.
 ``--calibration`` takes a second recording of the base and stops comparing what differs between
 the two: a header's digits everywhere (its whole value when more than digits differ), any other
-value (the length included) only in the exchange it differed in.
+value (the length included) only in the exchange it differed in. A header whose digits differ
+between two answers one test got to the same request, body alike, is a counter and has its digits
+ignored too, with or without ``--calibration``: a rate-limit window counts what ran before it on
+its worker, and two base runs scheduled alike agree on it.
 
 ``prose`` answers for a change to comments, docstrings and markdown: each Python file that differs
 from BASE_REF parses to the same tree once docstrings are dropped, except a route's or a CLI
@@ -262,16 +265,68 @@ def _digitless(value) -> str:
     return re.sub(r"\d+", "#", str(value))
 
 
+def _request(record: dict) -> str:
+    req = record["request"]
+    return json.dumps([req["method"], req["url"], req["headers"], req["body"]])
+
+
+def _pairs(old: dict, new: dict) -> tuple[list[tuple], list, list]:
+    """Each exchange of one run paired with its counterpart in another, and those of each run left
+    unpaired. A request a shared fixture or cache sends lands in whichever test needs it first, and
+    shifts the position of every request after it there, so exchanges pair by their request: within
+    their test, then across tests, then what is left of a test in order (a signed or dated request
+    differs between runs)."""
+    pairs: list[tuple] = []
+    left_old, left_new = sorted(old), sorted(new)
+    for scope in (
+        lambda key, record: (key[0], _request(record)),
+        lambda key, record: _request(record),
+        lambda key, record: key[0],
+    ):
+        groups: dict = {}
+        for key in left_new:
+            groups.setdefault(scope(key, new[key]), []).append(key)
+        paired = set()
+        for key in left_old:
+            candidates = groups.get(scope(key, old[key]))
+            if candidates:
+                match = candidates.pop(0)
+                pairs.append((key, match))
+                paired.update({("old", key), ("new", match)})
+        left_old = [k for k in left_old if ("old", k) not in paired]
+        left_new = [k for k in left_new if ("new", k) not in paired]
+    return pairs, left_old, left_new
+
+
+def _counters(run: dict) -> set[str]:
+    """The response headers whose digits differ between two answers one test got to the same
+    request, with the same status and body: a clock or a counter the process carries from request
+    to request, such as a rate-limit window, whose value depends on what ran before on its worker."""
+    first: dict[str, dict] = {}
+    names = set()
+    for record in run.values():
+        if "exception" in record:
+            continue
+        answer = json.dumps([record["test"], _request(record), record["status"], record["body"]])
+        headers: dict[str, list] = {}
+        for name, value in record["headers"]:
+            headers.setdefault(name.lower(), []).append(value)
+        earlier = first.setdefault(answer, headers)
+        for name in set(earlier) | set(headers):
+            old, new = earlier.get(name), headers.get(name)
+            if old != new and _digitless(old) == _digitless(new):
+                names.add(f"response {name}")
+    return names
+
+
 def _noise(base: dict, calibration: dict) -> tuple[dict[str, bool], dict]:
     """What differs between two runs of one commit. Headers by name, everywhere: True when only
     their digits differ (a clock, a counter), False when more does (a signature). Other parts per
-    exchange."""
+    exchange of the base."""
     names: dict[str, bool] = {}
     parts: dict[tuple[str, int], set[str]] = {}
-    for key, record in base.items():
-        if key not in calibration:
-            continue
-        old, new = _view(record), _view(calibration[key])
+    for key, other in _pairs(base, calibration)[0]:
+        old, new = _view(base[key]), _view(calibration[other])
         for part in set(old) | set(new):
             if old.get(part) != new.get(part):
                 # A header's value varies with the clock wherever it varies at all, except the
@@ -337,23 +392,36 @@ def _compare(base: Path, head: Path, mode: str, calibration: Path | None, limit:
     if mode == "code":
         b, h = _traffic(base), _traffic(head)
         names, parts = _noise(b, _traffic(calibration)) if calibration else ({}, {})
+        names = dict.fromkeys(_counters(b), True) | names
         digits = sorted(n for n, d in names.items() if d)
         whole = sorted(n for n, d in names.items() if not d)
         print(
             f"traffic: {len(b)} response(s) on the base, {len(h)} on the head; ignored as varying "
-            f"between two base runs: the digits of {digits or 'no headers'}, the values of "
-            f"{whole or 'no headers'}, and {sum(map(len, parts.values()))} other value(s) in "
-            f"{len(parts)} exchange(s)"
+            f"within the base or between two base runs: the digits of {digits or 'no headers'}, "
+            f"the values of {whole or 'no headers'}, and {sum(map(len, parts.values()))} other "
+            f"value(s) in {len(parts)} exchange(s)"
         )
+        pairs, only_base, only_head = _pairs(b, h)
+        # A module-scoped fixture runs once on each worker that runs a test of its module, so how
+        # many times its requests are sent follows the scheduling. An unpaired exchange that
+        # repeats a paired one of its run, request and answer alike, is such a copy.
+        for name, run, side, keys in (("base", b, 0, only_base), ("head", h, 1, only_head)):
+            twins: dict[str, list[tuple]] = {}
+            for pair in pairs:
+                twins.setdefault(_request(run[pair[side]]), []).append(pair)
+            for key in keys:
+                if not any(
+                    _masked(_view(run[key]), names, parts.get(pair[0], set()))
+                    == _masked(_view(run[pair[side]]), names, parts.get(pair[0], set()))
+                    for pair in twins.get(_request(run[key]), [])
+                ):
+                    problems.append(f"request {key[1]} of {key[0]} was sent by the {name} only")
         shown = 0
-        for key in sorted(set(b) | set(h)):
-            test, i = key
-            if key not in b or key not in h:
-                problems.append(f"request {i} of {test} was sent by one run only")
-                continue
+        for key, other in sorted(pairs):
+            test = key[0]
             req = b[key]["request"]
             old = _masked(_view(b[key]), names, parts.get(key, set()))
-            new = _masked(_view(h[key]), names, parts.get(key, set()))
+            new = _masked(_view(h[other]), names, parts.get(key, set()))
             if old != new:
                 problems.append(f"{req['method']} {req['url']} in {test} differs")
                 if shown < limit:

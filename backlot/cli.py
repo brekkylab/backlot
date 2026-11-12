@@ -304,8 +304,7 @@ def serve(
     data_dir: DataDir = None,
     disable_telemetry: DisableTelemetry = False,
     # `serve()` passes the two options below, and nothing else in Backlot does; they are not options
-    # to type, so `--help` leaves them out. `serve()` starts the server on a stdin pipe of its own,
-    # and on `--port 0` with the address and port read back from `--address-file`.
+    # to type, so `--help` leaves them out.
     exit_on_stdin_close: Annotated[
         bool,
         typer.Option(
@@ -382,19 +381,15 @@ def _serve_writing_address(config, address_file: Path) -> None:
     """Run the server ``uvicorn.run`` runs for ``config``, and write the address and port it bound
     to ``address_file``, space-separated, once it accepts connections there.
 
-    ``uvicorn.run`` builds its server itself, so this builds one on the same ``config`` with the
-    write added and runs it in this process, which is what ``uvicorn.run`` runs when neither
-    ``--reload`` nor ``WEB_CONCURRENCY`` asks for more processes. It ends as the locked uvicorn
-    0.52.4's ``uvicorn.run`` ends: the ``KeyboardInterrupt`` uvicorn raises again after shutting
-    down on Ctrl+C ends it with 0, and a server that never started exits with uvicorn's
-    startup-failure code, which uvicorn 0.29 leaves to ``uvicorn.run`` after a failed lifespan
-    startup.
+    It runs one server in this process, which is what ``uvicorn.run`` runs when neither
+    ``--reload`` nor ``WEB_CONCURRENCY`` asks for more processes. The locked uvicorn 0.52.4 raises
+    ``KeyboardInterrupt`` again after shutting down on Ctrl+C, and its ``uvicorn.run`` ends with 0
+    there; uvicorn 0.29 leaves the exit with its startup-failure code to ``uvicorn.run`` after a
+    failed lifespan startup.
 
     A host name binds every address it resolves to, each with a bind to port 0 of its own, and
     those binds can draw different ports (``localhost`` on macOS, 2026-11-11: 127.0.0.1 and ::1 on
-    two ports), so the file names one address with its port rather than a port alone. It is written
-    under another name and renamed into place, so a reader that finds ``address_file`` finds the
-    whole line."""
+    two ports), so the file names one address with its port rather than a port alone."""
     import uvicorn
     from uvicorn.main import STARTUP_FAILURE
 

@@ -247,7 +247,9 @@ def test_the_readiness_poll_dials_only_an_address_the_server_holds(monkeypatch):
     process's 200 there reads as this server being ready. Every address the poll is about to dial
     gets a bind of its own first, and a bind that succeeds is an address the server did not hold.
     ``localhost`` is a host name that can resolve to more than one address, and
-    ``backlot.cli._serve_writing_address`` says what that does to a bind to port 0."""
+    ``backlot.cli._serve_writing_address`` says what that does to a bind to port 0. A proxy is an
+    address the server does not hold either: ``127.0.0.1:1``, where nothing listens, stands in for
+    one that cannot reach this machine."""
     hosts = ["127.0.0.1", "localhost"]
     unheld = {}
     warm = backlot.server._warm
@@ -266,20 +268,14 @@ def test_the_readiness_poll_dials_only_an_address_the_server_holds(monkeypatch):
         return warm(base, **kwargs)
 
     monkeypatch.setattr(backlot.server, "_warm", warm_where_held)
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
+    monkeypatch.setenv("no_proxy", "localhost")
     status = {}
     for host in hosts:
         with backlot.serve(host=host) as s:
-            status[host] = _health(f"{s.base_url}/health")["status"]
+            with backlot.server._NO_PROXY.open(f"{s.base_url}/health", timeout=10) as r:
+                status[host] = json.load(r)["status"]
     assert (status, unheld) == ({host: "ok" for host in hosts}, {})
-
-
-def test_the_readiness_poll_sends_nothing_through_a_proxy(monkeypatch):
-    """``127.0.0.1:1``, where nothing listens, stands in for a proxy that cannot reach this
-    machine."""
-    monkeypatch.setenv("http_proxy", "http://127.0.0.1:1")
-    monkeypatch.setenv("no_proxy", "localhost")
-    with backlot.serve(host="localhost", telemetry=False) as s:
-        assert urllib.parse.urlsplit(s.base_url).hostname in ("127.0.0.1", "::1"), s.base_url
 
 
 def test_serve_or_connect_falls_back_when_the_url_is_unreachable():

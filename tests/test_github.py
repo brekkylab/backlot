@@ -7944,30 +7944,39 @@ def test_github_an_unparseable_callers_spent_window_403_carries_the_tokens_sente
 
 
 def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
-    """Measured (api.github.com, 2026-11-10): `/repositories/{id}` followed by other characters
-    reads the id's leading integer and answers the repository (`{id}x`, `{id}.5`,
-    `{id}%2Fbranches`), where paths under it (`{id}x/branches/main`, `{id}%2Fx/branches/main`)
-    answer the 404 of a path no route matches. A prefix of other characters (`x{id}`) is the
-    repository route's 404."""
+    """A repository id followed by other characters answers as the id does, a path under an id
+    holding anything but ASCII digits is the 404 of a path no route matches, and an id after other
+    characters is the repository route's 404, as real answered each
+    (``backlot.routers.github.canonical_id_path``)."""
     c, _ = gh_client
     rid = synth.github_user_id("codebase")
-    expected = c.get(f"/github/repositories/{rid}", headers=gh_admin_h).json()
-    assert expected["name"] == "codebase"
-
-    for rest in (f"{rid}x", f"{rid}.5", f"{rid}%2Fbranches"):
+    repository = c.get(f"/github/repositories/{rid}", headers=gh_admin_h).json()
+    assert repository["name"] == "codebase"
+    unrouted = {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "404",
+    }
+    absent = {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/repos/repos#get-a-repository",
+        "status": "404",
+    }
+    rows = {
+        f"{rid}x": (200, repository),
+        f"{rid}.5": (200, repository),
+        f"{rid}%2Fbranches": (200, repository),
+        f"{rid}%C2%B2": (200, repository),
+        f"{rid}%D9%A3": (200, repository),
+        f"x{rid}": (404, absent),
+        f"{rid}x/branches/main": (404, unrouted),
+        f"{rid}%2Fx/branches/main": (404, unrouted),
+        f"{rid}%C2%B2/branches/main": (404, unrouted),
+        f"{rid}%D9%A3/branches/main": (404, unrouted),
+        f"x{rid}/branches/main": (404, unrouted),
+    }
+    answered = {}
+    for rest in rows:
         r = c.get(f"/github/repositories/{rest}", headers=gh_admin_h)
-        assert r.status_code == 200, rest
-        assert r.json() == expected, rest
-
-    for rest in (f"{rid}x/branches/main", f"{rid}%2Fx/branches/main"):
-        r = c.get(f"/github/repositories/{rest}", headers=gh_admin_h)
-        assert r.status_code == 404, rest
-        assert r.json() == {
-            "message": "Not Found",
-            "documentation_url": "https://docs.github.com/rest",
-            "status": "404",
-        }, rest
-
-    r = c.get(f"/github/repositories/x{rid}", headers=gh_admin_h)
-    assert r.status_code == 404
-    assert r.json()["documentation_url"].endswith("#get-a-repository")
+        answered[rest] = (r.status_code, r.json())
+    assert answered == rows

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-10",
+  "measured": "2026-11-12",
   "root": {
     "query": "Query"
   },
@@ -409,10 +409,7 @@
           "status": "implemented"
         },
         "onBehalfOf": {
-          "status": "missing",
-          "type": "User",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "parent": {
           "status": "implemented"
@@ -5352,6 +5349,13 @@
           "type": "Issue!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "attachmentSources": {
+          "status": "missing",
+          "type": "AttachmentSourcesPayload!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Deliberate gap, by maintainer decision on 2026-11-12: api.linear.app answers `{ attachmentSources { sources } }` with 200 and `{\"sources\": []}` (`sources: JSONObject!`) on 2026-11-12, and no workspace with attachments has shown how `sources` groups them, so Backlot has no measured shape to derive from a corpus."
         },
         "attachments": {
           "status": "missing",

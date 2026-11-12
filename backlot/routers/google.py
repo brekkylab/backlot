@@ -216,9 +216,7 @@ def _drive_batch_cut_path(target: str) -> str:
     A request sent on its own is not cut: each of those paths was a 404 there on 2026-10-22, that
     same ``files/{id};x`` naming a file that does not exist."""
     path, sep, query = target.partition("?")
-    cut = path.find(";")
-    if cut != -1:
-        path = path[:cut]
+    path = path.split(";", 1)[0]
     return f"{path}?{query}" if sep else path
 
 
@@ -1600,28 +1598,23 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     )
 
 
+_GMAIL_ADDRESS_COLUMNS = {
+    "from": ("author_email",),
+    "to": ("to_addr", "cc", "bcc"),
+    "cc": ("cc",),
+    "bcc": ("bcc",),
+}
+
+
 def _gmail_op_match(row, ops: dict) -> bool:
     if _GMAIL_NOTHING in ops:
         return False
-    for v in ops.get("from", []):
-        if not _gmail_address_match(row["author_email"], v):
-            return False
-    for v in ops.get("to", []):
-        if not any(_gmail_address_match(row[k], v) for k in ("to_addr", "cc", "bcc")):
-            return False
-    for key in ("cc", "bcc"):
+    for key, columns in _GMAIL_ADDRESS_COLUMNS.items():
         for v in ops.get(key, []):
-            if not _gmail_address_match(row[key], v):
+            if not any(_gmail_address_match(row[c], v) for c in columns):
                 return False
-    for v in ops.get("-from", []):
-        if _gmail_address_match(row["author_email"], v):
-            return False
-    for v in ops.get("-to", []):
-        if any(_gmail_address_match(row[k], v) for k in ("to_addr", "cc", "bcc")):
-            return False
-    for key in ("cc", "bcc"):
         for v in ops.get(f"-{key}", []):
-            if _gmail_address_match(row[key], v):
+            if any(_gmail_address_match(row[c], v) for c in columns):
                 return False
     for v in ops.get("subject", []):
         if v.lower() not in (row["title"] or "").lower():
@@ -1704,20 +1697,10 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
     for word in negated_words:
         # The same search the word alone runs, so `-probe` leaves out what `probe` answers.
         # A quoted phrase of several words is matched adjacently, as a quoted free-text term is.
-        phrase = " " in word
-        excluded = {
-            row["id"]
-            for row in store.search_documents(
-                conn,
-                word,
-                "gmail",
-                ids,
-                limit=100_000,
-                offset=0,
-                container=mailbox,
-                phrase=phrase,
-            )
-        }
+        hits = store.search_documents(
+            conn, word, "gmail", ids, limit=100_000, offset=0, container=mailbox, phrase=" " in word
+        )
+        excluded = {row["id"] for row in hits}
         rows = [row for row in rows if row["id"] not in excluded]
     for group in groups:
         out = {r["id"] for r in _gmail_query(conn, mailbox, ids, group, caller_email)}
@@ -2102,9 +2085,7 @@ def _raw_header_value(name: str, value: str) -> str:
 
         def quoted(match: re.Match) -> str:
             inner = match.group(1)
-            if inner.isascii():
-                return match.group(0)
-            return f'"{_encoded_words(inner)}"'
+            return match.group(0) if inner.isascii() else f'"{_encoded_words(inner)}"'
 
         return re.sub(r'"([^"]*)"', quoted, value)
     if name.lower() in {"from", "to", "cc", "bcc", "reply-to", "delivered-to"}:
@@ -2280,22 +2261,19 @@ def _gmail_message(
     display = author.split("@")[0].replace(".", " ").title()
     msg_id = row["message_id"] or f"<{row['id']}@{get_settings().org_domain}>"
     headers = [
-        {
-            "name": "Delivered-To",
-            "value": row["to_addr"] or _mailbox_address(row["mailbox"]),
-        },
-        {"name": "MIME-Version", "value": "1.0"},
+        _header("Delivered-To", row["to_addr"] or _mailbox_address(row["mailbox"])),
+        _header("MIME-Version", "1.0"),
     ]
     # `Subject` sits with `To`, not with the mandatory headers: RFC 5322 §3.6 gives both 0..1, and
     # this corpus format says an empty subject IS the absence of one ("a message with no Subject
     # header is legal"). Emitting `Subject: ""` served a header real Gmail would have left out.
     # Placed here rather than appended with the others so the header order stays as it was.
     if row["title"]:
-        headers.append({"name": "Subject", "value": row["title"]})
+        headers.append(_header("Subject", row["title"]))
     headers += [
-        {"name": "From", "value": f"{display} <{author}>"},
-        {"name": "Date", "value": synth.rfc2822(ts)},
-        {"name": "Message-ID", "value": msg_id},
+        _header("From", f"{display} <{author}>"),
+        _header("Date", synth.rfc2822(ts)),
+        _header("Message-ID", msg_id),
     ]
     optional = [
         # `To` among them: RFC 5322 allows a message with no destination field, and real Gmail
@@ -2311,11 +2289,11 @@ def _gmail_message(
         optional.insert(1, ("Bcc", "bcc"))
     for hname, col in optional:
         if row[col]:
-            headers.append({"name": hname, "value": row[col]})
+            headers.append(_header(hname, row[col]))
     attachments = store.jcol(row, "attachments")
     top_mime = "multipart/mixed" if attachments else "multipart/alternative"
     boundary = f"b_{row['id'][:12]}"
-    headers.append({"name": "Content-Type", "value": f'{top_mime}; boundary="{boundary}"'})
+    headers.append(_header("Content-Type", f'{top_mime}; boundary="{boundary}"'))
 
     msg = {
         "id": _gmail_ids(row)[0],
@@ -3410,10 +3388,7 @@ def _drive_entry_keys(paths, under: str, defaults: frozenset) -> set[str] | None
         return set()
     if any(not p for p in under_paths):
         return None
-    keys = {
-        p[0] for p in under_paths if not (len(p) > 1 and p[1] == _MASK_EMPTY) or p[0] in defaults
-    }
-    return None if "*" in keys else keys
+    return _mask_keys(under_paths, defaults)
 
 
 def _drive_trim_object(obj, paths, under: str | None, defaults: frozenset):
@@ -3664,9 +3639,7 @@ def _drive_order_specs(order_by: str | None) -> list[tuple]:
     seen: set[str] = set()
     for parts in _drive_order_words(order_by):
         key = parts[0]
-        if parts[1:] not in ([], ["asc"], ["desc"]):
-            raise gerr.invalid_value("orderBy")
-        if key not in _DRIVE_ORDER_KEYS:
+        if parts[1:] not in ([], ["asc"], ["desc"]) or key not in _DRIVE_ORDER_KEYS:
             raise gerr.invalid_value("orderBy")
         # Real Drive (measured 2026-10-04) 403s a key named twice whatever either direction is, and
         # reads `name_natural` as `name` but `recency` and `modifiedTime` as two keys — so this
@@ -3883,9 +3856,7 @@ def _drive_about_field_keys(fields: str | None) -> set[str] | None:
     the 29 code points `str.isspace` takes, and to `user()`, `user( )` and `kind()`, measured
     2026-10-20, and to an empty group beside another key, `user(),kind` and `kind,user()`, on
     2026-10-25. So does each mask `_drive_about_mask_is_required` takes."""
-    if fields is None:
-        raise gerr.required("fields", "The 'fields' parameter is required for this method.")
-    if _drive_about_mask_is_required(fields):
+    if fields is None or _drive_about_mask_is_required(fields):
         raise gerr.required("fields", "The 'fields' parameter is required for this method.")
     paths = _mask_paths(fields)
     _check_mask(paths, _DRIVE_ABOUT_FIELDS, subfields=_DRIVE_ABOUT_SUBFIELDS)
@@ -4171,15 +4142,17 @@ async def drive_files_list(request: Request):
 
     # The row stream as (count, fetch) so the SQL paths stay SQL-paginated: a crawl costs one page
     # of rows per request, not a full-corpus scan re-run for every page.
+    folder = _DRIVE_ROOT_FOLDER if in_root else container
     if in_root and scoped:
         total_rows, fetch = 0, lambda o, n: []  # a file is at the root or in a folder, not both
-    elif in_root and (scope := _drive_q_plain_folder(query)):
-        # The files at the root are the ones a write created there (`_DRIVE_ROOT_FOLDER`): every
-        # corpus file lives in a folder.
+    elif folder is not None and (scope := _drive_q_plain_folder(query)):
+        # The common case: a client walking the tree wants just this folder's files. The files at
+        # the root are the ones a write created there (`_DRIVE_ROOT_FOLDER`): every corpus file
+        # lives in a folder.
         trash = _drive_listed_trash(ids, me) if scope == "all" else False
-        total_rows = store.count_drive_folder(conn, _DRIVE_ROOT_FOLDER, ids, trash)
+        total_rows = store.count_drive_folder(conn, folder, ids, trash)
         fetch = lambda o, n: store.list_drive_folder(  # noqa: E731
-            conn, _DRIVE_ROOT_FOLDER, ids, limit=n, offset=o, trash=trash
+            conn, folder, ids, limit=n, offset=o, trash=trash
         )
     elif in_root:
         matched = _drive_q_rows(conn, query, _DRIVE_ROOT_FOLDER, ids, me, hits)
@@ -4187,13 +4160,6 @@ async def drive_files_list(request: Request):
             matched.sort(key=lambda r: r["id"])
             matched.sort(key=_drive_modified, reverse=True)
         total_rows, fetch = len(matched), lambda o, n: matched[o : o + n]  # noqa: E731
-    elif container is not None and (scope := _drive_q_plain_folder(query)):
-        # The common case: a client walking the tree wants just this folder's files.
-        trash = _drive_listed_trash(ids, me) if scope == "all" else False
-        total_rows = store.count_drive_folder(conn, container, ids, trash)
-        fetch = lambda o, n: store.list_drive_folder(  # noqa: E731
-            conn, container, ids, limit=n, offset=o, trash=trash
-        )
     elif query is not None:  # filter the visible set by the query, then paginate
         matched = _drive_q_rows(conn, query, container, ids, me, hits)
         if not fulltext:  # in the order `_drive_newest_first` reads rows in
@@ -4493,7 +4459,6 @@ async def drive_files_permissions(file_id: str, request: Request):
 # suggest — they only ever show the family that matches. Measured both ways: .xlsx -> Sheets and
 # .docx -> Docs give the Office message, while .xlsx -> Docs and .docx -> Sheets give the plain
 # invalid-argument one. `.pptx -> Slides` gives the Office message too, measured on 2026-10-10.
-EDITOR_NOT_FOUND = "Requested entity was not found."
 EDITOR_INVALID_ARG = "Request contains an invalid argument."
 EDITOR_OFFICE = (
     "This operation is not supported for this document. The document must not be an Office file."
@@ -5009,27 +4974,24 @@ async def slides_get(presentation_id: str, request: Request):
     chunks = [c for c in (row["content"] or "").split("\n\n") if c.strip()] or [
         row["content"] or ""
     ]
-    slides = []
-    for i, chunk in enumerate(chunks):
-        slides.append(
-            {
-                "objectId": f"p{i}",
-                "pageType": "SLIDE",
-                "pageElements": [
-                    {
-                        "objectId": f"p{i}_t",
-                        "shape": {
-                            "shapeType": "TEXT_BOX",
-                            "text": {
-                                "textElements": [
-                                    {"textRun": {"content": chunk + "\n", "style": {}}}
-                                ]
-                            },
+    slides = [
+        {
+            "objectId": f"p{i}",
+            "pageType": "SLIDE",
+            "pageElements": [
+                {
+                    "objectId": f"p{i}_t",
+                    "shape": {
+                        "shapeType": "TEXT_BOX",
+                        "text": {
+                            "textElements": [{"textRun": {"content": chunk + "\n", "style": {}}}]
                         },
-                    }
-                ],
-            }
-        )
+                    },
+                }
+            ],
+        }
+        for i, chunk in enumerate(chunks)
+    ]
     return {
         "presentationId": presentation_id,
         "title": row["title"],

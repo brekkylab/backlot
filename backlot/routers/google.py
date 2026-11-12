@@ -1484,20 +1484,6 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     return free, ops
 
 
-def _gmail_date(v: str) -> int | None:
-    for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
-        try:
-            return int(
-                datetime.datetime.strptime(v, fmt).replace(tzinfo=datetime.timezone.utc).timestamp()
-            )
-        except ValueError:
-            continue
-    try:
-        return int(v)  # epoch seconds
-    except ValueError:
-        return None
-
-
 # Gmail relative-age units for newer_than:/older_than:. Real Gmail counts calendar months/years,
 # which we can't reproduce without the query's wall-clock calendar; days-per-unit is a faithful-
 # enough approximation here (the operators are otherwise honored exactly).
@@ -1525,7 +1511,8 @@ def _resolve_relative_dates(ops: dict) -> dict:
     ops = {k: list(vs) for k, vs in ops.items()}
     ops.pop("newer_than", None)
     ops.pop("older_than", None)
-    # as epoch-second strings: both the SQL push-down and _gmail_op_match parse these via _gmail_date
+    # as epoch-second strings, the form `_gmail_q_date` gives every other bound, which the SQL
+    # push-down and _gmail_op_match read with `int`
     ops.setdefault("after", []).extend(str(now - s) for s in new_secs)
     ops.setdefault("before", []).extend(str(now - s) for s in old_secs)
     return ops
@@ -1645,12 +1632,10 @@ def _gmail_op_match(row, ops: dict) -> bool:
         return False
     ts = _gmail_ts(row)
     for v in ops.get("after", []):
-        d = _gmail_date(v)
-        if d is not None and ts < d:
+        if ts < int(v):
             return False
     for v in ops.get("before", []):
-        d = _gmail_date(v)
-        if d is not None and ts >= d:
+        if ts >= int(v):
             return False
     return True
 
@@ -1683,12 +1668,8 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
         # a date-dir listing otherwise materialized the whole mailbox (~100k rows) then date-filtered
         # in Python. after: -> ts >= d (inclusive lo), before: -> ts < d (exclusive hi), matching
         # _gmail_op_match; the remaining ops still filter the (now small) candidate set below.
-        lo = max(
-            (d for v in ops.get("after", []) if (d := _gmail_date(v)) is not None), default=None
-        )
-        hi = min(
-            (d for v in ops.get("before", []) if (d := _gmail_date(v)) is not None), default=None
-        )
+        lo = max((int(v) for v in ops.get("after", [])), default=None)
+        hi = min((int(v) for v in ops.get("before", [])), default=None)
         # list_gmail_in_range for BOTH the date-pinned and the open-ended case (lo=hi=None): its
         # created_ts DESC, id order is the newest-first listing real Gmail returns — the plain
         # list_documents path ordered by id (a hash), scattering the listing by date.

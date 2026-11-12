@@ -767,11 +767,15 @@ def test_linear_priority_is_linears_numeric_scale(client, admin_h):
 
 def test_linear_comments_connection_on_an_issue(client, admin_h):
     r = gql(
-        client, '{ issue(id: "ENG-101") { comments { nodes { body user { email } } } } }', admin_h
+        client,
+        '{ issue(id: "ENG-101") { comments { nodes { body user { email } onBehalfOf { id } } } } }',
+        admin_h,
     )
     nodes = r.json()["data"]["issue"]["comments"]["nodes"]
     assert [c["body"] for c in nodes] == ["Reproduced with a burst test.", "Fix is in review."]
     assert nodes[0]["user"]["email"] == "bob@acme.com"
+    # A user-authored comment answers `onBehalfOf: null` (api.linear.app, `comments`, 2026-11-12).
+    assert [c["onBehalfOf"] for c in nodes] == [None, None]
 
 
 def test_linear_by_id_relation_roots_answer(client, admin_h):

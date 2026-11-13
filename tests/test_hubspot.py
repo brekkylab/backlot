@@ -2416,10 +2416,6 @@ def test_hubspot_search_sorts(client, admin_h):
 
 
 def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
-    """Real answers a search with no sort oldest `createdate` first — over `{}`, `{"sorts": []}`
-    and `{"sorts": null}` alike (measured against api.hubapi.com 2026-11-12, #1350) — where
-    Backlot answered in id order, which `after` pages on. With a sort given, the sort decides.
-    `created` is whole seconds here, so no two createdates tie."""
     from tests._helpers import client_for
 
     records = [
@@ -2443,15 +2439,22 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
     with client_for(settings, reload=True) as client:
         headers = {"Authorization": f"Bearer {settings.admin_token}"}
 
+        def search(body):
+            return client.post(
+                "/hubspot/crm/v3/objects/contacts/search", headers=headers, json=body
+            ).json()
+
         def emails(body):
-            return [
-                r["properties"]["email"]
-                for r in client.post(
-                    "/hubspot/crm/v3/objects/contacts/search",
-                    headers=headers,
-                    json=body,
-                ).json()["results"]
-            ]
+            return [r["properties"]["email"] for r in search(body)["results"]]
+
+        def crawl(body):
+            out, after = [], None
+            while True:
+                page = search({**body, "limit": 2, **({"after": after} if after else {})})
+                out += [r["properties"]["email"] for r in page["results"]]
+                after = (page.get("paging") or {}).get("next", {}).get("after")
+                if after is None:
+                    return out
 
         oldest_first = [
             "emailmaria@hubspot.com",
@@ -2460,10 +2463,12 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
             "bob@example.com",
             "cara@example.org",
         ]
-        # The two oldest createdates carry the 1st and 3rd ids, so this is not id order.
-        assert emails({}) == oldest_first
-        assert emails({"sorts": []}) == oldest_first
-        assert emails({"sorts": None}) == oldest_first
+        no_sort = ({}, {"sorts": []}, {"sorts": None})
+        assert [emails(body) for body in no_sort] == [oldest_first] * 3
+        assert [crawl(body) for body in no_sort] == [oldest_first] * 3
+        # The ids do not ascend in createdate order, so the order above is not id order.
+        ids = [int(r["id"]) for r in search({})["results"]]
+        assert ids != sorted(ids)
         # A sort still decides the order.
         assert emails({"sorts": [{"propertyName": "email"}]}) == sorted(oldest_first)
 

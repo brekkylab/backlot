@@ -2102,13 +2102,11 @@ async def search_objects(object_type: str, request: Request):
     if sorts:
         hits = _sorted(hits, sorts)
     else:
-        # No sort asked for — real answers oldest `createdate` first, not in id order
-        # (measured against api.hubapi.com 2026-11-12, #1350, over `{}`, `{"sorts": []}` and
-        # `{"sorts": null}` alike). Ties keep ascending id, the same order a sorted search
-        # leaves its ties in; real's tie order here was not measured. `created_ts` is what the
-        # record's `createdAt` — real's `createdate` — is served from, in whole seconds, so
-        # createdates that differ only below the second tie. `after` pages on id over this same
-        # list, so the cursor keeps working unchanged.
+        # No sort asked for — real answered `{}`, `{"sorts": []}` and `{"sorts": null}` oldest
+        # `createdate` first on contacts, companies, tasks and meetings (api.hubapi.com,
+        # 2026-11-13). `created_ts` serves `createdAt` in whole seconds, and rows created in the
+        # same second keep ascending id: no two records of the portal measured share a
+        # `createdate`, so real's order for a tie is unknown.
         hits.sort(key=lambda r: r["created_ts"])
 
     if after_doc is not None:

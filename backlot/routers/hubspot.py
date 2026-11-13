@@ -45,8 +45,9 @@ from backlot.routers import json_body
 
 router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 
-# `hubspot/utils/objects.py` in the official client pages at 100 (PAGE_MAX_SIZE); a larger `limit`
-# is clamped rather than rejected, matching how HubSpot itself caps a page.
+# The most a page holds, past which real refuses a `limit`: on the object listing
+# (`_listing_limit`) and on the search (`search_objects`). `hubspot/utils/objects.py` in the
+# official client pages at 100 (PAGE_MAX_SIZE).
 _PAGE_MAX = 100
 _SEARCH_PAGE_MAX = 200
 # The associations endpoint pages at 500 per request, like the vendor's.
@@ -518,77 +519,106 @@ def _existing_id(request: Request, record_id: str) -> str | None:
     return row["id"] if row is not None else None
 
 
-def _unparseable_limit() -> JSONResponse:
-    """Real's no-category 400 for a `limit` query parameter that does not parse — `abc`, `1.5` —
-    on the object and the associations listing (measured against api.hubapi.com 2026-09-30, #379)."""
+def _query_limit(request: Request, default: int) -> int | JSONResponse:
+    """The first `limit` in the query as real's listings read it: ``default`` when there is none or
+    `trim()` empties it, and otherwise `Integer.parseInt` of the value as sent (`_java_int`), or a
+    400 with no `category` where that throws. Measured against api.hubapi.com on 2026-11-13: on the
+    object listing an empty `limit`, a space, a tab and a newline were served, `0101`, `+101` and
+    `１０１` were read as 101, and ` 5`, `5 `, `1.5`, `1e2`, `0x10`, `+`, a no-break space and
+    `2147483648` got the 400, as `limit=abc&limit=2` did where `limit=2&limit=abc` served two
+    records; on the associations listing a tab was served and `+501`, `0501` and `５０１` were read
+    as 501."""
+    raw = _first_query(request.query_params, "limit")
+    if raw is None or not raw.strip(_TRIM):
+        return default
+    n = _java_int(raw)
+    if n is None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": "Unable to parse value for query parameter: limit",
+            },
+        )
+    return n
+
+
+def _limit_out_of_range(message: str, n: int, category: str = "VALIDATION_ERROR") -> JSONResponse:
+    """Real's 400 for a `limit` it read as ``n`` and refuses, naming ``n`` in `context`: `-0` and
+    `000` are named `0` (api.hubapi.com, 2026-11-13)."""
     return JSONResponse(
         status_code=400,
-        content={"status": "error", "message": "Unable to parse value for query parameter: limit"},
+        content={
+            "status": "error",
+            "message": message,
+            "context": {"limit": [str(n)]},
+            "category": category,
+        },
     )
 
 
 def _listing_limit(request: Request) -> int | JSONResponse:
-    """The object listing's `limit`, or real's 400 for one it refuses.
-
-    Measured against api.hubapi.com on 2026-09-30 (#379): `0` and `-1` answer VALIDATION_ERROR
-    "Limit must be greater than or equal to 1." with the value as sent in `context`; `101` answers
-    "You can only request at most 100 objects in one request." the same way; a value that does not
-    parse answers `_unparseable_limit`'s 400. `limit=100` and an empty `limit` are served on both
-    sides, and a repeated `limit` is read from its first value (`_first_query`)."""
-    raw = _first_query(request.query_params, "limit")
-    if raw is None or raw == "":
-        return 10
-    if not re.fullmatch(r"-?[0-9]+", raw):
-        return _unparseable_limit()
-    n = int(raw)
+    """The object listing's `limit` (`_query_limit`), or real's 400 for one below 1 or past
+    `_PAGE_MAX`."""
+    n = _query_limit(request, 10)
+    if isinstance(n, JSONResponse):
+        return n
     if n < 1:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": "Limit must be greater than or equal to 1.",
-                "context": {"limit": [raw]},
-                "category": "VALIDATION_ERROR",
-            },
-        )
+        return _limit_out_of_range("Limit must be greater than or equal to 1.", n)
     if n > _PAGE_MAX:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": "You can only request at most 100 objects in one request.",
-                "context": {"limit": [raw]},
-                "category": "VALIDATION_ERROR",
-            },
-        )
+        return _limit_out_of_range("You can only request at most 100 objects in one request.", n)
     return n
 
 
 def _assoc_limit(request: Request) -> int | JSONResponse:
-    """The associations listing's `limit`, or real's 400 for one it refuses.
-
-    Measured against api.hubapi.com on 2026-09-30 (#379): `501` answers API_LIMIT "Limit must be
-    between 0 and 500." with the value as sent in `context`; a value that does not parse answers
-    `_unparseable_limit`'s 400. `0` is served — an empty page (#378) — and an absent or empty
-    `limit` keeps the default page. Below the range was not measured; the message's own range
-    refuses it."""
-    raw = _first_query(request.query_params, "limit")
-    if raw is None or raw == "":
-        return _ASSOC_PAGE_MAX
-    if not re.fullmatch(r"-?[0-9]+", raw):
-        return _unparseable_limit()
-    n = int(raw)
+    """The associations listing's `limit` (`_query_limit`), or real's API_LIMIT 400 for one below 0
+    or past `_ASSOC_PAGE_MAX`: `-1`, `-5` and `501` got it from api.hubapi.com on 2026-11-13."""
+    n = _query_limit(request, _ASSOC_PAGE_MAX)
+    if isinstance(n, JSONResponse):
+        return n
     if not 0 <= n <= _ASSOC_PAGE_MAX:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": f"Limit must be between 0 and {_ASSOC_PAGE_MAX}.",
-                "context": {"limit": [raw]},
-                "category": "API_LIMIT",
-            },
+        return _limit_out_of_range(
+            f"Limit must be between 0 and {_ASSOC_PAGE_MAX}.", n, "API_LIMIT"
         )
     return n
+
+
+def _unreadable_limit(raw: bytes, value) -> JSONResponse | None:
+    """Real's 400 for a search body `limit` it cannot read as a Java `int`, or None. Measured
+    against api.hubapi.com on 2026-11-13: it names a boolean, an array or an object where it
+    starts; a number outside Java's int (`2147483648`, `1e10`, `-2147483649.0`) just past it, with
+    no `category` (`_past_int`); and a string that, trimmed (`_TRIM`), is not empty, not `null`
+    and not read by `Integer.parseInt` (`_java_int`), such as `abc`, `1.5`, `+` and `2147483648`,
+    by its field, echoed trimmed (`_unreadable_field`)."""
+    if isinstance(value, (bool, list, dict)):
+        kind, token = _json_kind(value)
+        text = (
+            f"Cannot deserialize value of type `int` from {kind} value (token `JsonToken.{token}`)"
+        )
+        return _invalid_at(raw, ("limit",), text)
+    if isinstance(value, (int, float)) and not -(2**31) <= value <= 2**31 - 1:
+        return _past_int(raw, ("limit",))
+    if isinstance(value, str):
+        text = value.strip(_TRIM)
+        if text not in ("", "null") and _java_int(text) is None:
+            return _unreadable_field(("limit",), text)
+    return None
+
+
+def _search_limit(body: dict) -> int:
+    """The search body's `limit` as real reads one `_unreadable_limit` passes: 10 when the body has
+    none, 0 for `null` and for a string that trims to nothing or to `null`, a float cut toward
+    zero, and a string as `_java_int` reads it trimmed. Measured against api.hubapi.com on
+    2026-11-13: `null`, `""`, `"  "`, `"null"`, `-0.5` and `"-0"` answered the empty page `0` does
+    and `1.5` the page `1` does; `"5"`, `" 5"`, `"+5"`, `"05"` and `"٥"` were served; `"201"` and
+    `"0201"` got the range 400 for 201, and `300.5` and `-1.5` the one for 300 and -1."""
+    if "limit" not in body:
+        return 10
+    value = body["limit"]
+    if isinstance(value, str):
+        value = value.strip(_TRIM)
+        return 0 if value in ("", "null") else _java_int(value)
+    return 0 if value is None else int(value)
 
 
 def _flag(raw) -> bool:
@@ -616,7 +646,7 @@ def _first_query(qp, name: str):
     Real reads a repeated `archived` on an object listing from its first value, where Starlette's
     `QueryParams.get` returns the last. Measured against api.hubapi.com (2026-10-07, 2026-10-08):
     `archived=true&archived=false` answers like `archived=true`, and `archived=false&archived=true`,
-    `archived=&archived=true` and `archived=yes&archived=true` like `archived=false`. A repeated `limit` is read from its first value too (2026-09-30, #379): `limit=1&limit=2` answers like `limit=1`."""
+    `archived=&archived=true` like `archived=false`."""
     values = qp.getlist(name)
     return values[0] if values else None
 
@@ -652,7 +682,10 @@ def _page(rows, limit: int, keep: list[str] | None) -> dict:
     has_more = len(rows) > limit
     rows = rows[:limit]
     out: dict = {"results": [_record(r, keep) for r in rows]}
-    if has_more:
+    # This router's cursor is the last row's id, so a page of `limit` 0 has no `paging`. Real's
+    # search answered `{"limit": 0}` with `paging.next.after` "0" and `{"limit": 0, "after": "2"}`
+    # with "2" (2026-11-13), an offset.
+    if has_more and rows:
         after = rows[-1]["id"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
     return out
@@ -1432,17 +1465,17 @@ def _refuse_a_search_shape(
     raw: bytes, body: dict, before: tuple[int, int] | None = None
 ) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
     """Real's 400 for a search body it cannot read, with where the value it names starts, or
-    `(None, None)`. Measured against api.hubapi.com on 2026-10-01 and 2026-11-09: real reads the
-    body in order and stops at the first value it cannot read, naming where it starts: a
+    `(None, None)`. Measured against api.hubapi.com on 2026-10-01, 2026-11-09 and 2026-11-13: real
+    reads the body in order and stops at the first value it cannot read, naming where it starts: a
     `filterGroups` or a group's `filters` that is neither null nor a list (`_not_a_list`), an
     element of either that is not an object (`_unbuildable`), a filter member `_unreadable_member`
-    refuses, or a `query` that is an array or an object. A null element is named at the closing
-    brace of the object holding its list, the body's for `filterGroups` and the group's for
-    `filters`: after that object's other values and ahead of a later element, `query` or
-    non-standard token. A null `filterGroups`, `filters` or `query`, and a group with no `filters`,
-    are read. With a `before` from `_non_standard_number`, a value from there on is left to the
-    token. A key the body repeats is read by its last value, the one `json.loads` keeps, where real
-    reads its values in order and names the first it cannot read
+    refuses, a `query` that is an array or an object, or a `limit` `_unreadable_limit` refuses. A
+    null element is named at the closing brace of the object holding its list, the body's for
+    `filterGroups` and the group's for `filters`: after that object's other values and ahead of a
+    later element, `query` or non-standard token. A null `filterGroups`, `filters` or `query`, and a
+    group with no `filters`, are read. With a `before` from `_non_standard_number`, a value from
+    there on is left to the token. A key the body repeats is read by its last value, the one
+    `json.loads` keeps, where real reads its values in order and names the first it cannot read
     (`{"filterGroups": "x", "filterGroups": []}` names the `"x"`, measured 2026-11-10); this router
     does not model that."""
 
@@ -1457,6 +1490,11 @@ def _refuse_a_search_shape(
             if isinstance(value, (dict, list)):
                 position = _token_at(raw, (key,))
                 return named(position, _invalid(position, _mismatched(value)))
+            continue
+        if key == "limit":
+            refusal = _unreadable_limit(raw, value)
+            if refusal is not None:
+                return named(_token_at(raw, (key,)), refusal)
             continue
         if key != "filterGroups" or value is None:
             continue
@@ -2129,25 +2167,12 @@ async def search_objects(object_type: str, request: Request):
     if refused is not None:
         return refused
     body = _scalars_as_text(raw, body)
-    raw_limit = body.get("limit")
-    if raw_limit is None:
-        limit = 10
-    elif not isinstance(raw_limit, int) or isinstance(raw_limit, bool):
-        # Real's deserialize 400 for a `limit` it cannot read (measured against api.hubapi.com
-        # 2026-09-30, #379, on `{"limit":"abc"}`); the message spells the value as the body does.
-        shown = raw_limit if isinstance(raw_limit, str) else json.dumps(raw_limit)
-        return _error(
-            400,
-            f'Invalid input JSON: unable to deserialize field "limit". Invalid value: {shown}',
-        )
-    elif not 0 <= raw_limit <= _SEARCH_PAGE_MAX:
-        # Real's range 400 (measured 2026-09-30, #379, on 201 and -1).
-        return _error(
-            400,
-            f"limit must be in range [0..{_SEARCH_PAGE_MAX}] (actual value: {raw_limit})",
-        )
-    else:
-        limit = raw_limit
+    limit = _search_limit(body)
+    # After the whole body is read: real named the `query` of `{"limit": 201, "query": ["x"]}` and
+    # the `filterGroups` of `{"limit": 201, "filterGroups": "x"}` (2026-11-13).
+    if not 0 <= limit <= _SEARCH_PAGE_MAX:
+        message = f"limit must be in range [0..{_SEARCH_PAGE_MAX}] (actual value: {limit})"
+        return _limit_out_of_range(message, limit)
     visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)
     after_doc, err = _resolve_cursor(request, body.get("after"))
@@ -2317,10 +2342,9 @@ async def list_associations(
             for r in rows
         ]
     }
-    # An empty page carries no `paging.next`: there is no result to take a cursor from. Real
-    # serves `limit=0` as an empty page (measured 2026-09-30, #378); whether it sends a `paging`
-    # there was not measured, and an empty terminal page is what `paging.next`'s absence already
-    # means to the official clients.
+    # Real answered `limit=0` with `paging.next.after` "0" and a `link` to it, and `after=0` with
+    # the first page (2026-11-13); `_resolve_cursor` refuses an `after` that names no record, so an
+    # empty page here has no `paging`.
     if has_more and out["results"]:
         after = out["results"][-1]["toObjectId"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}

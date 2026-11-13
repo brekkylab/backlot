@@ -2135,6 +2135,18 @@ _ARRAY = "Cannot deserialize value of type  from Array value (token `JsonToken.S
 _OBJECT = "Cannot deserialize value of type  from Object value (token `JsonToken.START_OBJECT`)"
 
 
+def _not_an_int(kind: str, token: str) -> str:
+    return f"Cannot deserialize value of type `int` from {kind} value (token `JsonToken.{token}`)"
+
+
+def _limit_refusal(message: str, n: str, category: str = "VALIDATION_ERROR") -> dict:
+    return {"status": "error", "message": message, "context": {"limit": [n]}, "category": category}
+
+
+def _limit_range(n: int) -> dict:
+    return _limit_refusal(f"limit must be in range [0..200] (actual value: {n})", str(n))
+
+
 def _enum_refusal(line: int, column: int) -> dict:
     return {
         "status": "error",
@@ -2415,101 +2427,99 @@ def test_hubspot_search_sorts(client, admin_h):
     assert names("DESCENDING") == ["Borealis Clinics", "Acme Health"]
 
 
-def test_hubspot_listing_refuses_a_limit_real_refuses(client, admin_h):
-    """Real refuses the listing `limit`s Backlot clamped or defaulted, reads a repeated one from
-    its first value, and serves `limit=100` and an empty `limit` (measured against api.hubapi.com
-    2026-09-30, #379)."""
-    url = "/hubspot/crm/v3/objects/companies"
-
-    def at(params):
-        return client.get(url, headers=admin_h, params=params)
-
-    r = at({"limit": "0"})
-    assert r.status_code == 400
-    assert _body(r) == {
-        "status": "error",
-        "message": "Limit must be greater than or equal to 1.",
-        "context": {"limit": ["0"]},
-        "category": "VALIDATION_ERROR",
-    }
-    assert _body(at({"limit": "-1"}))["context"] == {"limit": ["-1"]}
-    r = at({"limit": "101"})
-    assert r.status_code == 400
-    assert _body(r) == {
-        "status": "error",
-        "message": "You can only request at most 100 objects in one request.",
-        "context": {"limit": ["101"]},
-        "category": "VALIDATION_ERROR",
-    }
-    # a value that does not parse: a 400 with no category at all
-    r = at({"limit": "abc"})
-    assert r.status_code == 400
-    assert _body(r) == {
-        "status": "error",
-        "message": "Unable to parse value for query parameter: limit",
-    }
-    assert _body(at({"limit": "1.5"})) == _body(at({"limit": "abc"}))
-    # a repeated limit is read from its first value
-    assert len(at({"limit": ["1", "2"]}).json()["results"]) == 1
-    # `limit=100` and an empty `limit` are served, as real serves them
-    served = at({"limit": "100"}).json()["results"]
-    assert at({"limit": ""}).json()["results"] == served
-    assert at({}).json()["results"] == served
+_COMPANIES = "/hubspot/crm/v3/objects/companies"
+_MEETINGS = "/hubspot/crm/v3/objects/meetings"
+_AVAS_COMPANIES = "/hubspot/crm/v4/objects/contacts/{ava}/associations/companies"
+_UNPARSEABLE_LIMIT = {
+    "status": "error",
+    "message": "Unable to parse value for query parameter: limit",
+}
+_BELOW_ONE = "Limit must be greater than or equal to 1."
+_PAST_100 = "You can only request at most 100 objects in one request."
+_PAST_500 = "Limit must be between 0 and 500."
 
 
-def test_hubspot_associations_refuse_a_limit_real_refuses(client, admin_h, ava):
-    """Real refuses the associations `limit=501` with API_LIMIT and a `limit` that does not parse
-    with the no-category 400, and serves `limit=0` as an empty page (#378) — measured against
-    api.hubapi.com 2026-09-30 (#379)."""
-    url = f"/hubspot/crm/v4/objects/contacts/{ava}/associations/companies"
-
-    def at(params):
-        return client.get(url, headers=admin_h, params=params)
-
-    r = at({"limit": "501"})
-    assert r.status_code == 400
-    assert _body(r) == {
-        "status": "error",
-        "message": "Limit must be between 0 and 500.",
-        "context": {"limit": ["501"]},
-        "category": "API_LIMIT",
-    }
-    r = at({"limit": "abc"})
-    assert r.status_code == 400
-    assert _body(r) == {
-        "status": "error",
-        "message": "Unable to parse value for query parameter: limit",
-    }
-    assert at({"limit": "0"}).json()["results"] == []
+def _lq(id, path, query, want):
+    return pytest.param(path, query, want, id=id)
 
 
-def test_hubspot_search_refuses_a_body_limit_real_refuses(client, admin_h):
-    """Real refuses a search-body `limit` outside [0..200] and one it cannot deserialize, where
-    Backlot clamped and defaulted (measured against api.hubapi.com 2026-09-30, #379)."""
-    url = "/hubspot/crm/v3/objects/contacts/search"
+# A `limit` real refuses, with the body it answered, or one it serves, with (a query answering the
+# same page, is that page narrower than the one with no `limit`).
+# fmt: off
+_LIMIT_QUERY_ROWS = [
+    _lq("listing-0", _COMPANIES, "limit=0", _limit_refusal(_BELOW_ONE, "0")),
+    _lq("listing-minus-0", _COMPANIES, "limit=-0", _limit_refusal(_BELOW_ONE, "0")),
+    _lq("listing-000", _COMPANIES, "limit=000", _limit_refusal(_BELOW_ONE, "0")),
+    _lq("listing-plus-0", _COMPANIES, "limit=%2B0", _limit_refusal(_BELOW_ONE, "0")),
+    _lq("listing-minus-1", _COMPANIES, "limit=-1", _limit_refusal(_BELOW_ONE, "-1")),
+    _lq("listing-minus-arabic-indic-5", _COMPANIES, "limit=-%D9%A5", _limit_refusal(_BELOW_ONE, "-5")),
+    _lq("listing-101", _COMPANIES, "limit=101", _limit_refusal(_PAST_100, "101")),
+    _lq("listing-0101", _COMPANIES, "limit=0101", _limit_refusal(_PAST_100, "101")),
+    _lq("listing-plus-101", _COMPANIES, "limit=%2B101", _limit_refusal(_PAST_100, "101")),
+    _lq("listing-fullwidth-101", _COMPANIES, "limit=%EF%BC%91%EF%BC%90%EF%BC%91", _limit_refusal(_PAST_100, "101")),
+    _lq("listing-int-max", _COMPANIES, "limit=2147483647", _limit_refusal(_PAST_100, "2147483647")),
+    _lq("listing-past-int", _COMPANIES, "limit=2147483648", _UNPARSEABLE_LIMIT),
+    _lq("listing-below-int", _COMPANIES, "limit=-2147483649", _UNPARSEABLE_LIMIT),
+    _lq("listing-past-pythons-int-digits", _COMPANIES, "limit=" + "9" * 4301, _UNPARSEABLE_LIMIT),
+    _lq("listing-abc", _COMPANIES, "limit=abc", _UNPARSEABLE_LIMIT),
+    _lq("listing-1.5", _COMPANIES, "limit=1.5", _UNPARSEABLE_LIMIT),
+    _lq("listing-exponent", _COMPANIES, "limit=1e2", _UNPARSEABLE_LIMIT),
+    _lq("listing-leading-space", _COMPANIES, "limit=%205", _UNPARSEABLE_LIMIT),
+    _lq("listing-trailing-space", _COMPANIES, "limit=5%20", _UNPARSEABLE_LIMIT),
+    _lq("listing-leading-tab", _COMPANIES, "limit=%095", _UNPARSEABLE_LIMIT),
+    _lq("listing-unencoded-plus", _COMPANIES, "limit=+5", _UNPARSEABLE_LIMIT),
+    _lq("listing-sign", _COMPANIES, "limit=%2B", _UNPARSEABLE_LIMIT),
+    _lq("listing-no-break-space", _COMPANIES, "limit=%C2%A0", _UNPARSEABLE_LIMIT),
+    _lq("listing-abc-then-2", _COMPANIES, "limit=abc&limit=2", _UNPARSEABLE_LIMIT),
+    _lq("listing-0-then-2", _COMPANIES, "limit=0&limit=2", _limit_refusal(_BELOW_ONE, "0")),
+    _lq("archived-meetings-0", _MEETINGS, "archived=true&limit=0", _limit_refusal(_BELOW_ONE, "0")),
+    _lq("archived-meetings-abc", _MEETINGS, "archived=true&limit=abc", _UNPARSEABLE_LIMIT),
+    _lq("listing-plus-1", _COMPANIES, "limit=%2B1", ("limit=1", True)),
+    _lq("listing-01", _COMPANIES, "limit=01", ("limit=1", True)),
+    _lq("listing-fullwidth-1", _COMPANIES, "limit=%EF%BC%91", ("limit=1", True)),
+    _lq("listing-arabic-indic-1", _COMPANIES, "limit=%D9%A1", ("limit=1", True)),
+    _lq("listing-2-then-abc", _COMPANIES, "limit=2&limit=abc", ("limit=2", True)),
+    _lq("listing-100", _COMPANIES, "limit=100", ("", False)),
+    _lq("listing-empty", _COMPANIES, "limit=", ("", False)),
+    _lq("listing-space", _COMPANIES, "limit=%20", ("", False)),
+    _lq("listing-tab", _COMPANIES, "limit=%09", ("", False)),
+    _lq("listing-newline", _COMPANIES, "limit=%0A", ("", False)),
+    _lq("listing-empty-then-1", _COMPANIES, "limit=&limit=1", ("", False)),
+    _lq("associations-501", _AVAS_COMPANIES, "limit=501", _limit_refusal(_PAST_500, "501", "API_LIMIT")),
+    _lq("associations-0501", _AVAS_COMPANIES, "limit=0501", _limit_refusal(_PAST_500, "501", "API_LIMIT")),
+    _lq("associations-plus-501", _AVAS_COMPANIES, "limit=%2B501", _limit_refusal(_PAST_500, "501", "API_LIMIT")),
+    _lq("associations-fullwidth-501", _AVAS_COMPANIES, "limit=%EF%BC%95%EF%BC%90%EF%BC%91", _limit_refusal(_PAST_500, "501", "API_LIMIT")),
+    _lq("associations-minus-1", _AVAS_COMPANIES, "limit=-1", _limit_refusal(_PAST_500, "-1", "API_LIMIT")),
+    _lq("associations-minus-0001", _AVAS_COMPANIES, "limit=-0001", _limit_refusal(_PAST_500, "-1", "API_LIMIT")),
+    _lq("associations-501-then-2", _AVAS_COMPANIES, "limit=501&limit=2", _limit_refusal(_PAST_500, "501", "API_LIMIT")),
+    _lq("associations-past-int", _AVAS_COMPANIES, "limit=2147483648", _UNPARSEABLE_LIMIT),
+    _lq("associations-past-pythons-int-digits", _AVAS_COMPANIES, "limit=" + "9" * 4301, _UNPARSEABLE_LIMIT),
+    _lq("associations-abc", _AVAS_COMPANIES, "limit=abc", _UNPARSEABLE_LIMIT),
+    _lq("associations-minus", _AVAS_COMPANIES, "limit=-", _UNPARSEABLE_LIMIT),
+    _lq("associations-minus-0", _AVAS_COMPANIES, "limit=-0", ("limit=0", True)),
+    _lq("associations-minus-00", _AVAS_COMPANIES, "limit=-00", ("limit=0", True)),
+    _lq("associations-plus-5", _AVAS_COMPANIES, "limit=%2B5", ("limit=5", False)),
+    _lq("associations-empty", _AVAS_COMPANIES, "limit=", ("", False)),
+    _lq("associations-tab", _AVAS_COMPANIES, "limit=%09", ("", False)),
+    _lq("associations-2-then-501", _AVAS_COMPANIES, "limit=2&limit=501", ("limit=2", False)),
+]
+# fmt: on
 
-    def search(body):
-        return client.post(url, headers=admin_h, json=body)
 
-    r = search({"limit": 201})
-    assert r.status_code == 400
-    assert _body(r) == {
-        "status": "error",
-        "message": "limit must be in range [0..200] (actual value: 201)",
-        "category": "VALIDATION_ERROR",
-    }
-    assert (
-        _body(search({"limit": -1}))["message"]
-        == "limit must be in range [0..200] (actual value: -1)"
-    )
-    r = search({"limit": "abc"})
-    assert r.status_code == 400
-    assert _body(r) == {
-        "status": "error",
-        "message": 'Invalid input JSON: unable to deserialize field "limit". Invalid value: abc',
-        "category": "VALIDATION_ERROR",
-    }
-    assert search({"limit": 150}).status_code == 200
+def test_hubspot_listings_read_a_limit_as_real_does(client, admin_h, ava):
+    answered, expected = {}, {}
+    for row in _LIMIT_QUERY_ROWS:
+        path, query, want = row.values
+        url = path.format(ava=ava)
+        r = client.get(f"{url}?{query}", headers=admin_h)
+        if isinstance(want, dict):
+            answered[row.id], expected[row.id] = (r.status_code, _body(r)), (400, want)
+        else:
+            control = client.get(f"{url}?{want[0]}", headers=admin_h).json()
+            unlimited = client.get(url, headers=admin_h).json()
+            answered[row.id] = (r.status_code, r.json(), control != unlimited)
+            expected[row.id] = (200, control, want[1])
+    assert answered == expected
 
 
 def test_hubspot_search_is_acl_scoped(client, tokens_yaml):
@@ -2889,6 +2899,13 @@ _TOKEN_ROWS = [
     _nt("operator-ahead-of-filters", "search", '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"BOGUS"}]},{"filters":Infinity}]}', _enum_refusal(1, 64)),
     _nt("blank-operator-ahead", "search", "{" + _AN_OPERATOR % '" "' + ',"limit":NaN}', _empty_operator_refusal(0, 0)),
     _nt("blank-operator-behind", "search", '{"limit":NaN,' + _AN_OPERATOR % '" "' + "}", _token_refusal(13, "NaN")),
+    _nt("limit-true-ahead", "search", '{"limit":true,"query":NaN}', _json_refusal(10, _not_an_int("Boolean", "VALUE_TRUE"))),
+    _nt("limit-true-behind", "search", '{"query":NaN,"limit":true}', _token_refusal(13, "NaN")),
+    _nt("a-limit-array-around-it", "search", '{"limit":[NaN]}', _json_refusal(10, _not_an_int("Array", "START_ARRAY"))),
+    _nt("limit-string-ahead", "search", '{"limit":"abc","x":NaN}', _unreadable_field("limit", "abc")),
+    _nt("limit-string-behind", "search", '{"x":NaN,"limit":"abc"}', _token_refusal(9, "NaN")),
+    _nt("limit-past-int-ahead", "search", '{"limit":2147483648,"x":NaN}', _past_int_refusal(20, "2147483648")),
+    _nt("limit-201-ahead", "search", '{"limit":201,"x":NaN}', _token_refusal(21, "NaN")),
     _nt("filterGroups-string-then-nan", "search", '{"filterGroups": "x", "query": NaN}', _json_refusal(18, _not_a_list("String", "VALUE_STRING")), object_type="contacts"),
     _nt("nan-then-filterGroups-string", "search", '{"query": NaN, "filterGroups": "x"}', _token_refusal(14, "NaN"), object_type="contacts"),
     _nt("blank-string-group-then-nan", "search", '{"filterGroups": [" "], "query": NaN}', _unreadable_field("filterGroups[0]"), object_type="contacts"),
@@ -3024,6 +3041,37 @@ _SEARCH_BODY_ROWS = [
     # bodies with a second member or value real cannot read
     _sb("value-array-then-bad-operator", '{"filterGroups": [{"filters": [{"propertyName": "email", "value": [], "operator": "BOGUS"}]}]}', _json_refusal(67, _ARRAY)),
     _sb("bad-operator-then-value-array", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "BOGUS", "value": []}]}]}', _enum_refusal(1, 70)),
+    # a `limit` real cannot read as a Java `int`, or reads outside [0..200]
+    _sb("limit-true", '{"limit": true}', _json_refusal(11, _not_an_int("Boolean", "VALUE_TRUE"))),
+    _sb("limit-true-on-line-2", '{\n  "limit": true\n}', _json_refusal(12, _not_an_int("Boolean", "VALUE_TRUE"), line=2)),
+    _sb("limit-array", '{"limit":[]}', _json_refusal(10, _not_an_int("Array", "START_ARRAY"))),
+    _sb("limit-object", '{"limit": {"a": 1}}', _json_refusal(11, _not_an_int("Object", "START_OBJECT"))),
+    _sb("limit-string", '{"limit": "abc"}', _unreadable_field("limit", "abc")),
+    _sb("limit-padded-string", '{"limit": " abc "}', _unreadable_field("limit", "abc")),
+    _sb("limit-string-float", '{"limit": "1.5"}', _unreadable_field("limit", "1.5")),
+    _sb("limit-string-exponent", '{"limit": "1e2"}', _unreadable_field("limit", "1e2")),
+    _sb("limit-string-sign", '{"limit": "+"}', _unreadable_field("limit", "+")),
+    _sb("limit-string-past-int", '{"limit": "2147483648"}', _unreadable_field("limit", "2147483648")),
+    _sb("limit-past-int", '{"limit": 2147483648}', _past_int_refusal(21, "2147483648")),
+    _sb("limit-below-int", '{"limit": -2147483649}', _past_int_refusal(22, "-2147483649")),
+    _sb("limit-exponent-past-int", '{"limit": 1e10}', _past_int_refusal(15, "1e10")),
+    _sb("limit-float-past-int", '{"limit": 2147483648.5}', _past_int_refusal(23, "2147483648.5")),
+    _sb("limit-201", '{"limit": 201}', _limit_range(201)),
+    _sb("limit-minus-1", '{"limit": -1}', _limit_range(-1)),
+    _sb("limit-string-201", '{"limit": "201"}', _limit_range(201)),
+    _sb("limit-string-0201", '{"limit": "0201"}', _limit_range(201)),
+    _sb("limit-float-201.0", '{"limit": 201.0}', _limit_range(201)),
+    _sb("limit-float-300.5", '{"limit": 300.5}', _limit_range(300)),
+    _sb("limit-float-minus-1.5", '{"limit": -1.5}', _limit_range(-1)),
+    _sb("limit-string-then-query-array", '{"limit": "abc", "query": ["x"]}', _unreadable_field("limit", "abc")),
+    _sb("query-array-then-limit-string", '{"query": ["x"], "limit": "abc"}', _json_refusal(11, _ARRAY)),
+    _sb("limit-true-then-query-array", '{"limit": true, "query": ["x"]}', _json_refusal(11, _not_an_int("Boolean", "VALUE_TRUE"))),
+    _sb("query-array-then-limit-true", '{"query": ["x"], "limit": true}', _json_refusal(11, _ARRAY)),
+    _sb("limit-past-int-then-query-array", '{"limit": 2147483648, "query": ["x"]}', _past_int_refusal(21, "2147483648")),
+    _sb("filterGroups-string-then-limit-string", '{"filterGroups": "x", "limit": "abc"}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("limit-201-then-filterGroups-string", '{"limit": 201, "filterGroups": "x"}', _json_refusal(32, _not_a_list("String", "VALUE_STRING"))),
+    _sb("limit-201-then-query-array", '{"limit": 201, "query": ["x"]}', _json_refusal(25, _ARRAY)),
+    _sb("limit-float-then-query-array", '{"limit": 1.5, "query": ["x"]}', _json_refusal(25, _ARRAY)),
     # bodies real reads: (body answering the same page, is that page narrower than `{}`'s)
     _sb("query-integer", '{"query": 5}', ('{"query": "5"}', True)),
     _sb("query-float", '{"query": 1.5}', ('{"query": "1.5"}', True)),
@@ -3051,6 +3099,21 @@ _SEARCH_BODY_ROWS = [
     _sb("values-float-element-1.50", '{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": [1.50]}]}]}', ('{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": ["1.50"]}]}]}', True)),
     _sb("values-null", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "values": null}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
     _sb("member-not-read", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "x": []}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
+    _sb("limit-null", '{"limit": null}', ('{"limit": 0}', True)),
+    _sb("limit-empty-string", '{"limit": ""}', ('{"limit": 0}', True)),
+    _sb("limit-blank-string", '{"limit": "  "}', ('{"limit": 0}', True)),
+    _sb("limit-string-null", '{"limit": "null"}', ('{"limit": 0}', True)),
+    _sb("limit-string-minus-0", '{"limit": "-0"}', ('{"limit": 0}', True)),
+    _sb("limit-float-minus-0.5", '{"limit": -0.5}', ('{"limit": 0}', True)),
+    _sb("limit-float-1.5", '{"limit": 1.5}', ('{"limit": 1}', True)),
+    _sb("limit-string-1", '{"limit": "1"}', ('{"limit": 1}', True)),
+    _sb("limit-padded-string-1", '{"limit": " 1 "}', ('{"limit": 1}', True)),
+    _sb("limit-tab-string-1", '{"limit": "\\t1"}', ('{"limit": 1}', True)),
+    _sb("limit-plus-string-1", '{"limit": "+1"}', ('{"limit": 1}', True)),
+    _sb("limit-zero-padded-string-1", '{"limit": "01"}', ('{"limit": 1}', True)),
+    _sb("limit-arabic-indic-string-1", '{"limit": "\\u0661"}', ('{"limit": 1}', True)),
+    _sb("limit-fullwidth-string-1", '{"limit": "\\uff11"}', ('{"limit": 1}', True)),
+    _sb("limit-string-5", '{"limit": "5"}', ('{"limit": 5}', False)),
 ]
 # fmt: on
 

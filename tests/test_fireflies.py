@@ -1903,6 +1903,14 @@ def _not_found(method: str, target: str) -> bytes:
     )
 
 
+def _bad_url(target: str) -> bytes:
+    """Fastify's ``FST_ERR_BAD_URL`` 400, quoting ``target`` as the test sends it."""
+    return (
+        b'{"error":"Bad Request","code":"FST_ERR_BAD_URL","message":"\'%s\' is not a valid url '
+        b'component","statusCode":400}' % target.encode()
+    )
+
+
 # The headers an answer carries, as `backlot.routers.fireflies._from_fastify`, `_answer` and
 # `Budget` record what api.fireflies.ai sent, None for one it did not send.
 _HSTS = "max-age=31536000; includeSubDomains"
@@ -3555,11 +3563,19 @@ def test_fireflies_answers_past_the_day_with_the_refusal_on_and_off(
 # Fastify's 404 where nginx resolves the dot segments to `/graphql` and passes the path on as sent,
 # nginx's 404 where they resolve to any other path and its 400 where a `..` climbs past the root
 # (`nginx_path`), and Cloudflare's page where one does with a segment after it
-# (`request_target.refused_path`).
+# (`request_target.refused_path`). Then, where nginx passes the path on, a printable character
+# Fireflies refuses in it or in the query, an empty 400 that keeps the connection open
+# (`fireflies.printable_refusal`), and an escape in the path that is not UTF-8, Fastify's
+# FST_ERR_BAD_URL 400 under `fireflies._BAD_URL_METHODS` and its 404 under any other method, each
+# without @fastify/cors's header. Cloudflare's answers, those to a `\` ahead of the path and to a
+# raw byte among them, come ahead of that empty 400
+# (`backlot.main.refuse_a_printable_character_on_fireflies`).
 _NGINX_400 = _NGINX_404.replace(b"404 Not Found", b"400 Bad Request")
 _FASTIFYS = {"access-control-allow-origin": "*", "strict-transport-security": _HSTS}
 _NGINXS = {"access-control-allow-origin": None, "strict-transport-security": _HSTS}
 _NEITHER = {"access-control-allow-origin": None, "strict-transport-security": None}
+_BAD_URLS = {**_NGINXS, "content-type": "application/json"}
+_REFUSEDS = {**_NGINXS, "content-type": None, "connection": None}
 _FIREFLIES_SENT_RAW = [
     *(
         pytest.param(m, p, 404, _not_found(m, p), _FASTIFYS, id=f"{m} {p}")
@@ -3604,6 +3620,77 @@ _FIREFLIES_SENT_RAW = [
             "POST", p, 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2), _NEITHER, id=f"POST {p}"
         )
         for p in ("/../graphql", "/./../graphql")
+    ),
+    *(
+        pytest.param(m, p, 400, b"", _REFUSEDS, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/graphql/a<b"),
+            ("POST", "/graphql/a>b"),
+            ("POST", "/graphql/a`b"),
+            ("GET", '/graphql/?a"b'),
+            ("GET", "/graphql/?a<b"),
+            ("GET", "/graphql/?a>b"),
+            ("GET", '/graphql/a"b\\c<d>'),
+            ("POST", "/GRAPHQL/a<b"),
+            ("POST", "//graphql/a<b"),
+            ("POST", "/x/../graphql/a<b"),
+            ("POST", "/graphql%2Fa<b"),
+            ("POST", "/graphql?a<b"),
+            ("GET", '/graphql?a"b'),
+            ("GET", "/graphql/x?a>b"),
+            ("GET", "/graphql/%FF?x=a<b"),
+            ("OPTIONS", "/graphql/a<b"),
+            ("PUT", "/graphql/a<b"),
+        )
+    ),
+    *(
+        pytest.param(m, p, status, page, _NEITHER, id=f"{m} {p}")
+        for m, p, status, page in (
+            ("TRACE", "/graphql/a<b", 405, _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2)),
+            ("TRACE", "/graphql?a>b", 405, _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2)),
+            ("CONNECT", "/graphql/a<b", 400, b"error code: 1045\n"),
+            ("PURGE", "/graphql/?a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/graphql/a<b%2", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/graphql/a<b%zz", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/graphql/a<b%00", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/../graphql/a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("GET", "/../graphql/?a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "\\graphql/a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+        )
+    ),
+    *(
+        pytest.param("POST", p, 400, b"", {**_NEITHER, "content-type": None}, id=f"POST {p!r}")
+        for p in ("/graphql/a<b\x80", "/graphql/a<b?x=\x80")
+    ),
+    pytest.param("GET", "/nope?a<b", 404, _NGINX_404, _NGINXS, id="GET /nope?a<b"),
+    *(
+        pytest.param("GET", p, 404, _not_found("GET", quoted), _FASTIFYS, id=f"GET {p}")
+        for p, quoted in (('/graphql/a"b', '/graphql/a\\"b'), ("/graphql/?a`b", "/graphql/?a`b"))
+    ),
+    *(
+        pytest.param(m, p, 400, _bad_url(p), _BAD_URLS, id=f"{m} {p}")
+        for m, p in (
+            ("POST", "/graphql/%FF"),
+            ("POST", "/graphql/%E9"),
+            ("OPTIONS", "/graphql/%FF"),
+            ("GET", "/graphql/%ED%A0%80"),
+            ("GET", "/graphql/%C0%AF"),
+            ("DELETE", "/graphql/%FF"),
+            ("POST", "/GRAPHQL/%FF"),
+            ("GET", "//graphql/%FF"),
+            ("POST", "/x/../graphql/%FF"),
+            ("POST", "/graphql%2F%FF"),
+        )
+    ),
+    pytest.param("HEAD", "/graphql/%FF", 400, b"", _BAD_URLS, id="HEAD /graphql/%FF"),
+    *(
+        pytest.param(m, p, 404, _not_found(m, p), _NGINXS, id=f"{m} {p}")
+        for m, p in (
+            ("PUT", "/graphql/%FF"),
+            ("PATCH", "/graphql/%FF"),
+            ("PROPFIND", "/graphql/%FF"),
+            ("PUT", "/GRAPHQL/%FF"),
+        )
     ),
 ]
 

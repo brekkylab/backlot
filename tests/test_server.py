@@ -601,3 +601,77 @@ def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_pa
         with client_for(settings, reload=True):
             pass
     assert "gdrive_files.title_fold" in str(e.value)
+
+
+def test_test_client_and_server_route_percent_encoded_paths_alike(tmp_path):
+    """The test client single-decodes a request path, matching how Uvicorn builds ASGI
+    ``scope['path']`` from wire bytes over a live socket rather than Starlette's TestClient which
+    decodes ``request.url.path`` twice."""
+    from tests._helpers import TestClient, build_corpus, client_for
+    from tests.conftest import SAMPLE
+
+    pr_doc = {
+        "source_type": "github",
+        "doc_id": "gh-pr-chore",
+        "repo": "gateway",
+        "group": "engineering",
+        "title": "Chore",
+        "content": "Rename.",
+        "author_email": "bob@acme.com",
+        "visibility": "public",
+        "subtype": "pull_request",
+        "state": "open",
+        "head": "chore/rename",
+        "base": "main",
+    }
+    records = [complete(**r) if "source_type" in r else r for r in [*SAMPLE, pr_doc]]
+    settings = build_corpus(tmp_path, records)
+
+    paths = [
+        "/github/repos/acme%252Fgateway",
+        "/github/repos/acme/gateway/branches/chore%252Frename",
+        "/github/repos/acme/gateway",
+        "/github/repos/acme/gateway/branches/chore/rename",
+        "/github/repos/acme/gateway/branches/chore%2Frename",
+        "/github/repos/acme%20gateway",
+        "/github/repos/acme/gateway?foo=bar%252Fbaz",
+        "/slack/api/auth.test",
+    ]
+
+    def over_socket(base_url: str, path: str, token: str) -> tuple[int, str]:
+        u = urllib.parse.urlsplit(base_url)
+        with socket.create_connection((u.hostname, u.port)) as s:
+            s.sendall(
+                f"GET {path} HTTP/1.1\r\nHost: testserver\r\nAuthorization: Bearer {token}\r\n"
+                "Connection: close\r\n\r\n".encode()
+            )
+            data = b""
+            while chunk := s.recv(65536):
+                data += chunk
+        head, _, body = data.partition(b"\r\n\r\n")
+        status = int(head.split(b" ", 2)[1])
+        return status, body.decode("utf-8", errors="replace")
+
+    with backlot.serve(data_dir=settings.data_dir) as srv, client_for(settings) as c:
+        token = c.get("/_meta/users").json()["admin_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        answered, expected = {}, {}
+        for path in paths:
+            r = c.get(path, headers=headers)
+            srv_status, srv_body = over_socket(srv.base_url, path, token)
+            answered[path] = (r.status_code, r.text, r.request.url.raw_path.decode())
+            expected[path] = (srv_status, srv_body, path)
+        assert answered == expected
+
+    captured = []
+
+    async def capturing(scope, receive, send):
+        if scope["type"] == "http":
+            captured.append((scope["path"], scope["raw_path"]))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    tc = TestClient(capturing)
+    tc.get("/github/repos/acme%252Fgateway")
+    assert captured == [("/github/repos/acme%2Fgateway", b"/github/repos/acme%252Fgateway")]

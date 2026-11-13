@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 import uvicorn
-from starlette.testclient import TestClient
+from starlette.testclient import TestClient as _StarletteTestClient
 from uvicorn.server import ServerState
 
 from backlot import protocol
@@ -239,6 +239,32 @@ def settings_put_back():
             restored = get_settings()
             for name in type(outer).model_fields:
                 setattr(restored, name, getattr(outer, name))
+
+
+def _single_decoded_path_app(app):
+    """An ASGI application wrapper that single-decodes the request path from ``raw_path``,
+    matching Uvicorn's handling of wire request targets rather than Starlette's TestClient which
+    decodes ``request.url.path`` twice."""
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] in ("http", "websocket") and "raw_path" in scope:
+            scope = {
+                **scope,
+                "path": urllib.parse.unquote(scope["raw_path"].split(b"?", 1)[0].decode("latin-1")),
+            }
+        await app(scope, receive, send)
+
+    return wrapped
+
+
+class TestClient(_StarletteTestClient):
+    """A :class:`starlette.testclient.TestClient` that single-decodes the request path, matching
+    how Uvicorn and a real HTTP server build ASGI ``scope['path']`` from wire bytes."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if hasattr(self._transport, "app"):
+            self._transport.app = _single_decoded_path_app(self._transport.app)
 
 
 @contextlib.contextmanager

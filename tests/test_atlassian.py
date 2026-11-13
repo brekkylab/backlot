@@ -2534,8 +2534,25 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         assert list(storage) == ["value", "representation", "embeddedContent", "_expandable"]
         assert storage["embeddedContent"] == []
         assert storage["_expandable"] == {"content": f"/rest/api/content/{pid}"}
-        for name in ("view", "export_view", "atlas_doc_format", "storage.value"):
-            key = name.partition(".")[0]
+        empty_name = c.get(
+            f"{api}/content/{pid}", headers=h, params={"expand": "body.storage."}
+        ).json()["body"]["storage"]
+        assert empty_name == storage
+        for name in (
+            "view",
+            "export_view",
+            "atlas_doc_format",
+            "storage.value",
+            "storage.representation",
+            "storage.content",
+            "storage.x",
+            "storage.Value",
+            "storage.value.x",
+            "storage.value ",
+            "storage.value,body.storage",
+            "storage,body.storage.value",
+        ):
+            key = name.split(",", 1)[0].partition(".")[0]
             rep = c.get(
                 f"{api}/content/{pid}", headers=h, params={"expand": f"body.{name}"}
             ).json()["body"][key]

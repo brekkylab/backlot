@@ -7085,6 +7085,20 @@ _JIRA_PAGE = errors_atlassian.JIRA_SITE_HTML_MEDIA_TYPE
         ("/atlassian/wiki/rest/api/content/{content}/nope", False, 404, _PAGE, None, None),
         ("/atlassian/wiki/rest/api/content/{content}/nope", True, 404, _PAGE, None, None),
         ("/atlassian/wiki/rest/api/content/nope/deeper", False, 404, _PAGE, None, None),
+        ("/atlassian/wiki/rest/api/user/nope", True, 404, _PAGE, None, None),
+        ("/atlassian/wiki/rest/api/contentbody/nope/deeper", True, 404, _PAGE, None, None),
+        # Jersey's below them and at a REST plugin mount, where a name no plugin has is the page
+        ("/atlassian/wiki/rest/api/user/watch/nope", True, 404, _JAXRS_XML, None, "no-transform"),
+        (
+            "/atlassian/wiki/rest/api/content/archive/nope",
+            True,
+            404,
+            _JAXRS_XML,
+            None,
+            "no-transform",
+        ),
+        ("/atlassian/wiki/rest/applinks/2.0/x", True, 404, _JAXRS_XML, None, "no-transform"),
+        ("/atlassian/wiki/rest/nope/1/x", True, 404, _PAGE, None, None),
         # the Confluence web app sends a caller with no credential to log in
         ("/atlassian/wiki/nope", False, 404, _PAGE, None, None),
         (
@@ -7190,9 +7204,9 @@ def test_atlassian_answers_by_which_mount_the_path_is_under(
     client, admin_h, keys, path, anonymous, status, media_type, location, cache
 ):
     """Pins the answer each mount gives: Jira's RFC 7807 under ``errors.atlassian.JIRA_REST``, the
-    JAX-RS 404 under Confluence's API mount, a product's page below the resources
-    ``backlot.routers.atlassian._CONFLUENCE_HTML_RESOURCES`` names, the Confluence web app's login
-    redirect for a caller with no credential, and outside both mounts what
+    JAX-RS 404 under Confluence's API mount and at a REST plugin mount, a product's page where
+    ``backlot.routers.atlassian._confluence_serves_html`` says real answers one, the Confluence web
+    app's login redirect for a caller with no credential, and outside both mounts what
     ``backlot.routers.atlassian._site_surface`` answers. The pages are stubs with real's status and
     media type, and the caching is what ``backlot.routers.atlassian.vendor_headers`` and
     ``backlot.routers.atlassian._confluence_not_found`` say. So the mount decides the shape, not
@@ -8241,6 +8255,44 @@ _SPRING_CHARSET = [
     ("GET", "/wiki/rest/api/space/ENG/nope", _EMPTY_CHARSET, None, 500),
     ("GET", "/wiki/rest/api", _EMPTY_CHARSET, None, 500),
     ("GET", "/wiki/rest/", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/user/nope", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/rest/api/group/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/label/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/contentbody/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/api/content/blueprint/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/1", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/2/x", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/nope", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/atlassian-connect/1.0/x", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/applinks/1/x", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/nope/1/x", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/rest/applin%E2%84%AAs/1.0/x", _EMPTY_CHARSET, None, 500),
+    # below those resources, the prefixes Jersey answers
+    ("GET", "/wiki/rest/api/user/watch/nope", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/user/watchx/nope", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/content/archive/nope", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/content/blueprint/instance/1/nope", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/api/contentbody/convert/nope/x", _EMPTY_CHARSET, None, 400),
+    # the v2 API
+    ("GET", "/wiki/api/v2/spaces", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/api/v2/spaces", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/api/v2/pages", _EMPTY_CHARSET, None, 500),
+    ("POST", "/wiki/api/v2/pages", _EMPTY_CHARSET, None, 500),
+    ("GET", "/wiki/api/v2/spaces", _EMPTY_CHARSET, "admin", 500),
+    ("GET", "/wiki/api/v2/nope", _EMPTY_CHARSET, None, 500),
+    ("PUT", "/wiki/api/v2/pages/1", _EMPTY_CHARSET, None, 500),
+    ("OPTIONS", "/wiki/api/v2/spaces", _EMPTY_CHARSET, None, 500),
+    # plugin mounts under `/wiki/rest/`
+    ("GET", "/wiki/rest/atlassian-connect/1/nope", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/atlassian-connect/latest/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/prototype/1/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/applinks/1.0/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/applinks/2.0/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/plugins/1.0/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/Prototype/LATEST/x", _EMPTY_CHARSET, None, 400),
+    ("GET", "/wiki/rest/atlassian-connect/1/", _EMPTY_CHARSET, None, 400),
     # the header twice: a blank value left out, the others read joined
     ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
     ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
@@ -8282,6 +8334,11 @@ def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, 
     assert r.status_code == status, r.text[:200]
     if status == 500:
         assert (r.content, r.headers.get("content-type")) == (b"", None)
+    elif status == 400:
+        assert (r.text, r.headers.get("content-type")) == (
+            errors_atlassian.tomcat_page(400),
+            errors_atlassian.TOMCAT_MEDIA_TYPE,
+        )
 
 
 def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):

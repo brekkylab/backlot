@@ -993,6 +993,7 @@ def _comment(row, info) -> dict:
         "project": None,
         "projectUpdate": None,
         "resolvingUser": None,
+        "onBehalfOf": None,
     }
 
 

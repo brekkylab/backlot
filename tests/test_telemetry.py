@@ -436,6 +436,34 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
                 "unsupported",
             ),
         ),
+        # The baseline's `GET /user/{}` (`users/get-by-id`) fits this path too; the row with more
+        # literal segments names the call.
+        (
+            "GET",
+            "/github/user/issue-types",
+            {},
+            (
+                "github",
+                "users/list-issue-types-for-authenticated-user",
+                "missing",
+                404,
+                "not_found",
+                "unsupported",
+            ),
+        ),
+        (
+            "DELETE",
+            "/github/user/issue-fields/1",
+            {},
+            (
+                "github",
+                "users/delete-issue-field-for-authenticated-user",
+                "missing",
+                404,
+                "not_found",
+                "unsupported",
+            ),
+        ),
         # A `%00` in a name is the 400 of `refuse_a_nul_in_a_name_a_github_route_reads` in
         # `backlot.main`, named by the operation its path matches, served or not.
         ("GET", f"{GITHUB}%00", {}, ("github", "repos/get", "implemented", 400, None, "client")),
@@ -662,6 +690,32 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
             (
                 "fireflies",
                 "query.transcript_import",
+                "missing",
+                400,
+                "GRAPHQL_VALIDATION_FAILED",
+                "unsupported",
+            ),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"json": {"query": "{ scheduler_profile { __typename } }"}},
+            (
+                "fireflies",
+                "query.scheduler_profile",
+                "missing",
+                400,
+                "GRAPHQL_VALIDATION_FAILED",
+                "unsupported",
+            ),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"json": {"query": '{ scheduler_booking(id: "nope") { __typename } }'}},
+            (
+                "fireflies",
+                "query.scheduler_booking",
                 "missing",
                 400,
                 "GRAPHQL_VALIDATION_FAILED",

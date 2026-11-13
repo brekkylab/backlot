@@ -2119,6 +2119,14 @@ def _unreadable_field(field: str, value: str = "") -> dict:
     }
 
 
+def _too_many_sorts(count: int) -> dict:
+    return {
+        "status": "error",
+        "message": f"too many sorts (count: {count}, max allowed: 1)",
+        "category": "VALIDATION_ERROR",
+    }
+
+
 def _mismatched(kind: str, token: str) -> str:
     return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.{token}`)"
 
@@ -2417,11 +2425,11 @@ def test_hubspot_search_sorts(client, admin_h, tmp_path):
     from tests._helpers import corpus_client
 
     contacts = [
-        ("maria", "Johnson"),
-        ("brian", "Halligan"),
-        ("ava", "Chen"),
-        ("bob", "iyer"),
-        ("cara", "diaz"),
+        ("maria", "Johnson", "Brisbane"),
+        ("brian", "Halligan", "Cambridge"),
+        ("ava", "Chen", None),
+        ("bob", "iyer", "austin"),
+        ("cara", "diaz", "denver"),
     ]
     records = [
         {
@@ -2430,12 +2438,17 @@ def test_hubspot_search_sorts(client, admin_h, tmp_path):
             "doc_id": name,
             "title": lastname,
             "content": lastname,
-            "properties": {"email": f"{name}@example.com", "lastname": lastname},
+            "properties": {
+                "email": f"{name}@example.com",
+                "lastname": lastname,
+                **({"city": city} if city else {}),
+            },
         }
-        for name, lastname in contacts
+        for name, lastname, city in contacts
     ]
     email_order = ["ava", "bob", "brian", "cara", "maria"]
     lastname_order = ["ava", "cara", "brian", "bob", "maria"]
+    city_order = ["ava", "bob", "maria", "brian", "cara"]
     cases = [
         (["email"], email_order),
         (["-email"], email_order[::-1]),
@@ -2443,20 +2456,21 @@ def test_hubspot_search_sorts(client, admin_h, tmp_path):
         (["-lastname"], lastname_order[::-1]),
         ([{"propertyName": "lastname"}], lastname_order),
         ([{"propertyName": "lastname", "direction": "DESCENDING"}], lastname_order[::-1]),
+        (["city"], city_order),
+        (["-city"], city_order[::-1]),
+        (["email", {"propertyName": "email"}], email_order),
+        (["-email", {"propertyName": "email", "direction": "DESCENDING"}], email_order[::-1]),
     ]
     with corpus_client(tmp_path, records) as (contacts_client, settings):
         url = "/hubspot/crm/v3/objects/contacts/search"
         headers = {"Authorization": f"Bearer {settings.admin_token}"}
         served = []
         for sorts, _ in cases:
-            response = contacts_client.post(url, headers=headers, json={"sorts": sorts})
-            assert response.status_code == 200, response.text
-            served.append([row["properties"]["email"] for row in response.json()["results"]])
-        too_many = contacts_client.post(url, headers=headers, json={"sorts": ["email", "lastname"]})
-    assert served == [[f"{name}@example.com" for name in order] for _, order in cases]
-    assert too_many.status_code == 400
-    assert too_many.json()["category"] == "VALIDATION_ERROR"
-    assert too_many.json()["message"] == "too many sorts (count: 2, max allowed: 1)"
+            r = contacts_client.post(url, headers=headers, json={"sorts": sorts})
+            served.append(
+                (r.status_code, [c["properties"]["email"] for c in r.json().get("results", [])])
+            )
+    assert served == [(200, [f"{name}@example.com" for name in order]) for _, order in cases]
 
 
 def test_hubspot_search_is_acl_scoped(client, tokens_yaml):
@@ -2939,6 +2953,12 @@ _SEARCH_BODY_ROWS = [
     # a list real reads, ahead of the value it cannot
     _sb("properties-then-filterGroups-string", '{"properties": ["email"], "filterGroups": "x"}', _json_refusal(43, _not_a_list("String", "VALUE_STRING"))),
     _sb("sorts-string-then-filterGroups-string", '{"sorts": ["email"], "filterGroups": "x"}', _json_refusal(38, _not_a_list("String", "VALUE_STRING"))),
+    _sb("two-sorts-then-filterGroups-string", '{"sorts": ["email", "lastname"], "filterGroups": "x"}', _json_refusal(50, _not_a_list("String", "VALUE_STRING"))),
+    # more than one sort, counted once per property and direction
+    _sb("two-sorts", '{"sorts": ["email", "-email"]}', _too_many_sorts(2)),
+    _sb("two-sorts-repeated", '{"sorts": ["lastname", "lastname", "lastname", "email", "email"]}', _too_many_sorts(2)),
+    _sb("three-sorts", '{"sorts": ["email", "lastname", "firstname"]}', _too_many_sorts(3)),
+    _sb("two-sorts-then-after", '{"sorts": ["email", "lastname"], "after": "10000"}', _too_many_sorts(2)),
     # bodies with a null element, named where `_refuse_a_search_shape` says
     _sb("null-group-then-string-group", '{"filterGroups": [null, "x"]}', _json_refusal(25, _no_creator("String", "String value ('x')"))),
     _sb("null-group-then-query-array", '{"filterGroups": [null], "query": ["x"]}', _json_refusal(35, _ARRAY)),

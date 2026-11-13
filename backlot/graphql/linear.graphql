@@ -569,6 +569,9 @@ type Comment {
   projectUpdate: ProjectUpdate
   resolvingUser: User
   user: User
+  # The user an agent posted the comment for, apart from its author: nullable `User` (api.linear.app
+  # introspection, 2026-11-12). A corpus records no such attribution, so it is always null here.
+  onBehalfOf: User
 }
 
 type CommentConnection {

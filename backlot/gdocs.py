@@ -4058,8 +4058,8 @@ def _markdown(
 
 
 def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
-    """A table as Markdown: a row of `|`s per row, its first row the header, each column aligned
-    `:----`, and each cell its paragraphs' runs, a table's in it among them, one after another
+    """A table as Markdown: a row of `|`s per row, its first row the header, and
+    each cell its paragraphs' runs, a table's in it among them, one after another
     with a space between, as no list marker, heading or line break, the first row's bold left out.
     Measured 2026-11-03: a cell of `Head` as HEADING_1 and `body` was `Head body`, a list item
     `item1 item2`, a vertical tab and a tab were written as themselves, a cell's trailing spaces
@@ -4067,15 +4067,26 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
     second `**` and `[**…**]`, and italic and struck-through text in the first row was marked.
     Measured 2026-11-05: an empty paragraph of a table inside a cell was left out, where the
     cell's own empty paragraph was kept. Measured 2026-11-09: a cell a merged cell covers was
-    written empty, and a column every cell of which a merged cell covers was aligned `-----`."""
+    written empty, and a column every cell of which a merged cell covers was aligned `-----`.
+    Measured 2026-11-10: a column was aligned `:----` where every paragraph of its cells was START
+    or JUSTIFIED, `:---:` where every one was CENTER, `----:` where every one was END and `-----`
+    where any two differed, an empty paragraph counting, a merged cell's in its first column and a
+    covered cell's in none. Measured 2026-11-11: each paragraph of a table inside a cell counted in
+    that cell's column, an empty one among them."""
+    covered = _covered(table)
+    markers = {"CENTER": ":---:", "END": "----:"}
+    column_markers: list[set[str]] = [set() for _ in table["tableStyle"]["tableColumnProperties"]]
     rows = []
     for n, row in enumerate(table["tableRows"]):
         cells = []
-        for cell in row["tableCells"]:
+        for c, cell in enumerate(row["tableCells"]):
             lines = []
             for el in cell["content"]:
                 own = "paragraph" in el
                 for paragraph in [el["paragraph"]] if own else paragraphs_of([el]):
+                    if (n, c) not in covered:
+                        alignment = paragraph.get("paragraphStyle", {}).get("alignment")
+                        column_markers[c].add(markers.get(alignment, ":----"))
                     named = _named_text(paragraph)
                     pieces = []
                     for text, style in _spans(paragraph):
@@ -4087,12 +4098,7 @@ def _table(table: dict, notes: Iterator[int], anchors: dict[str, str]) -> str:
                         lines.append(line)
             cells.append(" ".join(lines))
         rows.append("| " + " | ".join(cells) + " |")
-    columns = len(table["tableStyle"]["tableColumnProperties"])
-    covered = _covered(table)
-    aligned = [
-        ":----" if any((r, c) not in covered for r in range(len(rows))) else "-----"
-        for c in range(columns)
-    ]
+    aligned = [next(iter(values)) if len(values) == 1 else "-----" for values in column_markers]
     return "\n".join([rows[0], "| " + " | ".join(aligned) + " |", *rows[1:]])
 
 

@@ -45,7 +45,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import socket
 import subprocess
 import sys
 import tempfile
@@ -66,9 +65,9 @@ HELLO_CORPUS = Path(__file__).resolve().parent / "data" / "hello.jsonl"
 TOKEN = "admin-service-token"
 
 # How long serve()'s local readiness poll waits for each attempt, and how many attempts it
-# makes. A subprocess that hasn't bound its port yet refuses the connection almost instantly, so
-# this is deliberately tight — unlike _healthy()'s own default, which has to allow for a remote,
-# possibly trans-continental HTTPS hop.
+# makes. The poll goes only to a port the server already holds, on this machine, so this is
+# deliberately tight — unlike _healthy()'s own default, which has to allow for a remote, possibly
+# trans-continental HTTPS hop.
 _LOCAL_HEALTH_TIMEOUT = 0.5
 _LOCAL_HEALTH_ATTEMPTS = 100
 
@@ -107,16 +106,6 @@ def ensure_cert_bundle() -> None:
         os.environ.setdefault("SSL_CERT_FILE", certifi.where())
     except ImportError:
         pass
-
-
-def _free_port(host: str = "127.0.0.1") -> int:
-    # Probed on the address the server will actually bind, in that address's own family: a port
-    # free on loopback can still be taken on another interface, and the server would then die on
-    # startup instead of serving.
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    with socket.socket(family) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
 
 
 def _dialable(host: str) -> str:
@@ -228,14 +217,16 @@ def admin_token_for(url: str) -> str:
 
 
 def _healthy(url: str, timeout: float = 10) -> bool:
-    # Default timeout suits a remote deployment; serve()'s local readiness poll passes a
-    # much smaller one (see _LOCAL_HEALTH_TIMEOUT) since a local subprocess either answers almost
-    # immediately or hasn't bound the port yet, in which case the connection is refused, not slow.
+    # Default timeout suits a remote deployment; serve()'s local readiness poll is `_warm`, with
+    # _LOCAL_HEALTH_TIMEOUT.
     try:
         with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=timeout) as r:
             return r.status == 200
     except Exception:  # noqa: BLE001
         return False
+
+
+_NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _warm(url: str, timeout: float) -> bool:
@@ -254,9 +245,13 @@ def _warm(url: str, timeout: float) -> bool:
 
     A recorded ``warm_error`` counts as warm: the caches will never fill, the server serves
     correctly without them, and waiting longer would only turn a reported failure into a timeout.
+
+    It sends nothing through a proxy: the server is on this machine, and urllib sends a request for
+    the ``127.0.0.1`` or ``::1`` that a ``localhost`` server is dialled at to ``http_proxy`` even
+    when ``no_proxy`` lists ``localhost`` (2026-11-11).
     """
     try:
-        with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=timeout) as r:
+        with _NO_PROXY.open(f"{url.rstrip('/')}/health", timeout=timeout) as r:
             if r.status != 200:
                 return False
             body = json.loads(r.read().decode())
@@ -285,7 +280,7 @@ def serve(
     resolve to this machine — a Docker container on Linux, where ``--add-host=…:host-gateway``
     resolves to the bridge address. A single interface's address works too. ``base_url`` follows:
     loopback for a wildcard bind, otherwise the address bound, since that is where the server
-    answers.
+    answers. A host name gets one of the addresses it resolves to, not the name.
 
     ``telemetry=False`` starts the server with usage telemetry off (docs/telemetry.md). A test
     suite or CI job passes it: its calls are not anyone's use of Backlot. A server started with it
@@ -326,8 +321,11 @@ def serve(
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
             )
-        port = _free_port(host)
-        base = f"http://{_dialable(host)}:{port}"
+        # The server binds port 0 itself and writes the address and port it got to `address_file`,
+        # and the poll below sends nothing until that file appears: a port is held from the moment
+        # it is bound, so no other process can draw it between the bind and the first request.
+        address_file = Path(scratch) / "address"
+        base = None
         # Captured to a file rather than subprocess.PIPE: a live pipe nobody drains can fill and
         # deadlock the child, and we only need the contents if uvicorn dies before serving.
         # In the scratch dir, not the data dir: a caller's own data dir is theirs to keep clean.
@@ -345,7 +343,9 @@ def serve(
                     "--host",
                     host,
                     "--port",
-                    str(port),
+                    "0",
+                    "--address-file",
+                    str(address_file),
                     "--log-level",
                     "warning",
                     "--exit-on-stdin-close",
@@ -367,15 +367,20 @@ def serve(
             for _ in range(_LOCAL_HEALTH_ATTEMPTS):
                 if proc.poll() is not None:
                     tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+                    on = f" on {base}" if base else ""
                     raise RuntimeError(
-                        f"Backlot exited with code {proc.returncode} before becoming ready on "
-                        f"{base}:\n{tail}"
+                        f"Backlot exited with code {proc.returncode} before becoming ready{on}:\n"
+                        f"{tail}"
                     )
-                if _warm(base, timeout=_LOCAL_HEALTH_TIMEOUT):
+                if base is None and address_file.exists():
+                    address, port = address_file.read_text(encoding="utf-8").rsplit(" ", 1)
+                    base = f"http://{_dialable(address)}:{port}"
+                if base is not None and _warm(base, timeout=_LOCAL_HEALTH_TIMEOUT):
                     break
                 time.sleep(0.1)
             else:
-                raise RuntimeError(f"Backlot did not become ready on {base}")
+                on = f" on {base}" if base else ""
+                raise RuntimeError(f"Backlot did not become ready{on}")
             yield Server(base_url=base, token=token, data_dir=Path(data_dir))
         finally:
             _terminate(proc)

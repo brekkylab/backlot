@@ -3567,7 +3567,9 @@ def test_fireflies_answers_past_the_day_with_the_refusal_on_and_off(
 # Fireflies refuses in it or in the query, an empty 400 that keeps the connection open
 # (`fireflies.printable_refusal`), and an escape in the path that is not UTF-8, Fastify's
 # FST_ERR_BAD_URL 400 under `fireflies._BAD_URL_METHODS` and its 404 under any other method, each
-# without @fastify/cors's header.
+# without @fastify/cors's header. Cloudflare's answers, those to a `\` ahead of the path and to a
+# raw byte among them, come ahead of that empty 400
+# (`backlot.main.refuse_a_printable_character_on_fireflies`).
 _NGINX_400 = _NGINX_404.replace(b"404 Not Found", b"400 Bad Request")
 _FASTIFYS = {"access-control-allow-origin": "*", "strict-transport-security": _HSTS}
 _NGINXS = {"access-control-allow-origin": None, "strict-transport-security": _HSTS}
@@ -3640,6 +3642,25 @@ _FIREFLIES_SENT_RAW = [
             ("OPTIONS", "/graphql/a<b"),
             ("PUT", "/graphql/a<b"),
         )
+    ),
+    *(
+        pytest.param(m, p, status, page, _NEITHER, id=f"{m} {p}")
+        for m, p, status, page in (
+            ("TRACE", "/graphql/a<b", 405, _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2)),
+            ("TRACE", "/graphql?a>b", 405, _CLOUDFLARE_PAGE % ((b"405 Not Allowed",) * 2)),
+            ("CONNECT", "/graphql/a<b", 400, b"error code: 1045\n"),
+            ("PURGE", "/graphql/?a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/graphql/a<b%2", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/graphql/a<b%zz", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/graphql/a<b%00", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "/../graphql/a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("GET", "/../graphql/?a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+            ("POST", "\\graphql/a<b", 400, _CLOUDFLARE_PAGE % ((b"400 Bad Request",) * 2)),
+        )
+    ),
+    *(
+        pytest.param("POST", p, 400, b"", {**_NEITHER, "content-type": None}, id=f"POST {p!r}")
+        for p in ("/graphql/a<b\x80", "/graphql/a<b?x=\x80")
     ),
     pytest.param("GET", "/nope?a<b", 404, _NGINX_404, _NGINXS, id="GET /nope?a<b"),
     *(

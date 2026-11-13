@@ -987,6 +987,26 @@ def _rows():
             yield pytest.param(
                 b"GET", base, b"nope?b=\x01x", answer, 0, header, b"x", id=f"{base} {name} {times}"
             )
+    # `Authorization` or `If-None-Match` twice, or a `Host` of `[x]`, beside a `<` Fireflies
+    # refuses: Cloudflare's page, ahead of Fireflies' empty 400
+    # (``backlot.main.refuse_a_printable_character_on_fireflies``)
+    inm_twice = b'If-None-Match: "a"\r\nIf-None-Match: "b"\r\n'
+    for method, rest, times, header, host, beside in (
+        (b"POST", b"graphql/a<b", 2, b"", b"x", "Authorization twice"),
+        (b"GET", b"graphql/?a=a<b", 2, b"", b"x", "Authorization twice"),
+        (b"GET", b"graphql/a<b", 0, inm_twice, b"x", "If-None-Match twice"),
+        (b"POST", b"graphql/a<b", 0, b"", b"[x]", "Host [x]"),
+    ):
+        yield pytest.param(
+            method,
+            "/fireflies/",
+            rest,
+            "cloudflare page",
+            times,
+            header,
+            host,
+            id=f"/fireflies/ {rest!r} {beside}",
+        )
     # a header value Cloudflare blocks on HubSpot (`hubspot.blocks_a_header_value`), whose block
     # comes after the byte's answer, with no credential
     for sent, answer in ((b"\x80", "cloudflare empty"), (b"\x00", "cloudflare page")):

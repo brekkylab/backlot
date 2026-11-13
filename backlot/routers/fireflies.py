@@ -632,17 +632,18 @@ def nginx_passes(path: bytes) -> bool:
 async def unrouted(request: Request):
     """Fireflies' answer at a path Fastify has no route for, each of which ``backlot.main`` routes
     here: nginx's page where nginx keeps the request (:func:`nginx_path`, :func:`nginx_passes`), its
-    400 without :data:`_HSTS` and its 404 with it alone, and Fastify's where it passes it on:
-    :func:`_preflight` to an `OPTIONS`, and to any other method, after reading the body of one of
-    :data:`_BODIED` (:func:`_fastify_read`), its not-found handler's 404 (:func:`_not_found`), each
-    with what :func:`_from_fastify` adds. Ahead of those, a path holding an escape that is not UTF-8
-    (:func:`_undecodable`) draws its router's 400 (:func:`_bad_url`) under one of
-    :data:`_BAD_URL_METHODS`, and under any other method the 404 with neither its body read nor
-    `@fastify/cors`'s header. api.fireflies.ai answered so on 2026-11-12 (UTC), with no credential,
-    each method of :data:`apollo_http.METHODS` but Cloudflare's three at a path under `/graphql/`
-    ending in `%FF`, and there `PUT` and `PATCH` with `{` as JSON, which drew the not-JSON 400 at a
-    path with no such escape; and `POST`, `GET` and `PUT` at `/GRAPHQL/…%FF` and `//graphql/…%FF`,
-    and `POST` at `/Graphql/…%FF`, `/x/../graphql/…%FF` and `/graphql%2F…%FF`."""
+    400 without :data:`_HSTS` and its 404 with it alone, and Fastify's where it passes it on. At a
+    path holding an escape that is not UTF-8 (:func:`_undecodable`), Fastify's is its router's 400
+    under one of :data:`_BAD_URL_METHODS` (:func:`_bad_url`), and under any other method the 404
+    with neither its body read nor `@fastify/cors`'s header: api.fireflies.ai answered so on
+    2026-11-12 (UTC), with no credential, each method of :data:`apollo_http.METHODS` but
+    Cloudflare's three at a path under `/graphql/` ending in `%FF`, and there `PUT` and `PATCH`
+    with `{` as JSON, which drew the not-JSON 400 at a path with no such escape; and `POST`, `GET`
+    and `PUT` at `/GRAPHQL/…%FF` and `//graphql/…%FF`, and `POST` at `/Graphql/…%FF`,
+    `/x/../graphql/…%FF` and `/graphql%2F…%FF`. At any other path, Fastify's is :func:`_preflight`
+    to an `OPTIONS`, and to any other method, after reading the body of one of :data:`_BODIED`
+    (:func:`_fastify_read`), its not-found handler's 404 (:func:`_not_found`), each with what
+    :func:`_from_fastify` adds."""
     path = nginx_path(sent_path(request.scope))
     if path is None:
         return Response(_NGINX_400, status_code=400, headers={"content-type": "text/html"})

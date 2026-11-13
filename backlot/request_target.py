@@ -31,7 +31,7 @@ from fastapi import Request, Response
 from starlette.types import Scope
 
 from backlot import auth, errors, utf8_escapes
-from backlot.routers import atlassian, fireflies, s3
+from backlot.routers import atlassian, s3
 
 #: The scope key :mod:`backlot.protocol` leaves the request target on, as sent, where it
 #: percent-encoded a byte of it or, for a `\` first, put a `/` ahead of it (:func:`encode_line`).
@@ -686,9 +686,8 @@ def _backslash_first(path: bytes) -> bytes | None:
 
 def printable_answer(scope: Scope) -> Response | None:
     """The front door's answer to a target holding a `#` (:data:`WITH_A_FRAGMENT`), a `%` two hex
-    digits do not follow (:data:`_BROKEN_ESCAPE`), a `\\` as its first byte, or on Graph, HubSpot
-    and Fireflies (``routers.fireflies.printable_refusal``) another printable character it refuses,
-    or ``None`` where it reads the target on.
+    digits do not follow (:data:`_BROKEN_ESCAPE`), a `\\` as its first byte, or on Graph and HubSpot
+    another printable character it refuses, or ``None`` where it reads the target on.
 
     A `\\` right after a mount of :data:`_MOUNTS_AHEAD_OF_THE_TARGET` is the CDN's 400 page on Jira
     and Confluence, Google's 1,555-byte page on Docs, Sheets and Slides, :data:`GITHUB_PAGE` on
@@ -792,8 +791,6 @@ def printable_answer(scope: Scope) -> Response | None:
             return _page(CLOUDFLARE_PAGE, "text/html")
         if raw_path.startswith(_HUBSPOT_JETTY_BRACES) and (b"{" in raw_path or b"}" in raw_path):
             return _page(HUBSPOT_JETTY_PAGE, "text/html;charset=iso-8859-1", close=False)
-    if raw_path.startswith(b"/fireflies/"):
-        return fireflies.printable_refusal(Request(scope))
     return None
 
 

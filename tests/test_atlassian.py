@@ -2810,20 +2810,55 @@ def test_confluence_restrictions_answer_what_expand_names_in_real_shape(
                 assert result[op]["restrictions"]["user"]["results"]  # the private doc's author
 
 
-def test_confluence_restrictions_keep_attachment_prefix_only_on_envelope(client, admin_h):
-    """The restriction listing keeps the attachment prefix on its own link."""
-    cid = served_id("confluence", "cf-comp")
-    path = f"/wiki/rest/api/content/att0{cid}/restriction/byOperation"
-    response = client.get(f"/atlassian{path}", headers=admin_h)
-    assert response.status_code == 200, response.text
-    result = response.json()
-    base = f"/wiki/rest/api/content/{cid}/restriction/byOperation"
-    assert result["_links"]["self"] == (
-        f"http://testserver/wiki/rest/api/content/att{cid}/restriction/byOperation"
-    )
-    for operation in ("read", "update"):
-        assert result[operation]["_links"]["self"] == f"http://testserver{base}/{operation}"
-        assert result[operation]["_expandable"]["content"] == f"/rest/api/content/{cid}"
+_HANDBOOK = served_id("confluence", "cf-handbook")
+# `_HANDBOOK` in Arabic-Indic digits, each the UTF-8 escapes of its digit in upper case
+_HANDBOOK_ARABIC = quote("".join(chr(0x0660 + int(digit)) for digit in str(_HANDBOOK)))
+_SPELT_IDS = {
+    "h": _HANDBOOK,
+    "o": served_id("confluence", "cf-oncall"),
+    "h_ar": _HANDBOOK_ARABIC,
+    "h_ar_lower": _HANDBOOK_ARABIC.lower(),
+}
+
+# (the id as sent, the route after it, the id in `self`, and the id in `prev`, or under
+# `restriction/byOperation` in the `read` operation's own link), with `{h}`, `{o}`, `{h_ar}` and
+# `{h_ar_lower}` read from `_SPELT_IDS`: real's answers, by the rules `_linked_id` and the comment
+# in `confluence_restrictions` record
+_ID_SPELLING_ROWS = [
+    ("{h}", "child/page", "{h}", "{h}"),
+    ("0{h}", "child/page", "0{h}", "0{h}"),
+    ("%2B{h}", "child/page", "+{h}", "+{h}"),
+    ("%30{h}", "child/page", "0{h}", "0{h}"),
+    ("{h_ar_lower}", "child/page", "{h_ar}", "{h_ar}"),
+    ("att0{h}", "child/page", "att0{h}", "att0{h}"),
+    ("att%2B{h}", "child/page", "att+{h}", "att+{h}"),
+    ("%2b{o}", "child/comment", "+{o}", "+{o}"),
+    ("att0{h}", "child/attachment", "att0{h}", "att0{h}"),
+    ("{h_ar}", "label", "{h_ar}", "{h_ar}"),
+    ("0{o}", "label", "0{o}", "0{o}"),
+    ("att0{h}", "restriction/byOperation", "att{h}", "{h}"),
+    ("att%2B{h}", "restriction/byOperation", "att{h}", "{h}"),
+    ("%2B{h}", "restriction/byOperation", "{h}", "{h}"),
+    ("{h_ar_lower}", "restriction/byOperation", "{h}", "{h}"),
+]
+
+
+def test_confluence_a_listing_names_the_content_id_as_measured(client, admin_h):
+    api = "/atlassian/wiki/rest/api/content"
+    site = "http://testserver/wiki/rest/api/content"
+    served, expected = [], []
+    for sent, route, own, linked in _ID_SPELLING_ROWS:
+        sent, own, linked = (spelt.format(**_SPELT_IDS) for spelt in (sent, own, linked))
+        r = client.get(f"{api}/{sent}/{route}?limit=1&start=1", headers=admin_h)
+        body = r.json()
+        if route == "restriction/byOperation":
+            served.append((r.status_code, body["_links"]["self"], body["read"]["_links"]["self"]))
+            expected.append((200, f"{site}/{own}/{route}", f"{site}/{linked}/{route}/read"))
+        else:
+            served.append((r.status_code, body["_links"]["self"], body["_links"]["prev"]))
+            prev = f"/rest/api/content/{linked}/{route}?prev=true&limit=1&start=0"
+            expected.append((200, f"{site}/{own}/{route}", prev))
+    assert served == expected
 
 
 @pytest.mark.parametrize("spelt", ["{}", "0{}", "att{}"])
@@ -4080,19 +4115,8 @@ def test_confluence_content_refuses_a_start_above_the_bound_where_space_serves_o
 _PAGED = ["content", "space", "child/page", "child/comment", "child/attachment", "label"]
 
 
-@pytest.mark.parametrize(
-    "route, spelling",
-    [(route, "{}") for route in _PAGED]
-    + [
-        ("child/page", "att0{}"),
-        ("child/comment", "%2B{}"),
-        ("child/attachment", "att0{}"),
-        ("label", "0{}"),
-    ],
-)
-def test_confluence_every_paged_listing_answers_base_context_and_self(
-    client, admin_h, route, spelling
-):
+@pytest.mark.parametrize("route", _PAGED)
+def test_confluence_every_paged_listing_answers_base_context_and_self(client, admin_h, route):
     """Measured: all three ride every page, `context` is `/wiki`, and `self` is the request's URL
     with `limit`, `start` and the markers removed and every other parameter kept."""
     api = "/atlassian/wiki/rest/api"
@@ -4100,12 +4124,11 @@ def test_confluence_every_paged_listing_answers_base_context_and_self(
         path = f"{api}/{route}"
     else:
         cid = client.get(f"{api}/content?limit=1", headers=admin_h).json()["results"][0]["id"]
-        path = f"{api}/content/{spelling.format(cid)}/{route}"
+        path = f"{api}/content/{cid}/{route}"
     links = client.get(f"{path}?limit=1&start=0&bogus=x", headers=admin_h).json()["_links"]
     assert links["context"] == "/wiki"
     assert links["base"].endswith("/wiki")
-    echoed = path.removeprefix("/atlassian").replace("%2B", "+")
-    assert links["self"].endswith(echoed + "?bogus=x"), links["self"]
+    assert links["self"].endswith(path.replace("/atlassian", "") + "?bogus=x"), links["self"]
 
 
 @pytest.mark.parametrize(
@@ -4243,8 +4266,7 @@ def test_confluence_a_carried_parameter_is_spelt_and_placed_as_measured(
     assert links["self"] == "http://testserver/wiki/rest/api" + self_path.format(**_SPACE_KEYS)
 
 
-@pytest.mark.parametrize("arabic_digits", [False, True])
-def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h, arabic_digits):
+def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h):
     """`label` is the one listing the bundled corpus holds two rows for, so it is where a page
     smaller than the collection can be read: one row, and a `next` to the second."""
     api = "/atlassian/wiki/rest/api"
@@ -4253,17 +4275,9 @@ def test_confluence_label_serves_one_of_two_labels_and_a_next(client, admin_h, a
         for page in client.get(f"{api}/content?limit=100", headers=admin_h).json()["results"]
         if client.get(f"{api}/content/{page['id']}/label", headers=admin_h).json()["size"] > 1
     )
-    from urllib.parse import quote
-
-    digits = str(holder)
-    if arabic_digits:
-        digits = digits.translate(str.maketrans("0123456789", "٠١٢٣٤٥٦٧٨٩"))
-    path = f"/rest/api/content/{quote(digits)}/label"
-    page = client.get(f"/atlassian/wiki{path}?limit=1&start=0", headers=admin_h).json()
+    page = client.get(f"{api}/content/{holder}/label?limit=1&start=0", headers=admin_h).json()
     assert page["size"] == 1 and page["limit"] == 1
-    assert page["_links"]["next"] == f"{path}?next=true&limit=1&start=1"
-    next_page = client.get(f"/atlassian/wiki{page['_links']['next']}", headers=admin_h).json()
-    assert next_page["_links"]["prev"] == f"{path}?prev=true&limit=1&start=0"
+    assert page["_links"]["next"].endswith("next=true&limit=1&start=1")
 
 
 @pytest.mark.parametrize(

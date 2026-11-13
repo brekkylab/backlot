@@ -831,6 +831,15 @@ def _content_id(raw: str) -> tuple[int, bool]:
     return content_id, attachment
 
 
+def _linked_id(raw: str) -> str:
+    """The ``content_id`` path variable, which arrives with its escapes decoded, as `child/page`,
+    `child/comment`, `child/attachment` and `label` name it in `self`, `next` and `prev`: each digit
+    outside ASCII as its UTF-8 escapes in upper case, and `att`, a `+` and ASCII digits as
+    themselves. Measured on Confluence Cloud on 2026-10-21 with Arabic-Indic digits and on
+    2026-11-12 with Arabic-Indic and fullwidth digits."""
+    return quote(raw, safe="+")
+
+
 def _role_id(request: Request, raw: str) -> int:
     """A project role's id as real reads it (:func:`_java_long`), or the 400 it answers: one naming
     the variable as missing where removing the whitespace leaves nothing
@@ -2475,6 +2484,7 @@ async def confluence_content_get(content_id: str, request: Request):
 async def confluence_child_pages(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    requested_id = content_id
     content_id, _ = _content_id(content_id)
     limit, start = _confluence_page_params(request)
     ids = auth.visible_ids(request, caller)
@@ -2492,7 +2502,7 @@ async def confluence_child_pages(content_id: str, request: Request):
         "size": len(results),
         "_links": _confluence_envelope(
             request,
-            f"/rest/api/content/{content_id}/child/page",
+            f"/rest/api/content/{_linked_id(requested_id)}/child/page",
             start=start,
             limit=limit,
             size=len(results),
@@ -2505,6 +2515,7 @@ async def confluence_child_pages(content_id: str, request: Request):
 async def confluence_comments(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    requested_id = content_id
     content_id, _ = _content_id(content_id)
     limit, start = _confluence_page_params(request, cap=1000)
     ids = auth.visible_ids(request, caller)
@@ -2545,7 +2556,7 @@ async def confluence_comments(content_id: str, request: Request):
         "size": len(results),
         "_links": _confluence_envelope(
             request,
-            f"/rest/api/content/{content_id}/child/comment",
+            f"/rest/api/content/{_linked_id(requested_id)}/child/comment",
             start=start,
             limit=limit,
             size=len(results),
@@ -2561,6 +2572,7 @@ async def confluence_attachments(content_id: str, request: Request):
     """
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    requested_id = content_id
     content_id, _ = _content_id(content_id)
     limit, start = _confluence_page_params(request, default=50)
     _refuse_a_start_past_java_int(limit, start)
@@ -2574,7 +2586,7 @@ async def confluence_attachments(content_id: str, request: Request):
         "size": 0,
         "_links": _confluence_envelope(
             request,
-            f"/rest/api/content/{content_id}/child/attachment",
+            f"/rest/api/content/{_linked_id(requested_id)}/child/attachment",
             start=start,
             limit=limit,
             size=0,
@@ -2608,6 +2620,7 @@ def _refuse_a_label_prefix(request: Request) -> None:
 async def confluence_labels(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
+    requested_id = content_id
     content_id, attachment = _content_id(content_id)
     # Real converts `limit` and `start`, then reads `prefix`, before it looks the page up, and
     # refuses a negative or zero one after it: on an id naming nothing, `?limit=abc` and
@@ -2633,7 +2646,7 @@ async def confluence_labels(content_id: str, request: Request):
         "size": len(results),
         "_links": _confluence_envelope(
             request,
-            f"/rest/api/content/{content_id}/label",
+            f"/rest/api/content/{_linked_id(requested_id)}/label",
             start=start,
             limit=limit,
             size=len(results),
@@ -2646,7 +2659,7 @@ async def confluence_labels(content_id: str, request: Request):
 async def confluence_restrictions(content_id: str, request: Request):
     conn = auth.conn(request)
     caller = _confluence_caller(request)
-    content_id, _ = _content_id(content_id)
+    content_id, attachment = _content_id(content_id)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
         raise errors_atlassian.content_not_found("restriction/byOperation", content_id)
@@ -2689,7 +2702,14 @@ async def confluence_restrictions(content_id: str, request: Request):
     answer = {name: _op(name) for name in _RESTRICTION_OPERATIONS if named is None or name in named}
     if unnamed := [name for name in _RESTRICTION_OPERATIONS if name not in answer]:
         answer["_expandable"] = dict.fromkeys(unnamed, "")
-    answer["_links"] = {"self": path, "base": f"{site}/wiki", "context": "/wiki"}
+    # The answer's own `self` names the id as read, after `att` when it was sent with one, where the
+    # operations' links and `content` name it alone (Confluence Cloud, 2026-10-21 and 2026-11-12).
+    listing_id = f"att{content_id}" if attachment else str(content_id)
+    answer["_links"] = {
+        "self": f"{site}/wiki/rest/api/content/{listing_id}/restriction/byOperation",
+        "base": f"{site}/wiki",
+        "context": "/wiki",
+    }
     return answer
 
 

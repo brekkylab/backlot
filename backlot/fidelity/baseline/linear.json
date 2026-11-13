@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-10",
+  "measured": "2026-11-12",
   "root": {
     "query": "Query"
   },
@@ -409,10 +409,7 @@
           "status": "implemented"
         },
         "onBehalfOf": {
-          "status": "missing",
-          "type": "User",
-          "kind": "missing_field",
-          "severity": "gap"
+          "status": "implemented"
         },
         "parent": {
           "status": "implemented"
@@ -5352,6 +5349,13 @@
           "type": "Issue!",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "attachmentSources": {
+          "status": "missing",
+          "type": "AttachmentSourcesPayload!",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Measured 2026-11-12 against api.linear.app: `{ attachmentSources { sources } }` answers 200 with `{\"sources\": []}` (`sources: JSONObject!`). No measurement has shown how `sources` groups attachments, so Backlot has no shape to derive from a corpus."
         },
         "attachments": {
           "status": "missing",

@@ -696,6 +696,32 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
                 "unsupported",
             ),
         ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"json": {"query": "{ scheduler_profile { __typename } }"}},
+            (
+                "fireflies",
+                "query.scheduler_profile",
+                "missing",
+                400,
+                "GRAPHQL_VALIDATION_FAILED",
+                "unsupported",
+            ),
+        ),
+        (
+            "POST",
+            "/fireflies/graphql",
+            {"json": {"query": '{ scheduler_booking(id: "nope") { __typename } }'}},
+            (
+                "fireflies",
+                "query.scheduler_booking",
+                "missing",
+                400,
+                "GRAPHQL_VALIDATION_FAILED",
+                "unsupported",
+            ),
+        ),
         # Fireflies' refusal of a subscription, a 200, and its 500 for a fragment it does not
         # define, are its answers, not Backlot bugs.
         (

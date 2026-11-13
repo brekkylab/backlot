@@ -115,7 +115,10 @@ _B_SEARCH = {
                                 },
                             },
                         },
-                        "sorts": {"type": "array", "items": {"type": "object"}},
+                        "sorts": {
+                            "type": "array",
+                            "items": {"anyOf": [{"type": "string"}, {"type": "object"}]},
+                        },
                         "query": {"type": "string"},
                         "properties": {"type": "array", "items": {"type": "string"}},
                         "limit": {"type": "integer"},
@@ -1557,15 +1560,27 @@ def _match_one(prop, f: dict) -> bool:
     return False
 
 
-def _sorted(rows, sorts):
-    """Apply `sorts` (first entry wins, as HubSpot documents). Numeric when every value on that
-    property parses as a number, else lexicographic — Backlot is not told property types."""
-    if not sorts:
+def _sort_field(spec) -> tuple[str, bool] | None:
+    """The property one element of a search's `sorts` names and whether it sorts descending, or
+    None when it names none. HubSpot's contacts search read a string as the property's name,
+    descending after a leading `-`, and answered it as the object naming the same property and
+    direction (2026-11-10)."""
+    if isinstance(spec, str):
+        return spec.removeprefix("-"), spec.startswith("-")
+    if isinstance(spec, dict) and isinstance(spec.get("propertyName"), str):
+        descending = str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING"
+        return spec["propertyName"], descending
+    return None
+
+
+def _sorted(rows, field: tuple[str, bool] | None):
+    """Order the full match set by one :func:`_sort_field`. HubSpot's contacts search ordered text
+    by its lower-case form (2026-11-10), and a contact without the property as the lowest value,
+    first ascending and last descending (2026-11-12). Numeric when every present value parses as a
+    number, since Backlot is not told property types."""
+    if field is None:
         return rows
-    spec = sorts[0] if isinstance(sorts, list) and sorts else None
-    if not isinstance(spec, dict) or not spec.get("propertyName"):
-        return rows
-    name = spec["propertyName"]
+    name, descending = field
     # Decorate once: the properties JSON is parsed per row here, and re-parsing it inside the sort
     # key would double that over the whole match set (15k+ rows at the scale measured).
     decorated = [(_props(r).get(name), r) for r in rows]
@@ -1576,11 +1591,11 @@ def _sorted(rows, sorts):
 
     def key(pair):
         v = pair[0]
-        if v is None:  # absent sorts last in both directions
-            return (1, 0.0 if numeric else "")
-        return (0, _num(v) if numeric else str(v))
+        if v is None:
+            return (0, 0.0 if numeric else "")
+        return (1, _num(v) if numeric else str(v).lower())
 
-    decorated.sort(key=key, reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
+    decorated.sort(key=key, reverse=descending)
     return [r for _, r in decorated]
 
 
@@ -2065,6 +2080,14 @@ async def search_objects(object_type: str, request: Request):
     visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)
     after_doc, err = _resolve_cursor(request, body.get("after"))
+    # Real counts each property and direction once, however often and in whichever form `sorts`
+    # names it, and refuses more than one ahead of a cursor it can parse that names no record
+    # (contacts search, 2026-11-12).
+    sorts = body.get("sorts")
+    fields = dict.fromkeys(_sort_field(s) for s in (sorts if isinstance(sorts, list) else []))
+    fields.pop(None, None)
+    if len(fields) > 1:
+        return _error(400, f"too many sorts (count: {len(fields)}, max allowed: 1)")
     if err is not None:
         return err
 
@@ -2098,7 +2121,7 @@ async def search_objects(object_type: str, request: Request):
         cursor = batch[-1]["id"]
         hits += [r for r in batch if _matches(r, body)]
     total = len(hits)
-    hits = _sorted(hits, body.get("sorts"))
+    hits = _sorted(hits, next(iter(fields), None))
 
     if after_doc is not None:
         ids = [r["id"] for r in hits]

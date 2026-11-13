@@ -440,15 +440,10 @@ def cql_expecting_value(operator: str, field: str, got: str | None = None) -> At
 
 
 def cql_unknown_field(name: str, suggestions: tuple[str, ...] = ()) -> AtlassianError:
-    """The CQL search's refusal of a field it does not have, naming the field as sent and,
-    where any field shares the name's first letter, up to five of them in the order real offers
-    them. Measured on Confluence Cloud on 2026-10-31: `foo` drew `favorite, filesize, favourite,
-    fileExtension`, and on 2026-11-04 the order was measured over 31 names: only fields whose
-    first character equals the name's, case-sensitive, then longest common prefix first, also
-    case-sensitive, then shorter first, then a fixed order that is not alphabetical, at most
-    five. A name sharing its first letter with no field draws no suggestions, as `x` and `C`
-    did. Where it falls among the search's other refusals is
-    ``routers.atlassian._cql_refusal``'s."""
+    """The CQL search's refusal of a field it does not have, naming the field as sent and the
+    fields ``routers.atlassian._cql_suggest`` offers for it, if any. Measured on Confluence Cloud on
+    2026-10-25: `foo=bar` drew `favorite, filesize, favourite, fileExtension`. Where it falls among
+    the search's other refusals is ``routers.atlassian._cql_refusal``'s."""
     message = f"No field exists with the name: '{name}'"
     if suggestions:
         message += f" Did you mean one of : {', '.join(suggestions)}"
@@ -468,12 +463,12 @@ def cql_expecting_operator(field: str, supported: str) -> AtlassianError:
 
 
 def cql_operator_not_supported(operator: str, field: str, supported: str) -> AtlassianError:
-    """The CQL search's refusal of an operator a field does not take, naming the operator as
-    sent, the field, and the operators it takes, the list as real spells it. Measured on
-    Confluence Cloud on 2026-10-31: every field under an operator outside its list drew this,
-    with `not in` quoted as `notin`, and `created > 20260910` drew the date list
-    `<, <=, >, >=, =, !=`. Where it falls among the search's other refusals is
-    ``routers.atlassian._cql_refusal``'s."""
+    """The CQL search's refusal of an operator a field does not take, naming the operator as sent,
+    the field, and the operators it takes, the list as real spells it. Measured on Confluence Cloud
+    on 2026-10-31: a field under an operator outside its list drew this where its value drew neither
+    ``cql_not_parsed`` nor ``cql_expecting_value``, with `not in` quoted as `notin`, and
+    `created > 20260910` drew the date list `<, <=, >, >=, =, !=`. Where it falls among the search's
+    other refusals is ``routers.atlassian._cql_refusal``'s."""
     return _service_refusal(
         400,
         "api.BadRequestException",

@@ -10316,8 +10316,7 @@ _CQL_PARSE_ROWS = [
     # `_cql_refusal` in `backlot.routers.atlassian` records it: an unknown field with up to
     # five suggestions in the order real offers them, a field with no operator, an operator the
     # field does not list, a value no shape reads, and a bare number or date after `~` or `!~`.
-    # The multi-clause rows pin the order the walk refuses in: the first unrefusable clause,
-    # in groups and after `not`.
+    # The multi-clause rows pin the order `_cql_refusal` answers them in.
     *[
         (cql, 400, message)
         for cql, message in [
@@ -10612,7 +10611,6 @@ _CQL_PARSE_ROWS = [
                 "type=page or foo=bar",
                 "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
             ),
-            # --- session 2: U (5 rows) ---
             (
                 "a = x",
                 "No field exists with the name: 'a' Did you mean one of : ancestor, approvalStatus",
@@ -10624,7 +10622,6 @@ _CQL_PARSE_ROWS = [
             ("Cre = x", "No field exists with the name: 'Cre'"),
             ("S = x", "No field exists with the name: 'S'"),
             ("T = x", "No field exists with the name: 'T'"),
-            # --- session 2: N (54 rows) ---
             (
                 "ancestor",
                 "Expecting operator for field 'ancestor', supported operators are : =, !=, IN, NOT IN",
@@ -10838,7 +10835,6 @@ _CQL_PARSE_ROWS = [
                 "watcher.accountid",
                 "Expecting operator for field 'watcher.accountid', supported operators are : =, !=, IN, NOT IN",
             ),
-            # --- session 2: O (334 rows) ---
             (
                 "ancestor !~ x",
                 "Operator '!~' is not supported for field 'ancestor'. Supported operators are : =, !=, IN, NOT IN",
@@ -12175,7 +12171,6 @@ _CQL_PARSE_ROWS = [
                 "watcher.accountid <= 1",
                 "Operator '<=' is not supported for field 'watcher.accountid'. Supported operators are : =, !=, IN, NOT IN",
             ),
-            # --- session 2: P (75 rows) ---
             ('ancestor > "x"', _CQL_NOT_PARSED),
             ('ancestor > ""', _CQL_NOT_PARSED),
             ("approvalStatus > x", _CQL_NOT_PARSED),
@@ -12251,7 +12246,6 @@ _CQL_PARSE_ROWS = [
             ('title > ""', _CQL_NOT_PARSED),
             ('user > "x"', _CQL_NOT_PARSED),
             ('user > ""', _CQL_NOT_PARSED),
-            # --- session 2: V (80 rows) ---
             (
                 "ancestor ~ 1",
                 "Expecting a value for operator '~' after field 'ancestor' but got '1'",
@@ -12536,12 +12530,104 @@ _CQL_PARSE_ROWS = [
                 "user !~ 2026-01-01",
                 "Expecting a value for operator '!~' after field 'user' but got '2026-01-01'",
             ),
-            # --- session 2: M (2 rows) ---
             ("label > 1 and text = x", _CQL_NOT_PARSED),
             (
                 "type > 1 and user ~ 1",
+                "Operator '>' is not supported for field 'type'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "user ~ 1 and type > 1",
                 "Expecting a value for operator '~' after field 'user' but got '1'",
             ),
+            (
+                "foo = x and space.key ~ x",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "space.key ~ x and foo = x",
+                "Operator '~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "created > 20260910 and foo = x",
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            (
+                "title ~ 1 and foo = x",
+                "Expecting a value for operator '~' after field 'title' but got '1'",
+            ),
+            (
+                "space.key ~ x and title ~ 1",
+                "Operator '~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "title and foo = x",
+                "Expecting operator for field 'title', supported operators are : ~, !~, =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key ~ x and title",
+                "Operator '~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "space.key ~ x and type = page type",
+                "Operator '~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "foo ~ 1",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "foo =",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "foo = bar()",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "foo = and type = page",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "foo = select",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "space.key ~ select",
+                "'select' is a reserved keyword.  You must surround 'select' in quotation marks to use it.",
+            ),
+            (
+                'label = select and space.key = "a\'b"',
+                "'select' is a reserved keyword.  You must surround 'select' in quotation marks to use it.",
+            ),
+            (
+                'foo = x and space.key = "a\'b"',
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, favourite, fileExtension",
+            ),
+            (
+                "created > 20260910 and (type = page",
+                "Operator '>' is not supported for field 'created'. Supported operators are : <, <=, >, >=, =, !=",
+            ),
+            ("(foo = x", "Missing closing parenthesis near field (()"),
+            ("(title", "Missing closing parenthesis near field (()"),
+            ('foo = x and created > "x"', _CQL_NOT_PARSED),
+            ('title and created > "x"', _CQL_NOT_PARSED),
+            ('title ~ 1 and created > "x"', _CQL_NOT_PARSED),
+            ("created > 20260910 and created > 2026-02-30", _CQL_NOT_PARSED),
+            ("created > 20260910 and created = 2026-02-30", _CQL_NOT_PARSED),
+            ("foo = x and type = -1", _CQL_NOT_PARSED),
+            ("foo = x and text = x", _CQL_NOT_PARSED),
+            ("type page and foo = x", _CQL_NOT_PARSED),
+            ("title and", _CQL_NOT_PARSED),
+            ("filesize > 2026-02-30", _CQL_NOT_PARSED),
+            ("type > 2026-02-30", _CQL_NOT_PARSED),
+            ("filesize = 2026-02-30", _CQL_NOT_PARSED),
+            ("text = 2026-02-30", _CQL_NOT_PARSED),
+            (
+                "title ~ 2026-02-30",
+                "Expecting a value for operator '~' after field 'title' but got '2026-02-30'",
+            ),
+            ('filesize > "２０２６-01-01"', _CQL_NOT_PARSED),
+            ('created > 20260910 and created > "２０２６-01-01"', _CQL_NOT_PARSED),
         ]
     ],
     # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record

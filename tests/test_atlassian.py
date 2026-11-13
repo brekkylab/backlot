@@ -1265,9 +1265,6 @@ def test_confluence_cql_search_filtered_by_space(client, admin_h):
     ).json()
     assert {r["title"] for r in narrowed["results"]} == {"Engineering Handbook"}
     assert narrowed["totalSize"] == 1
-    content = narrowed["results"][0]["content"]
-    names = ("childTypes", "macroRenderedOutput", "restrictions")
-    assert {name: content.get(name) for name in names} == dict.fromkeys(names, {})
 
     other_space = client.get(
         "/atlassian/wiki/rest/api/search",
@@ -2302,7 +2299,8 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
     """`content/{id}` expands what `confluence_content_get` and `_confluence_page` say real
     expands for each `expand`, and the rows of `content`, `content/{id}/child/page` and the CQL
-    search carry none of the four."""
+    search carry none of the four; a search row carries `childTypes`, `macroRenderedOutput` and
+    `restrictions` right after `title`, each empty."""
     page = {
         "source_type": "confluence",
         "doc_id": "p",
@@ -2530,6 +2528,16 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         assert hit["_expandable"]["descendants"] == ""
         assert hit["_expandable"]["history"] == f"/rest/api/content/{pid}/history"
         assert hit["_expandable"]["space"] == bare["_expandable"]["container"]
+        assert list(hit)[:7] == [
+            "id",
+            "type",
+            "status",
+            "title",
+            "childTypes",
+            "macroRenderedOutput",
+            "restrictions",
+        ]
+        assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
         # The members each served body representation carries.
         storage = c.get(
             f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}

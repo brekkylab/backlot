@@ -2850,9 +2850,6 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
     # as on the bare read and after `expand=body,metadata,ancestors`, and thirteen or more in
     # `many`'s, as on a listing row and after `expand=body,metadata` (2026-11-03 and 2026-11-09).
     if search:
-        # Confluence Cloud `GET /wiki/rest/api/search` carries these empty objects in each
-        # result's content, measured on 2026-10-23.
-        page.update({"childTypes": {}, "macroRenderedOutput": {}, "restrictions": {}})
         expandable = {
             "container": "",
             "metadata": "",
@@ -2866,6 +2863,10 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             "descendants": "",
             "space": f"/rest/api/space/{key}",
         }
+        # A search row's content carries these three, each empty, right after `title`, measured
+        # on Confluence Cloud on page, blog post, comment and attachment rows on 2026-11-12.
+        page.update(childTypes={}, macroRenderedOutput={}, restrictions={})
+        page["_links"] = page.pop("_links")
     else:
         links = {
             "container": f"/rest/api/space/{key}",

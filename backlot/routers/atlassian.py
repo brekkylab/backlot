@@ -2795,6 +2795,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         head, _, sub = term.partition(".")
         if head:
             wanted.setdefault(head, set()).update([sub.partition(".")[0]] if sub else [])
+    storage_value = "body.storage.value" in (expand or "").split(",")
     page = {
         "id": str(cid),
         "type": ctype,
@@ -2946,7 +2947,8 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             # Cloud: `storage` and `export_view` on 2026-11-03, `view` and `atlas_doc_format` on
             # 2026-11-04).
             rep = {"value": body_writers[name](), "representation": name}
-            if name == "storage":
+            # Confluence Cloud returned the four-name form for body.storage.value on 2026-11-03.
+            if name == "storage" and not storage_value:
                 rep["embeddedContent"] = []
                 rep["_expandable"] = {"content": f"/rest/api/content/{cid}"}
             else:

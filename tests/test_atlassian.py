@@ -2299,7 +2299,8 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
     """`content/{id}` expands what `confluence_content_get` and `_confluence_page` say real
     expands for each `expand`, and the rows of `content`, `content/{id}/child/page` and the CQL
-    search carry none of the four."""
+    search carry none of the four; a search row carries `childTypes`, `macroRenderedOutput` and
+    `restrictions` right after `title`, each empty."""
     page = {
         "source_type": "confluence",
         "doc_id": "p",
@@ -2527,6 +2528,16 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         assert hit["_expandable"]["descendants"] == ""
         assert hit["_expandable"]["history"] == f"/rest/api/content/{pid}/history"
         assert hit["_expandable"]["space"] == bare["_expandable"]["container"]
+        assert list(hit)[:7] == [
+            "id",
+            "type",
+            "status",
+            "title",
+            "childTypes",
+            "macroRenderedOutput",
+            "restrictions",
+        ]
+        assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
         # The members each served body representation carries.
         storage = c.get(
             f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}
@@ -2808,6 +2819,57 @@ def test_confluence_restrictions_answer_what_expand_names_in_real_shape(
             assert result[op]["_links"] == {"self": f"{path}/{op}"}
             if "user" in result[op].get("restrictions", {}):
                 assert result[op]["restrictions"]["user"]["results"]  # the private doc's author
+
+
+_HANDBOOK = served_id("confluence", "cf-handbook")
+# `_HANDBOOK` in Arabic-Indic digits, each the UTF-8 escapes of its digit in upper case
+_HANDBOOK_ARABIC = quote("".join(chr(0x0660 + int(digit)) for digit in str(_HANDBOOK)))
+_SPELT_IDS = {
+    "h": _HANDBOOK,
+    "o": served_id("confluence", "cf-oncall"),
+    "h_ar": _HANDBOOK_ARABIC,
+    "h_ar_lower": _HANDBOOK_ARABIC.lower(),
+}
+
+# (the id as sent, the route after it, the id in `self`, and the id in `prev`, or under
+# `restriction/byOperation` in the `read` operation's own link), with `{h}`, `{o}`, `{h_ar}` and
+# `{h_ar_lower}` read from `_SPELT_IDS`: real's answers, by the rules `_linked_id` and the comment
+# in `confluence_restrictions` record
+_ID_SPELLING_ROWS = [
+    ("{h}", "child/page", "{h}", "{h}"),
+    ("0{h}", "child/page", "0{h}", "0{h}"),
+    ("%2B{h}", "child/page", "+{h}", "+{h}"),
+    ("%30{h}", "child/page", "0{h}", "0{h}"),
+    ("{h_ar_lower}", "child/page", "{h_ar}", "{h_ar}"),
+    ("att0{h}", "child/page", "att0{h}", "att0{h}"),
+    ("att%2B{h}", "child/page", "att+{h}", "att+{h}"),
+    ("%2b{o}", "child/comment", "+{o}", "+{o}"),
+    ("att0{h}", "child/attachment", "att0{h}", "att0{h}"),
+    ("{h_ar}", "label", "{h_ar}", "{h_ar}"),
+    ("0{o}", "label", "0{o}", "0{o}"),
+    ("att0{h}", "restriction/byOperation", "att{h}", "{h}"),
+    ("att%2B{h}", "restriction/byOperation", "att{h}", "{h}"),
+    ("%2B{h}", "restriction/byOperation", "{h}", "{h}"),
+    ("{h_ar_lower}", "restriction/byOperation", "{h}", "{h}"),
+]
+
+
+def test_confluence_a_listing_names_the_content_id_as_measured(client, admin_h):
+    api = "/atlassian/wiki/rest/api/content"
+    site = "http://testserver/wiki/rest/api/content"
+    served, expected = [], []
+    for sent, route, own, linked in _ID_SPELLING_ROWS:
+        sent, own, linked = (spelt.format(**_SPELT_IDS) for spelt in (sent, own, linked))
+        r = client.get(f"{api}/{sent}/{route}?limit=1&start=1", headers=admin_h)
+        body = r.json()
+        if route == "restriction/byOperation":
+            served.append((r.status_code, body["_links"]["self"], body["read"]["_links"]["self"]))
+            expected.append((200, f"{site}/{own}/{route}", f"{site}/{linked}/{route}/read"))
+        else:
+            served.append((r.status_code, body["_links"]["self"], body["_links"]["prev"]))
+            prev = f"/rest/api/content/{linked}/{route}?prev=true&limit=1&start=0"
+            expected.append((200, f"{site}/{own}/{route}", prev))
+    assert served == expected
 
 
 @pytest.mark.parametrize("spelt", ["{}", "0{}", "att{}"])

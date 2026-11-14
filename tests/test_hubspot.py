@@ -2127,6 +2127,24 @@ def _too_many_sorts(count: int) -> dict:
     }
 
 
+def _sort_field_refusal() -> dict:
+    return {
+        "status": "error",
+        "message": (
+            "Invalid input JSON: Cannot build SortField, "
+            "some of required attributes are not set [propertyName]"
+        ),
+    }
+
+
+def _sort_direction_refusal(direction: str) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON: No enum constant .{direction}",
+        "category": "VALIDATION_ERROR",
+    }
+
+
 def _mismatched(kind: str, token: str) -> str:
     return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.{token}`)"
 
@@ -2433,6 +2451,8 @@ def test_hubspot_search_sorts(client, admin_h, tmp_path):
 
     assert names("ASCENDING") == ["Acme Health", "Borealis Clinics"]  # 150 then 400
     assert names("DESCENDING") == ["Borealis Clinics", "Acme Health"]
+    assert names(5) == ["Acme Health", "Borealis Clinics"]
+    assert names(None) == ["Acme Health", "Borealis Clinics"]
 
     from tests._helpers import corpus_client
 
@@ -3126,6 +3146,31 @@ _SEARCH_BODY_ROWS = [
     _sb("properties-then-filterGroups-string", '{"properties": ["email"], "filterGroups": "x"}', _json_refusal(43, _not_a_list("String", "VALUE_STRING"))),
     _sb("sorts-string-then-filterGroups-string", '{"sorts": ["email"], "filterGroups": "x"}', _json_refusal(38, _not_a_list("String", "VALUE_STRING"))),
     _sb("two-sorts-then-filterGroups-string", '{"sorts": ["email", "lastname"], "filterGroups": "x"}', _json_refusal(50, _not_a_list("String", "VALUE_STRING"))),
+    # sorts that real refuses: not a list, unreadable element, missing propertyName, or bad direction
+    _sb("sorts-string", '{"sorts": "email"}', _json_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-integer", '{"sorts": [5]}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-boolean", '{"sorts": [true]}', _json_refusal(12, _mismatched("Boolean", "VALUE_TRUE"))),
+    _sb("sorts-array", '{"sorts": [[]]}', _json_refusal(12, _ARRAY)),
+    _sb("sorts-null", '{"sorts": [null]}', _json_refusal(17, "sorts element")),
+    _sb("sorts-null-null", '{"sorts": [null, null]}', _json_refusal(23, "sorts element")),
+    _sb("sorts-null-then-string", '{"sorts": [null, "email"]}', _json_refusal(26, "sorts element")),
+    _sb("sorts-two-integers", '{"sorts": [5, 6]}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-integer-then-strings", '{"sorts": [5, "email", "lastname"]}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-strings-then-integer", '{"sorts": ["email", "lastname", 5]}', _json_refusal(33, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-empty-object", '{"sorts": [{}]}', _sort_field_refusal()),
+    _sb("sorts-two-empty-objects", '{"sorts": [{}, {}]}', _sort_field_refusal()),
+    _sb("sorts-object-integer-property", '{"sorts": [{"propertyName": 5}]}', _sort_field_refusal()),
+    _sb("sorts-direction-descending", '{"sorts": [{"propertyName": "email", "direction": "descending"}]}', _sort_direction_refusal("descending")),
+    _sb("sorts-direction-desc", '{"sorts": [{"propertyName": "email", "direction": "DESC"}]}', _sort_direction_refusal("DESC")),
+    _sb("sorts-direction-desc-no-property", '{"sorts": [{"direction": "DESC"}]}', _sort_direction_refusal("DESC")),
+    _sb("sorts-direction-up", '{"sorts": [{"propertyName": "email", "direction": "UP"}]}', _sort_direction_refusal("UP")),
+    # ordering of sorts against other body refusals
+    _sb("sorts-integer-then-filterGroups-string", '{"sorts": [5], "filterGroups": "x"}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("filterGroups-string-then-sorts-integer", '{"filterGroups": "x", "sorts": [5]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-empty-object-then-filterGroups-string", '{"sorts": [{}], "filterGroups": "x"}', _sort_field_refusal()),
+    _sb("filterGroups-string-then-sorts-empty-object", '{"filterGroups": "x", "sorts": [{}]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-direction-desc-then-filterGroups-string", '{"sorts": [{"direction": "DESC"}], "filterGroups": "x"}', _sort_direction_refusal("DESC")),
+    _sb("filterGroups-string-then-sorts-direction-desc", '{"filterGroups": "x", "sorts": [{"direction": "DESC"}]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
     # more than one sort, counted once per property and direction
     _sb("two-sorts", '{"sorts": ["email", "-email"]}', _too_many_sorts(2)),
     _sb("two-sorts-repeated", '{"sorts": ["lastname", "lastname", "lastname", "email", "email"]}', _too_many_sorts(2)),

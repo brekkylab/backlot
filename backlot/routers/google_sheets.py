@@ -327,7 +327,6 @@ SHEETS_SHEET_TITLE = "Sheet1"  # Backlot shapes every spreadsheet as one sheet w
 # So Backlot declares the same grid. This is API scaffolding, like the synthesized `sheetId` and
 # sheet title beside it — not invented cell data, which `_sheets_grid` still refuses to manufacture.
 SHEETS_GRID_ROWS = gsheets.GRID_ROWS
-SHEETS_GRID_COLS = gsheets.GRID_COLS
 
 # A cell's `effectiveFormat`, in the order real emits it. Measured: across every cell type a
 # corpus can state it varies in ONE field, `horizontalAlignment` -- a string sits left, a number
@@ -621,10 +620,6 @@ def _a1_find(title: str, sheets: list[_Sheet]) -> _Sheet | None:
     return next((s for s in sheets if gsheets.same_title(s.title, title)), None)
 
 
-def _a1_looks_like_a_range(body: str) -> bool:
-    return _a1_classify(body) is not None
-
-
 def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
     """``(sheet, body)`` — which sheet a spec addresses, and the cell part left over (``""`` for a
     bare sheet name, meaning the whole grid).
@@ -642,10 +637,9 @@ def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
       gets — resolving to an empty grid instead would be indistinguishable from an empty range
     """
     # Not stripped anywhere — the whitespace rule in `_R1C1_END`'s comment.
-    bare = spec
-    if "!" in bare:
-        title, _, body = bare.rpartition("!")
-        if title in ("", "''") and _a1_looks_like_a_range(body):
+    if "!" in spec:
+        title, _, body = spec.rpartition("!")
+        if title in ("", "''") and _a1_classify(body) is not None:
             # An EMPTY title is the first sheet (the rule in `_R1C1_END`'s comment), and only
             # before a range: `!Data` and a bare `!` are unparseable.
             return sheets[0], body
@@ -655,13 +649,13 @@ def _a1_sheet(spec: str, sheets: list[_Sheet]) -> tuple[_Sheet, str]:
         # A title that itself holds a bang, named bare: `has!bang` is the WHOLE sheet, so the
         # split above leaves `has` (no such sheet) over `bang` (no such range). Measured.
         # `Sheet1!` with nothing after it falls here too, and is malformed either way.
-        whole = _a1_find(bare, sheets)
+        whole = _a1_find(spec, sheets)
         if whole is None:
             raise gerr.invalid_argument(f"Unable to parse range: {spec}")
         return whole, ""
-    if _a1_looks_like_a_range(bare):
-        return sheets[0], bare
-    found = _a1_find(bare, sheets)
+    if _a1_classify(spec) is not None:
+        return sheets[0], spec
+    found = _a1_find(spec, sheets)
     if found is None:
         raise gerr.invalid_argument(f"Unable to parse range: {spec}")
     return found, ""
@@ -691,28 +685,23 @@ def _a1_range(
     if classified is None:
         raise gerr.invalid_argument(f"Unable to parse range: {spec}")
     notation, ends = classified
-    if len(ends) == 1:  # a single reference: one cell, one whole row, one column
-        (start,) = ends
-        r0f, c0f = (0 if start.row is None else start.row), (0 if start.col is None else start.col)
-        r1 = nrows if start.row is None else start.row + 1
-        c1 = ncols if start.col is None else start.col + 1
-    else:
-        start, end = ends
-        if notation == "r1c1":
-            # Real's reversed-range rule, on the numbers as written — see `_R1C1_END`.
-            for a, b in ((start.raw_row, end.raw_row), (start.raw_col, end.raw_col)):
-                if a is not None and b is not None and a[1] == b[1] and a[0] == b[0] + 1:
-                    raise gerr.invalid_argument(f"Unable to parse range: {spec}")
-        r0f = 0 if start.row is None else start.row
-        c0f = 0 if start.col is None else start.col
-        r1 = nrows if end.row is None else end.row + 1
-        c1 = ncols if end.col is None else end.col + 1
-        # Ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`), in R1C1
-        # as in A1 (`R3C3:R1C1` == `A1:C3`), once past the rule above.
-        if r1 < r0f + 1:
-            r0f, r1 = r1 - 1, r0f + 1
-        if c1 < c0f + 1:
-            c0f, c1 = c1 - 1, c0f + 1
+    # A single reference (one cell, one whole row, one column) is its own start and end.
+    start, end = ends[0], ends[-1]
+    if notation == "r1c1":
+        # Real's reversed-range rule, on the numbers as written — see `_R1C1_END`.
+        for a, b in ((start.raw_row, end.raw_row), (start.raw_col, end.raw_col)):
+            if a is not None and b is not None and a[1] == b[1] and a[0] == b[0] + 1:
+                raise gerr.invalid_argument(f"Unable to parse range: {spec}")
+    r0f = 0 if start.row is None else start.row
+    c0f = 0 if start.col is None else start.col
+    r1 = nrows if end.row is None else end.row + 1
+    c1 = ncols if end.col is None else end.col + 1
+    # Ranges are inclusive and may be written in either order (`B2:A1` == `A1:B2`), in R1C1 as in
+    # A1 (`R3C3:R1C1` == `A1:C3`), once past the rule above.
+    if r1 < r0f + 1:
+        r0f, r1 = r1 - 1, r0f + 1
+    if c1 < c0f + 1:
+        c0f, c1 = c1 - 1, c0f + 1
     if r0f >= nrows or c0f >= ncols or r0f < 0 or c0f < 0:
         # The START is outside the grid — refused, with the range echoed back unclamped; whole
         # columns by their letters alone and whole rows by their numbers alone (`_a1_axis_name`).
@@ -1038,29 +1027,27 @@ def _sheets_url(spreadsheet_id: str, caller: Caller) -> str:
     return f"{url}?ouid={synth.google_user_id(caller.email)}" if caller.email else url
 
 
+# The typed query values `values.get`, `values:batchGet` and `values:batchGetByDataFilter` read.
+_SHEETS_VALUES_FLAGS = {
+    "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
+    # Measured over typed cells: FORMATTED_VALUE gives the display string "12", UNFORMATTED_VALUE
+    # the JSON number 12, and FORMULA the same raw value as UNFORMATTED_VALUE for every cell that is
+    # not a formula. A spreadsheet whose cells are lines of stored text has only strings, so all
+    # three agree on one; a spreadsheet that STATES its grid does not.
+    "valueRenderOption": lambda raw: _query_enum(raw, "value_render_option", _PJ_RENDER),
+    # A date, time or date-time cell's serial number or its display string. Only a written cell can
+    # be one: a corpus states no number formats.
+    "dateTimeRenderOption": lambda raw: _query_enum(raw, "date_time_render_option", _PJ_DATETIME),
+}
+
+
 def _sheets_options(request: Request) -> tuple[str, str, str]:
     """Validate the read enums and return ``(majorDimension, valueRenderOption,
     dateTimeRenderOption)``. Real Sheets 400s
     on an unknown value; accepting one silently would hand back ROWS-shaped data to a client that
     asked for columns, and a silently unapplied option is worse than a refusal.
     """
-    enums = _typed_query(
-        request,
-        {
-            "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
-            # Measured over typed cells: FORMATTED_VALUE gives the display string "12",
-            # UNFORMATTED_VALUE the JSON number 12, and FORMULA the same raw value as
-            # UNFORMATTED_VALUE for every cell that is not a formula. A spreadsheet whose cells are
-            # lines of stored text has only strings, so all three agree on one; a spreadsheet that
-            # STATES its grid does not.
-            "valueRenderOption": lambda raw: _query_enum(raw, "value_render_option", _PJ_RENDER),
-            # A date, time or date-time cell's serial number or its display string. Only a written
-            # cell can be one: a corpus states no number formats.
-            "dateTimeRenderOption": lambda raw: _query_enum(
-                raw, "date_time_render_option", _PJ_DATETIME
-            ),
-        },
-    )
+    enums = _typed_query(request, _SHEETS_VALUES_FLAGS)
     major = (enums["majorDimension"] or ["ROWS"])[-1]
     render = (enums["valueRenderOption"] or ["FORMATTED_VALUE"])[-1]
     date_time = (enums["dateTimeRenderOption"] or ["SERIAL_NUMBER"])[-1]
@@ -1559,17 +1546,7 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
     `dateTimeRenderOption` number it does not declare reads as `SERIAL_NUMBER`."""
     _sheets_alt(request)
     _require(request)
-    query, body = await _query_and_body(
-        request,
-        {
-            "majorDimension": lambda raw: _query_enum(raw, "major_dimension", _PJ_DIMENSION),
-            "valueRenderOption": lambda raw: _query_enum(raw, "value_render_option", _PJ_RENDER),
-            "dateTimeRenderOption": lambda raw: _query_enum(
-                raw, "date_time_render_option", _PJ_DATETIME
-            ),
-        },
-        _PJ_BATCH_GET_BY_FILTER,
-    )
+    query, body = await _query_and_body(request, _SHEETS_VALUES_FLAGS, _PJ_BATCH_GET_BY_FILTER)
     tree, _ = _sheets_mask(request, "sheets.BatchGetValuesByDataFilterResponse")
     _row, sheets = _workbook(request, spreadsheet_id)
     render = query["valueRenderOption"]
@@ -2090,19 +2067,10 @@ async def sheets_values_batch_update(spreadsheet_id: str, request: Request):
                 f"Invalid data[{i}]: ValueRange.range is required but not specified"
             )
         major = _sheets_major(_PJ_DIMENSION.names[entry.get("major_dimension", 0)])
-        writings.append(
-            (
-                _sheets_writing(
-                    entry["range"],
-                    sheets,
-                    entry.get("values", []),
-                    major,
-                    prefix=f"Invalid data[{i}]: ",
-                ),
-                entry["range"],
-                major,
-            )
+        writing = _sheets_writing(
+            entry["range"], sheets, entry.get("values", []), major, prefix=f"Invalid data[{i}]: "
         )
+        writings.append((writing, entry["range"], major))
     out: dict = {"spreadsheetId": spreadsheet_id}
     if not writings:
         return _sheets_respond(request, out, tree)
@@ -2569,17 +2537,6 @@ def _sheets_tab_color(props: dict) -> dict:
         rgb = _sheets_rgb(style.get("rgb_color") or props.get("tab_color") or {})
         kept = {"rgbColor": rgb}
     return {**({"tabColor": rgb} if rgb else {}), "tabColorStyle": kept}
-
-
-def _sheets_json(message: dict) -> dict:
-    """A message `protojson` read, back as the JSON real echoes: camelCase names, and a whole
-    double without its decimal point (`"red": 1`), as proto3 JSON prints one."""
-    return {
-        re.sub(r"_([a-z])", lambda m: m.group(1).upper(), k): (
-            _sheets_json(v) if isinstance(v, dict) else gsheets.collapse(v)
-        )
-        for k, v in message.items()
-    }
 
 
 # What `sheets_create` keeps of a `Spreadsheet`; the rest it reads and drops

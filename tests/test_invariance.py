@@ -119,6 +119,81 @@ def test_compare_flags_a_difference_and_only_one_two_base_runs_agree_on(
     assert (found or "invariant") in out
 
 
+def _exchanges(root: Path, tests: dict[str, list[tuple]]) -> Path:
+    """A recording of `tests`, each a list of (url, response body, response headers) exchanges."""
+    traffic = [
+        {
+            "test": test,
+            "i": i,
+            "request": {"method": "GET", "url": url, "headers": [], "body": {"text": ""}},
+            "status": 200,
+            "headers": headers,
+            "body": {"text": json.dumps(body)},
+        }
+        for test, exchanges in tests.items()
+        for i, (url, body, headers) in enumerate(exchanges)
+    ]
+    outcomes = [{"test": test, "when": "call", "outcome": "passed"} for test in tests]
+    for part, rows in {"traffic": traffic, "outcomes": outcomes}.items():
+        (root / part).mkdir(parents=True)
+        (root / part / "main.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+        )
+    return root
+
+
+_FIXTURE = ("/f", {"f": 1}, [])
+_OWN = [("/x", {"a": 1}, [["x-left", "5"]]), ("/x", {"a": 1}, [["x-left", "4"]])]
+_OTHER = ("/g", {"g": 1}, [["x-limit", "10"]])
+
+
+@pytest.mark.parametrize(
+    ("head", "found"),
+    [
+        pytest.param({"a": _OWN, "b": [_FIXTURE, _OTHER]}, None, id="fixture-moved"),
+        pytest.param({"a": [_FIXTURE, *_OWN], "b": [_FIXTURE, _OTHER]}, None, id="fixture-twice"),
+        pytest.param(
+            {
+                "a": [_FIXTURE, ("/x", {"a": 1}, [["x-left", "9"]]), _OWN[1]],
+                "b": [_OTHER],
+            },
+            None,
+            id="counter",
+        ),
+        pytest.param(
+            {"a": _OWN, "b": [("/f", {"f": 2}, []), _OTHER]}, "$.f", id="fixture-moved-changed"
+        ),
+        pytest.param(
+            {"a": [_FIXTURE, *_OWN], "b": [("/f", {"f": 2}, []), _OTHER]},
+            "request 0 of t.py::b was sent by the head only",
+            id="fixture-twice-changed",
+        ),
+        pytest.param(
+            {"a": [_FIXTURE, *_OWN], "b": [("/g", {"g": 1}, [["x-limit", "11"]])]},
+            "x-limit",
+            id="digits-of-a-header-one-request-kept",
+        ),
+        pytest.param(
+            {"a": [_FIXTURE, *_OWN, ("/y", {}, [])], "b": [_OTHER]},
+            "request 3 of t.py::a was sent by the head only",
+            id="request-added",
+        ),
+    ],
+)
+def test_compare_pairs_exchanges_by_request_wherever_scheduling_put_them(
+    tmp_path, capsys, head, found
+):
+    """`/f` stands for a module-scoped fixture's request, sent by whichever test needs it first, on
+    each worker that runs one; `x-left` for a counter, which one test's two identical requests see
+    at two values. Without a calibration recording, neither is a difference."""
+    base = _exchanges(tmp_path / "base", {"t.py::a": [_FIXTURE, *_OWN], "t.py::b": [_OTHER]})
+    head = _exchanges(tmp_path / "head", {f"t.py::{t}": e for t, e in head.items()})
+    code = invariance._compare(base, head, "code", None, limit=5)
+    out = capsys.readouterr().out
+    assert code == (found is not None)
+    assert (found or "invariant") in out
+
+
 @pytest.mark.parametrize(
     "written", ["backlot/x.py", "backlot\\x.py"], ids=["written-slash", "written-backslash"]
 )

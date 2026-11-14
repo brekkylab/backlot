@@ -2121,7 +2121,15 @@ async def search_objects(object_type: str, request: Request):
         cursor = batch[-1]["id"]
         hits += [r for r in batch if _matches(r, body)]
     total = len(hits)
-    hits = _sorted(hits, next(iter(fields), None))
+    if fields:
+        hits = _sorted(hits, next(iter(fields), None))
+    elif not sorts:
+        # No sort asked for — real answered `{}`, `{"sorts": []}` and `{"sorts": null}` oldest
+        # `createdate` first on contacts, companies, tasks and meetings (api.hubapi.com,
+        # 2026-11-13). `created_ts` serves `createdAt` in whole seconds, and rows created in the
+        # same second keep ascending id: no two records of the portal measured share a
+        # `createdate`, so real's order for a tie is unknown.
+        hits.sort(key=lambda r: r["created_ts"])
 
     if after_doc is not None:
         ids = [r["id"] for r in hits]

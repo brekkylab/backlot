@@ -2473,6 +2473,64 @@ def test_hubspot_search_sorts(client, admin_h, tmp_path):
     assert served == [(200, [f"{name}@example.com" for name in order]) for _, order in cases]
 
 
+def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
+    from tests._helpers import client_for
+
+    records = [
+        {
+            "source_type": "hubspot",
+            "doc_id": doc_id,
+            "object_type": "contacts",
+            "title": email,
+            "properties": {"email": email},
+            "created": created,
+        }
+        for doc_id, email, created in (
+            ("hs-c-maria", "emailmaria@hubspot.com", "2026-09-30T09:42:39Z"),
+            ("hs-c-ava", "ava@example.com", "2026-09-30T09:47:03Z"),
+            ("hs-c-bh", "bh@hubspot.com", "2026-09-30T09:42:40Z"),
+            ("hs-c-bob", "bob@example.com", "2026-09-30T09:47:44Z"),
+            ("hs-c-cara", "cara@example.org", "2026-09-30T09:48:26Z"),
+        )
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    with client_for(settings, reload=True) as client:
+        headers = {"Authorization": f"Bearer {settings.admin_token}"}
+
+        def search(body):
+            return client.post(
+                "/hubspot/crm/v3/objects/contacts/search", headers=headers, json=body
+            ).json()
+
+        def emails(body):
+            return [r["properties"]["email"] for r in search(body)["results"]]
+
+        def crawl(body):
+            out, after = [], None
+            while True:
+                page = search({**body, "limit": 2, **({"after": after} if after else {})})
+                out += [r["properties"]["email"] for r in page["results"]]
+                after = (page.get("paging") or {}).get("next", {}).get("after")
+                if after is None:
+                    return out
+
+        oldest_first = [
+            "emailmaria@hubspot.com",
+            "bh@hubspot.com",
+            "ava@example.com",
+            "bob@example.com",
+            "cara@example.org",
+        ]
+        no_sort = ({}, {"sorts": []}, {"sorts": None})
+        assert [emails(body) for body in no_sort] == [oldest_first] * 3
+        assert [crawl(body) for body in no_sort] == [oldest_first] * 3
+        # The ids do not ascend in createdate order, so the order above is not id order.
+        ids = [int(r["id"]) for r in search({})["results"]]
+        assert ids != sorted(ids)
+        # A sort still decides the order.
+        assert emails({"sorts": [{"propertyName": "email"}]}) == sorted(oldest_first)
+
+
 def test_hubspot_search_is_acl_scoped(client, tokens_yaml):
     """Search must filter by the caller like every other read — not only the plain listing."""
     users = {u["email"]: u["token"] for u in tokens_yaml["users"]}

@@ -1468,26 +1468,28 @@ def _refuse_a_search_shape(
     raw: bytes, body: dict, before: tuple[int, int] | None = None
 ) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
     """Real's 400 for a search body it cannot read, with where the value it names starts, or
-    `(None, None)`. Measured against api.hubapi.com on 2026-10-01, 2026-11-09 and 2026-11-13: real
-    reads the body in order and stops at the first value it cannot read, naming where it starts: a
-    `filterGroups` or a group's `filters` that is neither null nor a list (`_not_a_list`), an
-    element of either that is not an object (`_unbuildable`), a filter member `_unreadable_member`
-    refuses, a `query` that is an array or an object, or a `limit` `_unreadable_limit` refuses. A
-    null element is named at the closing brace of the object holding its list, the body's for
-    `filterGroups` and the group's for `filters`: after that object's other values and ahead of a
-    later element, `query` or non-standard token. A null `filterGroups`, `filters` or `query`, and a
-    group with no `filters`, are read. With a `before` from `_non_standard_number`, a value from
-    there on is left to the token. A key the body repeats is read by its last value, the one
-    `json.loads` keeps, where real reads its values in order and names the first it cannot read
-    (`{"filterGroups": "x", "filterGroups": []}` names the `"x"`, measured 2026-11-10); this router
-    does not model that."""
+    `(None, None)`. Measured against api.hubapi.com on 2026-10-01, 2026-11-09, 2026-11-12 and
+    2026-11-13: real reads the body in order and stops at the first value it cannot read, naming
+    where it starts: a `sorts`, `filterGroups` or a group's `filters` that is neither null nor a
+    list (`_not_a_list`), an element of `sorts` that is neither a string nor an object
+    (`_mismatched`), an element of `filterGroups` or `filters` that is not an object
+    (`_unbuildable`), a sort object with an unrecognised direction or no string `propertyName`, a
+    filter member `_unreadable_member` refuses, a `query` that is an array or an object, or a
+    `limit` `_unreadable_limit` refuses. A null element is named at the closing brace of the object
+    holding its list, the body's for `sorts` and `filterGroups` and the group's for `filters`: after
+    that object's other values and ahead of a later element, `query` or non-standard token. A null
+    `sorts`, `filterGroups`, `filters` or `query`, and a group with no `filters`, are read. With a
+    `before` from `_non_standard_number`, a value from there on is left to the token. A key the body
+    repeats is read by its last value, the one `json.loads` keeps, where real reads its values in
+    order and names the first it cannot read (`{"filterGroups": "x", "filterGroups": []}` names the
+    `"x"`, measured 2026-11-10); this router does not model that."""
 
     def named(position, response):
         if before is not None and position >= before:
             return None, None
         return position, response
 
-    null_group = False
+    null_element: str | None = None
     for key, value in body.items():
         if key == "query":
             if isinstance(value, (dict, list)):
@@ -1499,6 +1501,48 @@ def _refuse_a_search_shape(
             if refusal is not None:
                 return named(_token_at(raw, (key,)), refusal)
             continue
+        if key == "sorts":
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                position = _token_at(raw, (key,))
+                return named(position, _invalid(position, _not_a_list(value)))
+            for j, item in enumerate(value):
+                if item is None:
+                    if null_element is None:
+                        null_element = "sorts element"
+                    continue
+                path = (key, j)
+                if not isinstance(item, (str, dict)):
+                    position = _token_at(raw, path)
+                    return named(position, _invalid(position, _mismatched(item)))
+                if isinstance(item, dict):
+                    if "direction" in item:
+                        direction = item["direction"]
+                        if isinstance(direction, str) and direction not in (
+                            "ASCENDING",
+                            "DESCENDING",
+                        ):
+                            position = _token_at(raw, path + ("direction",))
+                            return named(
+                                position,
+                                _error(400, f"Invalid input JSON: No enum constant .{direction}"),
+                            )
+                    if not isinstance(item.get("propertyName"), str):
+                        position = _token_at(raw, path)
+                        return named(
+                            position,
+                            _bare_error(
+                                400,
+                                {
+                                    "message": (
+                                        "Invalid input JSON: Cannot build SortField, "
+                                        "some of required attributes are not set [propertyName]"
+                                    )
+                                },
+                            ),
+                        )
+            continue
         if key != "filterGroups" or value is None:
             continue
         if not isinstance(value, list):
@@ -1506,7 +1550,8 @@ def _refuse_a_search_shape(
             return named(position, _invalid(position, _not_a_list(value)))
         for i, group in enumerate(value):
             if group is None:
-                null_group = True
+                if null_element is None:
+                    null_element = "filterGroups element"
                 continue
             if not isinstance(group, dict):
                 return named(*_unbuildable(raw, (key, i), group))
@@ -1532,9 +1577,9 @@ def _refuse_a_search_shape(
             if null_filter:
                 position = _closing_at(raw, (key, i))
                 return named(position, _invalid(position, "filters element"))
-    if null_group:
+    if null_element is not None:
         position = _closing_at(raw, ())
-        return named(position, _invalid(position, "filterGroups element"))
+        return named(position, _invalid(position, null_element))
     return None, None
 
 

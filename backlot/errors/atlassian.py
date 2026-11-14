@@ -2571,6 +2571,26 @@ _GATEWAY_PATCH_PAGE = (
     "</body>\r\n</html>\r\n"
 )
 
+#: The 404 page Confluence's openresty gateway answers under `/wiki/rest/mywork` with: the
+#: gateway's own page (:data:`_GATEWAY_PATCH_PAGE`) at 404, 150 bytes on `text/html` with no
+#: charset, measured on Confluence Cloud on 2026-11-10 at the mount and below it, with a
+#: credential and without one.
+OPENRESTY_NOT_FOUND = _GATEWAY_PATCH_PAGE.format(status=404, phrase="Not Found", server="openresty")
+
+#: What Confluence's plugins REST API answers at its mount (`/wiki/rest/plugins/1.0/` and
+#: `/wiki/rest/plugins/latest/`) and one segment below it, measured on Confluence Cloud on
+#: 2026-11-10: a caller with no credential is the 403 below, 75 bytes on `application/json`; a
+#: caller with one is refused for the segment, as a task error where it does not end in `-key`
+#: (87 bytes) and as an empty 404 under the plugin type where it does and names no app.
+PLUGINS_NOT_PERMITTED = (
+    b'{"message":"Current user not permitted to use Confluence","statusCode":403}'
+)
+PLUGINS_TASK_ERROR = (
+    b'{"errorMessage":"Cannot unescape the given app key. It must end in a \\"-key\\" suffix."}'
+)
+PLUGINS_TASK_ERROR_MEDIA_TYPE = "application/vnd.atl.plugins.task.error+json"
+PLUGINS_PLUGIN_MEDIA_TYPE = "application/vnd.atl.plugins.plugin+json"
+
 #: The page Confluence's Tomcat answers a refusal with where `Accept` takes no JSON and names no
 #: `+json` type (:func:`confluence_refusal`), and an encoded slash's or backslash's 400 whatever it
 #: takes (:func:`front_door`) and a JAX-RS write's for a `Content-Type` it cannot read

@@ -8369,6 +8369,10 @@ _SPRING_CHARSET = [
     ("GET", "/wiki/rest/applinks/1.0/x", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/applinks/2.0/x", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/plugins/1.0/x", _EMPTY_CHARSET, None, 400),
+    # under `/wiki/rest/mywork` the openresty gateway answers, ahead of the 500
+    ("GET", "/wiki/rest/mywork/latest/x", _EMPTY_CHARSET, None, 404),
+    ("POST", "/wiki/rest/mywork/latest/x", _EMPTY_CHARSET, None, 404),
+    ("GET", "/wiki/rest/mywork/latest/x", _EMPTY_CHARSET, "admin", 404),
     ("GET", "/wiki/rest/Prototype/LATEST/x", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/atlassian-connect/1/", _EMPTY_CHARSET, None, 400),
     # the header twice: a blank value left out, the others read joined
@@ -8421,6 +8425,55 @@ def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, 
 
 def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
     assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
+
+
+def _mywork_and_plugins(client, admin_h, method, vendor_path, authorization, status, media, body):
+    headers = {} if authorization is None else admin_h
+    r = client.request(method, f"/atlassian{vendor_path}", headers=headers)
+    assert r.status_code == status, r.text[:200]
+    assert r.headers.get("content-type") == media
+    if body is not None:
+        assert r.content == body
+
+
+#: What answers under `/wiki/rest/mywork` and at Confluence's plugins mount (the measurement is
+#: recorded beside ``_confluence_not_found`` and ``_confluence_plugins_answer``): the openresty
+#: gateway's 404 page at mywork and below it, for a
+#: `GET` and a `POST`, with a credential and without one; at `plugins/1.0` and `plugins/latest`
+#: the 403 with no credential, and with one the task error for a segment that does not end in
+#: `-key` and the empty 404 for one that does. The last two rows pin what stands around them: a
+#: version that is no mount is the product's page, and two segments below a mount is JAX-RS's 404.
+_MYWORK_AND_PLUGINS = [
+    ("GET", "/wiki/rest/mywork", None, 404, "text/html")
+    + (errors_atlassian.OPENRESTY_NOT_FOUND.encode(),),
+    ("GET", "/wiki/rest/mywork/nope", None, 404, "text/html")
+    + (errors_atlassian.OPENRESTY_NOT_FOUND.encode(),),
+    ("GET", "/wiki/rest/mywork/1/x", "admin", 404, "text/html")
+    + (errors_atlassian.OPENRESTY_NOT_FOUND.encode(),),
+    ("GET", "/wiki/rest/mywork/latest/x", "admin", 404, "text/html")
+    + (errors_atlassian.OPENRESTY_NOT_FOUND.encode(),),
+    ("POST", "/wiki/rest/mywork/latest/x", None, 404, "text/html")
+    + (errors_atlassian.OPENRESTY_NOT_FOUND.encode(),),
+    ("GET", "/wiki/rest/plugins/latest/", None, 403, "application/json")
+    + (errors_atlassian.PLUGINS_NOT_PERMITTED,),
+    ("GET", "/wiki/rest/plugins/1.0/x", None, 403, "application/json")
+    + (errors_atlassian.PLUGINS_NOT_PERMITTED,),
+    ("GET", "/wiki/rest/plugins/1.0/x-key", None, 403, "application/json")
+    + (errors_atlassian.PLUGINS_NOT_PERMITTED,),
+    ("GET", "/wiki/rest/plugins/1.0/x", "admin", 400)
+    + (errors_atlassian.PLUGINS_TASK_ERROR_MEDIA_TYPE, errors_atlassian.PLUGINS_TASK_ERROR),
+    ("GET", "/wiki/rest/plugins/latest/x", "admin", 400)
+    + (errors_atlassian.PLUGINS_TASK_ERROR_MEDIA_TYPE, errors_atlassian.PLUGINS_TASK_ERROR),
+    ("GET", "/wiki/rest/plugins/1.0/x-key", "admin", 404)
+    + (errors_atlassian.PLUGINS_PLUGIN_MEDIA_TYPE, b""),
+    ("GET", "/wiki/rest/plugins/1/x", None, 404, errors_atlassian.HTML_MEDIA_TYPE)
+    + (errors_atlassian.HTML_NOT_FOUND.encode(),),
+    ("GET", "/wiki/rest/plugins/1.0/nope/deeper", "admin", 404, "application/xml", None),
+]
+
+
+def test_confluence_mywork_and_the_plugins_mount_answer_as_real_does(client, admin_h):
+    assert _failures(_mywork_and_plugins, _MYWORK_AND_PLUGINS, client, admin_h) == {}
 
 
 @pytest.mark.parametrize(

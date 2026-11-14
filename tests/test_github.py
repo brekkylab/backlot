@@ -3179,7 +3179,7 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     # docstring for what that framing did while the scope was left saying `GET`). So the messages
     # the app sends are read directly: the headers carry the GET's length, and no body byte follows
     # them.
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     sent = []
 

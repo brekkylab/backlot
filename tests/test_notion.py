@@ -492,7 +492,7 @@ def test_notion_a_head_is_the_get_without_its_body(client, notion_h):
     body's own `content-length` and `content-type` (178 and 145 bytes) and nothing in the body;
     `HEAD /v1/comments/{id}`, an operation Backlot does not serve, was the credential's 401 at 178
     on 2026-09-28."""
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     rows = [
         ("/notion/v1/users/me", {"Notion-Version": DATA_SOURCES_VERSION}),

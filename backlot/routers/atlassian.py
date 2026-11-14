@@ -2886,7 +2886,6 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         # A search row's content carries these three, each empty, right after `title`, measured
         # on Confluence Cloud on page, blog post, comment and attachment rows on 2026-11-12.
         page.update(childTypes={}, macroRenderedOutput={}, restrictions={})
-        page["_links"] = page.pop("_links")
     else:
         links = {
             "container": f"/rest/api/space/{key}",

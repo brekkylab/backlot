@@ -2528,14 +2528,18 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         assert hit["_expandable"]["descendants"] == ""
         assert hit["_expandable"]["history"] == f"/rest/api/content/{pid}/history"
         assert hit["_expandable"]["space"] == bare["_expandable"]["container"]
-        assert list(hit)[:7] == [
-            "id",
-            "type",
-            "status",
-            "title",
-            "childTypes",
-            "macroRenderedOutput",
-            "restrictions",
+        # The members of the bare read, of one expanding `space,version`, of a `type=page` listing
+        # row and of a search row, in the order `_confluence_page` serves them.
+        spaced = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "space,version"}).json()
+        paged = c.get(api + "/content", headers=h, params={"type": "page"}).json()["results"]
+        paged_row = next(r for r in paged if str(r["id"]) == str(pid))
+        last = ["_expandable", "_links"]
+        searched = ["childTypes", "macroRenderedOutput", "restrictions"]
+        assert [list(bare), list(spaced), list(paged_row), list(hit)] == [
+            ["id", "type", "status", "title", "space", "history", "version", *last],
+            ["id", "type", "status", "title", "space", "version", *last],
+            ["id", "type", "status", "title", *last],
+            ["id", "type", "status", "title", *searched, *last],
         ]
         assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
         # The members each served body representation carries.
@@ -10575,27 +10579,3 @@ def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, ad
         answered[path] = (r.status_code, r.json()["limit"] if r.status_code == 200 else r.json())
     assert len(answered) == len(rows)
     assert answered == dict(rows)
-
-
-def test_confluence_content_object_ends_with_expandable_then_links(client, admin_h):
-    """`_confluence_page`: `_expandable` and then `_links` are a content object's last two members,
-    with `history` and `version` right after `space`, on each read measured."""
-    api = "/atlassian/wiki/rest/api"
-    row = client.get(f"{api}/content", headers=admin_h, params={"type": "page"}).json()["results"][
-        0
-    ]
-    cid = row["id"]
-    reads = [
-        client.get(f"{api}/content/{cid}", headers=admin_h).json(),
-        client.get(
-            f"{api}/content/{cid}", headers=admin_h, params={"expand": "space,version"}
-        ).json(),
-        row,
-        client.get(f"{api}/search", headers=admin_h, params={"cql": "type=page"}).json()["results"][
-            0
-        ]["content"],
-    ]
-    for got in reads:
-        assert list(got)[-2:] == ["_expandable", "_links"], list(got)
-    bare = list(reads[0])
-    assert bare[bare.index("space") + 1 : bare.index("space") + 3] == ["history", "version"], bare

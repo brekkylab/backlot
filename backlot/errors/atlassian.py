@@ -417,20 +417,6 @@ def _service_refusal(status: int, exception: str, message: str) -> AtlassianErro
     )
 
 
-def cql_operator_not_supported(operator: str, field: str) -> AtlassianError:
-    """The CQL search's 400 naming the operator of a date clause: real answered `created > 20260910`
-    with it for `>` (Confluence Cloud, 2026-10-31), and `created` before a list of dates with it for
-    `in` and `notin` and `lastmodified` for `in` (Confluence Cloud, 2026-11-06). The operator in the
-    message is the one sent, `not in` written `notin`; the list is the six comparison operators
-    whatever it is."""
-    return _service_refusal(
-        400,
-        "api.BadRequestException",
-        f"Operator '{operator}' is not supported for field '{field}'. "
-        "Supported operators are : <, <=, >, >=, =, !=",
-    )
-
-
 def cql_not_parsed() -> AtlassianError:
     """The CQL search's refusal of a `cql` it cannot parse (``routers.atlassian._cql_refusal``).
     Measured on Confluence Cloud on 2026-10-22 and 2026-10-25: `"`, `type=page and`, `type=page)`
@@ -451,6 +437,44 @@ def cql_expecting_value(operator: str, field: str, got: str | None = None) -> At
     if got is not None:
         message += f" but got '{got}'"
     return _service_refusal(400, "api.BadRequestException", message)
+
+
+def cql_unknown_field(name: str, suggestions: tuple[str, ...] = ()) -> AtlassianError:
+    """The CQL search's refusal of a field it does not have, naming the field as sent and the
+    fields ``routers.atlassian._cql_suggest`` offers for it, if any. Measured on Confluence Cloud on
+    2026-10-25: `foo=bar` drew `favorite, filesize, favourite, fileExtension`. Where it falls among
+    the search's other refusals is ``routers.atlassian._cql_refusal``'s."""
+    message = f"No field exists with the name: '{name}'"
+    if suggestions:
+        message += f" Did you mean one of : {', '.join(suggestions)}"
+    return _service_refusal(400, "api.BadRequestException", message)
+
+
+def cql_expecting_operator(field: str, supported: str) -> AtlassianError:
+    """The CQL search's refusal of a field with no operator after it, naming the field and the
+    operators it takes, the list as real spells it. Measured on Confluence Cloud on 2026-11-05:
+    `title` drew `~, !~, =, !=, IN, NOT IN` and `type` drew `=, !=, IN, NOT IN`. Where it falls
+    among the search's other refusals is ``routers.atlassian._cql_refusal``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Expecting operator for field '{field}', supported operators are : {supported}",
+    )
+
+
+def cql_operator_not_supported(operator: str, field: str, supported: str) -> AtlassianError:
+    """The CQL search's refusal of an operator a field does not take, naming the operator as sent,
+    the field, and the operators it takes, the list as real spells it. Measured on Confluence Cloud
+    on 2026-10-31: a field under an operator outside its list drew this where its value drew neither
+    ``cql_not_parsed`` nor ``cql_expecting_value``, with `not in` quoted as `notin`, and
+    `created > 20260910` drew the date list `<, <=, >, >=, =, !=`. Where it falls among the search's
+    other refusals is ``routers.atlassian._cql_refusal``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Operator '{operator}' is not supported for field '{field}'. "
+        f"Supported operators are : {supported}",
+    )
 
 
 def cql_reserved_keyword(word: str) -> AtlassianError:

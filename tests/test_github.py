@@ -2718,12 +2718,13 @@ _COUNTED_TOKEN_SHAPED = [
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: twenty-six are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the twelfth as the `/orgs/{}`
+#: thirty-one are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the twelfth as the `/orgs/{}`
 #: path `/organizations/{id}` is rewritten to, the thirteenth on a path whose slash-terminated
-#: spelling a route matches, and the ten after `security-advisories` on `contents`, `git/refs`,
-#: `git/matching-refs`, `tarball` and `zipball`, whose parameters span segments; the next two are in
+#: spelling a route matches, and the fifteen after `security-advisories` on `contents`, `git/refs`,
+#: `git/matching-refs`, `tarball`, `zipball`, `compare`, `rules/branches`, `branches/protection`,
+#: `branches/rename` and `commits/comments`, whose parameters span segments; the next two are in
 #: `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep
-#: out of it, and the three after them a second segment where the operation's parameter takes one;
+#: out of it, and the five after them a second segment where the operation's parameter takes one;
 #: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
 #: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
 #: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; the
@@ -2763,6 +2764,11 @@ _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase/git/refs/heads/x", True, 404),
     ("GET", "/github/repos/{org}/codebase/git/matching-refs/heads/x", True, 404),
     ("GET", "/github/repos/{org}/codebase/tarball/a/b", True, 404),
+    ("GET", "/github/repos/{org}/codebase/compare/a...b/c", True, 404),
+    ("GET", "/github/repos/{org}/codebase/rules/branches/a/b", True, 404),
+    ("DELETE", "/github/repos/{org}/codebase/branches/a/b/protection", True, 405),
+    ("POST", "/github/repos/{org}/codebase/branches/a/b/rename", True, 405),
+    ("POST", "/github/repos/{org}/codebase/commits/a/b/comments", True, 405),
     ("GET", "/github/agents/automations/available-tools", True, 404),
     ("GET", "/github/agents/automations/1/tasks", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
@@ -2772,6 +2778,13 @@ _UNSERVED_ROWS = [
     ("DELETE", "/github/repos/{org}/codebase/hooks/1/2", False, 404),
     ("DELETE", "/github/gists/1/2", False, 404),
     ("DELETE", "/github/repos/{org}/codebase/releases/1/2", False, 404),
+    ("GET", "/github/repos/{org}/codebase/git/commits/a/b", False, 404),
+    (
+        "GET",
+        "/github/repos/{org}/codebase/dependency-graph/compare/a...b/c",
+        False,
+        404,
+    ),
     ("GET", "/github/zen%23", False, 404),
     ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
     ("PUT", "/github/orgs/{org}", False, 405),
@@ -2798,7 +2811,7 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     400, counted, ahead of the router's answer to the admin token and of the refusal of a `Basic`
     value that names no token, each carrying the version echo. A row not refused is the router's
     answer for any caller. Real was measured on each row but the last with a bad bearer, an unknown
-    scheme and a bearer after a tab, on each refused row but the ten after `security-advisories`
+    scheme and a bearer after a tab, on each refused row but the fifteen after `security-advisories`
     with each header below, and with no header on the first ten. On the three refused rows after
     `git/trees` and the two under `/agents/automations`, two of those headers have no answer of
     real's: a bearer after a tab that resolves was not sent on the three writes, and
@@ -2866,6 +2879,29 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         unversioned = c.request(method, url, headers={**headers, **bad_version})
         assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+
+
+def test_github_unserved_operations_on_multi_segment_parameters(gh_client, gh_org):
+    """The operations :data:`backlot.routers.github._ROUTED_AS` routes with `{+}` answer 401 "Bad
+    credentials" when the parameter spans segments, where single-segment operations answer 404."""
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/codebase"
+    nope = {"Authorization": "Bearer nope"}
+    for method, path in (
+        ("GET", f"{base}/compare/a...b/c"),
+        ("GET", f"{base}/rules/branches/a/b"),
+        ("DELETE", f"{base}/branches/a/b/protection"),
+        ("POST", f"{base}/branches/a/b/rename"),
+        ("POST", f"{base}/commits/a/b/comments"),
+    ):
+        r = c.request(method, path, headers=nope)
+        assert (r.status_code, r.json()["message"]) == (401, "Bad credentials"), (method, path)
+    for method, path in (
+        ("GET", f"{base}/git/commits/a/b"),
+        ("GET", f"{base}/dependency-graph/compare/a...b/c"),
+    ):
+        r = c.request(method, path, headers=nope)
+        assert (r.status_code, r.json()["message"]) == (404, "Not Found"), (method, path)
 
 
 #: (method, path, whether a request with no `Authorization` header is counted) on the paths

@@ -612,11 +612,14 @@ async def _canonical_path_repo(request: Request) -> None:
 #: `/repos/{}/{}/dependabot/runner-settings`: on 2026-11-06 each was 404 `Not Found` with no
 #: credential, with `Bearer nope`, `Digest x` and a bearer after a tab, and with a token, an
 #: administrator's among them for the `GET`, where `GET …/dependabot/secrets` on the same public
-#: repository was 401 for the first two. `{path}` on `contents` and `{ref}` on `git/refs`,
-#: `git/matching-refs`, `tarball` and `zipball` take several segments (`{+}`): `Bearer nope` was 401
+#: repository was 401 for the first two. `{path}` on `contents`, `{ref}` on `git/refs`,
+#: `git/matching-refs`, `tarball` and `zipball`, `{basehead}` on `compare`, `{branch}` on
+#: `rules/branches`, `branches/rename` and `branches/protection` (and each of its sub-resources),
+#: and `{commit_sha}` on `commits/comments` take several segments (`{+}`): `Bearer nope` was 401
 #: "Bad credentials" for a value of two segments as for one (2026-10-14 on `PUT …/contents`,
-#: `DELETE …/git/refs` and `zipball`, 2026-11-10 on the other four), where `DELETE …/hooks/1/2`,
-#: `DELETE /gists/1/2` and `DELETE …/releases/1/2` were the 404.
+#: `DELETE …/git/refs` and `zipball`, 2026-11-10 on the other thirty-one), where `DELETE …/hooks/1/2`,
+#: `DELETE /gists/1/2`, `DELETE …/releases/1/2`, `GET …/git/commits/a/b` and
+#: `GET …/dependency-graph/compare/a...b/c` were the 404.
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip",
     "DELETE /repos/{}/{}/contents/{}": "DELETE /repos/{}/{}/contents/{+}",
@@ -626,6 +629,33 @@ _ROUTED_AS = {
     "GET /repos/{}/{}/git/matching-refs/{}": "GET /repos/{}/{}/git/matching-refs/{+}",
     "GET /repos/{}/{}/tarball/{}": "GET /repos/{}/{}/tarball/{+}",
     "GET /repos/{}/{}/zipball/{}": "GET /repos/{}/{}/zipball/{+}",
+    "GET /repos/{}/{}/compare/{}": "GET /repos/{}/{}/compare/{+}",
+    "GET /repos/{}/{}/rules/branches/{}": "GET /repos/{}/{}/rules/branches/{+}",
+    "POST /repos/{}/{}/commits/{}/comments": "POST /repos/{}/{}/commits/{+}/comments",
+    "POST /repos/{}/{}/branches/{}/rename": "POST /repos/{}/{}/branches/{+}/rename",
+    "DELETE /repos/{}/{}/branches/{}/protection": "DELETE /repos/{}/{}/branches/{+}/protection",
+    "DELETE /repos/{}/{}/branches/{}/protection/enforce_admins": "DELETE /repos/{}/{}/branches/{+}/protection/enforce_admins",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_pull_request_reviews": "DELETE /repos/{}/{}/branches/{+}/protection/required_pull_request_reviews",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_signatures": "DELETE /repos/{}/{}/branches/{+}/protection/required_signatures",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_status_checks": "DELETE /repos/{}/{}/branches/{+}/protection/required_status_checks",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_status_checks/contexts": "DELETE /repos/{}/{}/branches/{+}/protection/required_status_checks/contexts",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions/apps": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions/apps",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions/teams": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions/teams",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions/users": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions/users",
+    "PATCH /repos/{}/{}/branches/{}/protection/required_pull_request_reviews": "PATCH /repos/{}/{}/branches/{+}/protection/required_pull_request_reviews",
+    "PATCH /repos/{}/{}/branches/{}/protection/required_status_checks": "PATCH /repos/{}/{}/branches/{+}/protection/required_status_checks",
+    "POST /repos/{}/{}/branches/{}/protection/enforce_admins": "POST /repos/{}/{}/branches/{+}/protection/enforce_admins",
+    "POST /repos/{}/{}/branches/{}/protection/required_signatures": "POST /repos/{}/{}/branches/{+}/protection/required_signatures",
+    "POST /repos/{}/{}/branches/{}/protection/required_status_checks/contexts": "POST /repos/{}/{}/branches/{+}/protection/required_status_checks/contexts",
+    "POST /repos/{}/{}/branches/{}/protection/restrictions/apps": "POST /repos/{}/{}/branches/{+}/protection/restrictions/apps",
+    "POST /repos/{}/{}/branches/{}/protection/restrictions/teams": "POST /repos/{}/{}/branches/{+}/protection/restrictions/teams",
+    "POST /repos/{}/{}/branches/{}/protection/restrictions/users": "POST /repos/{}/{}/branches/{+}/protection/restrictions/users",
+    "PUT /repos/{}/{}/branches/{}/protection": "PUT /repos/{}/{}/branches/{+}/protection",
+    "PUT /repos/{}/{}/branches/{}/protection/required_status_checks/contexts": "PUT /repos/{}/{}/branches/{+}/protection/required_status_checks/contexts",
+    "PUT /repos/{}/{}/branches/{}/protection/restrictions/apps": "PUT /repos/{}/{}/branches/{+}/protection/restrictions/apps",
+    "PUT /repos/{}/{}/branches/{}/protection/restrictions/teams": "PUT /repos/{}/{}/branches/{+}/protection/restrictions/teams",
+    "PUT /repos/{}/{}/branches/{}/protection/restrictions/users": "PUT /repos/{}/{}/branches/{+}/protection/restrictions/users",
 }
 _NOT_ROUTED = frozenset(
     {

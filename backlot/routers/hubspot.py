@@ -646,7 +646,7 @@ def _first_query(qp, name: str):
     Real reads a repeated `archived` on an object listing from its first value, where Starlette's
     `QueryParams.get` returns the last. Measured against api.hubapi.com (2026-10-07, 2026-10-08):
     `archived=true&archived=false` answers like `archived=true`, and `archived=false&archived=true`,
-    `archived=&archived=true` like `archived=false`."""
+    `archived=&archived=true` and `archived=yes&archived=true` like `archived=false`."""
     values = qp.getlist(name)
     return values[0] if values else None
 

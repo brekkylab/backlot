@@ -2528,14 +2528,18 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         assert hit["_expandable"]["descendants"] == ""
         assert hit["_expandable"]["history"] == f"/rest/api/content/{pid}/history"
         assert hit["_expandable"]["space"] == bare["_expandable"]["container"]
-        assert list(hit)[:7] == [
-            "id",
-            "type",
-            "status",
-            "title",
-            "childTypes",
-            "macroRenderedOutput",
-            "restrictions",
+        # The members of the bare read, of one expanding `space,version`, of a `type=page` listing
+        # row and of a search row, in the order `_confluence_page` serves them.
+        spaced = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "space,version"}).json()
+        paged = c.get(api + "/content", headers=h, params={"type": "page"}).json()["results"]
+        paged_row = next(r for r in paged if str(r["id"]) == str(pid))
+        last = ["_expandable", "_links"]
+        searched = ["childTypes", "macroRenderedOutput", "restrictions"]
+        assert [list(bare), list(spaced), list(paged_row), list(hit)] == [
+            ["id", "type", "status", "title", "space", "history", "version", *last],
+            ["id", "type", "status", "title", "space", "version", *last],
+            ["id", "type", "status", "title", *last],
+            ["id", "type", "status", "title", *searched, *last],
         ]
         assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
         # The members each served body representation carries.

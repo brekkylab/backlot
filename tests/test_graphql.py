@@ -25,12 +25,11 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from graphql import GraphQLError, GraphQLID, parse, validate
 from graphql.type.scalars import coerce_id
-from starlette.testclient import TestClient
 
 from backlot import auth, pagination, store
 from backlot.graphql import apollo_http, engine, mcp_tools, node_utf8, v8_json
 from backlot.graphql import body as request_body
-from tests._helpers import selected_fields
+from tests._helpers import TestClient, selected_fields
 
 SDL = """
 type Query {

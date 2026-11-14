@@ -6061,7 +6061,7 @@ def test_atlassian_a_head_is_the_get_without_its_body(client, admin_h, keys):
 
     The test client drops a `HEAD` body itself, so what the app sends is read at the ASGI layer.
     """
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     sent = []
 
@@ -6725,7 +6725,7 @@ def _spelled(client, method):
     """A client whose requests reach the app under ``method`` as spelled, which the test client's
     transport would upper-case. No `with`: a second lifespan would overwrite the state `client`
     started."""
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     async def app(scope, receive, send):
         await client.app({**scope, "method": method}, receive, send)

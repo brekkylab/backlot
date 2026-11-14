@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 import uvicorn
-from starlette.testclient import TestClient
+from starlette.testclient import TestClient as _StarletteTestClient
 from uvicorn.server import ServerState
 
 from backlot import protocol
@@ -239,6 +239,25 @@ def settings_put_back():
             restored = get_settings()
             for name in type(outer).model_fields:
                 setattr(restored, name, getattr(outer, name))
+
+
+class TestClient(_StarletteTestClient):
+    """Starlette's test client, with ``scope["path"]`` the ``scope["raw_path"]`` the client sent
+    decoded once, as uvicorn decodes a request target. Starlette's transport (1.6.0) unquotes
+    httpx's ``URL.path``, which httpx has already decoded, so `%252F` would reach the app as `/`
+    where uvicorn hands it `%2F`."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        app = self._transport.app
+
+        async def decoded_once(scope, receive, send):
+            if scope["type"] in ("http", "websocket"):
+                raw_path = scope["raw_path"].decode("latin-1")
+                scope = {**scope, "path": urllib.parse.unquote(raw_path)}
+            await app(scope, receive, send)
+
+        self._transport.app = decoded_once
 
 
 @contextlib.contextmanager

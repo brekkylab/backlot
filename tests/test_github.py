@@ -2635,6 +2635,7 @@ _ESCAPED_SLASH_ROWS = [
     ("{gateway}%2Fissues%2F{issue}", "/repos/{org}/nope", 404),
     ("{gateway}%2Fbranches", "/repos/{org}/nope", 404),
     ("/repos/{org}%2Fgateway", "/nope", 404),
+    ("/repos/{org}%252Fgateway", "/nope", 404),
     ("/orgs/{org}%2Frepos", "/orgs/nope", 404),
     ("/search%2Fcode?q=x", "/nope", 404),
     ("/agents%2Frepos/{org}/gateway/nosuch", "/nope", 404),
@@ -2648,6 +2649,7 @@ _ESCAPED_SLASH_ROWS = [
     ("{gateway}/issues/x%2F1", "{gateway}/issues/x", 404),
     ("{diffable}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
     ("{diffable}/branches/chore%2frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/branches/chore%252Frename", "{diffable}/branches/nope", 404),
     ("{diffable}/commits/chore%2Frename", "{diffable}/commits/chore/rename", 200),
     ("{diffable}/git/ref/heads/chore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
     ("{diffable}/git/ref/heads%2Fchore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
@@ -3177,7 +3179,7 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     # docstring for what that framing did while the scope was left saying `GET`). So the messages
     # the app sends are read directly: the headers carry the GET's length, and no body byte follows
     # them.
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     sent = []
 

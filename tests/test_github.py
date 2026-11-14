@@ -7954,6 +7954,8 @@ def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
     rid = synth.github_user_id("codebase")
     repository = c.get(f"/github/repositories/{rid}", headers=gh_admin_h).json()
     assert repository["name"] == "codebase"
+    branch = c.get(f"/github/repositories/{rid}/branches/main", headers=gh_admin_h).json()
+    assert branch["name"] == "main"
     unrouted = {
         "message": "Not Found",
         "documentation_url": "https://docs.github.com/rest",
@@ -7965,12 +7967,16 @@ def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
         "status": "404",
     }
     rows = {
+        f"0{rid}": (200, repository),
+        f"%20{rid}": (200, repository),
         f"{rid}x": (200, repository),
         f"{rid}.5": (200, repository),
         f"{rid}%2Fbranches": (200, repository),
         f"{rid}%C2%B2": (200, repository),
         f"{rid}%D9%A3": (200, repository),
         f"x{rid}": (404, absent),
+        f"0{rid}/branches/main": (200, branch),
+        f"%20{rid}/branches/main": (200, branch),
         f"{rid}x/branches/main": (404, unrouted),
         f"{rid}%2Fx/branches/main": (404, unrouted),
         f"{rid}%C2%B2/branches/main": (404, unrouted),
@@ -7980,5 +7986,44 @@ def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
     answered = {}
     for rest in rows:
         r = c.get(f"/github/repositories/{rest}", headers=gh_admin_h)
+        answered[rest] = (r.status_code, r.json())
+    assert answered == rows
+
+
+def test_github_organization_id_canonicalization(gh_client, gh_admin_h):
+    """An organization id followed by other characters, or with a leading zero or a leading space,
+    answers as the id does; a subpath under an organization id holding anything other than ASCII
+    digits and optional leading spaces is the 404 of a path no route matches; and an organization id
+    prefixed by other characters is the organization route's 404, as real answered each
+    (``backlot.routers.github.canonical_id_path``)."""
+    c, _ = gh_client
+    oid = synth.github_user_id("acme")
+    organization = c.get(f"/github/organizations/{oid}", headers=gh_admin_h).json()
+    assert organization["login"] == "acme"
+    repos = c.get(f"/github/organizations/{oid}/repos", headers=gh_admin_h).json()
+    assert len(repos) > 0
+    unrouted = {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "404",
+    }
+    absent = {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/orgs/orgs#get-an-organization",
+        "status": "404",
+    }
+    rows = {
+        f"{oid}x": (200, organization),
+        f"0{oid}": (200, organization),
+        f"%20{oid}": (200, organization),
+        f"x{oid}": (404, absent),
+        f"0{oid}/repos": (200, repos),
+        f"%20{oid}/repos": (200, repos),
+        f"{oid}x/repos": (404, unrouted),
+        f"x{oid}/repos": (404, unrouted),
+    }
+    answered = {}
+    for rest in rows:
+        r = c.get(f"/github/organizations/{rest}", headers=gh_admin_h)
         answered[rest] = (r.status_code, r.json())
     assert answered == rows

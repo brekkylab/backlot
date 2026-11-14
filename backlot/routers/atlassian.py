@@ -2948,9 +2948,13 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             # `storage` adds `embeddedContent: []` and an `_expandable` naming the content, and
             # the other three this server renders add an `_expandable` of four names (Confluence
             # Cloud: `storage` and `export_view` on 2026-11-03, `view` and `atlas_doc_format` on
-            # 2026-11-04). A named storage member also gives the four-name form: `value`
-            # on 2026-11-03 and `representation`, `x`, `Value` and `value.x` on 2026-11-13.
-            # A trailing dot alone gives the bare storage form.
+            # 2026-11-04). A term naming anything inside `storage` gives it the four names instead
+            # and no `embeddedContent`: `body.storage.value` on 2026-11-03, and
+            # `body.storage.representation`, `body.storage.content`, `body.storage.x`,
+            # `body.storage.Value` and `body.storage.value.x` on 2026-11-13, where `body.storage.`
+            # drew the first form. A term naming `embeddedContent`, `webresource` or `mediaToken`
+            # there serves that member in place of its `_expandable` name, which this server
+            # leaves standing.
             rep = {"value": body_writers[name](), "representation": name}
             if name == "storage" and not storage_named:
                 rep["embeddedContent"] = []

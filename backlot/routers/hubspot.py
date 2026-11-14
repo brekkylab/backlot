@@ -45,9 +45,11 @@ from backlot.routers import json_body
 
 router = APIRouter(prefix="/hubspot", tags=["hubspot"])
 
-# `hubspot/utils/objects.py` in the official client pages at 100 (PAGE_MAX_SIZE); a larger `limit`
-# is clamped rather than rejected, matching how HubSpot itself caps a page.
+# The most a page holds, past which real refuses a `limit`: on the object listing
+# (`_listing_limit`) and on the search (`search_objects`). `hubspot/utils/objects.py` in the
+# official client pages at 100 (PAGE_MAX_SIZE).
 _PAGE_MAX = 100
+_SEARCH_PAGE_MAX = 200
 # The associations endpoint pages at 500 per request, like the vendor's.
 _ASSOC_PAGE_MAX = 500
 
@@ -115,7 +117,10 @@ _B_SEARCH = {
                                 },
                             },
                         },
-                        "sorts": {"type": "array", "items": {"type": "object"}},
+                        "sorts": {
+                            "type": "array",
+                            "items": {"anyOf": [{"type": "string"}, {"type": "object"}]},
+                        },
                         "query": {"type": "string"},
                         "properties": {"type": "array", "items": {"type": "string"}},
                         "limit": {"type": "integer"},
@@ -517,12 +522,106 @@ def _existing_id(request: Request, record_id: str) -> str | None:
     return row["id"] if row is not None else None
 
 
-def _clamp(raw, default: int, cap: int) -> int:
-    try:
-        n = int(raw)
-    except (TypeError, ValueError):
+def _query_limit(request: Request, default: int) -> int | JSONResponse:
+    """The first `limit` in the query as real's listings read it: ``default`` when there is none or
+    `trim()` empties it, and otherwise `Integer.parseInt` of the value as sent (`_java_int`), or a
+    400 with no `category` where that throws. Measured against api.hubapi.com on 2026-11-13: on the
+    object listing an empty `limit`, a space, a tab and a newline were served, `0101`, `+101` and
+    `１０１` were read as 101, and ` 5`, `5 `, `1.5`, `1e2`, `0x10`, `+`, a no-break space and
+    `2147483648` got the 400, as `limit=abc&limit=2` did where `limit=2&limit=abc` served two
+    records; on the associations listing a tab was served and `+501`, `0501` and `５０１` were read
+    as 501."""
+    raw = _first_query(request.query_params, "limit")
+    if raw is None or not raw.strip(_TRIM):
         return default
-    return max(1, min(n, cap))
+    n = _java_int(raw)
+    if n is None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": "Unable to parse value for query parameter: limit",
+            },
+        )
+    return n
+
+
+def _limit_out_of_range(message: str, n: int, category: str = "VALIDATION_ERROR") -> JSONResponse:
+    """Real's 400 for a `limit` it read as ``n`` and refuses, naming ``n`` in `context`: `-0` and
+    `000` are named `0` (api.hubapi.com, 2026-11-13)."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "status": "error",
+            "message": message,
+            "context": {"limit": [str(n)]},
+            "category": category,
+        },
+    )
+
+
+def _listing_limit(request: Request) -> int | JSONResponse:
+    """The object listing's `limit` (`_query_limit`), or real's 400 for one below 1 or past
+    `_PAGE_MAX`."""
+    n = _query_limit(request, 10)
+    if isinstance(n, JSONResponse):
+        return n
+    if n < 1:
+        return _limit_out_of_range("Limit must be greater than or equal to 1.", n)
+    if n > _PAGE_MAX:
+        return _limit_out_of_range("You can only request at most 100 objects in one request.", n)
+    return n
+
+
+def _assoc_limit(request: Request) -> int | JSONResponse:
+    """The associations listing's `limit` (`_query_limit`), or real's API_LIMIT 400 for one below 0
+    or past `_ASSOC_PAGE_MAX`: `-1`, `-5` and `501` got it from api.hubapi.com on 2026-11-13."""
+    n = _query_limit(request, _ASSOC_PAGE_MAX)
+    if isinstance(n, JSONResponse):
+        return n
+    if not 0 <= n <= _ASSOC_PAGE_MAX:
+        return _limit_out_of_range(
+            f"Limit must be between 0 and {_ASSOC_PAGE_MAX}.", n, "API_LIMIT"
+        )
+    return n
+
+
+def _unreadable_limit(raw: bytes, value) -> JSONResponse | None:
+    """Real's 400 for a search body `limit` it cannot read as a Java `int`, or None. Measured
+    against api.hubapi.com on 2026-11-13: it names a boolean, an array or an object where it
+    starts; a number outside Java's int (`2147483648`, `1e10`, `-2147483649.0`) just past it, with
+    no `category` (`_past_int`); and a string that, trimmed (`_TRIM`), is not empty, not `null`
+    and not read by `Integer.parseInt` (`_java_int`), such as `abc`, `1.5`, `+` and `2147483648`,
+    by its field, echoed trimmed (`_unreadable_field`)."""
+    if isinstance(value, (bool, list, dict)):
+        kind, token = _json_kind(value)
+        text = (
+            f"Cannot deserialize value of type `int` from {kind} value (token `JsonToken.{token}`)"
+        )
+        return _invalid_at(raw, ("limit",), text)
+    if isinstance(value, (int, float)) and not -(2**31) <= value <= 2**31 - 1:
+        return _past_int(raw, ("limit",))
+    if isinstance(value, str):
+        text = value.strip(_TRIM)
+        if text not in ("", "null") and _java_int(text) is None:
+            return _unreadable_field(("limit",), text)
+    return None
+
+
+def _search_limit(body: dict) -> int:
+    """The search body's `limit` as real reads one `_unreadable_limit` passes: 10 when the body has
+    none, 0 for `null` and for a string that trims to nothing or to `null`, a float cut toward
+    zero, and a string as `_java_int` reads it trimmed. Measured against api.hubapi.com on
+    2026-11-13: `null`, `""`, `"  "`, `"null"`, `-0.5` and `"-0"` answered the empty page `0` does
+    and `1.5` the page `1` does; `"5"`, `" 5"`, `"+5"`, `"05"` and `"٥"` were served; `"201"` and
+    `"0201"` got the range 400 for 201, and `300.5` and `-1.5` the one for 300 and -1."""
+    if "limit" not in body:
+        return 10
+    value = body["limit"]
+    if isinstance(value, str):
+        value = value.strip(_TRIM)
+        return 0 if value in ("", "null") else _java_int(value)
+    return 0 if value is None else int(value)
 
 
 def _flag(raw) -> bool:
@@ -586,7 +685,10 @@ def _page(rows, limit: int, keep: list[str] | None) -> dict:
     has_more = len(rows) > limit
     rows = rows[:limit]
     out: dict = {"results": [_record(r, keep) for r in rows]}
-    if has_more:
+    # This router's cursor is the last row's id, so a page of `limit` 0 has no `paging`. Real's
+    # search answered `{"limit": 0}` with `paging.next.after` "0" and `{"limit": 0, "after": "2"}`
+    # with "2" (2026-11-13), an offset.
+    if has_more and rows:
         after = rows[-1]["id"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
     return out
@@ -1366,17 +1468,17 @@ def _refuse_a_search_shape(
     raw: bytes, body: dict, before: tuple[int, int] | None = None
 ) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
     """Real's 400 for a search body it cannot read, with where the value it names starts, or
-    `(None, None)`. Measured against api.hubapi.com on 2026-10-01 and 2026-11-09: real reads the
-    body in order and stops at the first value it cannot read, naming where it starts: a
+    `(None, None)`. Measured against api.hubapi.com on 2026-10-01, 2026-11-09 and 2026-11-13: real
+    reads the body in order and stops at the first value it cannot read, naming where it starts: a
     `filterGroups` or a group's `filters` that is neither null nor a list (`_not_a_list`), an
     element of either that is not an object (`_unbuildable`), a filter member `_unreadable_member`
-    refuses, or a `query` that is an array or an object. A null element is named at the closing
-    brace of the object holding its list, the body's for `filterGroups` and the group's for
-    `filters`: after that object's other values and ahead of a later element, `query` or
-    non-standard token. A null `filterGroups`, `filters` or `query`, and a group with no `filters`,
-    are read. With a `before` from `_non_standard_number`, a value from there on is left to the
-    token. A key the body repeats is read by its last value, the one `json.loads` keeps, where real
-    reads its values in order and names the first it cannot read
+    refuses, a `query` that is an array or an object, or a `limit` `_unreadable_limit` refuses. A
+    null element is named at the closing brace of the object holding its list, the body's for
+    `filterGroups` and the group's for `filters`: after that object's other values and ahead of a
+    later element, `query` or non-standard token. A null `filterGroups`, `filters` or `query`, and a
+    group with no `filters`, are read. With a `before` from `_non_standard_number`, a value from
+    there on is left to the token. A key the body repeats is read by its last value, the one
+    `json.loads` keeps, where real reads its values in order and names the first it cannot read
     (`{"filterGroups": "x", "filterGroups": []}` names the `"x"`, measured 2026-11-10); this router
     does not model that."""
 
@@ -1391,6 +1493,11 @@ def _refuse_a_search_shape(
             if isinstance(value, (dict, list)):
                 position = _token_at(raw, (key,))
                 return named(position, _invalid(position, _mismatched(value)))
+            continue
+        if key == "limit":
+            refusal = _unreadable_limit(raw, value)
+            if refusal is not None:
+                return named(_token_at(raw, (key,)), refusal)
             continue
         if key != "filterGroups" or value is None:
             continue
@@ -1557,15 +1664,27 @@ def _match_one(prop, f: dict) -> bool:
     return False
 
 
-def _sorted(rows, sorts):
-    """Apply `sorts` (first entry wins, as HubSpot documents). Numeric when every value on that
-    property parses as a number, else lexicographic — Backlot is not told property types."""
-    if not sorts:
+def _sort_field(spec) -> tuple[str, bool] | None:
+    """The property one element of a search's `sorts` names and whether it sorts descending, or
+    None when it names none. HubSpot's contacts search read a string as the property's name,
+    descending after a leading `-`, and answered it as the object naming the same property and
+    direction (2026-11-10)."""
+    if isinstance(spec, str):
+        return spec.removeprefix("-"), spec.startswith("-")
+    if isinstance(spec, dict) and isinstance(spec.get("propertyName"), str):
+        descending = str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING"
+        return spec["propertyName"], descending
+    return None
+
+
+def _sorted(rows, field: tuple[str, bool] | None):
+    """Order the full match set by one :func:`_sort_field`. HubSpot's contacts search ordered text
+    by its lower-case form (2026-11-10), and a contact without the property as the lowest value,
+    first ascending and last descending (2026-11-12). Numeric when every present value parses as a
+    number, since Backlot is not told property types."""
+    if field is None:
         return rows
-    spec = sorts[0] if isinstance(sorts, list) and sorts else None
-    if not isinstance(spec, dict) or not spec.get("propertyName"):
-        return rows
-    name = spec["propertyName"]
+    name, descending = field
     # Decorate once: the properties JSON is parsed per row here, and re-parsing it inside the sort
     # key would double that over the whole match set (15k+ rows at the scale measured).
     decorated = [(_props(r).get(name), r) for r in rows]
@@ -1576,11 +1695,11 @@ def _sorted(rows, sorts):
 
     def key(pair):
         v = pair[0]
-        if v is None:  # absent sorts last in both directions
-            return (1, 0.0 if numeric else "")
-        return (0, _num(v) if numeric else str(v))
+        if v is None:
+            return (0, 0.0 if numeric else "")
+        return (1, _num(v) if numeric else str(v).lower())
 
-    decorated.sort(key=key, reverse=str(spec.get("direction", "ASCENDING")).upper() == "DESCENDING")
+    decorated.sort(key=key, reverse=descending)
     return [r for _, r in decorated]
 
 
@@ -1987,7 +2106,9 @@ async def list_objects(object_type: str, request: Request):
     if spellings is None:
         return _unknown_type(object_type)
     qp = request.query_params
-    limit = _clamp(qp.get("limit"), 10, _PAGE_MAX)
+    limit = _listing_limit(request)
+    if isinstance(limit, JSONResponse):
+        return limit
     after_doc, err = _resolve_cursor(request, qp.get("after"))
     if err is not None:
         return err
@@ -2061,10 +2182,23 @@ async def search_objects(object_type: str, request: Request):
     if refused is not None:
         return refused
     body = _scalars_as_text(raw, body)
-    limit = _clamp(body.get("limit"), 10, _PAGE_MAX)
+    limit = _search_limit(body)
+    # After the whole body is read: real named the `query` of `{"limit": 201, "query": ["x"]}` and
+    # the `filterGroups` of `{"limit": 201, "filterGroups": "x"}` (2026-11-13).
+    if not 0 <= limit <= _SEARCH_PAGE_MAX:
+        message = f"limit must be in range [0..{_SEARCH_PAGE_MAX}] (actual value: {limit})"
+        return _limit_out_of_range(message, limit)
     visible = auth.visible_ids(request, caller)
     conn = auth.conn(request)
     after_doc, err = _resolve_cursor(request, body.get("after"))
+    # Real counts each property and direction once, however often and in whichever form `sorts`
+    # names it, and refuses more than one ahead of a cursor it can parse that names no record
+    # (contacts search, 2026-11-12).
+    sorts = body.get("sorts")
+    fields = dict.fromkeys(_sort_field(s) for s in (sorts if isinstance(sorts, list) else []))
+    fields.pop(None, None)
+    if len(fields) > 1:
+        return _error(400, f"too many sorts (count: {len(fields)}, max allowed: 1)")
     if err is not None:
         return err
 
@@ -2098,7 +2232,15 @@ async def search_objects(object_type: str, request: Request):
         cursor = batch[-1]["id"]
         hits += [r for r in batch if _matches(r, body)]
     total = len(hits)
-    hits = _sorted(hits, body.get("sorts"))
+    if fields:
+        hits = _sorted(hits, next(iter(fields), None))
+    elif not sorts:
+        # No sort asked for — real answered `{}`, `{"sorts": []}` and `{"sorts": null}` oldest
+        # `createdate` first on contacts, companies, tasks and meetings (api.hubapi.com,
+        # 2026-11-13). `created_ts` serves `createdAt` in whole seconds, and rows created in the
+        # same second keep ascending id: no two records of the portal measured share a
+        # `createdate`, so real's order for a tie is unknown.
+        hits.sort(key=lambda r: r["created_ts"])
 
     if after_doc is not None:
         ids = [r["id"] for r in hits]
@@ -2188,7 +2330,9 @@ async def list_associations(
     if isinstance(record_id, JSONResponse):
         return record_id
     conn, visible = auth.conn(request), auth.visible_ids(request, caller)
-    limit = _clamp(request.query_params.get("limit"), _ASSOC_PAGE_MAX, _ASSOC_PAGE_MAX)
+    limit = _assoc_limit(request)
+    if isinstance(limit, JSONResponse):
+        return limit
     after_to, err = _resolve_cursor(request, request.query_params.get("after"))
     if err is not None:
         return err
@@ -2229,7 +2373,10 @@ async def list_associations(
             for r in rows
         ]
     }
-    if has_more:
+    # Real answered `limit=0` with `paging.next.after` "0" and a `link` to it, and `after=0` with
+    # the first page (2026-11-13); `_resolve_cursor` refuses an `after` that names no record, so an
+    # empty page here has no `paging`.
+    if has_more and out["results"]:
         after = out["results"][-1]["toObjectId"]
         out["paging"] = {"next": {"after": after, "link": f"?after={after}"}}
     return out

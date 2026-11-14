@@ -651,6 +651,33 @@ _PUBLISHED_NOT_SERVED = published.operations(
 _ROUTED_UNPUBLISHED = published.operations(
     ("GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
+#: The unserved reads real serves with no credential, of the sample in
+#: :func:`refuse_an_unserved_operation`: with `Digest x` on 2026-11-10, `…/zipball/a` and
+#: `…/tarball/a/b` were the 302 to the archive and `…/git/matching-refs/heads/x` the 200 list of
+#: refs, and `/zen` is one of the ten that sample answered with no `Authorization`.
+_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL = published.operations(
+    (
+        "GET /zen",
+        "GET /repos/{}/{}/zipball/{+}",
+        "GET /repos/{}/{}/tarball/{+}",
+        "GET /repos/{}/{}/git/matching-refs/{+}",
+    )
+)
+
+
+def _a_tab_credential_on_a_read_real_serves_without_one(request: Request) -> bool:
+    """Whether this request carries a `Bearer` or `token` credential after a tab, one that
+    resolves to no one, on a read of :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`: the one
+    header :func:`_a_header_without_a_credential` holds for that real reads as a credential
+    there, as it does on a served route (:func:`refused_without_a_window`)."""
+    if not auth.github_scheme_then_a_tab(request):
+        return False
+    if auth.github_scheme(request)[0] not in ("bearer", "token"):
+        return False
+    if not refused_a_credential(request):
+        return False
+    path = request.scope["path"].removeprefix("/github")
+    return published.includes(_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL, request.method, path)
 
 
 async def refuse_an_unserved_operation(request: Request) -> None:
@@ -697,6 +724,18 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     resolves after a tab, on the 18 `GET`s among them, which served it after a space. On the
     eight operations the tests send, each pinned to `1999-01-01`, so was an empty `Authorization`.
 
+    The reads real serves with no credential (:data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`)
+    are the exception for a bearer after a tab: there real reads the tab as it does on a served
+    route, as the credential it names. Measured on 2026-11-10, `Bearer<TAB>nope` on
+    `…/zipball/a`, `…/tarball/a`, `…/git/matching-refs/x` and `/zen`, and on the two-segment
+    values `…/zipball/a/b`, `…/tarball/a/b` and `…/git/matching-refs/heads/x`, was the 401 "Bad
+    credentials" with the five at `limit: 60`, counted in the window a tab bearer is counted in
+    on a served route (:func:`refused_without_a_window`), where the writes measured the same
+    day — `PUT …/contents/a` and `…/contents/a/b`, `DELETE …/contents/a/b`, and `DELETE` and
+    `PATCH` on `…/git/refs/x` and `…/git/refs/heads/x` — were "Requires authentication" with
+    none of the five, as the paragraph above records. A `Digest` on those reads is served
+    anonymously by real, which Backlot cannot serve, so it keeps the 401 above.
+
     A `Basic` value that names no token is the caller a served route serves with no credential: on
     those eight, `Basic Zm9vOmJhcg==` was each operation's own answer to that caller, carrying the
     echo and the five, on every method (2026-10-16). That answer was "Requires authentication" on
@@ -728,7 +767,9 @@ async def refuse_an_unserved_operation(request: Request) -> None:
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
         )
         raise HTTPException(status_code=401, detail="Requires authentication")
-    if _a_header_without_a_credential(request):
+    if _a_header_without_a_credential(
+        request
+    ) and not _a_tab_credential_on_a_read_real_serves_without_one(request):
         request.state.github_unserved_refusal = "uncounted"
         raise HTTPException(status_code=401, detail="Requires authentication")
     await _validate_bad_credential(request)

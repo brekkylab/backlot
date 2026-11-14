@@ -2805,7 +2805,8 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`. On `git/matching-refs`, `tarball` and `zipball` real answered
     `Digest x` with the public repository's 200 list of refs or 302 to the archive, and a bearer
-    after a tab with 401 "Bad credentials"; here both are 401 "Requires authentication".
+    after a tab with 401 "Bad credentials"; here a bearer after a tab is that "Bad credentials"
+    with the five, and `Digest x` is 401 "Requires authentication".
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
@@ -2832,8 +2833,18 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         ({"Authorization": value, **bad_version}, False)
         for value in ("Digest x", "nope", "", "Bearer\tnope", "Basic\t!!!!", tab_admin)
     ]
+    # on the archive and matching-refs reads a bearer after a tab is the credential it names
+    # (`backlot.routers.github._READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`)
+    tab_bad_credential = method == "GET" and any(
+        part in url for part in ("/zipball/", "/tarball/", "/git/matching-refs/")
+    )
     for headers, counted in no_credential:
         r = c.request(method, url, headers=headers)
+        if tab_bad_credential and headers.get("Authorization") == "Bearer\tnope":
+            assert (r.status_code, r.json()["message"]) == (401, "Bad credentials"), headers
+            assert "x-github-api-version-selected" not in r.headers, headers
+            assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
+            continue
         assert (r.status_code, r.json()["message"]) == (401, "Requires authentication"), headers
         assert "x-github-api-version-selected" not in r.headers, headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers) == counted, headers
@@ -3002,6 +3013,45 @@ def test_github_deleting_the_installation_token_is_answered_as_a_served_route(
     if five:
         second = c.delete("/github/installation/token", headers=headers)
         assert second.headers["x-ratelimit-used"] == first.headers["x-ratelimit-used"], headers
+
+
+#: The reads of `backlot.routers.github._READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`, as a bearer
+#: after a tab met them on api.github.com (the measurement is recorded on
+#: `refuse_an_unserved_operation`).
+_TAB_BEARER_ROWS = [
+    ("GET", "/github/repos/{org}/codebase/zipball/a"),
+    ("GET", "/github/repos/{org}/codebase/tarball/a"),
+    ("GET", "/github/repos/{org}/codebase/git/matching-refs/x"),
+    ("GET", "/github/zen"),
+    ("GET", "/github/repos/{org}/codebase/zipball/a/b"),
+    ("GET", "/github/repos/{org}/codebase/tarball/a/b"),
+    ("GET", "/github/repos/{org}/codebase/git/matching-refs/heads/x"),
+]
+
+
+def test_github_a_bearer_after_a_tab_on_a_read_real_serves_without_a_credential(gh_client, gh_org):
+    """Each read answers "Bad credentials" with the five at `limit: 60`, counted in the one
+    window, as `refuse_an_unserved_operation` records of real; the writes beside them keep
+    "Requires authentication" with none of the five."""
+    c, _ = gh_client
+    tab = {"Authorization": "Bearer\tnope"}
+    used = None
+    for method, path in _TAB_BEARER_ROWS:
+        r = c.request(method, path.format(org=gh_org), headers=tab)
+        assert (r.status_code, r.json()["message"]) == (401, "Bad credentials"), path
+        assert "x-github-api-version-selected" not in r.headers, path
+        assert r.headers["x-ratelimit-limit"] == "60", path
+        assert r.headers["x-ratelimit-resource"] == "core", path
+        if used is not None:
+            assert int(r.headers["x-ratelimit-used"]) == used + 1, path
+        used = int(r.headers["x-ratelimit-used"])
+    for method, path in (
+        ("PUT", "/github/repos/{org}/codebase/contents/a"),
+        ("DELETE", "/github/repos/{org}/codebase/git/refs/heads/x"),
+    ):
+        r = c.request(method, path.format(org=gh_org), headers=tab)
+        assert (r.status_code, r.json()["message"]) == (401, "Requires authentication"), path
+        assert not any(name.startswith("x-ratelimit-") for name in r.headers), path
 
 
 _NO_CREDENTIAL_ROUTES = {

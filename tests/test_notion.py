@@ -4765,7 +4765,7 @@ def test_notion_reads_a_request_as_real_does(client, notion_h):
         url = full + (f"?{query.format(**ids)}" if query else "")
         content = json.dumps(send).encode() if isinstance(send, dict) else send
         r = sent_as(client, method, url, sent, content)
-        body = None if status == 403 and expected is None else r.json()
+        body = r.json()
         row = (method, path, label)
         if isinstance(expected, dict):
             members = ["isNotionError", "errorId", *(k for k in expected if k != "isNotionError")]

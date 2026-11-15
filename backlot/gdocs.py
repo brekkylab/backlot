@@ -4025,6 +4025,8 @@ def _markdown(
         named = _named_text(paragraph)
         if listed[i]:
             prefix = _list_marker(items, paragraph["bullet"])
+            # Drive files.export, 2026-11-10: continuation lines use the list's marker widths.
+            rest = " " * _width(nesting.open())
         if level:
             heading = "".join(_inline(runs, named, notes, heading=True))
             anchor = anchors.get(paragraph["paragraphStyle"].get("headingId"))

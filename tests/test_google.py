@@ -21301,6 +21301,17 @@ _NESTED_MARKDOWN_ROWS = [
         "markdown",
         "* aa  \n* bb[^1]\n\n[^1]: yy",
     ),
+    # Drive files.export, 2026-11-10: continuation text starts after the numbered marker.
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\x0bz\nbb")],
+            [_bullets(1, 7, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+        ],
+        "markdown",
+        "1. aa  \n   z  \n2. bb",
+    ),
     # `cc`, 36 PT in, goes under no item after `> bb`, a quote under none; the line after the
     # vertical tab in `gg`, a quote under `* dd`, starts with its `> ` and the width of `* dd` and
     # `* ff`, both open

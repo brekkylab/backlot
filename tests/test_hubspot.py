@@ -2498,11 +2498,11 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
             "created": created,
         }
         for doc_id, email, created in (
-            ("hs-c-maria", "emailmaria@hubspot.com", "2026-09-30T09:42:39Z"),
-            ("hs-c-ava", "ava@example.com", "2026-09-30T09:47:03Z"),
-            ("hs-c-bh", "bh@hubspot.com", "2026-09-30T09:42:40Z"),
-            ("hs-c-bob", "bob@example.com", "2026-09-30T09:47:44Z"),
-            ("hs-c-cara", "cara@example.org", "2026-09-30T09:48:26Z"),
+            ("hs-c-maria", "emailmaria@hubspot.com", "2026-09-30T09:42:39.215Z"),
+            ("hs-c-ava", "ava@example.com", "2026-09-30T09:47:03.441Z"),
+            ("hs-c-bh", "bh@hubspot.com", "2026-09-30T09:42:39.729Z"),
+            ("hs-c-bob", "bob@example.com", "2026-09-30T09:47:44.340Z"),
+            ("hs-c-cara", "cara@example.org", "2026-09-30T09:48:26.603Z"),
         )
     ]
     settings = tiny_corpus(tmp_path, records)
@@ -2533,6 +2533,10 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
             "bob@example.com",
             "cara@example.org",
         ]
+        expected_created = {r["properties"]["email"]: r["created"] for r in records}
+        assert {
+            r["properties"]["email"]: r["createdAt"] for r in search({})["results"]
+        } == expected_created
         no_sort = ({}, {"sorts": []}, {"sorts": None})
         assert [emails(body) for body in no_sort] == [oldest_first] * 3
         assert [crawl(body) for body in no_sort] == [oldest_first] * 3

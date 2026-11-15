@@ -3988,7 +3988,11 @@ def _markdown(
     """Stored content as Markdown: TITLE as `#`, SUBTITLE as `##` and HEADING_n as n `#`s, a
     heading's vertical tab a space; bold, italic, strikethrough and links in a paragraph's named
     style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
-    paragraph after its marker (`_list_marker`), a paragraph in no list where `_Nesting` puts it,
+    paragraph after its marker (`_list_marker`), with nonempty continuation lines after a
+    vertical tab indented by the combined width of all open list items including the current
+    item (`_width`). In Drive `files.export` measurements on 2026-11-15, the continuation
+    used two spaces for a checkbox, three for `1.`, four for `10.`, and six for `1.` nested
+    under another `1.`. A paragraph in no list goes where `_Nesting` puts it,
     each block joined to the one before or apart from it as `_Nesting.joins` says, and a table as
     `_table` writes it. A line of exactly two spaces, its prefix included, after another line and
     with a blank line rather than a hard break first after it, is written as nothing, and the
@@ -4025,7 +4029,6 @@ def _markdown(
         named = _named_text(paragraph)
         if listed[i]:
             prefix = _list_marker(items, paragraph["bullet"])
-            # Drive files.export, 2026-11-10: continuation lines use the list's marker widths.
             rest = " " * _width(nesting.open())
         if level:
             heading = "".join(_inline(runs, named, notes, heading=True))

@@ -1502,6 +1502,39 @@ def test_notion_search_reads_its_body_as_real_does(client, admin_h, monkeypatch)
     assert answered == wanted
 
 
+def test_notion_search_brotli_content_encoding_gets_cloudflare_block_page(client):
+    ray = synth.cloudflare_ray_id("POST /notion/v1/search?")
+    for encoding, body in (
+        ("br", b'{"foo":1}'),
+        ("BR", b'{"foo":1}'),
+        ("gzip, br", b'{"foo":1}'),
+        ("br", b""),
+    ):
+        response = client.post(
+            "/notion/v1/search",
+            content=body,
+            headers={"Content-Type": "application/json", "Content-Encoding": encoding},
+        )
+        assert response.status_code == 403
+        assert response.headers["content-type"] == "text/html; charset=UTF-8"
+        assert b"prod.notion.com" in response.content
+        assert (
+            f'Cloudflare Ray ID: <strong class="font-semibold">{ray}</strong>'.encode()
+            in response.content
+        )
+        assert "x-notion-request-id" not in response.headers
+
+    for encoding in ("bogus", "not-br"):
+        response = client.post(
+            "/notion/v1/search",
+            content=b"{}",
+            headers={"Content-Type": "application/json", "Content-Encoding": encoding},
+        )
+        payload = response.json()
+        assert response.status_code == 415
+        assert {key: payload.get(key) for key in _UNKNOWN_API} == _UNKNOWN_API
+
+
 _SEARCHED_DATABASES = [
     ("2025-09-03", "", "data_source", "data_source"),
     ("2026-03-11", "", "data_source", "data_source"),
@@ -3744,8 +3777,8 @@ _REQUEST_ROWS = [
         "",
         b'{"foo":1}',
         {**_JSON, "Content-Encoding": "br"},
-        415,
-        _UNKNOWN_API,
+        403,
+        None,
     ),
     (
         "an empty encoding, then gzip",
@@ -4663,7 +4696,7 @@ def test_notion_reads_a_request_as_real_does(client, notion_h):
         url = full + (f"?{query.format(**ids)}" if query else "")
         content = json.dumps(send).encode() if isinstance(send, dict) else send
         r = sent_as(client, method, url, sent, content)
-        body = r.json()
+        body = None if status == 403 and expected is None else r.json()
         row = (method, path, label)
         if isinstance(expected, dict):
             members = ["isNotionError", "errorId", *(k for k in expected if k != "isNotionError")]

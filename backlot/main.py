@@ -2508,6 +2508,33 @@ def meta_overlay_reset(request: Request):
     return {"ok": True}
 
 
+def _notion_brotli(scope: Scope) -> bool:
+    return (
+        scope["method"] == "POST"
+        and scope["path"] == "/notion/v1/search"
+        and any(
+            coding.strip().lower() == b"br"
+            for name, value in scope["headers"]
+            if name.lower() == b"content-encoding"
+            for coding in value.split(b",")
+        )
+    )
+
+
+@_middleware(_notion_brotli)
+async def refuse_notion_brotli_with_cloudflare(request: Request, call_next):
+    """Answer Notion search requests carrying a Brotli content coding with Cloudflare's block page.
+
+    Measured against api.notion.com on 2026-10-27: ``br``, ``BR`` and ``gzip, br`` drew the 403
+    page for a plain, Brotli-compressed or empty body, ahead of the API's 415. Registered last so
+    this edge response precedes the other request middleware.
+    """
+    seed = f"{request.method} {request.url.path}?{request.url.query}"
+    return hubspot.cloudflare_block(
+        request, host="prod.notion.com", ray=synth.cloudflare_ray_id(seed)
+    )
+
+
 app.include_router(oauth.router)
 app.include_router(slack.router)
 app.include_router(msteams.router)

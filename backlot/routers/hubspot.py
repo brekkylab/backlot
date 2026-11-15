@@ -658,9 +658,9 @@ def _props(row) -> dict:
     return store.jcol(row, "properties", {}) or {}
 
 
-def _created_at(second: int | float) -> str:
-    """HubSpot `createdAt` carries milliseconds (api.hubapi.com,
-    `GET /crm/v3/objects/contacts`, measured 2026-11-12 and 2026-11-13)."""
+def _crm_time(second: int | float) -> str:
+    """HubSpot `createdAt` and `updatedAt` carry milliseconds (api.hubapi.com,
+    `POST /crm/v3/objects/{objectType}/search` on nine object types, measured 2026-11-13)."""
     whole, millis = divmod(round(second * 1000), 1000)
     clock = synth.utc_datetime(whole).isoformat(timespec="seconds")
     return clock.removesuffix("+00:00") + f".{millis:03d}Z"
@@ -678,8 +678,10 @@ def _record(row, keep: list[str] | None = None) -> dict:
         # with the value this very row was actually assigned and is looked up by.
         "id": row["id"],
         "properties": props,
-        "createdAt": _created_at(row["created_ts"]),
-        "updatedAt": synth.rfc3339_millis(row["updated_ts"] or int(row["created_ts"])),
+        "createdAt": _crm_time(row["created_ts"]),
+        "updatedAt": _crm_time(
+            row["created_ts"] if row["updated_ts"] is None else row["updated_ts"]
+        ),
         "archived": bool(row["archived"]),
     }
     return out

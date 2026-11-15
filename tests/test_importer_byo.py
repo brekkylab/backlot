@@ -1219,11 +1219,11 @@ def test_hubspot_byo_load(tmp_path):
     observed = []
     for created, _millis in cases:
         # A full re-import replaces a row; --append deliberately has no update path.
-        load(_write(tmp_path, [{**sample, "created": created}]), settings)
+        load(_write(tmp_path, [{**sample, "created": created, "updated": created}]), settings)
         with closing(store.connect_ro(settings.db_path)) as conn:
             row = store.hubspot_by_id(conn, "77")
-            observed.append(round(row["created_ts"] * 1000))
-    assert observed == [millis for _created, millis in cases]
+            observed.append((round(row["created_ts"] * 1000), round(row["updated_ts"] * 1000)))
+    assert observed == [(millis, millis) for _created, millis in cases]
 
     load(_write(tmp_path, [{**sample, "created": 1}]), settings)
     load(
@@ -1243,6 +1243,12 @@ def test_hubspot_byo_load(tmp_path):
     assert _dump_tables(settings.db_path) == before
     with pytest.raises(SystemExit, match="created is not a time this importer can read"):
         load(_write(tmp_path, [{**sample, "created": -62135596800.0001}]), settings)
+    assert _dump_tables(settings.db_path) == before
+    with pytest.raises(SystemExit, match="updated is not a time this importer can read"):
+        load(_write(tmp_path, [{**sample, "updated": -62135596800.0001}]), settings)
+    assert _dump_tables(settings.db_path) == before
+    with pytest.raises(SystemExit, match="updated.*None is not of type"):
+        load(_write(tmp_path, [{**sample, "updated": None}]), settings)
     assert _dump_tables(settings.db_path) == before
 
 

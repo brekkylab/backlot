@@ -2533,10 +2533,12 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
             "bob@example.com",
             "cara@example.org",
         ]
-        expected_created = {r["properties"]["email"]: r["created"] for r in records}
+        # No record states `updated`, so each serves its `created` as `updatedAt` too.
+        expected_times = {r["properties"]["email"]: (r["created"], r["created"]) for r in records}
         assert {
-            r["properties"]["email"]: r["createdAt"] for r in search({})["results"]
-        } == expected_created
+            r["properties"]["email"]: (r["createdAt"], r["updatedAt"])
+            for r in search({})["results"]
+        } == expected_times
         no_sort = ({}, {"sorts": []}, {"sorts": None})
         assert [emails(body) for body in no_sort] == [oldest_first] * 3
         assert [crawl(body) for body in no_sort] == [oldest_first] * 3
@@ -2545,6 +2547,46 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
         assert ids != sorted(ids)
         # A sort still decides the order.
         assert emails({"sorts": [{"propertyName": "email"}]}) == sorted(oldest_first)
+
+    # Local corpus preservation controls, not vendor measurements of zero or earlier updates.
+    before_epoch = "1969-12-31T23:59:59.750Z"
+    epoch = "1970-01-01T00:00:00.000Z"
+    update_cases = (
+        ({"created": -0.25}, (before_epoch, before_epoch)),
+        ({"created": -0.25, "updated": 0}, (before_epoch, epoch)),
+        (
+            {"created": 1.215, "updated": 1.9},
+            ("1970-01-01T00:00:01.215Z", "1970-01-01T00:00:01.900Z"),
+        ),
+        (
+            {"created": 1.9, "updated": 1.215},
+            ("1970-01-01T00:00:01.900Z", "1970-01-01T00:00:01.215Z"),
+        ),
+        ({"created": 1, "updated": 1}, ("1970-01-01T00:00:01.000Z",) * 2),
+    )
+    settings = tiny_corpus(
+        tmp_path / "updates",
+        [
+            {
+                "source_type": "hubspot",
+                "object_type": "contacts",
+                "doc_id": f"update-{i}",
+                "record_id": str(i + 1),
+                **times,
+            }
+            for i, (times, _expected) in enumerate(update_cases)
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        observed = []
+        for i, (_times, expected) in enumerate(update_cases):
+            response = client.get(
+                f"/hubspot/crm/v3/objects/contacts/{i + 1}",
+                headers={"Authorization": f"Bearer {settings.admin_token}"},
+            )
+            body = response.json()
+            observed.append((response.status_code, (body["createdAt"], body["updatedAt"])))
+        assert observed == [(200, expected) for _times, expected in update_cases]
 
 
 _COMPANIES = "/hubspot/crm/v3/objects/companies"

@@ -832,9 +832,11 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
 
 
 #: The operations of :data:`_PUBLISHED_NOT_SERVED` that real reads the name of before it asks for a
-#: credential: a `%00` in the login is its empty 400 for a caller with no credential
+#: credential: a `%00` in a name is its empty 400 for a caller with no credential
 #: (:func:`asks_for_a_credential_before_a_name`), where the others it asked a credential of first.
-_NAME_READ_BEFORE_A_CREDENTIAL = published.operations(("GET /users/{}", "GET /users/{}/repos"))
+_NAME_READ_BEFORE_A_CREDENTIAL = published.operations(
+    ("GET /users/{}", "GET /users/{}/repos", "GET /repos/{}/{}/planning-statuses")
+)
 
 
 def asks_for_a_credential_before_a_name(request: Request) -> bool:
@@ -852,7 +854,10 @@ def asks_for_a_credential_before_a_name(request: Request) -> bool:
     `nope` or `Digest x`. With a token the alert was the empty 400 counted in the token's window,
     pinned to `1999-01-01` or not, and so were a workflow run, a deployment and an organization's
     billing usage summary; with `Basic eDp5` the alert was the 400 with none of the five.
-    `Bearer nope` on `GET /users/octocat%00` and on the alert was the 401 "Bad credentials". The
+    `Bearer nope` on `GET /users/octocat%00` and on the alert was the 401 "Bad credentials". On
+    2026-11-15 (UTC) a `%00` in the owner or the repository of `GET …/planning-statuses` was the
+    empty 400 with no credential, with `Digest x` and with a token, each counted, and with
+    `Basic Zm9vOmJhcg==` with none of the five, and `Bearer nope` the 401 "Bad credentials". The
     path is the scope's, as :func:`is_an_unserved_operation` reads it."""
     path = request.scope["path"].removeprefix("/github")
     if published.includes(_NAME_READ_BEFORE_A_CREDENTIAL, request.method, path):

@@ -1905,6 +1905,37 @@ async def drop_what_slack_drops_off_the_end_of_a_path(request: Request, call_nex
     return await call_next(request)
 
 
+def _notion_brotli(scope: Scope) -> bool:
+    return (
+        _at_or_under(_url_path(scope), ("/notion",))
+        and scope["method"] not in _CLOUDFLARE_METHOD
+        and any(
+            coding.strip().lower() == b"br"
+            for name, value in scope["headers"]
+            if name.lower() == b"content-encoding"
+            for coding in value.split(b",")
+        )
+    )
+
+
+@_middleware(_notion_brotli)
+async def refuse_notion_brotli_with_cloudflare(request: Request, call_next):
+    """Answer a `/notion` request whose `Content-Encoding` names `br` with Cloudflare's 403 page
+    for `notion.com` (``hubspot.cloudflare_block``), before the route, body and credential.
+
+    On 2026-11-15 (UTC) api.notion.com blocked `br` on `POST /v1/search` with a token, without one
+    and with `identity` before it, on `/v1/search/`, `GET /v1/search`, `GET /v1/users/me`, a
+    database query, `POST /v1/nosuch` and `GET /`, and by `HEAD`, `OPTIONS`, `PATCH`, `DELETE` and
+    `PUT`. On 2026-10-27 it did the same for plain, Brotli-compressed and empty bodies, and for
+    `BR` and `gzip, br` with a plain body. `TRACE` and `PURGE` kept their answers without coding.
+    Registered inside :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, so
+    the front door's target, host and repeated-header refusals remain ahead: on 2026-11-15 real
+    answered `br` beside two `Authorization` headers with its 400, and beside a bracketed `Host`,
+    a `\\` first in the path or `%zz`, `%00` or a control byte in it with its front door's 400."""
+    seed = f"{request.method} {request.url.path}?{request.url.query}"
+    return hubspot.cloudflare_block(request, host="notion.com", ray=synth.cloudflare_ray_id(seed))
+
+
 @_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/hubspot",))

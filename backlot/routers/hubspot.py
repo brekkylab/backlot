@@ -450,7 +450,7 @@ def blocks_a_header_value(headers: list[tuple[bytes, bytes]]) -> bool:
 
 #: The page :func:`cloudflare_block` answers, with ``{ray}`` and ``{ip}`` where it puts the
 #: request's Ray ID and the client's address, the only bytes that differed across 34 of real's
-#: answers on 2026-10-30. Its host is replaced when another service uses the same page.
+#: answers on 2026-10-30, and `hubapi.com` where it puts the ``host`` it is given.
 _BLOCK_PAGE = (Path(__file__).parent.parent / "data" / "hubspot_block.html").read_bytes()
 
 

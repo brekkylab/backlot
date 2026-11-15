@@ -18,7 +18,16 @@ from backlot import store, synth
 from backlot.express_http import weak_etag
 from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
-from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
+from tests._helpers import (
+    CLOUDFLARE_BLOCK_HEADERS,
+    client_for,
+    cloudflare_blocked,
+    outcome,
+    sent_as,
+    served_id,
+    tiny_corpus,
+    tok,
+)
 
 
 @pytest.fixture
@@ -3840,14 +3849,24 @@ _REQUEST_ROWS = [
         _UNKNOWN_API,
     ),
     (
-        "br, which this parser does not read",
+        "a coding that ends in br",
         "POST",
         "/search",
         "",
-        b'{"foo":1}',
-        {**_JSON, "Content-Encoding": "br"},
-        403,
-        None,
+        b'{"page_size":1}',
+        {**_JSON, "Content-Encoding": "not-br"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "a coding that starts with br",
+        "POST",
+        "/search",
+        "",
+        b'{"page_size":1}',
+        {**_JSON, "Content-Encoding": "brotli"},
+        415,
+        _UNKNOWN_API,
     ),
     (
         "an empty encoding, then gzip",

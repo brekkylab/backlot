@@ -1477,8 +1477,8 @@ def test_hubspot_leaves_a_path_no_route_serves_to_the_router(client, admin_h, me
     assert r.status_code == 404
 
 
-#: The SHA-256 of real's 403 block page with its Ray ID read as `<RAY>` and the address it named
-#: as `<IP>`, the same for each of the 34 answers ``hubspot._BLOCK_PAGE`` was read from.
+#: Real's 403 block page as ``cloudflare_blocked`` reads it, the same for each of the 34 answers
+#: ``hubspot._BLOCK_PAGE`` was read from.
 _BLOCK_PAGE_SHA256 = "65d57c8fa13d6703177fef36fb7b88e9ac8fcda0d0c97ff92a491840569515b8"
 
 

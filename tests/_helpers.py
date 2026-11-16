@@ -558,8 +558,8 @@ CLOUDFLARE_BLOCK_HEADERS = {
 
 
 def cloudflare_blocked(r) -> tuple:
-    """``r``'s status, selected headers and the SHA-256 of its body with its Ray ID and the address
-    ``sent_as`` sends from read as `<RAY>` and `<IP>`."""
+    """``r``'s status, the headers of :data:`CLOUDFLARE_BLOCK_HEADERS` and the SHA-256 of its body
+    with its Ray ID read as `<RAY>` and the address `sent_as` sends from as `<IP>`."""
     body = re.sub(
         rb'(Cloudflare Ray ID: <strong class="font-semibold">)[0-9a-f]{16}(</strong>)',
         rb"\1<RAY>\2",

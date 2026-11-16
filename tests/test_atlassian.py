@@ -2587,8 +2587,8 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
     """A term naming one of a body representation's three members serves that member in place
     of its `_expandable` name, on each of the four representations this server renders:
     `embeddedContent` is `[]` after `representation`, `webresource` stands between `value`
-    and `representation`, and `mediaToken` stands first with its seven members (Confluence
-    Cloud, 2026-11-13)."""
+    and `representation`, and `mediaToken` stands first with its seven members (the
+    measurement `_confluence_media_token` records)."""
     page = {
         "source_type": "confluence",
         "doc_id": "p",

@@ -156,8 +156,23 @@ _B_BATCH = {
 # --------------------------------------------------------------------------- helpers
 
 
+# A UTF-16 surrogate, which a `\ud800` escape in a body that no low surrogate follows decodes
+# to. UTF-8 has no bytes for one, so `JSONResponse` raises on it.
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+class _EscapedJSONResponse(JSONResponse):
+    """`JSONResponse` with each surrogate written as a `\\u` escape in upper-case hex: real echoed
+    a `\\ud800` sent as a sort `direction` and as a `filterGroups` element as `\\uD800`
+    (2026-11-15)."""
+
+    def render(self, content) -> bytes:
+        text = json.dumps(content, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        return _SURROGATE.sub(lambda m: f"\\u{ord(m[0]):04X}", text).encode()
+
+
 def _error(status: int, message: str, category: str = "VALIDATION_ERROR") -> JSONResponse:
-    return JSONResponse(
+    return _EscapedJSONResponse(
         status_code=status, content={"status": "error", "message": message, "category": category}
     )
 
@@ -222,7 +237,7 @@ async def correlate(request: Request, response: Response) -> Response:
         members = list(content.items())
         at = list(content).index("message") + 1
         content = dict([*members[:at], ("correlationId", rid), *members[at:]])
-        body = JSONResponse(content).body
+        body = _EscapedJSONResponse(content).body
     headers = {
         k: v for k, v in response.headers.items() if k not in ("content-length", "content-type")
     }
@@ -1530,26 +1545,30 @@ def _refuse_a_search_shape(
     raw: bytes, body: _InOrder, before: tuple[int, int] | None = None
 ) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
     """Real's 400 for a search body it cannot read, with where the value it names starts, or
-    `(None, None)`. Measured against api.hubapi.com on 2026-10-01, 2026-11-09 and 2026-11-13: real
-    reads the body in order and stops at the first value it cannot read, naming where it starts: a
-    `filterGroups` or a group's `filters` that is neither null nor a list (`_not_a_list`), an
-    element of either that is not an object (`_unbuildable`), a filter member `_unreadable_member`
-    refuses, a `query` that is an array or an object, or a `limit` `_unreadable_limit` refuses. A
-    null element is named at the closing brace of the object holding its list, the body's for
-    `filterGroups` and the group's for `filters`: after that object's other values and ahead of a
-    later element, `query` or non-standard token. A null `filterGroups`, `filters` or `query`, and a
-    group with no `filters`, are read. With a `before` from `_non_standard_number`, a value from
-    there on is left to the token. A key the body repeats is read by its last value, the one
-    `json.loads` keeps, where real reads its values in order and names the first it cannot read
-    (`{"filterGroups": "x", "filterGroups": []}` names the `"x"`, measured 2026-11-10); this router
-    does not model that."""
+    `(None, None)`. Measured against api.hubapi.com on 2026-10-01, 2026-11-09, 2026-11-12,
+    2026-11-13 and 2026-11-15: real reads the body in order and stops at the first value it cannot
+    read, naming where it starts: a `sorts`, `filterGroups` or a group's `filters` that is neither
+    null nor a list (`_not_a_list`), an element of `sorts` that is neither a string nor an object
+    (`_mismatched`), an element of `filterGroups` or `filters` that is not an object
+    (`_unbuildable`), a filter member `_unreadable_member` refuses, a `query` that is an array or an
+    object, or a `limit` `_unreadable_limit` refuses. A sort object whose `direction` is a string
+    other than `ASCENDING` and `DESCENDING`, or that has no string `propertyName`, is refused at its
+    closing brace, the direction first. A null element is named at the closing brace of the object
+    holding its list, the body's for `sorts` and `filterGroups` and the group's for `filters`: after
+    that object's other values and ahead of a later element, `query` or non-standard token. With a
+    null in both `sorts` and `filterGroups`, the `filterGroups` one is named, whichever comes first.
+    A null `sorts`, `filterGroups`, `filters` or `query`, and a group with no `filters`, are read.
+    With a `before` from `_non_standard_number`, a value from there on is left to the token. A key
+    the body repeats is read by its last value, the one `json.loads` keeps, where real reads its
+    values in order and names the first it cannot read (`{"filterGroups": "x", "filterGroups": []}`
+    names the `"x"`, measured 2026-11-10); this router does not model that."""
 
     def named(position, response):
         if before is not None and position >= before:
             return None, None
         return position, response
 
-    null_group = False
+    null_group = null_sort = False
     for key, value in body.items():
         if key == "query":
             if isinstance(value, (dict, list)):
@@ -1560,6 +1579,42 @@ def _refuse_a_search_shape(
             refusal = _unreadable_limit(raw, value, at)
             if refusal is not None:
                 return named(_token_at(raw, (key,), at), refusal)
+            continue
+        if key == "sorts":
+            if value is None:
+                continue
+            if not isinstance(value, list):
+                position = _token_at(raw, (key,))
+                return named(position, _invalid(position, _not_a_list(value)))
+            for j, item in enumerate(value):
+                if item is None:
+                    null_sort = True
+                    continue
+                path = (key, j)
+                if not isinstance(item, (str, dict)):
+                    position = _token_at(raw, path)
+                    return named(position, _invalid(position, _mismatched(item)))
+                if isinstance(item, dict):
+                    position = _closing_at(raw, path)
+                    direction = item.get("direction")
+                    if isinstance(direction, str) and direction not in ("ASCENDING", "DESCENDING"):
+                        return named(
+                            position,
+                            _error(400, f"Invalid input JSON: No enum constant .{direction}"),
+                        )
+                    if not isinstance(item.get("propertyName"), str):
+                        return named(
+                            position,
+                            _bare_error(
+                                400,
+                                {
+                                    "message": (
+                                        "Invalid input JSON: Cannot build SortField, "
+                                        "some of required attributes are not set [propertyName]"
+                                    )
+                                },
+                            ),
+                        )
             continue
         if key != "filterGroups" or value is None:
             continue
@@ -1599,9 +1654,10 @@ def _refuse_a_search_shape(
             if null_filter:
                 position = _closing_at(raw, (key, i), at)
                 return named(position, _invalid(position, "filters element"))
-    if null_group:
+    if null_group or null_sort:
         position = _closing_at(raw, ())
-        return named(position, _invalid(position, "filterGroups element"))
+        element = "filterGroups element" if null_group else "sorts element"
+        return named(position, _invalid(position, element))
     return None, None
 
 
@@ -1735,7 +1791,8 @@ def _sort_field(spec) -> tuple[str, bool] | None:
     """The property one element of a search's `sorts` names and whether it sorts descending, or
     None when it names none. HubSpot's contacts search read a string as the property's name,
     descending after a leading `-`, and answered it as the object naming the same property and
-    direction (2026-11-10)."""
+    direction (2026-11-10). It sorted an object whose `direction` is not a string ascending: `5`,
+    null, `0`, `1`, `true`, `1.5`, `[]` and `{}` (2026-11-15)."""
     if isinstance(spec, str):
         return spec.removeprefix("-"), spec.startswith("-")
     if isinstance(spec, dict) and isinstance(spec.get("propertyName"), str):

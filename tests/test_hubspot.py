@@ -2418,6 +2418,47 @@ def test_hubspot_search_prefilter_cannot_change_results(client, admin_h, monkeyp
     assert with_pushdown == without
 
 
+def test_hubspot_search_serves_a_group_of_993_filters(client, admin_h):
+    """A search group may hold as many filters as it holds: real serves one of 993, where the
+    prefilter's flat chain of conditions was one expression tree past SQLite's depth limit
+    and the search answered 500. The deep group answers what the same filter alone answers."""
+    one = {"propertyName": "industry", "operator": "EQ", "value": "healthcare"}
+    url = "/hubspot/crm/v3/objects/companies/search"
+    single = client.post(
+        url, headers=admin_h, json={"filterGroups": [{"filters": [one]}], "limit": 100}
+    )
+    deep = client.post(
+        url, headers=admin_h, json={"filterGroups": [{"filters": [one] * 993}], "limit": 100}
+    )
+    assert deep.status_code == 200
+    assert deep.json()["total"] == single.json()["total"]
+    assert [r["id"] for r in deep.json()["results"]] == [r["id"] for r in single.json()["results"]]
+
+
+def test_hubspot_search_refuses_an_in_filter_of_more_than_100_values(client, admin_h):
+    """An `IN` filter names at most 100 values: real refuses 101 with a 400 naming the count
+    at the filter's closing brace, where Backlot served the search (or, past SQLite's depth
+    limit, answered 500). A filter of exactly 100 values is served."""
+    url = "/hubspot/crm/v3/objects/contacts/search"
+
+    def body(count):
+        f = {"propertyName": "email", "operator": "IN", "values": [f"v{i}" for i in range(count)]}
+        return json.dumps({"filterGroups": [{"filters": [f]}]})
+
+    served = client.post(url, headers=admin_h, content=body(100))
+    assert served.status_code == 200
+    for count, column in [(101, 784), (994, 7928)]:
+        r = client.post(url, headers=admin_h, content=body(count))
+        assert r.status_code == 400
+        j = r.json()
+        assert j["status"] == "error"
+        assert j["category"] == "VALIDATION_ERROR"
+        assert j["message"] == (
+            f"Invalid input JSON on line 1, column {column}: too many IN list "
+            f"values (count: {count}, max allowed: 100)"
+        )
+
+
 def test_hubspot_search_sorts(client, admin_h, tmp_path):
     """`sorts` is advertised, so it has to order the whole match set — not just whatever landed on
     the page. Numeric properties sort numerically, which string ordering would get wrong."""

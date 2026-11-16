@@ -1306,6 +1306,58 @@ def _refuse_an_operator(
     return None
 
 
+def _refuse_too_many_in_values(
+    raw: bytes, body: _InOrder, before: tuple[int, int] | None = None
+) -> JSONResponse | None:
+    """Real's 400 for the first filter, in body order, whose `IN` names more than 100 values,
+    or None.
+
+    Real refuses the count however the search is evaluated, one filter group or many, and
+    reports it at the filter's closing brace (api.hubapi.com, 2026-11-15: 101 values at
+    column 784 and 994 at column 7928 of the bodies that carried them). The walk follows
+    `_refuse_an_operator`'s, occurrences of a repeated key included, and a refusal at or past
+    `before` is left to what starts there. Which of the two refusals real gives when an
+    unreadable operator stands in another filter was not measured; the operator is read first.
+    """
+    seen: dict = {}
+    for key, groups in body.members:
+        occurrence = seen.get(key, 0)
+        seen[key] = occurrence + 1
+        if key != "filterGroups" or not isinstance(groups, list):
+            continue
+        for i, group in enumerate(groups):
+            if not isinstance(group, dict):
+                continue
+            counted: dict = {}
+            for name, filters in group.members:
+                index = counted.get(name, 0)
+                counted[name] = index + 1
+                if name != "filters" or not isinstance(filters, list):
+                    continue
+                for j, f in enumerate(filters):
+                    if not isinstance(f, dict):
+                        continue
+                    try:
+                        if _operator(f) != "IN":
+                            continue
+                    except (IndexError, KeyError, AttributeError):
+                        # an operator `_operator` cannot read is the shape refusal's to name
+                        continue
+                    values = f.get("values")
+                    if not isinstance(values, list) or len(values) <= 100:
+                        continue
+                    position = _closing_at(
+                        raw, ("filterGroups", i, "filters", j), {0: occurrence, 2: index}
+                    )
+                    if before is not None and position >= before:
+                        return None
+                    return _invalid(
+                        position,
+                        f"too many IN list values (count: {len(values)}, max allowed: 100)",
+                    )
+    return None
+
+
 def _java_double(x: float) -> str:
     """``x`` as real echoes it, in the form of Java's `Double.toString`: plain from 10^-3 up to
     10^7, and otherwise with one digit before the point (`1.0E7`, `1.23456789125E8`, `1.0E-4`)."""
@@ -1870,6 +1922,23 @@ def _ascii_scalar(v) -> str | None:
     return v if '"' not in v and "\\" not in v else None
 
 
+def _join_balanced(frags: list[str], op: str) -> str:
+    """`frags` joined by `op`, paired level by level so the tree stays balanced.
+
+    A flat chain is one left-deep expression tree to SQLite, which refuses it past a depth of
+    1000 (`Expression tree is too large`): a single search group of 993 filters, or one `IN`
+    of 994 values, was a 500 where real serves the search (2026-11-15). Paired, the depth
+    grows with the logarithm of the count instead. AND and OR associate, three-valued logic
+    included, so the pairing cannot change which rows the condition holds for.
+    """
+    while len(frags) > 1:
+        frags = [
+            f"({frags[i]} {op} {frags[i + 1]})" if i + 1 < len(frags) else frags[i]
+            for i in range(0, len(frags), 2)
+        ]
+    return frags[0]
+
+
 def _sql_prefilter(body: dict):
     """A SQL condition every match must satisfy, or None.
 
@@ -1906,12 +1975,12 @@ def _sql_prefilter(body: dict):
                 "(instr(lower(properties), lower(?)) > 0 OR instr(properties, char(92) || 'u') > 0)"
             )
             if op == "IN":
-                frags.append("(" + " OR ".join([needle] * len(vals)) + ")")
+                frags.append("(" + _join_balanced([needle] * len(vals), "OR") + ")")
             else:
                 frags += [needle] * len(vals)
             params += vals
         # every other operator (NEQ/NOT_*/comparisons/BETWEEN) has no safe necessary condition here
-    return (" AND ".join(frags), params) if frags else None
+    return (_join_balanced(frags, "AND"), params) if frags else None
 
 
 def _matches(row, body: dict) -> bool:
@@ -2337,7 +2406,12 @@ async def search_objects(object_type: str, request: Request):
     # names no record (measured 2026-10-06), and a `filterGroups` or `query` it cannot read ahead of
     # such a cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
     # refusal names, that value when it starts ahead of the non-standard token.
-    refused = _refuse_an_operator(raw, pairs, before if at is None else at) or unreadable or refused
+    refused = (
+        _refuse_an_operator(raw, pairs, before if at is None else at)
+        or _refuse_too_many_in_values(raw, pairs, before if at is None else at)
+        or unreadable
+        or refused
+    )
     if refused is not None:
         return refused
     body = _scalars_as_text(raw, body)

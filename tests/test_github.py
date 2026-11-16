@@ -2843,7 +2843,8 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     credential: no header, `Basic Zm9vOmJhcg==` and each header below that carries none but
     `Bearer<TAB>nope` were its 404 with the echo, or the version's 400 when pinned to `1999-01-01`,
     and `Bearer<TAB>nope` was 401 "Bad credentials"; here each of those but the pinned `Basic` value
-    is 401 "Requires authentication".
+    and `Bearer<TAB>nope` is 401 "Requires authentication", and a bearer after a tab on a row of
+    `_COUNTED_APART_ROWS` is asserted there.
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
@@ -2869,7 +2870,8 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     no_credential += [
         ({"Authorization": value, **bad_version}, False)
         for value in ("Digest x", "nope", "", "Bearer\tnope", "Basic\t!!!!", tab_admin)
-        if value != "Bearer\tnope" or (method, path) not in _TAB_BEARER_ROWS
+        if value != "Bearer\tnope"
+        or ((method, path) not in _TAB_BEARER_ROWS and (method, path) not in _COUNTED_APART_ROWS)
     ]
     for headers, counted in no_credential:
         r = c.request(method, url, headers=headers)
@@ -3095,6 +3097,37 @@ def test_github_a_bearer_after_a_tab_on_a_read_real_serves_without_a_credential(
         assert r.headers["x-ratelimit-resource"] == "core", path
         assert after == before + 1 + moves, path
         before = after
+
+
+#: The operations of `backlot.routers.github._UNSERVED_COUNTED_APART` a bearer after a tab was
+#: sent to on api.github.com (measured as `_a_tab_credential_counted_apart` records).
+_COUNTED_APART_ROWS = [
+    ("POST", "/github/markdown"),
+    ("GET", "/github/advisories"),
+    ("GET", "/github/repos/{org}/codebase/planning-statuses"),
+]
+
+
+def test_github_a_bearer_after_a_tab_on_an_operation_counted_apart(gh_client, gh_org):
+    """Each operation is answered as `backlot.routers.github._a_tab_credential_counted_apart`
+    records, and the three count in one window of their own: each reads the `used` the one
+    before it read, one higher, and a `/zen` sent after them reads its own window as only its
+    own requests left it."""
+    c, _ = gh_client
+    tab = {"Authorization": "Bearer\tnope"}
+    zen = int(c.get("/github/zen", headers=tab).headers["x-ratelimit-used"])
+    used = None
+    for method, path in _COUNTED_APART_ROWS:
+        r = c.request(method, path.format(org=gh_org), headers=tab)
+        assert (r.status_code, r.json()["message"]) == (401, "Bad credentials"), path
+        assert "x-github-api-version-selected" not in r.headers, path
+        assert r.headers["x-ratelimit-limit"] == "60", path
+        assert r.headers["x-ratelimit-resource"] == "core", path
+        if used is not None:
+            assert int(r.headers["x-ratelimit-used"]) == used + 1, path
+        used = int(r.headers["x-ratelimit-used"])
+    after = int(c.get("/github/zen", headers=tab).headers["x-ratelimit-used"])
+    assert after == zen + 1
 
 
 _NO_CREDENTIAL_ROUTES = {

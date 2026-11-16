@@ -699,11 +699,13 @@ _READS_REAL_SERVES_WITHOUT_A_CREDENTIAL = published.operations(
         "GET /zen",
         "GET /repos/{}/{}/actions/artifacts",
         "GET /repos/{}/{}/commits",
+        "GET /repos/{}/{}/compare/{+}",
         "GET /repos/{}/{}/contributors",
         "GET /repos/{}/{}/git/matching-refs/{+}",
         "GET /repos/{}/{}/labels",
         "GET /repos/{}/{}/languages",
         "GET /repos/{}/{}/releases",
+        "GET /repos/{}/{}/rules/branches/{+}",
         "GET /repos/{}/{}/tarball/{+}",
         "GET /repos/{}/{}/zipball/{+}",
     )
@@ -720,18 +722,22 @@ def _a_tab_credential_on_a_read_real_serves_without_one(request: Request) -> boo
     credentials" with the five at `limit: 60`.
 
     Measured against api.github.com, one cache-busted request each. With no `Authorization` on
-    2026-11-15 each of those reads was its 200, the archive reads their 302. `Bearer<TAB>nope` was
-    that 401 on `…/zipball/a`, `…/tarball/a`, `…/git/matching-refs/x`, `/zen` and on
-    `…/zipball/a/b`, `…/tarball/a/b` and `…/git/matching-refs/heads/x` on 2026-11-10, and on each
-    of the others on 2026-11-15, where `…/actions/secrets` and `…/hooks` answered it "Requires
-    authentication" with none of the five; so was `token<TAB>nope` on `/zen`, `…/zipball/a` and
-    `…/languages` (2026-11-15). On 2026-11-15 each read but the archive reads moved by one the
-    `used` a bearer after a tab on `/zen` reads, and the archive reads (:data:`_ARCHIVE_READS`) left
-    it where it was: `…/zipball/a` and `…/tarball/a/b`, sent twice each between two `/zen`, each
-    read `used: 29`, where the two `/zen` read 29 and 30.
+    2026-11-15 each of those reads was its 200, the archive reads their 302, and on 2026-11-16
+    `…/compare/a...b` and `…/compare/a...b/c` were the 404 of the comparison and
+    `…/rules/branches/master` and `…/rules/branches/a/b` the 200 `[]`. `Bearer<TAB>nope` was that
+    401 on `…/zipball/a`, `…/tarball/a`, `…/git/matching-refs/x`, `/zen` and on `…/zipball/a/b`,
+    `…/tarball/a/b` and `…/git/matching-refs/heads/x` on 2026-11-10, on the four compare and rules
+    reads on 2026-11-16, and on each of the others on 2026-11-15, where `…/actions/secrets` and
+    `…/hooks` answered it "Requires authentication" with none of the five; so was `token<TAB>nope`
+    on `/zen`, `…/zipball/a` and `…/languages` (2026-11-15) and on `…/compare/a...b` and
+    `…/rules/branches/master` (2026-11-16). On 2026-11-15 each read but the archive reads moved by
+    one the `used` a bearer after a tab on `/zen` reads, as each of the four compare and rules reads
+    did on 2026-11-16, and the archive reads (:data:`_ARCHIVE_READS`) left it where it was:
+    `…/zipball/a` and `…/tarball/a/b`, sent twice each between two `/zen`, each read `used: 29`,
+    where the two `/zen` read 29 and 30.
 
     A bearer after a tab that resolves, `Basic<TAB>!!!!` and `Digest x` keep the 401 for a header
-    that carries no credential: real answered each where it was sent with the read's own 200 or 302,
+    that carries no credential: real answered each where it was sent with the read's own answer,
     which Backlot cannot give on these reads. On 2026-11-15 the bearer that resolves was the 200 of
     `/zen` and `…/languages` at `limit: 60` and the 302 of `…/zipball/a` at the token's
     `limit: 5000`, and `Basic<TAB>!!!!` the answer of each of the three at `limit: 60`; on

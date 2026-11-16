@@ -2837,12 +2837,13 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`. On `git/matching-refs`, `tarball`, `zipball`, `compare` and
     `rules/branches` real answered `Digest x` with the public repository's 200 list of refs, 302 to
-    the archive, 404 for the comparison or 200 `[]` of rules, and a bearer after a tab with 401
-    "Bad credentials"; here both are 401 "Requires authentication". On `planning-statuses` real
-    asked for no credential: no header, `Basic Zm9vOmJhcg==` and each header below that carries
-    none but `Bearer<TAB>nope` were its 404 with the echo, or the version's 400 when pinned to
-    `1999-01-01`, and `Bearer<TAB>nope` was 401 "Bad credentials"; here each of those but the
-    pinned `Basic` value is 401 "Requires authentication".
+    the archive, 404 for the comparison or 200 `[]` of rules, and a bearer after a tab with 401 "Bad
+    credentials"; here `Digest x` is 401 "Requires authentication", and a bearer after a tab on a
+    row of `_TAB_BEARER_ROWS` is asserted there. On `planning-statuses` real asked for no
+    credential: no header, `Basic Zm9vOmJhcg==` and each header below that carries none but
+    `Bearer<TAB>nope` were its 404 with the echo, or the version's 400 when pinned to `1999-01-01`,
+    and `Bearer<TAB>nope` was 401 "Bad credentials"; here each of those but the pinned `Basic` value
+    is 401 "Requires authentication".
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
@@ -3061,12 +3062,16 @@ _TAB_BEARER_ROWS = {
     ("GET", "/github/zen"): 1,
     ("GET", "/github/repos/{org}/codebase/actions/artifacts"): 1,
     ("GET", "/github/repos/{org}/codebase/commits"): 1,
+    ("GET", "/github/repos/{org}/codebase/compare/a...b"): 1,
+    ("GET", "/github/repos/{org}/codebase/compare/a...b/c"): 1,
     ("GET", "/github/repos/{org}/codebase/contributors"): 1,
     ("GET", "/github/repos/{org}/codebase/git/matching-refs/x"): 1,
     ("GET", "/github/repos/{org}/codebase/git/matching-refs/heads/x"): 1,
     ("GET", "/github/repos/{org}/codebase/labels"): 1,
     ("GET", "/github/repos/{org}/codebase/languages"): 1,
     ("GET", "/github/repos/{org}/codebase/releases"): 1,
+    ("GET", "/github/repos/{org}/codebase/rules/branches/master"): 1,
+    ("GET", "/github/repos/{org}/codebase/rules/branches/a/b"): 1,
     ("GET", "/github/repos/{org}/codebase/tarball/a"): 0,
     ("GET", "/github/repos/{org}/codebase/tarball/a/b"): 0,
     ("GET", "/github/repos/{org}/codebase/zipball/a"): 0,

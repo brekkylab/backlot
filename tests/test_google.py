@@ -5172,7 +5172,7 @@ def test_google_a_head_is_the_get_without_its_body_or_the_editor_hosts_400(
     `content-type` alike, with a length only where `declares` says; the three editor hosts answer
     their empty 400, where the GET beside it is a JSON answer of its own. The body a `HEAD` leaves
     off is read from the ASGI messages the app sends, since the test client discards it."""
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     ids = {
         "doc": _drive_find(client, admin_h, "Brand")["id"],

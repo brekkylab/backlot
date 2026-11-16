@@ -6,15 +6,22 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import uuid
 
 import pytest
 
 from backlot import store
-from tests._helpers import crawl_hubspot, db_count, outcome, sent_as, served_id, tiny_corpus
+from tests._helpers import (
+    CLOUDFLARE_BLOCK_HEADERS,
+    cloudflare_blocked,
+    crawl_hubspot,
+    db_count,
+    outcome,
+    sent_as,
+    served_id,
+    tiny_corpus,
+)
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
 
@@ -1470,33 +1477,9 @@ def test_hubspot_leaves_a_path_no_route_serves_to_the_router(client, admin_h, me
     assert r.status_code == 404
 
 
-#: The SHA-256 of real's 403 block page with its Ray ID read as `<RAY>` and the address it named
-#: as `<IP>`, the same for each of the 34 answers ``hubspot._BLOCK_PAGE`` was read from.
+#: Real's 403 block page as ``cloudflare_blocked`` reads it, the same for each of the 34 answers
+#: ``hubspot._BLOCK_PAGE`` was read from.
 _BLOCK_PAGE_SHA256 = "65d57c8fa13d6703177fef36fb7b88e9ac8fcda0d0c97ff92a491840569515b8"
-_BLOCK_HEADERS = {
-    "content-type": "text/html; charset=UTF-8",
-    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, post-check=0, "
-    "pre-check=0",
-    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
-    "referrer-policy": "same-origin",
-    "x-frame-options": "SAMEORIGIN",
-    "connection": None,
-}
-
-
-def _blocked(r) -> tuple:
-    """``r``'s status, the headers of :data:`_BLOCK_HEADERS` and the SHA-256 of its body read as
-    :data:`_BLOCK_PAGE_SHA256` reads real's, the address being the one `sent_as` sends from."""
-    body = re.sub(
-        rb'(Cloudflare Ray ID: <strong class="font-semibold">)[0-9a-f]{16}(</strong>)',
-        rb"\1<RAY>\2",
-        r.content,
-    )
-    body = re.sub(
-        rb'(<span class="hidden" id="cf-footer-ip">)127\.0\.0\.1(</span>)', rb"\1<IP>\2", body
-    )
-    headers = {name: r.headers.get(name) for name in _BLOCK_HEADERS}
-    return r.status_code, headers, hashlib.sha256(body).hexdigest()
 
 
 # Each `X-Probe` value sent to api.hubapi.com on 2026-10-30 (UTC) with no credential on the
@@ -1535,11 +1518,11 @@ _HEADER_VALUES = [
 def test_hubspot_answers_a_header_value_that_is_not_utf_8_with_cloudflares_block(client):
     def answered(value):
         r = sent_as(client, "GET", f"/hubspot{_LISTING}", [("X-Probe", value.decode("latin-1"))])
-        return _blocked(r) if r.status_code == 403 else r.status_code
+        return cloudflare_blocked(r) if r.status_code == 403 else r.status_code
 
     got = {value: outcome(answered, value) for value, _ in _HEADER_VALUES}
     assert got == {
-        value: (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256) if blocked else 401
+        value: (403, CLOUDFLARE_BLOCK_HEADERS, _BLOCK_PAGE_SHA256) if blocked else 401
         for value, blocked in _HEADER_VALUES
     }
 
@@ -1575,7 +1558,7 @@ def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(client)
         without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
         if method == "HEAD":
             return r.status_code, r.headers["content-length"], without.status_code != 403
-        return (*_blocked(r), without.status_code != 403)
+        return (*cloudflare_blocked(r), without.status_code != 403)
 
     got, expected = {}, {}
     for row, method, path, sent, body, answer in _BLOCK_ROWS:
@@ -1588,7 +1571,7 @@ def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(client)
             get = sent_as(client, "GET", f"/hubspot{path}", sent)
             expected[row] = (403, get.headers["content-length"], True)
         else:
-            expected[row] = (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256, True)
+            expected[row] = (403, CLOUDFLARE_BLOCK_HEADERS, _BLOCK_PAGE_SHA256, True)
     assert got == expected
 
 

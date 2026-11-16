@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -541,6 +542,34 @@ def outcome(call, *args, **kwargs):
         return call(*args, **kwargs)
     except Exception as e:
         return f"raised {type(e).__name__}"
+
+
+#: The headers api.hubapi.com and api.notion.com sent with Cloudflare's 403 block page, and
+#: `Connection` absent: neither closed the connection.
+CLOUDFLARE_BLOCK_HEADERS = {
+    "content-type": "text/html; charset=UTF-8",
+    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, post-check=0, "
+    "pre-check=0",
+    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
+    "referrer-policy": "same-origin",
+    "x-frame-options": "SAMEORIGIN",
+    "connection": None,
+}
+
+
+def cloudflare_blocked(r) -> tuple:
+    """``r``'s status, the headers of :data:`CLOUDFLARE_BLOCK_HEADERS` and the SHA-256 of its body
+    with its Ray ID read as `<RAY>` and the address `sent_as` sends from as `<IP>`."""
+    body = re.sub(
+        rb'(Cloudflare Ray ID: <strong class="font-semibold">)[0-9a-f]{16}(</strong>)',
+        rb"\1<RAY>\2",
+        r.content,
+    )
+    body = re.sub(
+        rb'(<span class="hidden" id="cf-footer-ip">)127\.0\.0\.1(</span>)', rb"\1<IP>\2", body
+    )
+    headers = {name: r.headers.get(name) for name in CLOUDFLARE_BLOCK_HEADERS}
+    return r.status_code, headers, hashlib.sha256(body).hexdigest()
 
 
 def http_row(method, target, sent, body, credential, status, media_type, answer, id, answered=None):

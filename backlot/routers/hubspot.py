@@ -465,19 +465,26 @@ def blocks_a_header_value(headers: list[tuple[bytes, bytes]]) -> bool:
 
 #: The page :func:`cloudflare_block` answers, with ``{ray}`` and ``{ip}`` where it puts the
 #: request's Ray ID and the client's address, the only bytes that differed across 34 of real's
-#: answers on 2026-10-30.
+#: answers on 2026-10-30, and `hubapi.com` where it puts the ``host`` it is given.
 _BLOCK_PAGE = (Path(__file__).parent.parent / "data" / "hubspot_block.html").read_bytes()
 
 
-def cloudflare_block(request: Request) -> Response:
+def cloudflare_block(
+    request: Request, *, host: str = "hubapi.com", ray: str | None = None
+) -> Response:
     """Cloudflare's 403 block page, titled `Attention Required! | Cloudflare`, on
     `text/html; charset=UTF-8` with the headers below. Real's Ray ID was 16 lower-case hex digits in
     each of the 34 answers :data:`_BLOCK_PAGE` was read from, a different one each time, and the
-    same as the `CF-RAY` header's up to its `-`; here it is 16 random ones. The address is the
-    client's as the server saw it, where real's was the address the probe sent from."""
-    ray = secrets.token_hex(8)
+    same as the `CF-RAY` header's up to its `-`; absent a supplied ``ray``, here it is 16 random
+    ones. The address is the client's as the server saw it, where real's was the address the probe
+    sent from."""
+    ray = secrets.token_hex(8) if ray is None else ray
     address = request.client.host if request.client else ""
-    body = _BLOCK_PAGE.replace(b"{ray}", ray.encode()).replace(b"{ip}", address.encode())
+    body = (
+        _BLOCK_PAGE.replace(b"hubapi.com", host.encode("ascii"))
+        .replace(b"{ray}", ray.encode("ascii"))
+        .replace(b"{ip}", address.encode())
+    )
     return Response(
         body,
         status_code=403,

@@ -1905,6 +1905,39 @@ async def drop_what_slack_drops_off_the_end_of_a_path(request: Request, call_nex
     return await call_next(request)
 
 
+def _notion_brotli(scope: Scope) -> bool:
+    return (
+        _at_or_under(_url_path(scope), ("/notion",))
+        and scope["method"] not in _CLOUDFLARE_METHOD
+        and any(
+            coding.strip().lower() == b"br"
+            for name, value in scope["headers"]
+            if name.lower() == b"content-encoding"
+            for coding in value.split(b",")
+        )
+    )
+
+
+@_middleware(_notion_brotli)
+async def refuse_notion_brotli_with_cloudflare(request: Request, call_next):
+    """Answer a `/notion` request whose `Content-Encoding` names `br` among its codings, in any
+    case, with Cloudflare's 403 block page naming `notion.com` (``hubspot.cloudflare_block``), ahead
+    of the route, the body and the credential.
+
+    On 2026-11-15 (UTC) api.notion.com blocked `br` on `POST /v1/search` with a token, without one
+    and with a header of `identity` before it, on `/v1/search/`, `GET /v1/search`,
+    `GET /v1/users/me`, a database's query, `POST /v1/nosuch` and `GET /`, and by `HEAD`, `OPTIONS`,
+    `PATCH`, `DELETE` and `PUT`; on 2026-10-27 `br` drew it for a plain, Brotli-compressed or empty
+    body, and `BR` and `gzip, br` for a plain one. `TRACE` and `PURGE` drew the answers they draw
+    with no coding, which are left to what answers the method here. Registered inside
+    :func:`refuse_a_repeated_header_on_notion_linear_fireflies_and_hubspot`, and so inside the front
+    door's refusals of a target and a `Host`: on 2026-11-15 real answered `br` beside two
+    `Authorization` headers with that 400, and beside a bracketed `Host`, a `\\` first in the path
+    or `%zz`, `%00` or a control byte in it with its front door's 400."""
+    seed = f"{request.method} {request.url.path}?{request.url.query}"
+    return hubspot.cloudflare_block(request, host="notion.com", ray=synth.cloudflare_ray_id(seed))
+
+
 @_middleware(
     lambda scope: (
         _at_or_under(_url_path(scope), ("/hubspot",))

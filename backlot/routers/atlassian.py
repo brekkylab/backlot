@@ -3342,13 +3342,13 @@ def _refuse_a_cross_site_write(request: Request) -> None:
     passes it; failing both, a `POST` is the 403 ``errors.atlassian.xsrf_check_failed`` and any
     other method goes on.
 
-    Every operation Jira publishes takes it, `search/jql` among them, after the 415 and the 406 and
-    ahead of reading the body, the 401 for no credential and the issue's 404, and
-    `X-Atlassian-Token: no-check` does not pass it. Measured on Jira Cloud 2026-11-16 on
-    `search/jql`, `issue`, `issue/bulk`, `issue/{key}`, `issue/{key}/comment`,
-    `issue/{key}/transitions` and `issue/{key}/worklog`, under v2 and v3, with a credential and
-    with none: `Origin: null` beside a `Referer` naming the site passed, and beside another site's
-    was the 500.
+    It comes after the 415 and the 406 and ahead of reading the body, a path variable's 400, the 401
+    for no credential and the issue's or the project's 404, and `X-Atlassian-Token: no-check` does
+    not pass it. Measured on Jira Cloud 2026-11-16 on `search/jql`, `issue`, `issue/bulk`,
+    `issue/{key}`, `issue/{key}/comment`, `issue/{key}/transitions`, `issue/{key}/worklog` and
+    `project/{key}/role/{id}`, under v2 and v3, with a credential and with none, and taken here for
+    every operation Jira publishes: `Origin: null` beside a `Referer` naming the site passed, and
+    beside another site's was the 500.
     """
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return
@@ -5704,9 +5704,11 @@ def _published_answer(request: Request, vendor_path: str, body: bytes) -> Respon
     Jira checks the request's media type where the operation does, for any caller the gateway lets
     through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, asked
     of no caller where the operation's entry says ``"accept": "unchecked"``, which was measured with
-    no credential), then refuses a caller with no credential it resolves where the operation will
-    not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured
-    2026-09-30 and the `Accept` check's place 2026-10-13; where the operation runs and is one of
+    no credential), then runs its XSRF check (:func:`_refuse_a_cross_site_write`), then refuses a
+    caller with no credential it resolves where the operation will not run anonymously, and any
+    `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured 2026-09-30 and the `Accept`
+    check's place 2026-10-13; where the operation runs, it reads the body first if it is one of
+    :data:`_JIRA_WRITE_BODIES` (:func:`_jira_write_body`), and if it is one of
     :data:`_JIRA_ISSUE_WRITES` or :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing
     the caller can see is its 404, and a role write's is followed by the 401
     :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.

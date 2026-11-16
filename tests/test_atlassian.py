@@ -3421,13 +3421,9 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
 @pytest.fixture
 def jira_overlay(sample_settings, tokens):
     """A server of its own, so what a test writes is no other test's starting state, with a
-    payments member's header and an outsider's."""
+    payments member's header."""
     with client_for(sample_settings, reload=True) as c:
-        yield (
-            c,
-            {"Authorization": f"Bearer {tokens['bob@acme.com']}"},
-            {"Authorization": f"Bearer {tokens['hana@acme.com']}"},
-        )
+        yield c, {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
 
 
 def _write_issue(conn, title: str, content: str, **columns) -> str:
@@ -3449,13 +3445,33 @@ def _write_issue(conn, title: str, content: str, **columns) -> str:
     return key
 
 
+@pytest.mark.parametrize(
+    "principal,reads", [("admin", True), ("bob@acme.com", True), ("hana@acme.com", False)]
+)
+def test_jira_a_written_issue_is_read_by_whoever_reads_its_project(
+    jira_overlay, tokens_yaml, principal, reads
+):
+    """It takes its project's grants (`store.insert_document`): bob reads payments, hana does
+    not, and the admin token reads everything."""
+    client, _bob = jira_overlay
+    token = tokens_yaml["admin_token"] if principal == "admin" else tok(tokens_yaml, principal)
+    h = {"Authorization": f"Bearer {token}"}
+    written = _write_issue(client.app.state.conn, "Zephyr gateway retries", "Retry zephyr.")
+    r = client.get(f"/atlassian/rest/api/3/issue/{written}", headers=h)
+    assert r.status_code == (200 if reads else 404)
+    found = client.get(
+        "/atlassian/rest/api/3/search/jql", headers=h, params={"jql": 'text ~ "zephyr"'}
+    ).json()["issues"]
+    assert [i["key"] for i in found] == ([written] if reads else [])
+
+
 def test_jira_reads_what_the_overlay_holds_as_it_reads_the_corpus(jira_overlay, sample_settings):
-    client, bob, hana = jira_overlay
+    client, bob = jira_overlay
     conn = client.app.state.conn
     issue = "/atlassian/rest/api/3/issue/{}"
 
-    def search(jql, h=bob):
-        r = client.get("/atlassian/rest/api/3/search/jql", headers=h, params={"jql": jql})
+    def search(jql):
+        r = client.get("/atlassian/rest/api/3/search/jql", headers=bob, params={"jql": jql})
         return [i["key"] for i in r.json()["issues"]]
 
     def comments(key):
@@ -3481,10 +3497,6 @@ def test_jira_reads_what_the_overlay_holds_as_it_reads_the_corpus(jira_overlay, 
     assert {sev2, written} <= set(search('project = payments AND text ~ "latency"'))
     subtasks = client.get(issue.format(sev2), headers=bob).json()["fields"]["subtasks"]
     assert written in [s["key"] for s in subtasks]
-
-    # It takes the project's grants: whoever reads payments reads it, and nobody else.
-    assert client.get(issue.format(written), headers=hana).status_code == 404
-    assert search("project = payments", hana) == [] and search('text ~ "zephyr"', hana) == []
 
     store.patch_document(conn, "jira", (written,), "title", "Boreas gateway retries")
     assert client.get(issue.format(written), headers=bob).json()["fields"]["summary"] == (
@@ -7977,6 +7989,9 @@ _WRITE_REFUSALS = [
     ),
     ("PUT", "/rest/api/3/issue/NOPE-999999", {**_JSON_CT, "User-Agent": _BROWSER}, b"{nope")
     + (_said(errors_atlassian.BODY_UNPARSEABLE),),
+    # ahead of a project role's id and its project's 404 too
+    ("POST", "/rest/api/3/project/NOPESUCHZZ/role/abc", {**_JSON_CT, "User-Agent": _BROWSER})
+    + (b"{}", _XSRF),
     # an `Origin` with no host is real's 500 on any method but a read, unless `Referer` passes
     *(
         (method, path, {**_JSON_CT, "User-Agent": _BROWSER, "Origin": origin}, b"{}", _NPE)
@@ -8046,13 +8061,7 @@ _WRITE_REFUSALS = [
 ]
 
 
-@pytest.mark.parametrize("method,vendor_path,headers,body,want", _WRITE_REFUSALS)
-def test_jira_refuses_what_every_write_refuses_ahead_of_its_own(
-    client, method, vendor_path, headers, body, want
-):
-    """What `issue`, `issue/{key}`, `issue/{key}/comment` and `issue/{key}/transitions` answer
-    before anything of their own, and the XSRF check every POST takes
-    (``_refuse_a_cross_site_write`` and ``_jira_write_body`` in ``backlot.routers.atlassian``)."""
+def _write_refused(client, method, vendor_path, headers, body, want):
     r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
     status, media_type, answer = want
     assert r.status_code == status, r.text
@@ -8062,6 +8071,13 @@ def test_jira_refuses_what_every_write_refuses_ahead_of_its_own(
         assert r.content == answer
     elif answer is not None:
         assert r.json() == answer
+
+
+def test_jira_refuses_what_every_write_refuses_ahead_of_its_own(client):
+    """What `issue`, `issue/{key}`, `issue/{key}/comment` and `issue/{key}/transitions` answer
+    before anything of their own, and the XSRF check every write takes
+    (``_refuse_a_cross_site_write`` and ``_jira_write_body`` in ``backlot.routers.atlassian``)."""
+    assert _failures(_write_refused, _WRITE_REFUSALS, client) == {}
 
 
 _SPRING_415 = "org.springframework.web.HttpMediaTypeNotSupportedException: "

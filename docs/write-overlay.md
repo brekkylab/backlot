@@ -156,8 +156,8 @@ curl -X POST -H "Authorization: Bearer <admin token>" \
 
 `GET /_meta/overlay` is the read a grader makes: the documents written, the grants they carry, the
 columns overwritten, the parts replaced (a written spreadsheet's sheets), the documents subtracted,
-and the memberships changed — what an agent did, in
-one place, without diffing the served surface against itself.
+the comments written and subtracted (a Jira issue's), and the memberships changed — what an agent
+did, in one place, without diffing the served surface against itself.
 
 `POST /_meta/overlay/reset` restores the corpus's own state, tombstones included, so a second
 evaluation run over the same server starts where the first one did: a deleted message, issue or

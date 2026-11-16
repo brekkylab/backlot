@@ -4438,17 +4438,20 @@ def jira_next_key(conn, project: str, project_key: str) -> tuple[str, str]:
     """
     from backlot import overlay
 
-    sides = ["main.jira_issues"]
-    if overlay.is_attached(conn):
-        sides.append("ov.jira_issues")
     prefix = f"{project_key}-"
-    number = 0
-    numeric = 0
+    sides = ["main", "ov"] if overlay.is_attached(conn) else ["main"]
+    number = numeric = 0
     for side in sides:
-        for (key,) in conn.execute(f"SELECT key FROM {side} WHERE project = ?", (project,)):
-            if key.startswith(prefix) and key[len(prefix) :].isdigit():
-                number = max(number, int(key[len(prefix) :]))
-        row = conn.execute(f"SELECT MAX(CAST(numeric_id AS INTEGER)) FROM {side}").fetchone()
+        row = conn.execute(
+            f"SELECT MAX(CAST(SUBSTR(key, ?) AS INTEGER)) FROM {side}.jira_issues "
+            f"WHERE project = ? AND SUBSTR(key, 1, ?) = ? AND SUBSTR(key, ?) GLOB '[0-9]*' "
+            f"AND SUBSTR(key, ?) NOT GLOB '*[^0-9]*'",
+            [len(prefix) + 1, project, len(prefix), prefix, *[len(prefix) + 1] * 2],
+        ).fetchone()
+        number = max(number, row[0] or 0)
+        row = conn.execute(
+            f"SELECT MAX(CAST(numeric_id AS INTEGER)) FROM {side}.jira_issues"
+        ).fetchone()
         numeric = max(numeric, row[0] or 0)
     return f"{prefix}{number + 1}", str(numeric + 1)
 
@@ -5240,11 +5243,15 @@ def doc_comments(conn, source_type, *ident) -> list[sqlite3.Row]:
 
     where = " AND ".join(f"{c} = ?" for c in cols)
     projection = "id, seq, author_email, body, created_ts, reactions"
-    if source_type not in WRITABLE or not overlay.is_attached(conn):
+    names = overlay.table_names(source_type) if source_type in WRITABLE else {}
+    if not overlay.is_attached(conn) or not any(
+        conn.execute(f"SELECT 1 FROM ov.{names[kind]} LIMIT 1").fetchone()
+        for kind in ("comment", "comment_tombstone")
+        if kind in names
+    ):
         return conn.execute(
             f"SELECT {projection} FROM {tbl} WHERE {where} ORDER BY seq", ident
         ).fetchall()
-    names = overlay.table_names(source_type)
     gone = f"SELECT 1 FROM ov.{names['comment_tombstone']} x WHERE x.id = c.id"
     return conn.execute(
         f"SELECT {projection} FROM main.{tbl} c WHERE {where} AND NOT EXISTS ({gone}) "

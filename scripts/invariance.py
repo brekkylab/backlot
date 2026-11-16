@@ -31,10 +31,11 @@ Two runs of one commit differ: S3 signatures and rate-limit counters follow the 
 array-conversion error carries a Java identity hash, and a generated service-account key is random.
 ``--calibration`` takes a second recording of the base and stops comparing what differs between
 the two: a header's digits everywhere (its whole value when more than digits differ), any other
-value (the length included) only in the exchange it differed in. A header whose digits differ
-between two answers one test got to the same request, body alike, is a counter and has its digits
-ignored too, with or without ``--calibration``: a rate-limit window counts what ran before it on
-its worker, and two base runs scheduled alike agree on it.
+value (the length included) only in the exchange it differed in. A header named for what is left,
+used or when it resets (``_COUNTER``) whose digits differ between two answers one test got to the
+same request, status and body alike, is a counter and has its digits ignored too, with or without
+``--calibration``: a rate-limit window counts what ran before it on its worker, and two base runs
+scheduled alike agree on it. A limit a test reconfigures varies the same way and is still compared.
 
 ``prose`` answers for a change to comments, docstrings and markdown: each Python file that differs
 from BASE_REF parses to the same tree once docstrings are dropped, except a route's or a CLI
@@ -298,10 +299,11 @@ def _pairs(old: dict, new: dict) -> tuple[list[tuple], list, list]:
     return pairs, left_old, left_new
 
 
+_COUNTER = re.compile(r"remaining|reset|used|request-time")
+
+
 def _counters(run: dict) -> set[str]:
-    """The response headers whose digits differ between two answers one test got to the same
-    request, with the same status and body: a clock or a counter the process carries from request
-    to request, such as a rate-limit window, whose value depends on what ran before on its worker."""
+    """The response headers the module docstring reads as counters."""
     first: dict[str, dict] = {}
     names = set()
     for record in run.values():
@@ -314,7 +316,7 @@ def _counters(run: dict) -> set[str]:
         earlier = first.setdefault(answer, headers)
         for name in set(earlier) | set(headers):
             old, new = earlier.get(name), headers.get(name)
-            if old != new and _digitless(old) == _digitless(new):
+            if old != new and _digitless(old) == _digitless(new) and _COUNTER.search(name):
                 names.add(f"response {name}")
     return names
 

@@ -143,7 +143,10 @@ def _exchanges(root: Path, tests: dict[str, list[tuple]]) -> Path:
 
 
 _FIXTURE = ("/f", {"f": 1}, [])
-_OWN = [("/x", {"a": 1}, [["x-left", "5"]]), ("/x", {"a": 1}, [["x-left", "4"]])]
+_OWN = [
+    ("/x", {"a": 1}, [["x-remaining", "5"], ["x-limit", "3"]]),
+    ("/x", {"a": 1}, [["x-remaining", "4"], ["x-limit", "2"]]),
+]
 _OTHER = ("/g", {"g": 1}, [["x-limit", "10"]])
 
 
@@ -154,7 +157,11 @@ _OTHER = ("/g", {"g": 1}, [["x-limit", "10"]])
         pytest.param({"a": [_FIXTURE, *_OWN], "b": [_FIXTURE, _OTHER]}, None, id="fixture-twice"),
         pytest.param(
             {
-                "a": [_FIXTURE, ("/x", {"a": 1}, [["x-left", "9"]]), _OWN[1]],
+                "a": [
+                    _FIXTURE,
+                    ("/x", {"a": 1}, [["x-remaining", "9"], ["x-limit", "3"]]),
+                    _OWN[1],
+                ],
                 "b": [_OTHER],
             },
             None,
@@ -171,7 +178,7 @@ _OTHER = ("/g", {"g": 1}, [["x-limit", "10"]])
         pytest.param(
             {"a": [_FIXTURE, *_OWN], "b": [("/g", {"g": 1}, [["x-limit", "11"]])]},
             "x-limit",
-            id="digits-of-a-header-one-request-kept",
+            id="a-limit-a-test-reconfigures-is-compared-elsewhere",
         ),
         pytest.param(
             {"a": [_FIXTURE, *_OWN, ("/y", {}, [])], "b": [_OTHER]},
@@ -184,8 +191,9 @@ def test_compare_pairs_exchanges_by_request_wherever_scheduling_put_them(
     tmp_path, capsys, head, found
 ):
     """`/f` stands for a module-scoped fixture's request, sent by whichever test needs it first, on
-    each worker that runs one; `x-left` for a counter, which one test's two identical requests see
-    at two values. Without a calibration recording, neither is a difference."""
+    each worker that runs one; `x-remaining` for a counter, which one test's two identical requests
+    see at two values. Without a calibration recording, neither is a difference. `x-limit` varies
+    the same way, as a limit a test reconfigures does, and is still compared."""
     base = _exchanges(tmp_path / "base", {"t.py::a": [_FIXTURE, *_OWN], "t.py::b": [_OTHER]})
     head = _exchanges(tmp_path / "head", {f"t.py::{t}": e for t, e in head.items()})
     code = invariance._compare(base, head, "code", None, limit=5)

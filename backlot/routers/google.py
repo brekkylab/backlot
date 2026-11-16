@@ -1664,10 +1664,9 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
             conn, term, "gmail", ids, limit=10_000, offset=0, container=mailbox, phrase=phrase
         )
     else:
-        # No free text. If the query pins a date range (after:/before:), filter created_ts in SQL —
-        # a date-dir listing otherwise materialized the whole mailbox (~100k rows) then date-filtered
-        # in Python. after: -> ts >= lo (inclusive), before: -> ts < hi (exclusive), matching
-        # _gmail_op_match; the remaining ops still filter the (now small) candidate set below.
+        # No free text. If the query pins a date range (after:/before:), filter created_ts in SQL:
+        # after: -> ts >= lo (inclusive), before: -> ts < hi (exclusive), matching _gmail_op_match;
+        # the remaining ops still filter the candidate set below.
         lo = max((int(v) for v in ops.get("after", [])), default=None)
         hi = min((int(v) for v in ops.get("before", [])), default=None)
         # list_gmail_in_range for BOTH the date-pinned and the open-ended case (lo=hi=None): its

@@ -9273,8 +9273,7 @@ def sheet_id(base, admin_h):
 
 
 def _values(base, headers, sheet_id, rng, **params):
-    """Percent-encoded, as google-api-python-client sends it; a hand-written `!` and `:` must read
-    the same."""
+    """Percent-encoded, as google-api-python-client sends it."""
     return httpx.get(
         f"{base}/sheets/v4/spreadsheets/{sheet_id}/values/{quote(rng, safe='')}",
         headers=headers,
@@ -13010,6 +13009,7 @@ def test_pretty_print_indents_by_default_and_is_compact_to_the_byte_when_off(gc,
     """Pins `gerr.respond`'s two renderings to the byte: compact at the spellings
     `_sheets_respond` records, indented with no parameter and at every other value, and a 200
     whatever the value, `NOPE` included."""
+    # hand-written `!` and `:`, which read as the percent-encoded range does
     url = f"/sheets/v4/spreadsheets/{book}/values/Summary!A1:A1"
     answered = {}
     for value, _ in _PRETTY_PRINT_COMPACT:

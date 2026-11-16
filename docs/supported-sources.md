@@ -202,7 +202,11 @@ an empty password or `x-oauth-basic`, a token that resolves or one shaped like r
 hexadecimal digits) is that token; so is one of 40 lower-case hexadecimal digits, or one of those
 four prefixes in another case and 36 ASCII letters or digits, whose "Bad credentials" carries the
 five and is counted in the window a `Basic` value naming no token is counted in; and one that
-holds anything else is no credential at all.
+holds anything else is no credential at all. On the reads real was measured serving with no
+credential (`backlot.routers.github._READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`, `GET /zen` and the
+archive reads among them), a `Bearer` or `token` credential after a tab that does not resolve is
+"Bad credentials" with the five rather than "Requires authentication", counted on each but the
+archive reads (2026-11-10, 2026-11-15 and 2026-11-16).
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer its API gives,
 the errors included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for

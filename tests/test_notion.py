@@ -18,7 +18,16 @@ from backlot import store, synth
 from backlot.express_http import weak_etag
 from backlot.routers.notion import DATA_SOURCES_VERSION, PUBLISHED_VERSIONS
 from backlot.routers.notion import router as notion_router
-from tests._helpers import client_for, sent_as, served_id, tiny_corpus, tok
+from tests._helpers import (
+    CLOUDFLARE_BLOCK_HEADERS,
+    client_for,
+    cloudflare_blocked,
+    outcome,
+    sent_as,
+    served_id,
+    tiny_corpus,
+    tok,
+)
 
 
 @pytest.fixture
@@ -1500,6 +1509,108 @@ def test_notion_search_reads_its_body_as_real_does(client, admin_h, monkeypatch)
             )
             wanted[label] = (status, False, ["error", status, code, message], True)
     assert answered == wanted
+
+
+#: What ``cloudflare_blocked`` reads api.notion.com's page as, the same in each of the ten answers
+#: it was read from.
+_BLOCK_PAGE_SHA256 = "0659ebaab8237c07bac1df78436cd51d056d2ea308545d421b8279a54ad0eaf3"
+_KEY = ("Authorization", "{key}")
+_VERSION = ("Notion-Version", DATA_SOURCES_VERSION)
+_TYPE = ("Content-Type", "application/json")
+_BR = ("Content-Encoding", "br")
+
+# Requests with a Brotli coding, each sent as it was to api.notion.com, beside what real answered:
+# its block, or (`without`) what it answers with no coding, here this server's answer to the request
+# with none. `{key}` is a token that resolves, and `{rand}` an id no object has.
+_BROTLI_ROWS = [
+    ("br", "POST", "/v1/search", [_KEY, _VERSION, _TYPE, _BR], b'{"foo":1}', "block"),
+    (
+        "BR",
+        "POST",
+        "/v1/search",
+        [_KEY, _VERSION, _TYPE, ("Content-Encoding", "BR")],
+        b'{"foo":1}',
+        "block",
+    ),
+    (
+        "gzip, br",
+        "POST",
+        "/v1/search",
+        [_KEY, _VERSION, _TYPE, ("Content-Encoding", "gzip, br")],
+        b'{"foo":1}',
+        "block",
+    ),
+    ("no body", "POST", "/v1/search", [_KEY, _VERSION, _TYPE, _BR], b"", "block"),
+    (
+        "identity, then br",
+        "POST",
+        "/v1/search",
+        [_KEY, _VERSION, _TYPE, ("Content-Encoding", "identity"), _BR],
+        b'{"page_size":1}',
+        "block",
+    ),
+    ("no token", "POST", "/v1/search", [_VERSION, _TYPE, _BR], b'{"page_size":1}', "block"),
+    (
+        "a trailing slash",
+        "POST",
+        "/v1/search/",
+        [_KEY, _VERSION, _TYPE, _BR],
+        b'{"page_size":1}',
+        "block",
+    ),
+    ("GET", "GET", "/v1/search", [_KEY, _VERSION, _BR], None, "block"),
+    ("the token's user", "GET", "/v1/users/me", [_KEY, _VERSION, _BR], None, "block"),
+    (
+        "a database query",
+        "POST",
+        "/v1/databases/{rand}/query",
+        [_KEY, _VERSION, _TYPE, _BR],
+        b"{}",
+        "block",
+    ),
+    ("no route", "POST", "/v1/nosuch", [_KEY, _VERSION, _TYPE, _BR], b"{}", "block"),
+    ("root", "GET", "", [_BR], None, "block"),
+    ("HEAD", "HEAD", "/v1/users/me", [_VERSION, _BR], None, "block"),
+    ("OPTIONS", "OPTIONS", "/v1/search", [_VERSION, _BR], None, "block"),
+    ("PATCH", "PATCH", "/v1/pages/{rand}", [_VERSION, _TYPE, _BR], b"{}", "block"),
+    ("DELETE", "DELETE", "/v1/blocks/{rand}", [_VERSION, _BR], None, "block"),
+    ("PUT", "PUT", "/v1/search", [_VERSION, _TYPE, _BR], b"{}", "block"),
+    (
+        "Authorization twice",
+        "POST",
+        "/v1/search",
+        [_KEY, _KEY, _VERSION, _TYPE, _BR],
+        b'{"page_size":1}',
+        "without",
+    ),
+    ("TRACE", "TRACE", "/v1/search", [_VERSION, _BR], None, "without"),
+    ("PURGE", "PURGE", "/v1/search", [_VERSION, _BR], None, "without"),
+]
+
+
+def test_notion_answers_a_brotli_coding_with_cloudflares_block(client, admin_h):
+    def answered(method, url, sent, body, answer):
+        r = sent_as(client, method, url, sent, content=body)
+        if answer == "without":
+            return r.status_code, r.content
+        if method == "HEAD":
+            return r.status_code, r.headers["content-type"]
+        return cloudflare_blocked(r)
+
+    got, expected = {}, {}
+    for row, method, path, sent, body, answer in _BROTLI_ROWS:
+        url = "/notion" + path.format(rand=_RAND)
+        sent = [(name, value.format(key=admin_h["Authorization"])) for name, value in sent]
+        got[row] = outcome(answered, method, url, sent, body, answer)
+        if answer == "without":
+            plain = [(name, value) for name, value in sent if name != "Content-Encoding"]
+            without = sent_as(client, method, url, plain, content=body)
+            expected[row] = (without.status_code, without.content)
+        elif method == "HEAD":
+            expected[row] = (403, "text/html; charset=UTF-8")
+        else:
+            expected[row] = (403, CLOUDFLARE_BLOCK_HEADERS, _BLOCK_PAGE_SHA256)
+    assert got == expected
 
 
 _SEARCHED_DATABASES = [
@@ -3738,12 +3849,22 @@ _REQUEST_ROWS = [
         _UNKNOWN_API,
     ),
     (
-        "br, which this parser does not read",
+        "a coding that ends in br",
         "POST",
         "/search",
         "",
-        b'{"foo":1}',
-        {**_JSON, "Content-Encoding": "br"},
+        b'{"page_size":1}',
+        {**_JSON, "Content-Encoding": "not-br"},
+        415,
+        _UNKNOWN_API,
+    ),
+    (
+        "a coding that starts with br",
+        "POST",
+        "/search",
+        "",
+        b'{"page_size":1}',
+        {**_JSON, "Content-Encoding": "brotli"},
         415,
         _UNKNOWN_API,
     ),

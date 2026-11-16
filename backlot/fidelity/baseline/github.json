@@ -3,7 +3,7 @@
   "endpoints": [
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
   ],
-  "measured": "2026-11-11",
+  "measured": "2026-11-15",
   "operations": [
     {
       "operation": "DELETE /agents/repos/{}/{}/automations/{}",
@@ -4860,6 +4860,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "GET /repos/{}/{}/planning-statuses",
+      "id": "repos/list-planning-statuses",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "No field in `backlot/schemas/github.schema.json` states an issue's planning status (`state` is `open` or `closed`), so a repository's planning statuses are not served. Read from the vendor's published OpenAPI document (github/rest-api-description) on 2026-11-15, which calls issue statuses a preview and documents a 404 where they are not available in the repository. On 2026-11-15 api.github.com answered it on a public repository with 404 \"Not Found\" for no credential, for `Digest x`, for `Basic Zm9vOmJhcg==` and for an OAuth token, and with 401 \"Bad credentials\" for `Bearer nope`, so a list of statuses was not measured."
     },
     {
       "operation": "GET /repos/{}/{}/private-vulnerability-reporting",

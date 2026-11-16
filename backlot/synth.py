@@ -49,6 +49,11 @@ def hnum(seed: str, start: int = 0, length: int = 8, salt: str = "") -> int:
     return int(h[start : start + length] or h[:length], 16)
 
 
+def cloudflare_ray_id(seed: str) -> str:
+    """A stable 16-character lower-case hex id for a synthesized Cloudflare response."""
+    return _digest("cloudflare-ray:" + seed)[:16]
+
+
 def pick(seed: str, seq, salt: str = ""):
     """Deterministically choose one element of ``seq`` for this doc."""
     seq = list(seq)

@@ -3987,21 +3987,20 @@ def _markdown(
 ) -> str:
     """Stored content as Markdown: TITLE as `#`, SUBTITLE as `##` and HEADING_n as n `#`s, a
     heading's vertical tab a space; bold, italic, strikethrough and links in a paragraph's named
-    style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list
-    paragraph after its marker (`_list_marker`), with nonempty continuation lines after a
-    vertical tab indented by the combined width of all open list items including the current
-    item (`_width`). In Drive `files.export` measurements on 2026-11-15, the continuation
-    used two spaces for a checkbox, three for `1.`, four for `10.`, and six for `1.` nested
-    under another `1.`. A paragraph in no list goes where `_Nesting` puts it,
-    each block joined to the one before or apart from it as `_Nesting.joins` says, and a table as
-    `_table` writes it. A line of exactly two spaces, its prefix included, after another line and
-    with a blank line rather than a hard break first after it, is written as nothing, and the
-    breaks either side of it as three newlines, the line after it then written as it is: real
+    style or its runs' as `**`, `*`, `~~` and `[text](url)`, underline as nothing; a list paragraph
+    after its marker (`_list_marker`), each line with text after a vertical tab in it after the
+    width of every item open, its own among them (`_width`); a paragraph in no list where `_Nesting`
+    puts it, each block joined to the one before or apart from it as `_Nesting.joins` says, and a
+    table as `_table` writes it. Measured 2026-11-15, a line after a vertical tab in a list item:
+    `1. aa` and `- [ ] aa` were followed by `   z` and `  z`, `10. aa` by `    z`, and `   1. bb`,
+    under `1. aa`, by `      z`. A line of exactly two spaces, its prefix included, after another
+    line and with a blank line rather than a hard break first after it, is written as nothing, and
+    the breaks either side of it as three newlines, the line after it then written as it is: real
     wrote a paragraph of two spaces so before a heading on 2026-11-01 and before a table, a list
-    item and a paragraph on 2026-11-09, and on 2026-11-10 a vertical tab's line of two spaces
-    before a heading, and of four paragraphs of two spaces each a blank line from the next, the
-    first and the third. Real kept a first line of two spaces, and one with a hard break first
-    after it, on 2026-11-10. Nothing is trimmed, and nothing ends the last line."""
+    item and a paragraph on 2026-11-09, and on 2026-11-10 a vertical tab's line of two spaces before
+    a heading, and of four paragraphs of two spaces each a blank line from the next, the first and
+    the third. Real kept a first line of two spaces, and one with a hard break first after it, on
+    2026-11-10. Nothing is trimmed, and nothing ends the last line."""
     at = [k for k, el in enumerate(content) if "paragraph" in el or "table" in el]
     blocks = [content[k].get("paragraph", content[k]) for k in at]
     levels = ["table" if "table" in b else _MARKDOWN_LEVEL.get(_named(b)) for b in blocks]

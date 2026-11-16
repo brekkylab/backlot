@@ -20865,8 +20865,8 @@ def _in_segment(segment, request):
     return {kind: body | {where: {"segmentId": segment, **body[where]}}}
 
 
-# Paragraphs in no list after list items (`gdocs._Nesting`), and continuation lines within
-# list items. Each expected row comes from the Doc's `text/markdown` export.
+# Paragraphs in no list after list items (`gdocs._Nesting`), and a list item's lines after its
+# first, each row's Doc read back as the `text/markdown` export (`markdown`) real gave of it
 _NESTED_MARKDOWN_ROWS = [
     # a paragraph in no list 36 PT in, one step, after an item goes under the item and joins it, and
     # a paragraph at no indent after it stands apart

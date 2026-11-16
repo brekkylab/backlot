@@ -651,25 +651,62 @@ _PUBLISHED_NOT_SERVED = published.operations(
 _ROUTED_UNPUBLISHED = published.operations(
     ("GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
-#: The unserved reads real serves with no credential, of the sample in
-#: :func:`refuse_an_unserved_operation`: with `Digest x` on 2026-11-10, `…/zipball/a` and
-#: `…/tarball/a/b` were the 302 to the archive and `…/git/matching-refs/heads/x` the 200 list of
-#: refs, and `/zen` is one of the ten that sample answered with no `Authorization`.
+#: The unserved reads real was measured serving a caller with no credential
+#: (:func:`_a_tab_credential_on_a_read_real_serves_without_one`).
 _READS_REAL_SERVES_WITHOUT_A_CREDENTIAL = published.operations(
     (
+        "GET /",
+        "GET /codes_of_conduct",
+        "GET /emojis",
+        "GET /events",
+        "GET /gists/public",
+        "GET /gitignore/templates",
+        "GET /licenses",
+        "GET /licenses/{}",
+        "GET /meta",
+        "GET /octocat",
+        "GET /users/{}/repos",
         "GET /zen",
-        "GET /repos/{}/{}/zipball/{+}",
-        "GET /repos/{}/{}/tarball/{+}",
+        "GET /repos/{}/{}/actions/artifacts",
+        "GET /repos/{}/{}/commits",
+        "GET /repos/{}/{}/contributors",
         "GET /repos/{}/{}/git/matching-refs/{+}",
+        "GET /repos/{}/{}/labels",
+        "GET /repos/{}/{}/languages",
+        "GET /repos/{}/{}/releases",
+        "GET /repos/{}/{}/tarball/{+}",
+        "GET /repos/{}/{}/zipball/{+}",
     )
+)
+#: The two of them whose "Bad credentials" leaves `used` where it was.
+_ARCHIVE_READS = published.operations(
+    ("GET /repos/{}/{}/tarball/{+}", "GET /repos/{}/{}/zipball/{+}")
 )
 
 
 def _a_tab_credential_on_a_read_real_serves_without_one(request: Request) -> bool:
-    """Whether this request carries a `Bearer` or `token` credential after a tab, one that
-    resolves to no one, on a read of :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`: the one
-    header :func:`_a_header_without_a_credential` holds for that real reads as a credential
-    there, as it does on a served route (:func:`refused_without_a_window`)."""
+    """Whether this request carries a `Bearer` or `token` credential after a tab that resolves to
+    no one, on a read of :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`, which real answers "Bad
+    credentials" with the five at `limit: 60`.
+
+    Measured against api.github.com, one cache-busted request each. With no `Authorization` on
+    2026-11-15 each of those reads was its 200, the archive reads their 302. `Bearer<TAB>nope` was
+    that 401 on `…/zipball/a`, `…/tarball/a`, `…/git/matching-refs/x`, `/zen` and on
+    `…/zipball/a/b`, `…/tarball/a/b` and `…/git/matching-refs/heads/x` on 2026-11-10, and on each
+    of the others on 2026-11-15, where `…/actions/secrets` and `…/hooks` answered it "Requires
+    authentication" with none of the five; so was `token<TAB>nope` on `/zen`, `…/zipball/a` and
+    `…/languages` (2026-11-15). On 2026-11-15 each read but the archive reads moved by one the
+    `used` a bearer after a tab on `/zen` reads, and the archive reads (:data:`_ARCHIVE_READS`) left
+    it where it was: `…/zipball/a` and `…/tarball/a/b`, sent twice each between two `/zen`, each
+    read `used: 29`, where the two `/zen` read 29 and 30.
+
+    A bearer after a tab that resolves, `Basic<TAB>!!!!` and `Digest x` keep the 401 for a header
+    that carries no credential: real answered each where it was sent with the read's own 200 or 302,
+    which Backlot cannot give on these reads. On 2026-11-15 the bearer that resolves was the 200 of
+    `/zen` and `…/languages` at `limit: 60` and the 302 of `…/zipball/a` at the token's
+    `limit: 5000`, and `Basic<TAB>!!!!` the answer of each of the three at `limit: 60`; on
+    2026-11-10 `Digest x` was the 302 of the archive reads and the 200 of the matching-refs read.
+    """
     if not auth.github_scheme_then_a_tab(request):
         return False
     if auth.github_scheme(request)[0] not in ("bearer", "token"):
@@ -721,20 +758,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     method and ahead of the version: measured on 2026-10-16 on the 43 operations of a sample of 51
     that asked for a credential, `Digest x`, `nope`, `Bearer<TAB>nope` and `Basic<TAB>!!!!` were
     each "Requires authentication" with none of the five and no echo, and so was a bearer that
-    resolves after a tab, on the 18 `GET`s among them, which served it after a space. On the
-    eight operations the tests send, each pinned to `1999-01-01`, so was an empty `Authorization`.
-
-    The reads real serves with no credential (:data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`)
-    are the exception for a bearer after a tab: there real reads the tab as it does on a served
-    route, as the credential it names. Measured on 2026-11-10, `Bearer<TAB>nope` on
-    `…/zipball/a`, `…/tarball/a`, `…/git/matching-refs/x` and `/zen`, and on the two-segment
-    values `…/zipball/a/b`, `…/tarball/a/b` and `…/git/matching-refs/heads/x`, was the 401 "Bad
-    credentials" with the five at `limit: 60`, counted in the window a tab bearer is counted in
-    on a served route (:func:`refused_without_a_window`), where the writes measured the same
-    day — `PUT …/contents/a` and `…/contents/a/b`, `DELETE …/contents/a/b`, and `DELETE` and
-    `PATCH` on `…/git/refs/x` and `…/git/refs/heads/x` — were "Requires authentication" with
-    none of the five, as the paragraph above records. A `Digest` on those reads is served
-    anonymously by real, which Backlot cannot serve, so it keeps the 401 above.
+    resolves after a tab, on the 18 `GET`s among them, which served it after a space. On the reads
+    of :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL` a bearer after a tab that resolves to no one
+    is "Bad credentials" instead (:func:`_a_tab_credential_on_a_read_real_serves_without_one`). On
+    the eight operations the tests send, each pinned to `1999-01-01`, so was an empty
+    `Authorization`.
 
     A `Basic` value that names no token is the caller a served route serves with no credential: on
     those eight, `Basic Zm9vOmJhcg==` was each operation's own answer to that caller, carrying the
@@ -767,11 +795,14 @@ async def refuse_an_unserved_operation(request: Request) -> None:
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
         )
         raise HTTPException(status_code=401, detail="Requires authentication")
-    if _a_header_without_a_credential(
-        request
-    ) and not _a_tab_credential_on_a_read_real_serves_without_one(request):
+    tab_credential = _a_tab_credential_on_a_read_real_serves_without_one(request)
+    if _a_header_without_a_credential(request) and not tab_credential:
         request.state.github_unserved_refusal = "uncounted"
         raise HTTPException(status_code=401, detail="Requires authentication")
+    if tab_credential and published.includes(
+        _ARCHIVE_READS, request.method, request.scope["path"].removeprefix("/github")
+    ):
+        request.state.github_unserved_refusal = "reported"
     await _validate_bad_credential(request)
     await _validate_api_version(request)
     _require(request)
@@ -1010,9 +1041,11 @@ def refused_an_unserved_operation_uncounted(request: Request) -> bool:
 
 
 def refused_an_unserved_operation_reported(request: Request) -> bool:
-    """Whether :func:`refuse_an_unserved_operation` answered ``DELETE /installation/token`` as a
-    served route does for a caller with no credential: the version echo, the five `x-ratelimit-*`,
-    and nothing counted. See that function for the measurement."""
+    """Whether :func:`refuse_an_unserved_operation` answered with the five `x-ratelimit-*` and
+    nothing counted: ``DELETE /installation/token`` as a served route does for a caller with no
+    credential, with the version echo, or an archive read's "Bad credentials" for a bearer after a
+    tab (:func:`_a_tab_credential_on_a_read_real_serves_without_one`). See those functions for the
+    measurements."""
     return getattr(request.state, "github_unserved_refusal", None) == "reported"
 
 

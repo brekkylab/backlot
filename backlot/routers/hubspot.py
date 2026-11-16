@@ -680,6 +680,14 @@ def _props(row) -> dict:
     return store.jcol(row, "properties", {}) or {}
 
 
+def _crm_time(second: int | float) -> str:
+    """HubSpot `createdAt` and `updatedAt` carry milliseconds (api.hubapi.com,
+    `POST /crm/v3/objects/{objectType}/search` on nine object types, measured 2026-11-13)."""
+    whole, millis = divmod(round(second * 1000), 1000)
+    clock = synth.utc_datetime(whole).isoformat(timespec="seconds")
+    return clock.removesuffix("+00:00") + f".{millis:03d}Z"
+
+
 def _record(row, keep: list[str] | None = None) -> dict:
     """One CRM record in HubSpot's object shape. ``keep`` mirrors the ``properties`` query param:
     a projection, not a different record."""
@@ -692,8 +700,10 @@ def _record(row, keep: list[str] | None = None) -> dict:
         # with the value this very row was actually assigned and is looked up by.
         "id": row["id"],
         "properties": props,
-        "createdAt": synth.rfc3339_millis(row["created_ts"]),
-        "updatedAt": synth.rfc3339_millis(row["updated_ts"] or row["created_ts"]),
+        "createdAt": _crm_time(row["created_ts"]),
+        "updatedAt": _crm_time(
+            row["created_ts"] if row["updated_ts"] is None else row["updated_ts"]
+        ),
         "archived": bool(row["archived"]),
     }
     return out
@@ -2386,9 +2396,9 @@ async def search_objects(object_type: str, request: Request):
     elif not sorts:
         # No sort asked for — real answered `{}`, `{"sorts": []}` and `{"sorts": null}` oldest
         # `createdate` first on contacts, companies, tasks and meetings (api.hubapi.com,
-        # 2026-11-13). `created_ts` serves `createdAt` in whole seconds, and rows created in the
-        # same second keep ascending id: no two records of the portal measured share a
-        # `createdate`, so real's order for a tie is unknown.
+        # 2026-11-13). `created_ts` serves `createdAt` with its milliseconds. Rows sharing that
+        # time keep ascending id: no two records of the portal measured share a `createdate`,
+        # so real's order for a tie is unknown.
         hits.sort(key=lambda r: r["created_ts"])
 
     if after_doc is not None:

@@ -4896,6 +4896,8 @@ _LONG_TARGET_ROWS = [
         for n, a in ((4_096, 404), (4_097, "path"))
     ),
     ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),
+    ("GET", "/repositories/{pad}", "path", 4_414, "admin", "path"),
+    ("GET", "/organizations/{pad}", "path", 4_415, "admin", "path"),
     ("GET", "/repos/{org}/gateway/pulls/{pad}", "path", 4_097, "admin", 404),
     ("GET", "/repos/{org}/gateway/contents/{pad}", "path", 4_097, "admin", 404),
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 8_180, "admin", "line"),
@@ -7946,9 +7948,7 @@ def test_github_an_unparseable_callers_spent_window_403_carries_the_tokens_sente
 
 
 def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
-    """A repository id followed by other characters answers as the id does, a path under an id
-    holding anything but ASCII digits is the 404 of a path no route matches, and an id after other
-    characters is the repository route's 404, as real answered each
+    """Spellings of a repository id, each answered as real answered it
     (``backlot.routers.github.canonical_id_path``)."""
     c, _ = gh_client
     rid = synth.github_user_id("codebase")
@@ -7967,16 +7967,30 @@ def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
         "status": "404",
     }
     rows = {
-        f"0{rid}": (200, repository),
-        f"%20{rid}": (200, repository),
+        **{
+            f"{before}{rid}": (200, repository)
+            for before in ("0", "%20", "%20%20", "%09", "%0A", "%0B", "%0C", "%0D", "%2B", "%20%2B")
+        },
+        f"0d{rid}": (200, repository),
+        f"0D{rid}": (200, repository),
+        f"{rid:_}": (200, repository),
+        f"{rid}_": (200, repository),
         f"{rid}x": (200, repository),
         f"{rid}.5": (200, repository),
         f"{rid}%2Fbranches": (200, repository),
         f"{rid}%C2%B2": (200, repository),
         f"{rid}%D9%A3": (200, repository),
         f"x{rid}": (404, absent),
+        f"-{rid}": (404, absent),
+        f"_{rid}": (404, absent),
+        f"%2B%20{rid}": (404, absent),
+        f"%C2%A0{rid}": (404, absent),
+        f"{rid:_}".replace("_", "__"): (404, absent),
         f"0{rid}/branches/main": (200, branch),
-        f"%20{rid}/branches/main": (200, branch),
+        f"%20{rid}/branches/main": (404, unrouted),
+        f"%2B{rid}/branches/main": (404, unrouted),
+        f"0d{rid}/branches/main": (404, unrouted),
+        f"{rid:_}/branches/main": (404, unrouted),
         f"{rid}x/branches/main": (404, unrouted),
         f"{rid}%2Fx/branches/main": (404, unrouted),
         f"{rid}%C2%B2/branches/main": (404, unrouted),
@@ -7991,11 +8005,6 @@ def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
 
 
 def test_github_organization_id_canonicalization(gh_client, gh_admin_h):
-    """An organization id followed by other characters, or with a leading zero or a leading space,
-    answers as the id does; a subpath under an organization id holding anything other than ASCII
-    digits and optional leading spaces is the 404 of a path no route matches; and an organization id
-    prefixed by other characters is the organization route's 404, as real answered each
-    (``backlot.routers.github.canonical_id_path``)."""
     c, _ = gh_client
     oid = synth.github_user_id("acme")
     organization = c.get(f"/github/organizations/{oid}", headers=gh_admin_h).json()
@@ -8016,9 +8025,14 @@ def test_github_organization_id_canonicalization(gh_client, gh_admin_h):
         f"{oid}x": (200, organization),
         f"0{oid}": (200, organization),
         f"%20{oid}": (200, organization),
+        f"%20{oid}x": (200, organization),
+        f"%0A{oid}": (200, organization),
+        f"%2B{oid}": (200, organization),
+        f"0d{oid}": (200, organization),
+        f"{oid:_}": (200, organization),
         f"x{oid}": (404, absent),
         f"0{oid}/repos": (200, repos),
-        f"%20{oid}/repos": (200, repos),
+        f"%20{oid}/repos": (404, unrouted),
         f"{oid}x/repos": (404, unrouted),
         f"x{oid}/repos": (404, unrouted),
     }

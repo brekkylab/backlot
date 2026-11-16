@@ -21135,8 +21135,15 @@ _NESTED_MARKDOWN_ROWS = [
             [_ins(8, "cc")],
             [_bullets(8, 10)],
         ],
-        "markdown",
-        "* aa  \n  bb\n\n* cc",
+        "paragraphs-and-markdown",
+        {
+            "paragraphs": [
+                ["aa\n", _PT(36), _PT(18), True, None],
+                ["bb\n", _PT(36), _PT(36), False, None],
+                ["cc\n", _PT(72), _PT(54), True, None],
+            ],
+            "markdown": "* aa  \n  bb\n\n* cc",
+        },
     ),
     # an empty paragraph after an item does not stop the next going under it
     (
@@ -21521,6 +21528,23 @@ def _docs_served(wc, h, doc: str, part: str):
             wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": m}).text
             for m in ("text/plain", "text/markdown")
         ]
+    if part == "paragraphs-and-markdown":
+        read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+        return {
+            "paragraphs": [
+                [
+                    "".join(pe.get("textRun", {}).get("content", "") for pe in para["elements"]),
+                    para["paragraphStyle"].get("indentStart"),
+                    para["paragraphStyle"].get("indentFirstLine"),
+                    "bullet" in para,
+                    para.get("bullet", {}).get("nestingLevel"),
+                ]
+                for para in gdocs.paragraphs_of(read["body"]["content"])
+            ],
+            "markdown": wc.get(
+                f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/markdown"}
+            ).text,
+        }
     if part == "markdown":
         return wc.get(
             f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/markdown"}

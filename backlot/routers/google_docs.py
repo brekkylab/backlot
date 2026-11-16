@@ -2202,6 +2202,9 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         raise _EditorRefused("Cannot operate on the first section break in the document.")
     paragraphs = body.uncovered_paragraphs(body.paragraphs_in(start, end))
     owns = [body.bullet(p) for p in paragraphs]
+    origin = (
+        body.paragraphs[paragraphs[0]]["paragraphStyle"].get("indentStart", {}).get("magnitude", 0)
+    )
     tabs = [
         0 if own is not None else min(body.leading_tabs(p), _DOCS_LIST_DEPTH)
         for p, own in zip(paragraphs, owns)
@@ -2216,7 +2219,13 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         levels
     ):
         made = before["listId"]
-    made = made or doc.new_list(tab, levels)
+    if made is None:
+        # Docs, createParagraphBullets, measured 2026-11-10: a new list on a
+        # paragraph indented 36 PT starts at 72/54 PT, still at nesting level zero.
+        levels = _docs_shifted(
+            _DOCS_PRESETS[_DOCS_BULLET_PRESET.names[preset]], fewest, origin=origin
+        )
+        made = doc.new_list(tab, levels)
     for p, n, own in zip(paragraphs, tabs, owns):
         level = n - fewest if own is None else own.get("nestingLevel", 0)
         at = _docs_levels(tab, made)[level]
@@ -2228,12 +2237,12 @@ def _docs_levels(tab: dict, list_id: str) -> list[dict]:
     return tab["lists"][list_id]["listProperties"]["nestingLevels"]
 
 
-def _docs_shifted(levels: list[dict], tabs: int) -> list[dict]:
-    """A preset's levels, each indented ``tabs`` tabs of 36 PT further."""
+def _docs_shifted(levels: list[dict], tabs: int, *, origin: float = 0) -> list[dict]:
+    """A preset's levels, shifted from ``origin`` by ``tabs`` tabs of 36 PT."""
     out = copy.deepcopy(levels)
     for level in out:
         for key in ("indentFirstLine", "indentStart"):
-            level[key]["magnitude"] += 36 * tabs
+            level[key]["magnitude"] += origin + 36 * tabs
     return out
 
 

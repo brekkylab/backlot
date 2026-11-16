@@ -338,7 +338,11 @@ def _epoch(v):
         # [Errno 22] on Windows 11 (Python 3.14.0), and -86400 with `+00:00` on both.
         if written.tzinfo is None:
             written = written.replace(tzinfo=timezone.utc)
-        return int(written.timestamp())
+        try:
+            sec = int(written.timestamp())
+        except (ValueError, OverflowError, OSError):
+            return None
+        return _seconds(sec)
     # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
     # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
     # first, so an 8-digit basic-format date stays a date rather than becoming a second.

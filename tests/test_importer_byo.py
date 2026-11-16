@@ -857,6 +857,38 @@ def test_byo_reply_clock_refuses_unservable_numbers(tmp_path, bad):
 
 
 @pytest.mark.windows
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "0001-01-01T00:00:00+01:00",  # 0000-12-31T23:00:00Z once offset is applied
+        "9999-12-31T23:30:00-01:00",  # 10000-01-01T00:30:00Z once offset is applied
+    ],
+)
+def test_byo_iso_time_outside_datetime_range_once_offset_applied_refuses(tmp_path, bad):
+    """An ISO 8601 string whose year falls outside 1..9999 once its timezone offset is applied
+    cannot be rendered by synth.utc_datetime and raises OverflowError when served. The import
+    refuses it as it refuses out-of-range epoch seconds."""
+    corpus = _write(
+        tmp_path,
+        [
+            {
+                "source_type": "github",
+                "doc_id": "gh-r",
+                "repo": "r",
+                "subtype": "issue",
+                "title": "r",
+                "content": "body",
+                "visibility": "public",
+                "author_email": "ava@acme.com",
+                "created": bad,
+            }
+        ],
+    )
+    with pytest.raises(SystemExit, match="not a time this importer can read"):
+        load(corpus, Settings(data_dir=tmp_path))
+
+
+@pytest.mark.windows
 def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     """`_epoch` answers None rather than raising, for every shape a corpus can put in a
     time field. `json.loads` accepts bare `Infinity` and `NaN`, so these arrive as floats
@@ -872,6 +904,11 @@ def test_byo_epoch_handles_every_number_without_raising(tmp_path):
     assert _epoch(0) == 0 and _epoch("0") == 0
     assert _epoch("-86400") == -86400
     assert _epoch("1770746760") == 1770746760
+    # ISO strings that fall outside years 1..9999 once their offset is applied are refused
+    for v in ["0001-01-01T00:00:00+01:00", "9999-12-31T23:30:00-01:00"]:
+        assert _epoch(v) is None, v
+    assert _epoch("0001-01-01T00:00:00Z") == -62135596800
+    assert _epoch("9999-12-31T23:59:59Z") == 253402300799
 
 
 @pytest.mark.windows

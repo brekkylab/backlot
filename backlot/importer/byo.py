@@ -301,12 +301,11 @@ def _epoch(v):
         # [Errno 22] on Windows 11 (Python 3.14.0), and -86400 with `+00:00` on both.
         if written.tzinfo is None:
             written = written.replace(tzinfo=timezone.utc)
-        # Validate the offset-adjusted instant before dropping fractional seconds.
+        # Count in integers: timestamp() rounds the last microsecond of year 9999 into
+        # year 10000. Truncate toward zero before the same range check as numeric inputs.
         elapsed = written - datetime(1970, 1, 1, tzinfo=timezone.utc)
-        second = _seconds(elapsed // timedelta(seconds=1))
-        if second is not None and second < 0 and elapsed.microseconds:
-            return second + 1  # Preserve truncation toward zero for dates before the epoch.
-        return second
+        whole, part = divmod(elapsed, timedelta(seconds=1))
+        return _seconds(whole + 1 if whole < 0 and part else whole)
     # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
     # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
     # first, so an 8-digit basic-format date stays a date rather than becoming a second.

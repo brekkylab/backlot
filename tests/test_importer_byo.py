@@ -885,7 +885,8 @@ def test_byo_epoch_handles_every_number_without_raising(tmp_path):
         ("2026-05-01T09:00:00+09:00", 1777593600),  # an offset is the offset written
         ("2026-05-01T00:00:00Z", 1777593600),
         ("0001-01-01T00:00:00+01:00", None),
-        ("0001-01-01T00:00:00.999999+00:00:01", None),
+        ("0001-01-01T00:00:00+00:00:01", None),
+        ("0001-01-01T00:00:00.999999+00:00:01", -62135596800),
         ("9999-12-31T23:30:00-01:00", None),
         ("0001-01-01T01:00:00+01:00", -62135596800),
         ("9999-12-31T22:59:59.999999-01:00", 253402300799),
@@ -894,7 +895,8 @@ def test_byo_epoch_handles_every_number_without_raising(tmp_path):
 )
 def test_byo_an_iso_time_reads_the_same_whatever_the_machines_zone(written, second, monkeypatch):
     """An ISO time is the same second on every machine: one with no offset is UTC, one with an
-    offset is that offset. Read under a UTC+9 zone where the platform can switch it
+    offset is that offset. Seconds outside years 1–9999 after truncation are refused.
+    Read under a UTC+9 zone where the platform can switch it
     (`backlot.importer.byo._epoch` has the measurement)."""
     import time
 

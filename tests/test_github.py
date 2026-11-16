@@ -2635,6 +2635,7 @@ _ESCAPED_SLASH_ROWS = [
     ("{gateway}%2Fissues%2F{issue}", "/repos/{org}/nope", 404),
     ("{gateway}%2Fbranches", "/repos/{org}/nope", 404),
     ("/repos/{org}%2Fgateway", "/nope", 404),
+    ("/repos/{org}%252Fgateway", "/nope", 404),
     ("/orgs/{org}%2Frepos", "/orgs/nope", 404),
     ("/search%2Fcode?q=x", "/nope", 404),
     ("/agents%2Frepos/{org}/gateway/nosuch", "/nope", 404),
@@ -2648,6 +2649,7 @@ _ESCAPED_SLASH_ROWS = [
     ("{gateway}/issues/x%2F1", "{gateway}/issues/x", 404),
     ("{diffable}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
     ("{diffable}/branches/chore%2frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/branches/chore%252Frename", "{diffable}/branches/nope", 404),
     ("{diffable}/commits/chore%2Frename", "{diffable}/commits/chore/rename", 200),
     ("{diffable}/git/ref/heads/chore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
     ("{diffable}/git/ref/heads%2Fchore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
@@ -2718,17 +2720,17 @@ _COUNTED_TOKEN_SHAPED = [
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: twenty-six are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the twelfth as the `/orgs/{}`
-#: path `/organizations/{id}` is rewritten to, the thirteenth on a path whose slash-terminated
-#: spelling a route matches, and the ten after `security-advisories` on `contents`, `git/refs`,
-#: `git/matching-refs`, `tarball` and `zipball`, whose parameters span segments; the next two are in
-#: `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep
-#: out of it, and the three after them a second segment where the operation's parameter takes one;
-#: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
-#: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
-#: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; the
-#: two after it are paths under `/agents/automations/{}` that real answered 404 for every
-#: credential; the six after them are paths outside the two agent families
+#: twenty-seven are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the thirteenth as the
+#: `/orgs/{}` path `/organizations/{id}` is rewritten to, the fourteenth on a path whose
+#: slash-terminated spelling a route matches, and the ten after `security-advisories` on `contents`,
+#: `git/refs`, `git/matching-refs`, `tarball` and `zipball`, whose parameters span segments; the
+#: next two are in `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and
+#: `_NOT_ROUTED` keep out of it, and the three after them a second segment where the operation's
+#: parameter takes one; the two after them are no operation, though a parsed URL ends the first at
+#: its decoded `#` and a `missing_param` row of the baseline spells the second's path; the next is a
+#: method GitHub does not publish on a path whose `PATCH` it does, which real answered a bad bearer
+#: with its 404; the two after it are paths under `/agents/automations/{}` that real answered 404
+#: for every credential; the six after them are paths outside the two agent families
 #: (`backlot.routers.github.under_an_agent_family`), which real answered 404 for every credential
 #: too; and the last two are no GitHub request at all.
 _UNSERVED_ROWS = [
@@ -2742,6 +2744,7 @@ _UNSERVED_ROWS = [
     ("POST", "/github/repos/{org}/codebase/pulls/1/copilot-code-review", True, 404),
     ("POST", "/github/user/issue-types", True, 404),
     ("DELETE", "/github/user/issue-fields/1", True, 404),
+    ("GET", "/github/repos/{org}/codebase/planning-statuses", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
     ("GET", "/github/organizations/1/settings/billing/usage", True, 404),
     ("POST", "/github/repos/{org}/codebase/git/trees", True, 404),
@@ -2799,13 +2802,17 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     value that names no token, each carrying the version echo. A row not refused is the router's
     answer for any caller. Real was measured on each row but the last with a bad bearer, an unknown
     scheme and a bearer after a tab, on each refused row but the ten after `security-advisories`
-    with each header below, and with no header on the first ten. On the three refused rows after
+    with each header below, and with no header on the first eleven. On the three refused rows after
     `git/trees` and the two under `/agents/automations`, two of those headers have no answer of
     real's: a bearer after a tab that resolves was not sent on the three writes, and
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`. On `git/matching-refs`, `tarball` and `zipball` real answered
     `Digest x` with the public repository's 200 list of refs or 302 to the archive, and a bearer
-    after a tab with 401 "Bad credentials"; here both are 401 "Requires authentication".
+    after a tab with 401 "Bad credentials"; here both are 401 "Requires authentication". On
+    `planning-statuses` real asked for no credential: no header, `Basic Zm9vOmJhcg==` and each
+    header below that carries none but `Bearer<TAB>nope` were its 404 with the echo, or the
+    version's 400 when pinned to `1999-01-01`, and `Bearer<TAB>nope` was 401 "Bad credentials";
+    here each of those but the pinned `Basic` value is 401 "Requires authentication".
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
@@ -3177,7 +3184,7 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     # docstring for what that framing did while the scope was left saying `GET`). So the messages
     # the app sends are read directly: the headers carry the GET's length, and no body byte follows
     # them.
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     sent = []
 

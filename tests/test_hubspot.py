@@ -2548,7 +2548,12 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
         # A sort still decides the order.
         assert emails({"sorts": [{"propertyName": "email"}]}) == sorted(oldest_first)
 
-    # Local corpus preservation controls, not vendor measurements of zero or earlier updates.
+
+def test_hubspot_a_record_serves_its_created_and_updated_to_the_millisecond(tmp_path):
+    from tests._helpers import client_for
+
+    # Corpus times no measurement of real's covers, among them times before the epoch, an `updated`
+    # of 0 and an `updated` earlier than `created`.
     before_epoch = "1969-12-31T23:59:59.750Z"
     epoch = "1970-01-01T00:00:00.000Z"
     update_cases = (
@@ -2565,7 +2570,7 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
         ({"created": 1, "updated": 1}, ("1970-01-01T00:00:01.000Z",) * 2),
     )
     settings = tiny_corpus(
-        tmp_path / "updates",
+        tmp_path,
         [
             {
                 "source_type": "hubspot",

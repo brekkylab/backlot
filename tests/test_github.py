@@ -2837,12 +2837,13 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
     with no `x-ratelimit-*`. On `git/matching-refs`, `tarball`, `zipball`, `compare` and
     `rules/branches` real answered `Digest x` with the public repository's 200 list of refs, 302 to
-    the archive, 404 for the comparison or 200 `[]` of rules, and a bearer after a tab with 401
-    "Bad credentials"; here both are 401 "Requires authentication". On `planning-statuses` real
-    asked for no credential: no header, `Basic Zm9vOmJhcg==` and each header below that carries
-    none but `Bearer<TAB>nope` were its 404 with the echo, or the version's 400 when pinned to
-    `1999-01-01`, and `Bearer<TAB>nope` was 401 "Bad credentials"; here each of those but the
-    pinned `Basic` value is 401 "Requires authentication".
+    the archive, 404 for the comparison or 200 `[]` of rules, and a bearer after a tab with 401 "Bad
+    credentials"; here `Digest x` is 401 "Requires authentication", and a bearer after a tab on a
+    row of `_TAB_BEARER_ROWS` is asserted there. On `planning-statuses` real asked for no
+    credential: no header, `Basic Zm9vOmJhcg==` and each header below that carries none but
+    `Bearer<TAB>nope` were its 404 with the echo, or the version's 400 when pinned to `1999-01-01`,
+    and `Bearer<TAB>nope` was 401 "Bad credentials"; here each of those but the pinned `Basic` value
+    is 401 "Requires authentication".
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
@@ -2868,6 +2869,7 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     no_credential += [
         ({"Authorization": value, **bad_version}, False)
         for value in ("Digest x", "nope", "", "Bearer\tnope", "Basic\t!!!!", tab_admin)
+        if value != "Bearer\tnope" or (method, path) not in _TAB_BEARER_ROWS
     ]
     for headers, counted in no_credential:
         r = c.request(method, url, headers=headers)
@@ -3039,6 +3041,60 @@ def test_github_deleting_the_installation_token_is_answered_as_a_served_route(
     if five:
         second = c.delete("/github/installation/token", headers=headers)
         assert second.headers["x-ratelimit-used"] == first.headers["x-ratelimit-used"], headers
+
+
+#: For each read of `backlot.routers.github._READS_REAL_SERVES_WITHOUT_A_CREDENTIAL` a bearer
+#: after a tab was sent to on api.github.com, by how much its "Bad credentials" moved the `used`
+#: a bearer after a tab on `/zen` reads (measured as
+#: `_a_tab_credential_on_a_read_real_serves_without_one` records).
+_TAB_BEARER_ROWS = {
+    ("GET", "/github/"): 1,
+    ("GET", "/github/codes_of_conduct"): 1,
+    ("GET", "/github/emojis"): 1,
+    ("GET", "/github/events"): 1,
+    ("GET", "/github/gists/public"): 1,
+    ("GET", "/github/gitignore/templates"): 1,
+    ("GET", "/github/licenses"): 1,
+    ("GET", "/github/licenses/mit"): 1,
+    ("GET", "/github/meta"): 1,
+    ("GET", "/github/octocat"): 1,
+    ("GET", "/github/users/{org}/repos"): 1,
+    ("GET", "/github/zen"): 1,
+    ("GET", "/github/repos/{org}/codebase/actions/artifacts"): 1,
+    ("GET", "/github/repos/{org}/codebase/commits"): 1,
+    ("GET", "/github/repos/{org}/codebase/compare/a...b"): 1,
+    ("GET", "/github/repos/{org}/codebase/compare/a...b/c"): 1,
+    ("GET", "/github/repos/{org}/codebase/contributors"): 1,
+    ("GET", "/github/repos/{org}/codebase/git/matching-refs/x"): 1,
+    ("GET", "/github/repos/{org}/codebase/git/matching-refs/heads/x"): 1,
+    ("GET", "/github/repos/{org}/codebase/labels"): 1,
+    ("GET", "/github/repos/{org}/codebase/languages"): 1,
+    ("GET", "/github/repos/{org}/codebase/releases"): 1,
+    ("GET", "/github/repos/{org}/codebase/rules/branches/master"): 1,
+    ("GET", "/github/repos/{org}/codebase/rules/branches/a/b"): 1,
+    ("GET", "/github/repos/{org}/codebase/tarball/a"): 0,
+    ("GET", "/github/repos/{org}/codebase/tarball/a/b"): 0,
+    ("GET", "/github/repos/{org}/codebase/zipball/a"): 0,
+    ("GET", "/github/repos/{org}/codebase/zipball/a/b"): 0,
+}
+
+
+def test_github_a_bearer_after_a_tab_on_a_read_real_serves_without_a_credential(gh_client, gh_org):
+    """Each read is answered as
+    `backlot.routers.github._a_tab_credential_on_a_read_real_serves_without_one` records, and sent
+    between two `/zen` leaves their `used` one more than its row apart."""
+    c, _ = gh_client
+    tab = {"Authorization": "Bearer\tnope"}
+    before = int(c.get("/github/zen", headers=tab).headers["x-ratelimit-used"])
+    for (method, path), moves in _TAB_BEARER_ROWS.items():
+        r = c.request(method, path.format(org=gh_org), headers=tab)
+        after = int(c.get("/github/zen", headers=tab).headers["x-ratelimit-used"])
+        assert (r.status_code, r.json()["message"]) == (401, "Bad credentials"), path
+        assert "x-github-api-version-selected" not in r.headers, path
+        assert r.headers["x-ratelimit-limit"] == "60", path
+        assert r.headers["x-ratelimit-resource"] == "core", path
+        assert after == before + 1 + moves, path
+        before = after
 
 
 _NO_CREDENTIAL_ROUTES = {

@@ -2795,6 +2795,39 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
+def _confluence_media_token(cid) -> dict:
+    """The `mediaToken` member a body representation serves when an `expand` term names it.
+
+    Measured on Confluence Cloud on 2026-11-13, on a page with no attachments: seven members in
+    this order — `contentId` the page id as a string, `token`, `fileIds`, `collectionIds` the
+    one `contentId-<id>`, `expiryDateTime`, `clientId` and `descriptors`. `token` was a JWT of
+    three segments whose header is `{"alg": "HS256"}`; neither its payload nor its signature
+    follows from a corpus, so the payload carries the expiry and the signature is a digest of
+    the two segments and the content id — the shape is real's, the value is this server's own.
+    `expiryDateTime` was 48 minutes after the request, with milliseconds and a `Z`. `fileIds`
+    and `descriptors` were empty on a page with no attachments; a page with attachments was
+    not measured.
+    """
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=48)
+
+    def b64(raw: bytes) -> str:
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    head = b64(json.dumps({"alg": "HS256"}, separators=(",", ":")).encode())
+    payload = b64(json.dumps({"exp": int(expiry.timestamp())}, separators=(",", ":")).encode())
+    signature = b64(hashlib.sha256(f"confluence-media:{cid}:{head}.{payload}".encode()).digest())
+    expiry_text = expiry.strftime("%Y-%m-%dT%H:%M:%S.") + f"{expiry.microsecond // 1000:03d}Z"
+    return {
+        "contentId": str(cid),
+        "token": f"{head}.{payload}.{signature}",
+        "fileIds": [],
+        "collectionIds": [f"contentId-{cid}"],
+        "expiryDateTime": expiry_text,
+        "clientId": synth.confluence_media_client_id(str(cid)),
+        "descriptors": [],
+    }
+
+
 def _confluence_page(conn, request: Request, row, expand: str, search: bool = False) -> dict:
     created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
@@ -2819,6 +2852,18 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         term.startswith("body.storage.") and term.split(".")[2]
         for term in (expand or "").split(",")
     )
+    # The members of a body representation an `expand` term names, by representation: the
+    # third segment of `body.<representation>.<name>`, where the name is one of the three a
+    # representation carries beside `value` and `representation`. A name under a member
+    # (`body.storage.embeddedContent.x`) names the member, as real answers it with what the
+    # member alone draws. The tuple is the order real names the unserved ones under
+    # `_expandable`.
+    body_member_names = ("webresource", "embeddedContent", "mediaToken")
+    body_members: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        parts = term.split(".")
+        if len(parts) >= 3 and parts[0] == "body" and parts[2] in body_member_names:
+            body_members.setdefault(parts[1], set()).add(parts[2])
     page = {
         "id": str(cid),
         "type": ctype,
@@ -2975,11 +3020,32 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             # and no `embeddedContent`: `body.storage.value` on 2026-11-03, and
             # `body.storage.representation`, `body.storage.content`, `body.storage.x`,
             # `body.storage.Value` and `body.storage.value.x` on 2026-11-13, where `body.storage.`
-            # drew the first form. A term naming `embeddedContent`, `webresource` or `mediaToken`
-            # there serves that member in place of its `_expandable` name, which this server
-            # leaves standing.
-            rep = {"value": body_writers[name](), "representation": name}
-            if name == "storage" and not storage_named:
+            # drew the first form. A term naming one of the three members serves that member in
+            # place of its `_expandable` name, on each of the four representations this server
+            # renders (2026-11-13): the members stand in the order `mediaToken`, `value`,
+            # `webresource`, `representation`, `embeddedContent`, `_expandable`, each where it
+            # is served, and `_expandable` keeps the other two names at "" and `content` — all
+            # three named together leave `content` alone, and `webresource` and `mediaToken`
+            # draw no `embeddedContent`, on `storage` as well.
+            members = body_members.get(name, set())
+            rep = {}
+            if "mediaToken" in members:
+                rep["mediaToken"] = _confluence_media_token(cid)
+            rep["value"] = body_writers[name]()
+            if "webresource" in members:
+                rep["webresource"] = {
+                    "superbatch": {"_expandable": {"uris": "", "metatags": "", "tags": ""}},
+                    "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                }
+            rep["representation"] = name
+            if "embeddedContent" in members:
+                rep["embeddedContent"] = []
+            if members:
+                rep["_expandable"] = {
+                    **{m: "" for m in body_member_names if m not in members},
+                    "content": f"/rest/api/content/{cid}",
+                }
+            elif name == "storage" and not storage_named:
                 rep["embeddedContent"] = []
                 rep["_expandable"] = {"content": f"/rest/api/content/{cid}"}
             else:

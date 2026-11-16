@@ -128,6 +128,14 @@ holding a value, row by row, grown through every cell in the row or column next 
 the values go on the row under it from its first column. `INSERT_ROWS` inserts whole rows there,
 and the sheet's row count grows with them.
 
+A Jira issue the overlay holds reads back through `issue/{key}`, its numeric id, its parent's
+`subtasks` and `search/jql`, a `text ~` included, and its comments through `issue/{key}/comment`
+and the issue's own `comment` field; an edited one reads edited, a deleted one is gone, and so is
+a deleted comment. An issue written into a project is read by whoever reads that project, and by
+no one else. A created issue takes its project's key and the number one above the highest any of
+its issues has held, and the numeric id one above the highest any issue has held, a deleted one's
+included: real never hands a deleted issue's key or id out again.
+
 Search needed one thing more. Relevance is bm25, whose inverse document frequency is a property of
 the index a term is in — so an overlay holding a handful of rows scores everything in it at about
 `-1e-06`, where the corpus index scores comparable text `-2.70`. Lower ranks higher, so a newly
@@ -152,7 +160,8 @@ and the memberships changed — what an agent did, in
 one place, without diffing the served surface against itself.
 
 `POST /_meta/overlay/reset` restores the corpus's own state, tombstones included, so a second
-evaluation run over the same server starts where the first one did.
+evaluation run over the same server starts where the first one did: a deleted message, issue or
+comment is back, and an edited one reads as the corpus has it.
 
 Reading is unauthenticated, like the rest of `/_meta`. Resetting requires the admin token.
 

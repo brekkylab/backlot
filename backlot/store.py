@@ -233,7 +233,7 @@ def order_columns(source_type: str) -> tuple[str, ...]:
 # path is byte-identical to a build without writes, which is what lets a new write surface ship
 # without re-validating every other vendor. Adding one is this entry, its PATCHABLE columns, and
 # its endpoints.
-WRITABLE = frozenset({"slack", "google_drive"})
+WRITABLE = frozenset({"slack", "google_drive", "jira"})
 
 # Per source, the columns a served write may overwrite. Everything else is immutable once written:
 # a patch to an identifier column would move a row out from under its own ACL grant, since a grant
@@ -252,6 +252,28 @@ PATCHABLE = {
     # measured 2026-10-26, both reflect a `values.update` on real Drive. `updated_ts` is
     # `modifiedTime`, which real moves to the write's own time.
     "google_drive": frozenset({"content", "updated_ts"}),
+    # What an edit, an assignment and a transition change, and what each of them moves with it:
+    # `updated_ts` and the `changelog` an `expand=changelog` read serves. `title` and `content` are
+    # the summary and the description, re-indexed when patched.
+    "jira": frozenset(
+        {
+            "title",
+            "content",
+            "status",
+            "issuetype",
+            "priority",
+            "labels",
+            "components",
+            "parent_id",
+            "assignee_email",
+            "reporter_email",
+            "resolution",
+            "resolution_ts",
+            "duedate",
+            "updated_ts",
+            "changelog",
+        }
+    ),
 }
 
 # Per source, the corpus tables that hold PARTS of a document rather than documents, each with the
@@ -1371,14 +1393,25 @@ def insert_document(
             [values[c] for c in cols],
         )
         if grants is None:
+            # An ACL table holds the key alone, so where the key does not name the container
+            # (jira's `key`, unlike slack's `(channel, ts)`) the grants are joined through the
+            # document table instead.
+            if container in key:
+                held = " UNION ".join(
+                    f"SELECT DISTINCT principal_type, principal_id FROM {db}.{names['acl']} "
+                    f"WHERE {container} = ?"
+                    for db in ("main", "ov")
+                )
+            else:
+                held = " UNION ".join(
+                    f"SELECT DISTINCT a.principal_type, a.principal_id FROM {db}.{names['acl']} a "
+                    f"JOIN {db}.{tbl} d ON {_acl_join(source_type, 'a', 'd')} "
+                    f"WHERE d.{container} = ?"
+                    for db in ("main", "ov")
+                )
             conn.execute(
                 f"INSERT INTO ov.{names['acl']} ({key_cols}, principal_type, principal_id) "
-                f"SELECT {', '.join('?' for _ in key)}, principal_type, principal_id FROM ("
-                f"  SELECT DISTINCT principal_type, principal_id FROM main.{names['acl']} "
-                f"  WHERE {container} = ?"
-                f"  UNION SELECT DISTINCT principal_type, principal_id FROM ov.{names['acl']} "
-                f"  WHERE {container} = ?"
-                f")",
+                f"SELECT {', '.join('?' for _ in key)}, principal_type, principal_id FROM ({held})",
                 [*(values[c] for c in key), values[container], values[container]],
             )
         else:
@@ -3947,8 +3980,7 @@ def children(
     conn, source_type, parent_id, visible_ids=None, limit=1000, offset=0
 ) -> list[sqlite3.Row]:
     """Child documents (jira subtasks / confluence child pages) of a parent doc."""
-    tbl = table(source_type)
-    sql = f"SELECT * FROM {tbl} WHERE parent_id = ?"
+    sql = f"SELECT * FROM {merged_source(conn, source_type)} WHERE parent_id = ?"
     params: list = [parent_id]
     clause, cparams = _acl_clause(source_type, visible_ids=visible_ids)
     sql += clause + f" ORDER BY {_order_by(source_type)} LIMIT ? OFFSET ?"
@@ -4368,16 +4400,18 @@ def github_file_refs(conn, repo, visible_ids=None) -> list[str]:
 
 
 def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
-    """One issue by the key the API reports, whole. A unique-indexed column lookup — the key is
-    composed at import (see importer.byo's ``resolve_jira_keys``) and stored, so serving it needs
-    neither the project's prefix nor a suffix to recombine.
+    """One issue by the key the API reports, whole. A primary-key lookup — the key is composed at
+    import (see importer.byo's ``resolve_jira_keys``) or at create (:func:`jira_next_key`) and
+    stored, so serving it needs neither the project's prefix nor a suffix to recombine.
 
     Case-SENSITIVE, deliberately: real Jira keys are uppercase and the schema enforces it, and the
     one time this resolved case-insensitively it was an accident of reusing the JQL project
     token's tolerance. There is no prefix resolution here for that tolerance to leak through.
     """
     clause, cp = _acl_clause("jira", visible_ids=visible_ids)
-    return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
+    return conn.execute(
+        f"SELECT * FROM {merged_source(conn, 'jira')} WHERE key = ?{clause}", [key, *cp]
+    ).fetchone()
 
 
 def jira_by_numeric_id(conn, issue_id: str, visible_ids=None) -> sqlite3.Row | None:
@@ -4388,8 +4422,35 @@ def jira_by_numeric_id(conn, issue_id: str, visible_ids=None) -> sqlite3.Row | N
     """
     clause, cp = _acl_clause("jira", visible_ids=visible_ids)
     return conn.execute(
-        f"SELECT * FROM jira_issues WHERE numeric_id = ?{clause}", [issue_id, *cp]
+        f"SELECT * FROM {merged_source(conn, 'jira')} WHERE numeric_id = ?{clause}",
+        [issue_id, *cp],
     ).fetchone()
+
+
+def jira_next_key(conn, project: str, project_key: str) -> tuple[str, str]:
+    """The key and the numeric id an issue created in ``project`` takes.
+
+    The key is the project's key and one above the highest number any key of the project holds,
+    and the id one above the highest id any issue holds. Measured on Jira Cloud 2026-11-16: three
+    creates in a row took `-5`, `-6` and `-7` and ids `10004` to `10006`, the second deleted before
+    the third, so a deleted issue's key and id are never handed out again. Both are read off the
+    PHYSICAL rows of both databases, a tombstoned one among them, for that reason.
+    """
+    from backlot import overlay
+
+    sides = ["main.jira_issues"]
+    if overlay.is_attached(conn):
+        sides.append("ov.jira_issues")
+    prefix = f"{project_key}-"
+    number = 0
+    numeric = 0
+    for side in sides:
+        for (key,) in conn.execute(f"SELECT key FROM {side} WHERE project = ?", (project,)):
+            if key.startswith(prefix) and key[len(prefix) :].isdigit():
+                number = max(number, int(key[len(prefix) :]))
+        row = conn.execute(f"SELECT MAX(CAST(numeric_id AS INTEGER)) FROM {side}").fetchone()
+        numeric = max(numeric, row[0] or 0)
+    return f"{prefix}{number + 1}", str(numeric + 1)
 
 
 def _file_head_clause(visible_ids=None, tbl: str = "t") -> tuple[str, list]:
@@ -5175,9 +5236,53 @@ def doc_comments(conn, source_type, *ident) -> list[sqlite3.Row]:
             f"doc_comments: {source_type!r} comments hang off {cols}, so this takes "
             f"{len(cols)} value(s), not {len(ident)}"
         )
+    from backlot import overlay
+
     where = " AND ".join(f"{c} = ?" for c in cols)
+    projection = "id, seq, author_email, body, created_ts, reactions"
+    if source_type not in WRITABLE or not overlay.is_attached(conn):
+        return conn.execute(
+            f"SELECT {projection} FROM {tbl} WHERE {where} ORDER BY seq", ident
+        ).fetchall()
+    names = overlay.table_names(source_type)
+    gone = f"SELECT 1 FROM ov.{names['comment_tombstone']} x WHERE x.id = c.id"
     return conn.execute(
-        f"SELECT id, seq, author_email, body, created_ts, reactions FROM {tbl} "
-        f"WHERE {where} ORDER BY seq",
-        ident,
+        f"SELECT {projection} FROM main.{tbl} c WHERE {where} AND NOT EXISTS ({gone}) "
+        f"AND NOT EXISTS (SELECT 1 FROM ov.{tbl} o WHERE o.id = c.id) "
+        f"UNION ALL SELECT {projection} FROM ov.{tbl} c WHERE {where} AND NOT EXISTS ({gone}) "
+        f"ORDER BY seq",
+        [*ident, *ident],
     ).fetchall()
+
+
+def write_comment(conn, source_type: str, values: dict) -> None:
+    """Write one comment to the overlay: a new one, or an edit of one either database holds, which
+    replaces it whole under its own `id`. ``values`` is every column of the comment table."""
+    from backlot import overlay
+
+    _require_writable(source_type)
+    tbl = COMMENT_TABLE[source_type]
+    known = {r[1] for r in conn.execute(f"PRAGMA main.table_info({tbl})")}
+    if unknown := set(values) - known:
+        raise ValueError(f"{source_type}: no such column(s) {sorted(unknown)} on {tbl}")
+    with overlay.LOCK:
+        conn.execute(
+            f"INSERT OR REPLACE INTO ov.{tbl} ({', '.join(values)}) "
+            f"VALUES ({','.join('?' for _ in values)})",
+            list(values.values()),
+        )
+        conn.commit()
+
+
+def tombstone_comment(conn, source_type: str, comment_id: str) -> None:
+    """Subtract one comment from every read, whichever database holds it."""
+    from backlot import overlay
+
+    _require_writable(source_type)
+    names = overlay.table_names(source_type)
+    with overlay.LOCK:
+        conn.execute(
+            f"INSERT OR IGNORE INTO ov.{names['comment_tombstone']} (id) VALUES (?)",
+            (comment_id,),
+        )
+        conn.commit()

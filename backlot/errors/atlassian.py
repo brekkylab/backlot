@@ -2209,6 +2209,27 @@ def failed_to_read_request(path: str) -> AtlassianError:
     )
 
 
+def xsrf_check_failed() -> AtlassianError:
+    """Jira's 403 for a POST its XSRF check reads as a browser's from another site
+    (`routers.atlassian._refuse_a_cross_site_write`): the sentence alone, as bytes, under JSON's
+    media type. Measured on Jira Cloud 2026-11-16."""
+    return AtlassianError(403, b"XSRF check failed", headers={"Content-Type": JIRA_JSON_MEDIA_TYPE})
+
+
+def xsrf_origin_unread() -> AtlassianError:
+    """Jira's 500 for an `Origin` its XSRF check finds no host in (`null`, `garbage`, a host with no
+    scheme), measured on Jira Cloud 2026-11-16: the NPE comparing the host, verbatim."""
+    return AtlassianError(
+        500,
+        {
+            "message": 'Cannot invoke "Object.equals(Object)" because "<parameter1>" is null',
+            "status-code": 500,
+            "stack-trace": "",
+        },
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def unbounded_jql() -> AtlassianError:
     """Jira's 400 for `search/jql` given no `jql` at all — on GET or POST, measured 2026-09-16
     on Jira Cloud. The sentence is Backlot's own: real answers in the account's language, as it does

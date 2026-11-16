@@ -7949,6 +7949,13 @@ _WRITE_REFUSALS = [
     ("POST", "/rest/api/3/search/jql", {**_JSON_CT, "User-Agent": "MSIE 10"}, b"{}", _XSRF),
     (
         "POST",
+        _COMMENT,
+        [*_JSON_CT.items(), ("User-Agent", "curl/8"), ("User-Agent", _BROWSER)],
+        b"{}",
+        _XSRF,
+    ),
+    (
+        "POST",
         "/rest/api/3/issue/NOPE-999999/transitions",
         {**_JSON_CT, "User-Agent": _BROWSER, "X-Atlassian-Token": "no-check"},
         b"{}",

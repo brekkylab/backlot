@@ -3299,7 +3299,8 @@ async def _jira_search_body(request: Request) -> dict:
 #: `Chrome/`, `Safari/`, `Edge/`, `Opera/`, `Konqueror/`, `Netscape/`, `Googlebot/` and `Trident/`
 #: with their slash and `Firefox` and `MSIE` with or without one, where `Chrome`, `chrome/120`,
 #: `Edg/`, `OPR/`, `Chromium/`, `AppleWebKit/`, `Mozilla/5.0 (Macintosh)`, `curl/8` and
-#: `python-requests/2.31` were not.
+#: `python-requests/2.31` were not. A token in a second `User-Agent` header counts: `curl/8` and
+#: then a browser's was the 403.
 _JIRA_BROWSER_TOKENS = (
     "Chrome/",
     "Firefox",

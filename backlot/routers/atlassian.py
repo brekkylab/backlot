@@ -5754,9 +5754,47 @@ def _confluence_serves_html(vendor_path: str) -> bool:
     )
 
 
+#: The versions Confluence's plugins REST API is mounted at under `/wiki/rest/plugins/`, the two
+#: measured as mounts on 2026-11-10 (`plugins/1/x` is the product's page).
+_CONFLUENCE_PLUGINS_MOUNT = re.compile(r"^/wiki/rest/plugins/(?:1\.0|latest)/(?:([^/]+)/?)?$")
+
+
+def _confluence_plugins_answer(request: Request, vendor_path: str) -> Response | None:
+    """What Confluence's plugins REST API answers at its mount and one segment below it, or None
+    where it does not answer (two segments below the mount is JAX-RS's 404, and the installed
+    apps a caller with a credential reads at the mount itself are not copied, since no corpus
+    holds apps).
+
+    Measured on Confluence Cloud on 2026-11-10 and 2026-11-15: a caller with no credential is the
+    403 (``errors.atlassian.PLUGINS_NOT_PERMITTED``) at the mount and one segment below it; a caller
+    with one is refused for the segment, as the task error (``errors.atlassian.PLUGINS_TASK_ERROR``)
+    where it does not end in `-key` (`x-KEY` among them) and as an empty 404 under the plugin type
+    where it does and names no app (`-key` alone among them), with a slash after the segment or
+    none.
+    """
+    match = _CONFLUENCE_PLUGINS_MOUNT.match(vendor_path)
+    if match is None:
+        return None
+    segment = match.group(1)
+    if auth.atlassian_caller(request).is_anonymous:
+        return Response(
+            errors_atlassian.PLUGINS_NOT_PERMITTED, status_code=403, media_type="application/json"
+        )
+    if segment is None:
+        return None
+    if segment.endswith("-key"):
+        return Response(b"", status_code=404, media_type=errors_atlassian.PLUGINS_PLUGIN_MEDIA_TYPE)
+    return Response(
+        errors_atlassian.PLUGINS_TASK_ERROR,
+        status_code=400,
+        media_type=errors_atlassian.PLUGINS_TASK_ERROR_MEDIA_TYPE,
+    )
+
+
 def _confluence_not_found(request: Request) -> Response:
-    """Confluence's answer for a path it serves nothing at: the page, or JAX-RS's own 404. Neither
-    is Spring's to write, which the request is marked with for :func:`spring_write_failure`."""
+    """Confluence's answer for a path it serves nothing at: the page, JAX-RS's own 404, or the
+    plugins REST API's refusal at its mount (:func:`_confluence_plugins_answer`). None is Spring's
+    to write, which the request is marked with for :func:`spring_write_failure`."""
     request.scope["atlassian_outside_spring"] = True
     vendor_path = _vendor_path(_echoed_path(request))
     if _confluence_serves_html(vendor_path):
@@ -5778,6 +5816,10 @@ def _confluence_not_found(request: Request) -> Response:
         # blank member and `;foo`, with a credential and without one, and 2026-10-16 with U+00A0
         request.state.answered_5xx = True  # the vendor's own answer, not this server's
         return Response(b"", status_code=500)
+    if request.method == "GET":
+        plugins = _confluence_plugins_answer(request, vendor_path)
+        if plugins is not None:
+            return plugins
     url = f"{_site(request)}{vendor_path}"
     # the query as it arrived, for the reason `normalise_the_slashes_in_an_atlassian_path` reads
     # the path from the scope

@@ -7432,6 +7432,7 @@ _CLOUDFRONT_400 = (915, "73a1d9f5d62fcebdc292a776e609c11154344817ddfa6d4d1fa2b75
 _CLOUDFRONT_BLOCKED = (919, "9d105cf52ff43a5280d20ee1f0fdfac202ef44d9d70b25857d2a7b6ad3a59e45")
 _NGINX_400 = (150, "487ad0d2cf075f4328a1adf57ef428759ad4e2c873a8ebd2ad9653990829c9cf")
 _OPENRESTY_405 = (154, "4a327e30d348f9975e50913c72d1bdb067f31f726722326c17c6af8d7f04b3a6")
+_OPENRESTY_404 = (150, "ee1a27178227546d3dcc49e611a6d72e4f1c30080ee4493ae4085b58a49e28e6")
 _TOMCAT_400 = (435, "141d0eee920f04eae74509434b49e8c473014166b90ec31e6f03596a782bf89f")
 _EDGE_400 = (126, "8266721d920027d1f639bfc978f9293bd845ffd458017961400c519328e2c328")
 _EDGE_PAGE = "text/html"
@@ -7488,6 +7489,26 @@ _FRONT_DOOR_ROWS = [
     ("PATCH", "/wiki", 405, _OPENRESTY_405, _EDGE_PAGE),
     ("PATCH", "//wiki/rest/api/space", 405, _OPENRESTY_405, _EDGE_PAGE),
     ("PATCH", "/wiki/rest/api/space/NO%2FSUCH", 405, _OPENRESTY_405, _EDGE_PAGE),
+    # the gateway's page under `/wiki/rest/mywork` and the layers around it
+    # (``errors.atlassian.OPENRESTY_NOT_FOUND``)
+    *[
+        (method, "/wiki/rest/mywork/latest/x", 404, _OPENRESTY_404, _EDGE_PAGE)
+        for method in ("GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS")
+    ],
+    *[
+        ("GET", path, 404, _OPENRESTY_404, _EDGE_PAGE)
+        for path in (
+            *("/wiki/rest/mywork", "/wiki/rest/myworkx", "/wiki/rest/mywork%2Fx"),
+            *("/wiki/rest/my%77ork/x", "/wiki//rest/mywork/x", "/wiki/rest//mywork/x"),
+            *("/wiki/rest/mywork/a%2Fb", "/wiki/rest/mywork/a%5Cb", "/wiki/rest/mywork/["),
+        )
+    ],
+    ("GET", "/wiki/rest/mywork/nope%00", 400, _CLOUDFRONT_400, _EDGE_PAGE),
+    ("GET", "/wiki/rest/mywork/<script>", 403, _CLOUDFRONT_BLOCKED, _EDGE_PAGE),
+    ("GET", "/wiki/rest/mywork/a;b", 400, _EDGE_400, _EDGE_PAGE),
+    ("PATCH", "/wiki/rest/mywork/latest/x", 405, _OPENRESTY_405, _EDGE_PAGE),
+    ("GET", "/wiki/rest/mywor", 404, None, "text/html;charset=UTF-8"),
+    ("GET", "/wiki/rest/MYWORK/latest/x", 404, None, "text/html;charset=UTF-8"),
     # Confluence's Tomcat: an encoded slash or backslash anywhere under `/wiki/` but `spaces/`
     ("GET", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
     ("POST", "/wiki/rest/api/space/NO%2FSUCH", 400, _TOMCAT_400, _TOMCAT_PAGE),
@@ -7656,7 +7677,7 @@ def _front_door(client, admin_h, method, vendor_path, status, page, media_type):
     assert "allow" not in r.headers
     assert ("content-language" in r.headers) == (media_type == _TOMCAT_PAGE)
     # the gateway's two ids, which the edge's 400 carries too where no `;` is bare
-    ids = page in (_NGINX_400, _OPENRESTY_405, _TOMCAT_400) or (
+    ids = page in (_NGINX_400, _OPENRESTY_405, _OPENRESTY_404, _TOMCAT_400) or (
         page == _EDGE_400 and ";" not in vendor_path
     )
     for name in ("atl-request-id", "atl-traceid"):
@@ -8371,6 +8392,16 @@ _SPRING_CHARSET = [
     ("GET", "/wiki/rest/plugins/1.0/x", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/Prototype/LATEST/x", _EMPTY_CHARSET, None, 400),
     ("GET", "/wiki/rest/atlassian-connect/1/", _EMPTY_CHARSET, None, 400),
+    # `/wiki/rest/mywork` is the gateway's (``errors.atlassian.front_door``), ahead of the 500 and
+    # of Tomcat's 401
+    *(
+        (method, "/wiki/rest/mywork/latest/x", _EMPTY_CHARSET, None, 404)
+        for method in ("GET", "POST", "PUT", "DELETE", "OPTIONS")
+    ),
+    ("GET", "/wiki/rest/mywork/latest/x", _EMPTY_CHARSET, "admin", 404),
+    ("GET", "/wiki/rest/mywork/latest/x", _EMPTY_CHARSET, "Basic !!!", 404),
+    ("POST", "/wiki/rest/mywork/latest/x", _EMPTY_CHARSET, "Basic !!!", 404),
+    ("GET", "/wiki/rest/myworkx", _EMPTY_CHARSET, None, 404),
     # the header twice: a blank value left out, the others read joined
     ("GET", "/wiki/rest/api/space", (_EMPTY_CHARSET, ""), None, 500),
     ("GET", "/wiki/rest/api/space", ("\t", _EMPTY_CHARSET), None, 500),
@@ -8421,6 +8452,50 @@ def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, 
 
 def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
     assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
+
+
+def _plugins_mount(client, admin_h, method, vendor_path, authorization, status, media, body):
+    headers = {} if authorization is None else admin_h
+    r = client.request(method, f"/atlassian{vendor_path}", headers=headers)
+    assert r.status_code == status, r.text[:200]
+    assert r.headers.get("content-type") == media
+    if body is not None:
+        assert r.content == body
+
+
+#: The answers ``backlot.routers.atlassian._confluence_plugins_answer`` gives at the plugins mount,
+#: with the admin's token (``"admin"``) and with no credential. The last two rows pin what stands
+#: around the mount: a version that is no mount is the product's page, and two segments below a
+#: mount is JAX-RS's 404.
+_PLUGINS_MOUNT = [
+    ("GET", "/wiki/rest/plugins/latest/", None, 403, "application/json")
+    + (errors_atlassian.PLUGINS_NOT_PERMITTED,),
+    ("GET", "/wiki/rest/plugins/1.0/x", None, 403, "application/json")
+    + (errors_atlassian.PLUGINS_NOT_PERMITTED,),
+    ("GET", "/wiki/rest/plugins/1.0/x-key", None, 403, "application/json")
+    + (errors_atlassian.PLUGINS_NOT_PERMITTED,),
+    ("GET", "/wiki/rest/plugins/1.0/x", "admin", 400)
+    + (errors_atlassian.PLUGINS_TASK_ERROR_MEDIA_TYPE, errors_atlassian.PLUGINS_TASK_ERROR),
+    ("GET", "/wiki/rest/plugins/latest/x", "admin", 400)
+    + (errors_atlassian.PLUGINS_TASK_ERROR_MEDIA_TYPE, errors_atlassian.PLUGINS_TASK_ERROR),
+    ("GET", "/wiki/rest/plugins/1.0/x-KEY", "admin", 400)
+    + (errors_atlassian.PLUGINS_TASK_ERROR_MEDIA_TYPE, errors_atlassian.PLUGINS_TASK_ERROR),
+    ("GET", "/wiki/rest/plugins/1.0/x/", "admin", 400)
+    + (errors_atlassian.PLUGINS_TASK_ERROR_MEDIA_TYPE, errors_atlassian.PLUGINS_TASK_ERROR),
+    ("GET", "/wiki/rest/plugins/1.0/x-key", "admin", 404)
+    + (errors_atlassian.PLUGINS_PLUGIN_MEDIA_TYPE, b""),
+    ("GET", "/wiki/rest/plugins/1.0/-key", "admin", 404)
+    + (errors_atlassian.PLUGINS_PLUGIN_MEDIA_TYPE, b""),
+    ("GET", "/wiki/rest/plugins/1.0/x-key/", "admin", 404)
+    + (errors_atlassian.PLUGINS_PLUGIN_MEDIA_TYPE, b""),
+    ("GET", "/wiki/rest/plugins/1/x", None, 404, errors_atlassian.HTML_MEDIA_TYPE)
+    + (errors_atlassian.HTML_NOT_FOUND.encode(),),
+    ("GET", "/wiki/rest/plugins/1.0/nope/deeper", "admin", 404, "application/xml", None),
+]
+
+
+def test_confluence_plugins_mount_answers_as_real_does(client, admin_h):
+    assert _failures(_plugins_mount, _PLUGINS_MOUNT, client, admin_h) == {}
 
 
 @pytest.mark.parametrize(
@@ -9447,6 +9522,9 @@ _ACCEPT_ROWS = [
             ("GET", "/atlassian/wiki/rest/api/nopesuchroute", "none", _SORT_FAILS),
         )
     ),
+    # but not where the gateway answers first (``errors.atlassian.front_door``)
+    ("GET", "/atlassian/wiki/rest/mywork/latest/x", "none", _SORT_FAILS, None, 404, "text/html")
+    + (errors_atlassian.OPENRESTY_NOT_FOUND.encode(), {"x-confluence-request-time": None}),
     ("GET", f"{_SPACES}?limit=abc", "admin", _SORT_FAILS, None, 500, None, b"", {}),
     # three and four members, where which pairs Java's sort compares decides it
     *(

@@ -601,3 +601,34 @@ def test_serving_a_db_older_than_the_schema_says_so_and_says_to_re_import(tmp_pa
         with client_for(settings, reload=True):
             pass
     assert "gdrive_files.title_fold" in str(e.value)
+
+
+def test_the_test_client_hands_the_app_the_path_the_server_does():
+    import asyncio
+
+    from tests._helpers import TestClient, in_process, raw_request
+
+    rows = [
+        ("/repos/acme%252Fgateway", "/repos/acme%2Fgateway"),
+        ("/branches/chore%252Frename", "/branches/chore%2Frename"),
+        ("/branches/chore%2Frename", "/branches/chore/rename"),
+        ("/repos/acme%20gateway", "/repos/acme gateway"),
+        ("/repos/acme?q=bar%252Fbaz", "/repos/acme"),
+    ]
+    paths = []
+
+    async def app(scope, receive, send):
+        paths.append(scope["path"])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    answered = {}
+    for target, _ in rows:
+        with in_process(app) as (served, transport, loop):
+            served.data_received(raw_request("GET", target))
+            # the app's task runs here: `in_process` cancels it on the way out
+            loop.run_until_complete(asyncio.sleep(0))
+        TestClient(app).get(target)
+        answered[target] = tuple(paths)
+        paths.clear()
+    assert answered == {target: (path, path) for target, path in rows}

@@ -1128,8 +1128,8 @@ def _token_at(raw: bytes, path: tuple, occurrences: dict | None = None) -> tuple
     """Where the value at `path` starts in the JSON body `raw`, as real reports a position: a
     1-based line and a 1-based column counted in UTF-8 bytes, so `ééé` before the value moves it
     six columns and a CRLF line ending none (measured 2026-10-06), a lone CR is a line break and a
-    byte-order mark three columns of line 1 (2026-10-13). A key the body repeats resolves to its
-    last occurrence, the one `json.loads` keeps, unless `occurrences` names another."""
+    byte-order mark three columns of line 1 (2026-10-13). A key the body repeats resolves as in
+    `_token_span`."""
     text, pos, _ = _token_span(raw, path, occurrences)
     return _position(text, pos)
 
@@ -1140,49 +1140,24 @@ def _closing_at(raw: bytes, path: tuple, occurrences: dict | None = None) -> tup
     return _position(text, end - 1)
 
 
-def _object_members(raw: bytes, path: tuple = (), occurrences: dict | None = None) -> list | None:
-    """The immediate members of the object at `path`, in body order, a key it repeats once per
-    occurrence with the value that occurrence holds, or None when the value at `path` is not an
-    object the walk can read. `json.loads` keeps only a repeated key's last value, so this is
-    what a reader in body order sees."""
+class _InOrder(dict):
+    """A JSON object as `json.loads` reads it, a key it repeats holding its last value, with
+    `members`: its members in body order, a repeated key once per occurrence with the value that
+    occurrence holds."""
+
+    def __init__(self, members: list):
+        super().__init__(members)
+        self.members = members
+
+
+def _in_order(raw: bytes) -> _InOrder:
+    """`raw` read as `json_body` reads it, with each object an `_InOrder`, and an empty one where
+    `json_body` answers `{}`."""
     try:
-        text, start, _ = _token_span(raw, path, occurrences)
-    except (ValueError, IndexError, UnicodeDecodeError):
-        return None
-    if start >= len(text) or text[start] != "{":
-        return None
-    decoder = json.JSONDecoder()
-    members = []
-    pos = _WS.match(text, start + 1).end()
-    while pos < len(text) and text[pos] != "}":
-        key, pos = decoder.raw_decode(text, pos)
-        pos = _WS.match(text, _WS.match(text, pos).end() + 1).end()
-        value, pos = decoder.raw_decode(text, pos)
-        members.append((key, value))
-        pos = _WS.match(text, pos).end()
-        if pos < len(text) and text[pos] == ",":
-            pos = _WS.match(text, pos + 1).end()
-    return members
-
-
-def _level_members(
-    raw: bytes, path: tuple, occurrences: dict | None, fallback
-) -> tuple[list, dict | None]:
-    """One object's members in body order and the `occurrences` its member positions resolve
-    under: the raw body's (`_object_members`), or the parsed `fallback` object's items with
-    None, whose positions resolve as they did before a repeated key was read in order."""
-    found = _object_members(raw, path, occurrences)
-    if found is not None:
-        return found, occurrences if occurrences is not None else {}
-    return (list(fallback.items()) if isinstance(fallback, dict) else []), None
-
-
-def _occurrence(occurrences: dict | None, depth: int, index: int) -> dict | None:
-    """`occurrences` extended to resolve step `depth` to its `index`-th occurrence, or None when
-    positions resolve to the last occurrence, as they do under a `_level_members` fallback."""
-    if occurrences is None:
-        return None
-    return {**occurrences, depth: index}
+        body = json.loads(raw, object_pairs_hook=_InOrder)
+    except (ValueError, RecursionError):
+        return _InOrder([])
+    return body if isinstance(body, _InOrder) else _InOrder([])
 
 
 def _position(text: str, pos: int) -> tuple[int, int]:
@@ -1246,7 +1221,7 @@ def _ahead(raw: bytes, path: tuple, before: tuple[int, int] | None) -> bool:
 
 
 def _refuse_an_operator(
-    raw: bytes, body: dict, before: tuple[int, int] | None = None
+    raw: bytes, body: _InOrder, before: tuple[int, int] | None = None
 ) -> JSONResponse | None:
     """Real's 400 for the first filter, in body order, whose operator is a string it cannot read, or
     None.
@@ -1259,33 +1234,26 @@ def _refuse_an_operator(
     occurrence of a repeated key is read in turn (measured 2026-11-10). An operator that is not a
     string is `_unreadable_member`'s. An operator from `before` on is left to what starts there:
     the token `_non_standard_number` found, or the value `_refuse_a_search_shape` names."""
-    top, top_at = _level_members(raw, (), None, body)
     seen: dict = {}
-    for key, groups in top:
+    for key, groups in body.members:
         occurrence = seen.get(key, 0)
         seen[key] = occurrence + 1
         if key != "filterGroups" or not isinstance(groups, list):
             continue
-        at = _occurrence(top_at, 0, occurrence)
         for i, group in enumerate(groups):
             if not isinstance(group, dict):
                 continue
-            members, group_at = _level_members(raw, ("filterGroups", i), at, group)
             counted: dict = {}
-            for name, filters in members:
+            for name, filters in group.members:
                 index = counted.get(name, 0)
                 counted[name] = index + 1
                 if name != "filters" or not isinstance(filters, list):
                     continue
-                filters_at = _occurrence(group_at, 2, index)
                 for j, f in enumerate(filters):
                     if not isinstance(f, dict):
                         continue
-                    own, filter_at = _level_members(
-                        raw, ("filterGroups", i, "filters", j), filters_at, f
-                    )
                     taken: dict = {}
-                    for member, op in own:
+                    for member, op in f.members:
                         spot = taken.get(member, 0)
                         taken[member] = spot + 1
                         if member != "operator" or not isinstance(op, str):
@@ -1294,7 +1262,7 @@ def _refuse_an_operator(
                         if op in _OPERATORS or op in _OPERATOR_INDEXES:
                             continue
                         path = ("filterGroups", i, "filters", j, "operator")
-                        position = _token_at(raw, path, _occurrence(filter_at, 4, spot))
+                        position = _token_at(raw, path, {0: occurrence, 2: index, 4: spot})
                         if before is not None and position >= before:
                             return None
                         if op == "":
@@ -1500,11 +1468,7 @@ _TEXT_MEMBERS = ("propertyName", "value", "highValue")
 
 
 def _unreadable_member(
-    raw: bytes,
-    path: tuple,
-    f: dict,
-    occurrences: dict | None = None,
-    members: list | None = None,
+    raw: bytes, path: tuple, f: _InOrder, occurrences: dict
 ) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
     """Where the first member of the filter `f` at `path`, in body order, that real cannot read
     starts, and real's 400 for it, or `(None, None)`.
@@ -1517,25 +1481,27 @@ def _unreadable_member(
     operator is `_refuse_an_operator`'s. It reads a list or a null `values`, refuses a string there
     as `_unbuildable` does and any other value with `_not_a_list`, and refuses an array or object
     element of the list (`_mismatched`). A member real does not read, `"x": []` among them, is
-    passed over. A member a filter repeats is read at each occurrence in turn (`members`, when the
-    caller read them from the raw body), so an unreadable first value is named even with a readable
-    one after it (measured 2026-11-10).
+    passed over. A member a filter repeats is read at each occurrence in turn (`occurrences` names,
+    by depth in `path`, the occurrence of each key on the way to the filter), so an unreadable first
+    value is named even with a readable one after it: the array in
+    `"operator": [], "operator": "EQ"` (2026-11-10) and in `"value": [], "value": "x"`, and the `5`
+    in `"values": 5, "values": ["x"]` (2026-11-15).
 
     Real also refuses, at the filter's closing brace, a filter with no `propertyName` or `operator`
     or a null one, one whose operator needs a `value`, `values` or `highValue` it lacks, and one
     with a `value` its operator takes none of, and it refuses a null element of `values` with a 400
     of its own. This router models none of those."""
 
-    def refused(at: tuple, text: str, at_occurrences: dict | None):
+    def refused(at: tuple, text: str, at_occurrences: dict):
         position = _token_at(raw, at, at_occurrences)
         return position, _invalid(position, text)
 
     seen: dict = {}
-    for name, value in members if members is not None else f.items():
+    for name, value in f.members:
         index = seen.get(name, 0)
         seen[name] = index + 1
         at = path + (name,)
-        at_occurrences = _occurrence(occurrences, len(path), index)
+        at_occurrences = {**occurrences, len(path): index}
         if name in _TEXT_MEMBERS and isinstance(value, (dict, list)):
             return refused(at, _mismatched(value), at_occurrences)
         if name == "operator" and not isinstance(value, (str, type(None))):
@@ -1561,7 +1527,7 @@ def _unreadable_member(
 
 
 def _refuse_a_search_shape(
-    raw: bytes, body: dict, before: tuple[int, int] | None = None
+    raw: bytes, body: _InOrder, before: tuple[int, int] | None = None
 ) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
     """Real's 400 for a search body it cannot read, with where the value it names starts, or
     `(None, None)`. Measured against api.hubapi.com on 2026-10-01, 2026-11-09 and 2026-11-13: real
@@ -1573,10 +1539,10 @@ def _refuse_a_search_shape(
     `filterGroups` and the group's for `filters`: after that object's other values and ahead of a
     later element, `query` or non-standard token. A null `filterGroups`, `filters` or `query`, and a
     group with no `filters`, are read. With a `before` from `_non_standard_number`, a value from
-    there on is left to the token. A key the body repeats is read at each of its occurrences in
-    order, not only by the last value, the one `json.loads` keeps, so the first value real cannot
-    read is the one named: `{"filterGroups": "x", "filterGroups": []}` names the `"x"` and
-    `{"filterGroups": [], "filterGroups": "x"}` the later `"x"` (measured 2026-11-10)."""
+    there on is left to the token. A key the body repeats is read by its last value, the one
+    `json.loads` keeps, where real reads its values in order and names the first it cannot read
+    (`{"filterGroups": "x", "filterGroups": []}` names the `"x"`, measured 2026-11-10); this router
+    does not model that."""
 
     def named(position, response):
         if before is not None and position >= before:
@@ -1584,12 +1550,7 @@ def _refuse_a_search_shape(
         return position, response
 
     null_group = False
-    top, top_at = _level_members(raw, (), None, body)
-    seen: dict = {}
-    for key, value in top:
-        occurrence = seen.get(key, 0)
-        seen[key] = occurrence + 1
-        at = _occurrence(top_at, 0, occurrence)
+    for key, value in body.items():
         if key == "query":
             if isinstance(value, (dict, list)):
                 position = _token_at(raw, (key,), at)
@@ -1611,15 +1572,17 @@ def _refuse_a_search_shape(
                 continue
             if not isinstance(group, dict):
                 return named(*_unbuildable(raw, (key, i), group, at))
-            members, group_at = _level_members(raw, (key, i), at, group)
             counted: dict = {}
             null_filter = False
-            for name, filters in members:
+            for name, filters in group.members:
                 index = counted.get(name, 0)
                 counted[name] = index + 1
-                if name != "filters" or filters is None:
+                if name != "filters":
                     continue
-                filters_at = _occurrence(group_at, 2, index)
+                null_filter = False
+                if filters is None:
+                    continue
+                filters_at = {**at, 2: index}
                 if not isinstance(filters, list):
                     position = _token_at(raw, (key, i, "filters"), filters_at)
                     return named(position, _invalid(position, _not_a_list(filters)))
@@ -1630,8 +1593,7 @@ def _refuse_a_search_shape(
                     path = (key, i, "filters", j)
                     if not isinstance(f, dict):
                         return named(*_unbuildable(raw, path, f, filters_at))
-                    own, _ = _level_members(raw, path, filters_at, f)
-                    position, response = _unreadable_member(raw, path, f, filters_at, own)
+                    position, response = _unreadable_member(raw, path, f, filters_at)
                     if response is not None:
                         return named(position, response)
             if null_filter:
@@ -2278,12 +2240,13 @@ async def search_objects(object_type: str, request: Request):
     body = await json_body(request)
     raw = await request.body()
     before, refused = _non_standard_number(raw)
-    at, unreadable = _refuse_a_search_shape(raw, body, before)
+    pairs = _in_order(raw)
+    at, unreadable = _refuse_a_search_shape(raw, pairs, before)
     # Before `after`: real refuses the operator first when the cursor is one it can parse but
     # names no record (measured 2026-10-06), and a `filterGroups` or `query` it cannot read ahead of
     # such a cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
     # refusal names, that value when it starts ahead of the non-standard token.
-    refused = _refuse_an_operator(raw, body, before if at is None else at) or unreadable or refused
+    refused = _refuse_an_operator(raw, pairs, before if at is None else at) or unreadable or refused
     if refused is not None:
         return refused
     body = _scalars_as_text(raw, body)

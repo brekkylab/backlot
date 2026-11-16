@@ -436,6 +436,12 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
                 "unsupported",
             ),
         ),
+        (
+            "GET",
+            f"{GITHUB}/planning-statuses",
+            {},
+            ("github", "repos/list-planning-statuses", "missing", 404, "not_found", "unsupported"),
+        ),
         # The baseline's `GET /user/{}` (`users/get-by-id`) fits this path too; the row with more
         # literal segments names the call.
         (

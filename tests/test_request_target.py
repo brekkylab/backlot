@@ -1183,6 +1183,7 @@ def _rows():
         # asks for a credential first gives a caller without one
         ("/github/", b"repos/acme/pipeline%00", "github nul", b""),
         ("/github/", b"users/nope%00", "github nul", b""),
+        ("/github/", b"repos/acme/pipeline%00/planning-statuses", "github nul", b""),
         (
             "/github/",
             b"repos/acme/pipeline%00",

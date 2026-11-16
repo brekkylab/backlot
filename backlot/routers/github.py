@@ -612,11 +612,14 @@ async def _canonical_path_repo(request: Request) -> None:
 #: `/repos/{}/{}/dependabot/runner-settings`: on 2026-11-06 each was 404 `Not Found` with no
 #: credential, with `Bearer nope`, `Digest x` and a bearer after a tab, and with a token, an
 #: administrator's among them for the `GET`, where `GET …/dependabot/secrets` on the same public
-#: repository was 401 for the first two. `{path}` on `contents` and `{ref}` on `git/refs`,
-#: `git/matching-refs`, `tarball` and `zipball` take several segments (`{+}`): `Bearer nope` was 401
-#: "Bad credentials" for a value of two segments as for one (2026-10-14 on `PUT …/contents`,
-#: `DELETE …/git/refs` and `zipball`, 2026-11-10 on the other four), where `DELETE …/hooks/1/2`,
-#: `DELETE /gists/1/2` and `DELETE …/releases/1/2` were the 404.
+#: repository was 401 for the first two. `{path}` on `contents`, `{ref}` on `git/refs`,
+#: `git/matching-refs`, `tarball` and `zipball`, `{basehead}` on `compare`, `{branch}` on
+#: `rules/branches`, `branches/rename` and the writes to `branches/{}/protection` and its
+#: sub-resources, and `{commit_sha}` on `commits/comments` take several segments (`{+}`):
+#: `Bearer nope` was 401 "Bad credentials" for a value of two segments as for one (2026-10-14 on
+#: `PUT …/contents`, `DELETE …/git/refs` and `zipball`, 2026-11-10 on the other thirty-one), where
+#: `DELETE …/hooks/1/2`, `DELETE /gists/1/2`, `DELETE …/releases/1/2`, `GET …/git/commits/a/b` and
+#: `GET …/dependency-graph/compare/a...b/c` were the 404.
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip",
     "DELETE /repos/{}/{}/contents/{}": "DELETE /repos/{}/{}/contents/{+}",
@@ -626,6 +629,33 @@ _ROUTED_AS = {
     "GET /repos/{}/{}/git/matching-refs/{}": "GET /repos/{}/{}/git/matching-refs/{+}",
     "GET /repos/{}/{}/tarball/{}": "GET /repos/{}/{}/tarball/{+}",
     "GET /repos/{}/{}/zipball/{}": "GET /repos/{}/{}/zipball/{+}",
+    "GET /repos/{}/{}/compare/{}": "GET /repos/{}/{}/compare/{+}",
+    "GET /repos/{}/{}/rules/branches/{}": "GET /repos/{}/{}/rules/branches/{+}",
+    "POST /repos/{}/{}/commits/{}/comments": "POST /repos/{}/{}/commits/{+}/comments",
+    "POST /repos/{}/{}/branches/{}/rename": "POST /repos/{}/{}/branches/{+}/rename",
+    "DELETE /repos/{}/{}/branches/{}/protection": "DELETE /repos/{}/{}/branches/{+}/protection",
+    "DELETE /repos/{}/{}/branches/{}/protection/enforce_admins": "DELETE /repos/{}/{}/branches/{+}/protection/enforce_admins",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_pull_request_reviews": "DELETE /repos/{}/{}/branches/{+}/protection/required_pull_request_reviews",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_signatures": "DELETE /repos/{}/{}/branches/{+}/protection/required_signatures",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_status_checks": "DELETE /repos/{}/{}/branches/{+}/protection/required_status_checks",
+    "DELETE /repos/{}/{}/branches/{}/protection/required_status_checks/contexts": "DELETE /repos/{}/{}/branches/{+}/protection/required_status_checks/contexts",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions/apps": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions/apps",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions/teams": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions/teams",
+    "DELETE /repos/{}/{}/branches/{}/protection/restrictions/users": "DELETE /repos/{}/{}/branches/{+}/protection/restrictions/users",
+    "PATCH /repos/{}/{}/branches/{}/protection/required_pull_request_reviews": "PATCH /repos/{}/{}/branches/{+}/protection/required_pull_request_reviews",
+    "PATCH /repos/{}/{}/branches/{}/protection/required_status_checks": "PATCH /repos/{}/{}/branches/{+}/protection/required_status_checks",
+    "POST /repos/{}/{}/branches/{}/protection/enforce_admins": "POST /repos/{}/{}/branches/{+}/protection/enforce_admins",
+    "POST /repos/{}/{}/branches/{}/protection/required_signatures": "POST /repos/{}/{}/branches/{+}/protection/required_signatures",
+    "POST /repos/{}/{}/branches/{}/protection/required_status_checks/contexts": "POST /repos/{}/{}/branches/{+}/protection/required_status_checks/contexts",
+    "POST /repos/{}/{}/branches/{}/protection/restrictions/apps": "POST /repos/{}/{}/branches/{+}/protection/restrictions/apps",
+    "POST /repos/{}/{}/branches/{}/protection/restrictions/teams": "POST /repos/{}/{}/branches/{+}/protection/restrictions/teams",
+    "POST /repos/{}/{}/branches/{}/protection/restrictions/users": "POST /repos/{}/{}/branches/{+}/protection/restrictions/users",
+    "PUT /repos/{}/{}/branches/{}/protection": "PUT /repos/{}/{}/branches/{+}/protection",
+    "PUT /repos/{}/{}/branches/{}/protection/required_status_checks/contexts": "PUT /repos/{}/{}/branches/{+}/protection/required_status_checks/contexts",
+    "PUT /repos/{}/{}/branches/{}/protection/restrictions/apps": "PUT /repos/{}/{}/branches/{+}/protection/restrictions/apps",
+    "PUT /repos/{}/{}/branches/{}/protection/restrictions/teams": "PUT /repos/{}/{}/branches/{+}/protection/restrictions/teams",
+    "PUT /repos/{}/{}/branches/{}/protection/restrictions/users": "PUT /repos/{}/{}/branches/{+}/protection/restrictions/users",
 }
 _NOT_ROUTED = frozenset(
     {
@@ -1780,13 +1810,14 @@ def canonical_id_path(conn, org: str, path: str) -> str | None:
     holds (401) from one it does not (404) — and since the id is ``github_user_id(name)``, confirm
     a guessed name that way.
 
-    A repository id is read up to its first character that is not an ASCII digit, and a path under
-    an id holding such a character is ``None`` and so answers the 404 of a path no route matches.
-    Measured against api.github.com on 2026-11-10 and 2026-11-11 with a token, each request with
-    its own cache-buster: `/repositories/{id}` followed by `x`, `.5`, `%2Fbranches`, `%C2%B2` or
-    `%D9%A3` answered as `/repositories/{id}` does, and `{id}x/branches/main`,
-    `{id}%2Fx/branches/main`, `{id}%C2%B2/branches/main`, `{id}%D9%A3/branches/main` and
-    `x{id}/branches/main` with that 404.
+    A repository or organization id with nothing after it is read as real reads one: past any
+    spaces, tabs, LFs, VTs, FFs and CRs in front of it, an optional `+` and an optional `0d` in
+    either case, up to the first character that is neither an ASCII digit nor a `_` between two
+    digits. A path under an id holding anything but ASCII digits is ``None`` and so answers the 404
+    of a path no route matches. Measured against api.github.com on 2026-11-10, 2026-11-11 and
+    2026-11-15 with a token, each request with its own cache-buster;
+    `test_github_repository_id_leading_integer` and `test_github_organization_id_canonicalization`
+    in ``tests/test_github.py`` hold the spellings sent.
 
     An id TWO repositories share names neither. `github_user_id` is `1000 + digest % 9_000_000` and
     so not injective — `repo485` and `repo4107` both hash to 7755679 — and answering with whichever
@@ -1801,12 +1832,14 @@ def canonical_id_path(conn, org: str, path: str) -> str | None:
     # `/repos/{owner}/{repo}/` it stands for, so dropping it with the rest of the stripping would
     # answer the resource on a spelling real refuses.
     slash = "/" if path.endswith("/") else ""
-    if parts[1] == "organizations":
-        named = org if str(synth.github_user_id(org)) == parts[2] else parts[2]
-        return "/".join(["/github/orgs", named, *tail]) + slash
     if tail and not re.fullmatch(r"[0-9]+", parts[2]):
         return None
-    digits = re.match(r"[0-9]*", parts[2]).group()
+    read = re.match(r"[ \t\n\v\f\r]*\+?(?:0[dD])?([0-9]+(?:_[0-9]+)*)", parts[2])
+    # compared as text, since `int()` refuses more than 4,300 digits
+    digits = read.group(1).replace("_", "").lstrip("0") if read else ""
+    if parts[1] == "organizations":
+        named = org if str(synth.github_user_id(org)) == digits else parts[2]
+        return "/".join(["/github/orgs", named, *tail]) + slash
     hits = [
         r["name"]
         for r in store.list_containers(conn, "github")

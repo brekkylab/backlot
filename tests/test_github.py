@@ -2720,17 +2720,19 @@ _COUNTED_TOKEN_SHAPED = [
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: twenty-seven are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the thirteenth as the
+#: fifty-four are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the thirteenth as the
 #: `/orgs/{}` path `/organizations/{id}` is rewritten to, the fourteenth on a path whose
-#: slash-terminated spelling a route matches, and the ten after `security-advisories` on `contents`,
-#: `git/refs`, `git/matching-refs`, `tarball` and `zipball`, whose parameters span segments; the
-#: next two are in `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and
-#: `_NOT_ROUTED` keep out of it, and the three after them a second segment where the operation's
-#: parameter takes one; the two after them are no operation, though a parsed URL ends the first at
-#: its decoded `#` and a `missing_param` row of the baseline spells the second's path; the next is a
-#: method GitHub does not publish on a path whose `PATCH` it does, which real answered a bad bearer
-#: with its 404; the two after it are paths under `/agents/automations/{}` that real answered 404
-#: for every credential; the six after them are paths outside the two agent families
+#: slash-terminated spelling a route matches, and the thirty-seven after `security-advisories` on
+#: `contents`, `git/refs`, `git/matching-refs`, `tarball`, `zipball`, `compare`, `rules/branches`,
+#: `branches/rename`, `commits/comments` and the writes to `branches/{}/protection` and its
+#: sub-resources, whose parameter takes one or more segments; the next two are in
+#: `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep
+#: out of it, and the five after them a second segment where the operation's parameter takes one;
+#: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
+#: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
+#: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; the
+#: two after it are paths under `/agents/automations/{}` that real answered 404 for every
+#: credential; the six after them are paths outside the two agent families
 #: (`backlot.routers.github.under_an_agent_family`), which real answered 404 for every credential
 #: too; and the last two are no GitHub request at all.
 _UNSERVED_ROWS = [
@@ -2766,6 +2768,26 @@ _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase/git/refs/heads/x", True, 404),
     ("GET", "/github/repos/{org}/codebase/git/matching-refs/heads/x", True, 404),
     ("GET", "/github/repos/{org}/codebase/tarball/a/b", True, 404),
+    ("GET", "/github/repos/{org}/codebase/compare/a...b/c", True, 404),
+    ("GET", "/github/repos/{org}/codebase/rules/branches/a/b", True, 404),
+    *(
+        (method, "/github/repos/{org}/codebase/branches/a/b/protection" + rest, True, 405)
+        for rest, methods in (
+            ("", ("DELETE", "PUT")),
+            ("/enforce_admins", ("DELETE", "POST")),
+            ("/required_pull_request_reviews", ("DELETE", "PATCH")),
+            ("/required_signatures", ("DELETE", "POST")),
+            ("/required_status_checks", ("DELETE", "PATCH")),
+            ("/required_status_checks/contexts", ("DELETE", "POST", "PUT")),
+            ("/restrictions", ("DELETE",)),
+            ("/restrictions/apps", ("DELETE", "POST", "PUT")),
+            ("/restrictions/teams", ("DELETE", "POST", "PUT")),
+            ("/restrictions/users", ("DELETE", "POST", "PUT")),
+        )
+        for method in methods
+    ),
+    ("POST", "/github/repos/{org}/codebase/branches/a/b/rename", True, 405),
+    ("POST", "/github/repos/{org}/codebase/commits/a/b/comments", True, 405),
     ("GET", "/github/agents/automations/available-tools", True, 404),
     ("GET", "/github/agents/automations/1/tasks", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
@@ -2775,6 +2797,13 @@ _UNSERVED_ROWS = [
     ("DELETE", "/github/repos/{org}/codebase/hooks/1/2", False, 404),
     ("DELETE", "/github/gists/1/2", False, 404),
     ("DELETE", "/github/repos/{org}/codebase/releases/1/2", False, 404),
+    ("GET", "/github/repos/{org}/codebase/git/commits/a/b", False, 404),
+    (
+        "GET",
+        "/github/repos/{org}/codebase/dependency-graph/compare/a...b/c",
+        False,
+        404,
+    ),
     ("GET", "/github/zen%23", False, 404),
     ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
     ("PUT", "/github/orgs/{org}", False, 405),
@@ -2801,18 +2830,19 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     400, counted, ahead of the router's answer to the admin token and of the refusal of a `Basic`
     value that names no token, each carrying the version echo. A row not refused is the router's
     answer for any caller. Real was measured on each row but the last with a bad bearer, an unknown
-    scheme and a bearer after a tab, on each refused row but the ten after `security-advisories`
-    with each header below, and with no header on the first eleven. On the three refused rows after
-    `git/trees` and the two under `/agents/automations`, two of those headers have no answer of
-    real's: a bearer after a tab that resolves was not sent on the three writes, and
+    scheme and a bearer after a tab, with each header below on each refused row but the thirty-seven
+    after `security-advisories`, and with no header on the first eleven. On the three refused rows
+    after `git/trees` and the two under `/agents/automations`, two of those headers have no answer
+    of real's: a bearer after a tab that resolves was not sent on the three writes, and
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
-    with no `x-ratelimit-*`. On `git/matching-refs`, `tarball` and `zipball` real answered
-    `Digest x` with the public repository's 200 list of refs or 302 to the archive, and a bearer
-    after a tab with 401 "Bad credentials"; here both are 401 "Requires authentication". On
-    `planning-statuses` real asked for no credential: no header, `Basic Zm9vOmJhcg==` and each
-    header below that carries none but `Bearer<TAB>nope` were its 404 with the echo, or the
-    version's 400 when pinned to `1999-01-01`, and `Bearer<TAB>nope` was 401 "Bad credentials";
-    here each of those but the pinned `Basic` value is 401 "Requires authentication".
+    with no `x-ratelimit-*`. On `git/matching-refs`, `tarball`, `zipball`, `compare` and
+    `rules/branches` real answered `Digest x` with the public repository's 200 list of refs, 302 to
+    the archive, 404 for the comparison or 200 `[]` of rules, and a bearer after a tab with 401
+    "Bad credentials"; here both are 401 "Requires authentication". On `planning-statuses` real
+    asked for no credential: no header, `Basic Zm9vOmJhcg==` and each header below that carries
+    none but `Bearer<TAB>nope` were its 404 with the echo, or the version's 400 when pinned to
+    `1999-01-01`, and `Bearer<TAB>nope` was 401 "Bad credentials"; here each of those but the
+    pinned `Basic` value is 401 "Requires authentication".
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned

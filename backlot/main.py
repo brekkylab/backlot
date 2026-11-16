@@ -1797,6 +1797,26 @@ def _sent(scope: Scope) -> tuple[bytes, bool]:
 
 @_middleware(
     lambda scope: (
+        _at_or_under(_url_path(scope), ("/fireflies",))
+        and fireflies.printable_refusal(Request(scope)) is not None
+    )
+)
+async def refuse_a_printable_character_on_fireflies(request: Request, call_next):
+    """Answer a `/fireflies` request whose target holds a printable character Fireflies refuses
+    with ``fireflies.printable_refusal``'s empty 400. Registered before
+    :func:`refuse_a_cut_escape_on_linear_and_fireflies`, the first of the middlewares that give
+    Cloudflare's answers on Fireflies, which makes it inside each of them: on 2026-11-13 (UTC)
+    api.fireflies.ai answered a `<` in the path with Cloudflare's answer by `TRACE`, `CONNECT` and
+    `PURGE`, beside `Authorization` or `If-None-Match` sent twice, a raw byte or a `Host` of `[x]`,
+    in a path that a `%2` or a `%` ends, that holds a `%zz` or a `%00` or that climbs past the root,
+    and behind a `\\` ahead of the path; a `<` in the query by `CONNECT` and `PURGE`, beside
+    `Authorization` sent twice and in a path that climbs past the root; and a `>` in the query by
+    `TRACE`."""
+    return fireflies.printable_refusal(request)
+
+
+@_middleware(
+    lambda scope: (
         _at_or_under(_url_path(scope), ("/linear", "/fireflies"))
         and request_target.cut_escape(*_sent(scope))
     )

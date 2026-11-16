@@ -303,8 +303,8 @@ def serve(
     ] = None,
     data_dir: DataDir = None,
     disable_telemetry: DisableTelemetry = False,
-    # `serve()` passes this, for the stdin pipe it starts the server on, and nothing else in Backlot
-    # does; it is not an option to type, so `--help` leaves it out.
+    # `serve()` passes the two options below, and nothing else in Backlot does; they are not options
+    # to type, so `--help` leaves them out.
     exit_on_stdin_close: Annotated[
         bool,
         typer.Option(
@@ -313,6 +313,15 @@ def serve(
             help="stop serving once stdin reaches end of file",
         ),
     ] = False,
+    address_file: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--address-file",
+            hidden=True,
+            help="write the address and port the server bound to this file once it accepts "
+            "connections",
+        ),
+    ] = None,
 ) -> None:
     """Serve Backlot APIs over the corpus in the data dir.
 
@@ -348,12 +357,9 @@ def serve(
 
     from backlot.protocol import Protocol
 
-    # The app is passed as an import STRING because that is what --reload requires.
-    uvicorn.run(
-        "backlot.main:app",
+    options = dict(
         host=host,
         port=port,
-        reload=reload,
         # .value, not the member: uvicorn stores what it is given and this keeps a plain str out of
         # its config rather than a str subclass.
         log_level=log_level.value if log_level else None,
@@ -363,6 +369,46 @@ def serve(
         # pickles it by reference
         http=Protocol,
     )
+    # The app is passed as an import STRING because that is what --reload requires.
+    app = "backlot.main:app"
+    if address_file is not None:
+        _serve_writing_address(uvicorn.Config(app, **options), address_file)
+    else:
+        uvicorn.run(app, reload=reload, **options)
+
+
+def _serve_writing_address(config, address_file: Path) -> None:
+    """Run the server ``uvicorn.run`` runs for ``config``, and write the address and port it bound
+    to ``address_file``, space-separated, once it accepts connections there.
+
+    It runs one server in this process, which is what ``uvicorn.run`` runs when neither
+    ``--reload`` nor ``WEB_CONCURRENCY`` asks for more processes. The locked uvicorn 0.52.4 raises
+    ``KeyboardInterrupt`` again after shutting down on Ctrl+C, and its ``uvicorn.run`` ends with 0
+    there; uvicorn 0.29 leaves the exit with its startup-failure code to ``uvicorn.run`` after a
+    failed lifespan startup.
+
+    A host name binds every address it resolves to, each with a bind to port 0 of its own, and
+    those binds can draw different ports (``localhost`` on macOS, 2026-11-11: 127.0.0.1 and ::1 on
+    two ports), so the file names one address with its port rather than a port alone."""
+    import uvicorn
+    from uvicorn.main import STARTUP_FAILURE
+
+    class Server(uvicorn.Server):
+        async def startup(self, sockets=None) -> None:
+            await super().startup(sockets=sockets)
+            if self.started:
+                address, port = self.servers[0].sockets[0].getsockname()[:2]
+                partial = address_file.with_name(f"{address_file.name}.partial")
+                partial.write_text(f"{address} {port}", encoding="utf-8")
+                os.replace(partial, address_file)
+
+    server = Server(config)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
+    if not server.started:
+        sys.exit(STARTUP_FAILURE)
 
 
 def _stop_at_stdin_eof() -> None:

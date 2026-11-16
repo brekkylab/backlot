@@ -450,6 +450,26 @@ def test_serve_stops_at_stdin_eof_only_when_asked(
 
 
 @pytest.mark.parametrize(
+    ("method", "code"), [("run", 0), ("startup", 3)], ids=["ctrl-c", "never-started"]
+)
+def test_serve_with_an_address_file_ends_with_0_after_a_ctrl_c_and_3_if_never_started(
+    monkeypatch, tmp_path, a_data_dir_with_a_corpus, method, code
+):
+    import uvicorn
+
+    def run(self, sockets=None):
+        self.started = True
+        raise KeyboardInterrupt
+
+    async def startup(self, sockets=None):
+        # What uvicorn 0.29's `Server.startup` does after a failed lifespan startup
+        self.should_exit = True
+
+    monkeypatch.setattr(uvicorn.Server, method, {"run": run, "startup": startup}[method])
+    assert cli.main(["serve", "--address-file", str(tmp_path / "address")]) == code
+
+
+@pytest.mark.parametrize(
     ("damage", "reason"),
     [
         ("random-bytes", "file is not a database"),
@@ -598,14 +618,16 @@ def test_version_reports_the_installed_distribution(capsys, monkeypatch):
     assert plain(capsys.readouterr().out) == "backlot unknown"
 
 
-def test_serve_help_leaves_out_the_option_only_serve_passes(capsys):
-    """`backlot serve --help` lists the options a person types and leaves out the hidden one (its
-    comment in `backlot/cli.py` says why); `test_serve_stops_at_stdin_eof_only_when_asked` passes
-    it and requires that it still works."""
+def test_serve_help_leaves_out_the_options_only_serve_passes(capsys):
+    """`backlot serve --help` lists the options a person types and leaves out the hidden ones
+    (their comment in `backlot/cli.py` says why); `test_serve_stops_at_stdin_eof_only_when_asked`
+    passes `--exit-on-stdin-close` and requires that it still works, and `backlot.serve()` passes
+    both on every start."""
     assert cli.main(["serve", "--help"]) == 0
     out = plain(capsys.readouterr().out)
     assert "--data-dir" in out and "--log-level" in out, out
     assert "exit-on-stdin" not in out, out
+    assert "address-file" not in out, out
 
 
 def test_help_shows_every_command(capsys):

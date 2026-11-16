@@ -32,10 +32,10 @@ array-conversion error carries a Java identity hash, and a generated service-acc
 ``--calibration`` takes a second recording of the base and stops comparing what differs between
 the two: a header's digits everywhere (its whole value when more than digits differ), any other
 value (the length included) only in the exchange it differed in. A header named for what is left,
-used or when it resets (``_COUNTER``) whose digits differ between two answers one test got to the
-same request, status and body alike, is a counter and has its digits ignored too, with or without
-``--calibration``: a rate-limit window counts what ran before it on its worker, and two base runs
-scheduled alike agree on it. A limit a test reconfigures varies the same way and is still compared.
+used or when it resets, or for the time a request was answered (``_COUNTER``), whose digits differ
+between two answers one test got to the same request, status and body alike, is a counter or a
+clock and has its digits ignored too, with or without ``--calibration``: a rate-limit window counts
+what ran before it on its worker, and two base runs scheduled alike agree on it. A limit a test reconfigures varies the same way and is still compared.
 
 ``prose`` answers for a change to comments, docstrings and markdown: each Python file that differs
 from BASE_REF parses to the same tree once docstrings are dropped, except a route's or a CLI

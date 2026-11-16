@@ -614,11 +614,11 @@ async def _canonical_path_repo(request: Request) -> None:
 #: administrator's among them for the `GET`, where `GET …/dependabot/secrets` on the same public
 #: repository was 401 for the first two. `{path}` on `contents`, `{ref}` on `git/refs`,
 #: `git/matching-refs`, `tarball` and `zipball`, `{basehead}` on `compare`, `{branch}` on
-#: `rules/branches`, `branches/rename` and `branches/protection` (and each of its sub-resources),
-#: and `{commit_sha}` on `commits/comments` take several segments (`{+}`): `Bearer nope` was 401
-#: "Bad credentials" for a value of two segments as for one (2026-10-14 on `PUT …/contents`,
-#: `DELETE …/git/refs` and `zipball`, 2026-11-10 on the other thirty-one), where `DELETE …/hooks/1/2`,
-#: `DELETE /gists/1/2`, `DELETE …/releases/1/2`, `GET …/git/commits/a/b` and
+#: `rules/branches`, `branches/rename` and the writes to `branches/{}/protection` and its
+#: sub-resources, and `{commit_sha}` on `commits/comments` take several segments (`{+}`):
+#: `Bearer nope` was 401 "Bad credentials" for a value of two segments as for one (2026-10-14 on
+#: `PUT …/contents`, `DELETE …/git/refs` and `zipball`, 2026-11-10 on the other thirty-one), where
+#: `DELETE …/hooks/1/2`, `DELETE /gists/1/2`, `DELETE …/releases/1/2`, `GET …/git/commits/a/b` and
 #: `GET …/dependency-graph/compare/a...b/c` were the 404.
 _ROUTED_AS = {
     "GET /repos/{}/{}/actions/artifacts/{}/{}": "GET /repos/{}/{}/actions/artifacts/{}/zip",

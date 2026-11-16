@@ -1553,15 +1553,24 @@ def _refuse_a_search_shape(
     (`_unbuildable`), a filter member `_unreadable_member` refuses, a `query` that is an array or an
     object, or a `limit` `_unreadable_limit` refuses. A sort object whose `direction` is a string
     other than `ASCENDING` and `DESCENDING`, or that has no string `propertyName`, is refused at its
-    closing brace, the direction first. A null element is named at the closing brace of the object
-    holding its list, the body's for `sorts` and `filterGroups` and the group's for `filters`: after
-    that object's other values and ahead of a later element, `query` or non-standard token. With a
-    null in both `sorts` and `filterGroups`, the `filterGroups` one is named, whichever comes first.
-    A null `sorts`, `filterGroups`, `filters` or `query`, and a group with no `filters`, are read.
-    With a `before` from `_non_standard_number`, a value from there on is left to the token. A key
-    the body repeats is read by its last value, the one `json.loads` keeps, where real reads its
-    values in order and names the first it cannot read (`{"filterGroups": "x", "filterGroups": []}`
-    names the `"x"`, measured 2026-11-10); this router does not model that."""
+    closing brace, the direction first; a `direction` the object repeats is read by its last value,
+    so `{"direction": "x", "direction": "ASCENDING"}` was served on 2026-11-16. A null element is
+    named at the closing brace of the object holding its list, the body's for `sorts` and
+    `filterGroups` and the group's for `filters`: after that object's other values and ahead of a
+    later element, `query` or non-standard token. With a null in both `sorts` and `filterGroups`,
+    the `filterGroups` one is named, whichever comes first. A null `sorts`, `filterGroups`,
+    `filters` or `query`, and a group with no `filters`, are read. With a `before` from
+    `_non_standard_number`, a value from there on is left to the token. A key the body repeats is
+    read at each of its occurrences in order, not only by the last value, the one `json.loads`
+    keeps, so the first value real cannot read is the one named:
+    `{"filterGroups": "x", "filterGroups": []}` names the `"x"` and
+    `{"filterGroups": [], "filterGroups": "x"}` the later `"x"` (measured 2026-11-10). A null
+    element is named only in the last `sorts` or `filterGroups` the body holds and the last
+    `filters` its group holds: `{"filterGroups": [null], "filterGroups": []}` and
+    `{"filterGroups": [{"filters": [null], "filters": []}]}` were the page of the empty list on
+    2026-11-15, as `{"sorts": [null], "sorts": []}` was on 2026-11-16, and
+    `{"filterGroups": [{"filters": [null]}], "filterGroups": [{"filters": []}]}` the 400 at the
+    first group's closing brace (2026-11-15)."""
 
     def named(position, response):
         if before is not None and position >= before:
@@ -1569,7 +1578,11 @@ def _refuse_a_search_shape(
         return position, response
 
     null_group = null_sort = False
-    for key, value in body.items():
+    seen: dict = {}
+    for key, value in body.members:
+        occurrence = seen.get(key, 0)
+        seen[key] = occurrence + 1
+        at = {0: occurrence}
         if key == "query":
             if isinstance(value, (dict, list)):
                 position = _token_at(raw, (key,), at)
@@ -1581,10 +1594,11 @@ def _refuse_a_search_shape(
                 return named(_token_at(raw, (key,), at), refusal)
             continue
         if key == "sorts":
+            null_sort = False
             if value is None:
                 continue
             if not isinstance(value, list):
-                position = _token_at(raw, (key,))
+                position = _token_at(raw, (key,), at)
                 return named(position, _invalid(position, _not_a_list(value)))
             for j, item in enumerate(value):
                 if item is None:
@@ -1592,10 +1606,10 @@ def _refuse_a_search_shape(
                     continue
                 path = (key, j)
                 if not isinstance(item, (str, dict)):
-                    position = _token_at(raw, path)
+                    position = _token_at(raw, path, at)
                     return named(position, _invalid(position, _mismatched(item)))
                 if isinstance(item, dict):
-                    position = _closing_at(raw, path)
+                    position = _closing_at(raw, path, at)
                     direction = item.get("direction")
                     if isinstance(direction, str) and direction not in ("ASCENDING", "DESCENDING"):
                         return named(
@@ -1616,7 +1630,10 @@ def _refuse_a_search_shape(
                             ),
                         )
             continue
-        if key != "filterGroups" or value is None:
+        if key != "filterGroups":
+            continue
+        null_group = False
+        if value is None:
             continue
         if not isinstance(value, list):
             position = _token_at(raw, (key,), at)

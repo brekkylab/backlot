@@ -2635,6 +2635,7 @@ _ESCAPED_SLASH_ROWS = [
     ("{gateway}%2Fissues%2F{issue}", "/repos/{org}/nope", 404),
     ("{gateway}%2Fbranches", "/repos/{org}/nope", 404),
     ("/repos/{org}%2Fgateway", "/nope", 404),
+    ("/repos/{org}%252Fgateway", "/nope", 404),
     ("/orgs/{org}%2Frepos", "/orgs/nope", 404),
     ("/search%2Fcode?q=x", "/nope", 404),
     ("/agents%2Frepos/{org}/gateway/nosuch", "/nope", 404),
@@ -2648,6 +2649,7 @@ _ESCAPED_SLASH_ROWS = [
     ("{gateway}/issues/x%2F1", "{gateway}/issues/x", 404),
     ("{diffable}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
     ("{diffable}/branches/chore%2frename", "{diffable}/branches/chore/rename", 200),
+    ("{diffable}/branches/chore%252Frename", "{diffable}/branches/nope", 404),
     ("{diffable}/commits/chore%2Frename", "{diffable}/commits/chore/rename", 200),
     ("{diffable}/git/ref/heads/chore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
     ("{diffable}/git/ref/heads%2Fchore%2Frename", "{diffable}/git/ref/heads/chore/rename", 200),
@@ -2718,12 +2720,14 @@ _COUNTED_TOKEN_SHAPED = [
 
 
 #: (method, path, whether it is refused, the status a caller it does not refuse gets). The first
-#: twenty-six are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the twelfth as the `/orgs/{}`
-#: path `/organizations/{id}` is rewritten to, the thirteenth on a path whose slash-terminated
-#: spelling a route matches, and the ten after `security-advisories` on `contents`, `git/refs`,
-#: `git/matching-refs`, `tarball` and `zipball`, whose parameters span segments; the next two are in
+#: fifty-four are in `backlot.routers.github._PUBLISHED_NOT_SERVED`, the thirteenth as the
+#: `/orgs/{}` path `/organizations/{id}` is rewritten to, the fourteenth on a path whose
+#: slash-terminated spelling a route matches, and the thirty-seven after `security-advisories` on
+#: `contents`, `git/refs`, `git/matching-refs`, `tarball`, `zipball`, `compare`, `rules/branches`,
+#: `branches/rename`, `commits/comments` and the writes to `branches/{}/protection` and its
+#: sub-resources, whose parameter takes one or more segments; the next two are in
 #: `_ROUTED_UNPUBLISHED`; the next four are baseline rows that `_ROUTED_AS` and `_NOT_ROUTED` keep
-#: out of it, and the three after them a second segment where the operation's parameter takes one;
+#: out of it, and the five after them a second segment where the operation's parameter takes one;
 #: the two after them are no operation, though a parsed URL ends the first at its decoded `#` and a
 #: `missing_param` row of the baseline spells the second's path; the next is a method GitHub does
 #: not publish on a path whose `PATCH` it does, which real answered a bad bearer with its 404; the
@@ -2742,6 +2746,7 @@ _UNSERVED_ROWS = [
     ("POST", "/github/repos/{org}/codebase/pulls/1/copilot-code-review", True, 404),
     ("POST", "/github/user/issue-types", True, 404),
     ("DELETE", "/github/user/issue-fields/1", True, 404),
+    ("GET", "/github/repos/{org}/codebase/planning-statuses", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip", True, 404),
     ("GET", "/github/organizations/1/settings/billing/usage", True, 404),
     ("POST", "/github/repos/{org}/codebase/git/trees", True, 404),
@@ -2763,6 +2768,26 @@ _UNSERVED_ROWS = [
     ("PATCH", "/github/repos/{org}/codebase/git/refs/heads/x", True, 404),
     ("GET", "/github/repos/{org}/codebase/git/matching-refs/heads/x", True, 404),
     ("GET", "/github/repos/{org}/codebase/tarball/a/b", True, 404),
+    ("GET", "/github/repos/{org}/codebase/compare/a...b/c", True, 404),
+    ("GET", "/github/repos/{org}/codebase/rules/branches/a/b", True, 404),
+    *(
+        (method, "/github/repos/{org}/codebase/branches/a/b/protection" + rest, True, 405)
+        for rest, methods in (
+            ("", ("DELETE", "PUT")),
+            ("/enforce_admins", ("DELETE", "POST")),
+            ("/required_pull_request_reviews", ("DELETE", "PATCH")),
+            ("/required_signatures", ("DELETE", "POST")),
+            ("/required_status_checks", ("DELETE", "PATCH")),
+            ("/required_status_checks/contexts", ("DELETE", "POST", "PUT")),
+            ("/restrictions", ("DELETE",)),
+            ("/restrictions/apps", ("DELETE", "POST", "PUT")),
+            ("/restrictions/teams", ("DELETE", "POST", "PUT")),
+            ("/restrictions/users", ("DELETE", "POST", "PUT")),
+        )
+        for method in methods
+    ),
+    ("POST", "/github/repos/{org}/codebase/branches/a/b/rename", True, 405),
+    ("POST", "/github/repos/{org}/codebase/commits/a/b/comments", True, 405),
     ("GET", "/github/agents/automations/available-tools", True, 404),
     ("GET", "/github/agents/automations/1/tasks", True, 404),
     ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/tar", False, 404),
@@ -2772,6 +2797,13 @@ _UNSERVED_ROWS = [
     ("DELETE", "/github/repos/{org}/codebase/hooks/1/2", False, 404),
     ("DELETE", "/github/gists/1/2", False, 404),
     ("DELETE", "/github/repos/{org}/codebase/releases/1/2", False, 404),
+    ("GET", "/github/repos/{org}/codebase/git/commits/a/b", False, 404),
+    (
+        "GET",
+        "/github/repos/{org}/codebase/dependency-graph/compare/a...b/c",
+        False,
+        404,
+    ),
     ("GET", "/github/zen%23", False, 404),
     ("GET", "/github/repos/{org}/codebase/issues%3Fsince", False, 404),
     ("PUT", "/github/orgs/{org}", False, 405),
@@ -2798,14 +2830,19 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
     400, counted, ahead of the router's answer to the admin token and of the refusal of a `Basic`
     value that names no token, each carrying the version echo. A row not refused is the router's
     answer for any caller. Real was measured on each row but the last with a bad bearer, an unknown
-    scheme and a bearer after a tab, on each refused row but the ten after `security-advisories`
-    with each header below, and with no header on the first ten. On the three refused rows after
-    `git/trees` and the two under `/agents/automations`, two of those headers have no answer of
-    real's: a bearer after a tab that resolves was not sent on the three writes, and
+    scheme and a bearer after a tab, with each header below on each refused row but the thirty-seven
+    after `security-advisories`, and with no header on the first eleven. On the three refused rows
+    after `git/trees` and the two under `/agents/automations`, two of those headers have no answer
+    of real's: a bearer after a tab that resolves was not sent on the three writes, and
     `Basic Zm9vOmJhcg==` on the three under `/agents` was answered 403 "API rate limit exceeded"
-    with no `x-ratelimit-*`. On `git/matching-refs`, `tarball` and `zipball` real answered
-    `Digest x` with the public repository's 200 list of refs or 302 to the archive, and a bearer
-    after a tab with 401 "Bad credentials"; here both are 401 "Requires authentication".
+    with no `x-ratelimit-*`. On `git/matching-refs`, `tarball`, `zipball`, `compare` and
+    `rules/branches` real answered `Digest x` with the public repository's 200 list of refs, 302 to
+    the archive, 404 for the comparison or 200 `[]` of rules, and a bearer after a tab with 401
+    "Bad credentials"; here both are 401 "Requires authentication". On `planning-statuses` real
+    asked for no credential: no header, `Basic Zm9vOmJhcg==` and each header below that carries
+    none but `Bearer<TAB>nope` were its 404 with the echo, or the version's 400 when pinned to
+    `1999-01-01`, and `Bearer<TAB>nope` was 401 "Bad credentials"; here each of those but the
+    pinned `Basic` value is 401 "Requires authentication".
 
     On the three refused rows under `/agents` no version is read
     (`backlot.routers.github.honours_api_version`): their answers carry no echo, and a pinned
@@ -3177,7 +3214,7 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     # docstring for what that framing did while the scope was left saying `GET`). So the messages
     # the app sends are read directly: the headers carry the GET's length, and no body byte follows
     # them.
-    from starlette.testclient import TestClient
+    from tests._helpers import TestClient
 
     sent = []
 
@@ -4896,6 +4933,8 @@ _LONG_TARGET_ROWS = [
         for n, a in ((4_096, 404), (4_097, "path"))
     ),
     ("GET", "/repos/{org}/{pad}", "path", 4_097, "admin", "path"),
+    ("GET", "/repositories/{pad}", "path", 4_414, "admin", "path"),
+    ("GET", "/organizations/{pad}", "path", 4_415, "admin", "path"),
     ("GET", "/repos/{org}/gateway/pulls/{pad}", "path", 4_097, "admin", 404),
     ("GET", "/repos/{org}/gateway/contents/{pad}", "path", 4_097, "admin", 404),
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 8_180, "admin", "line"),
@@ -7946,14 +7985,14 @@ def test_github_an_unparseable_callers_spent_window_403_carries_the_tokens_sente
 
 
 def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
-    """A repository id followed by other characters answers as the id does, a path under an id
-    holding anything but ASCII digits is the 404 of a path no route matches, and an id after other
-    characters is the repository route's 404, as real answered each
+    """Spellings of a repository id, each answered as real answered it
     (``backlot.routers.github.canonical_id_path``)."""
     c, _ = gh_client
     rid = synth.github_user_id("codebase")
     repository = c.get(f"/github/repositories/{rid}", headers=gh_admin_h).json()
     assert repository["name"] == "codebase"
+    branch = c.get(f"/github/repositories/{rid}/branches/main", headers=gh_admin_h).json()
+    assert branch["name"] == "main"
     unrouted = {
         "message": "Not Found",
         "documentation_url": "https://docs.github.com/rest",
@@ -7965,12 +8004,30 @@ def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
         "status": "404",
     }
     rows = {
+        **{
+            f"{before}{rid}": (200, repository)
+            for before in ("0", "%20", "%20%20", "%09", "%0A", "%0B", "%0C", "%0D", "%2B", "%20%2B")
+        },
+        f"0d{rid}": (200, repository),
+        f"0D{rid}": (200, repository),
+        f"{rid:_}": (200, repository),
+        f"{rid}_": (200, repository),
         f"{rid}x": (200, repository),
         f"{rid}.5": (200, repository),
         f"{rid}%2Fbranches": (200, repository),
         f"{rid}%C2%B2": (200, repository),
         f"{rid}%D9%A3": (200, repository),
         f"x{rid}": (404, absent),
+        f"-{rid}": (404, absent),
+        f"_{rid}": (404, absent),
+        f"%2B%20{rid}": (404, absent),
+        f"%C2%A0{rid}": (404, absent),
+        f"{rid:_}".replace("_", "__"): (404, absent),
+        f"0{rid}/branches/main": (200, branch),
+        f"%20{rid}/branches/main": (404, unrouted),
+        f"%2B{rid}/branches/main": (404, unrouted),
+        f"0d{rid}/branches/main": (404, unrouted),
+        f"{rid:_}/branches/main": (404, unrouted),
         f"{rid}x/branches/main": (404, unrouted),
         f"{rid}%2Fx/branches/main": (404, unrouted),
         f"{rid}%C2%B2/branches/main": (404, unrouted),
@@ -7980,5 +8037,44 @@ def test_github_repository_id_leading_integer(gh_client, gh_admin_h):
     answered = {}
     for rest in rows:
         r = c.get(f"/github/repositories/{rest}", headers=gh_admin_h)
+        answered[rest] = (r.status_code, r.json())
+    assert answered == rows
+
+
+def test_github_organization_id_canonicalization(gh_client, gh_admin_h):
+    c, _ = gh_client
+    oid = synth.github_user_id("acme")
+    organization = c.get(f"/github/organizations/{oid}", headers=gh_admin_h).json()
+    assert organization["login"] == "acme"
+    repos = c.get(f"/github/organizations/{oid}/repos", headers=gh_admin_h).json()
+    assert len(repos) > 0
+    unrouted = {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest",
+        "status": "404",
+    }
+    absent = {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/orgs/orgs#get-an-organization",
+        "status": "404",
+    }
+    rows = {
+        f"{oid}x": (200, organization),
+        f"0{oid}": (200, organization),
+        f"%20{oid}": (200, organization),
+        f"%20{oid}x": (200, organization),
+        f"%0A{oid}": (200, organization),
+        f"%2B{oid}": (200, organization),
+        f"0d{oid}": (200, organization),
+        f"{oid:_}": (200, organization),
+        f"x{oid}": (404, absent),
+        f"0{oid}/repos": (200, repos),
+        f"%20{oid}/repos": (404, unrouted),
+        f"{oid}x/repos": (404, unrouted),
+        f"x{oid}/repos": (404, unrouted),
+    }
+    answered = {}
+    for rest in rows:
+        r = c.get(f"/github/organizations/{rest}", headers=gh_admin_h)
         answered[rest] = (r.status_code, r.json())
     assert answered == rows

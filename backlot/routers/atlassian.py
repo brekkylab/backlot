@@ -5465,10 +5465,7 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     path, or None. That is each path an operation is published at (the baseline's and
     :data:`_CONFLUENCE_OUTSIDE_THE_DOCUMENT`), whichever method reaches it (`OPTIONS` and the 405s
     among them), every path below `/wiki/api/v2/`, and the product's page under `/wiki/rest/`
-    (:func:`_confluence_serves_html`). The paths under `/wiki/rest/mywork` are not Spring's
-    either: the openresty gateway answers them first (:func:`_confluence_not_found`), and a `GET`
-    and a `POST` there with `text/plain;charset=` answered its 404 on 2026-11-10. Jersey's paths
-    (the CQL search, :data:`_CONFLUENCE_JAXRS`,
+    (:func:`_confluence_serves_html`). Jersey's paths (the CQL search, :data:`_CONFLUENCE_JAXRS`,
     :data:`_CONFLUENCE_JAXRS_GETS` and its 404) answer the header with Tomcat's 400 page instead,
     and a Basic value Tomcat cannot read is left alone, since real answers it with Tomcat's 401
     first.
@@ -5492,9 +5489,6 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     # where `/wiki/rest/api` is the page
     sent = _vendor_path(_echoed_path(request))
     if not (sent.startswith("/wiki/rest/") or sent.startswith("/wiki/api/v2/")):
-        return None
-    if request.method in ("GET", "POST") and _confluence_mywork(sent):
-        # the openresty gateway answers there, ahead of this 500 (see `_confluence_not_found`)
         return None
     if _is(_CONFLUENCE_JAXRS, None, vendor_path) or _is(_CONFLUENCE_JAXRS_GETS, None, vendor_path):
         return None
@@ -5760,14 +5754,9 @@ def _confluence_serves_html(vendor_path: str) -> bool:
     )
 
 
-def _confluence_mywork(vendor_path: str) -> bool:
-    """Whether ``vendor_path`` is `/wiki/rest/mywork` or a path below it."""
-    return vendor_path == "/wiki/rest/mywork" or vendor_path.startswith("/wiki/rest/mywork/")
-
-
 #: The versions Confluence's plugins REST API is mounted at under `/wiki/rest/plugins/`, the two
 #: measured as mounts on 2026-11-10 (`plugins/1/x` is the product's page).
-_CONFLUENCE_PLUGINS_MOUNT = re.compile(r"^/wiki/rest/plugins/(?:1\.0|latest)(?:/([^/]+))?/?$")
+_CONFLUENCE_PLUGINS_MOUNT = re.compile(r"^/wiki/rest/plugins/(?:1\.0|latest)/(?:([^/]+)/?)?$")
 
 
 def _confluence_plugins_answer(request: Request, vendor_path: str) -> Response | None:
@@ -5776,11 +5765,12 @@ def _confluence_plugins_answer(request: Request, vendor_path: str) -> Response |
     apps a caller with a credential reads at the mount itself are not copied, since no corpus
     holds apps).
 
-    Measured on Confluence Cloud on 2026-11-10: a caller with no credential is the 403
-    (``errors.atlassian.PLUGINS_NOT_PERMITTED``) at the mount and one segment below it; a caller
-    with one is refused for the segment, as the task error
-    (``errors.atlassian.PLUGINS_TASK_ERROR``) where it does not end in `-key` and as an empty
-    404 under the plugin type where it does and names no app.
+    Measured on Confluence Cloud on 2026-11-10 and 2026-11-15: a caller with no credential is the
+    403 (``errors.atlassian.PLUGINS_NOT_PERMITTED``) at the mount and one segment below it; a caller
+    with one is refused for the segment, as the task error (``errors.atlassian.PLUGINS_TASK_ERROR``)
+    where it does not end in `-key` (`x-KEY` among them) and as an empty 404 under the plugin type
+    where it does and names no app (`-key` alone among them), with a slash after the segment or
+    none.
     """
     match = _CONFLUENCE_PLUGINS_MOUNT.match(vendor_path)
     if match is None:
@@ -5802,19 +5792,11 @@ def _confluence_plugins_answer(request: Request, vendor_path: str) -> Response |
 
 
 def _confluence_not_found(request: Request) -> Response:
-    """Confluence's answer for a path it serves nothing at: the page, or JAX-RS's own 404. Neither
-    is Spring's to write, which the request is marked with for :func:`spring_write_failure`."""
+    """Confluence's answer for a path it serves nothing at: the page, JAX-RS's own 404, or the
+    plugins REST API's refusal at its mount (:func:`_confluence_plugins_answer`). None is Spring's
+    to write, which the request is marked with for :func:`spring_write_failure`."""
     request.scope["atlassian_outside_spring"] = True
     vendor_path = _vendor_path(_echoed_path(request))
-    if request.method in ("GET", "POST") and _confluence_mywork(vendor_path):
-        # the openresty gateway answers every path under `/wiki/rest/mywork`, whatever the
-        # `Content-Type`, ahead of the charset refusal: measured on Confluence Cloud on
-        # 2026-11-10 at the mount and below it, with a credential and without one
-        return Response(
-            errors_atlassian.OPENRESTY_NOT_FOUND,
-            status_code=404,
-            headers={"Content-Type": "text/html"},
-        )
     if _confluence_serves_html(vendor_path):
         return Response(
             errors_atlassian.HTML_NOT_FOUND,

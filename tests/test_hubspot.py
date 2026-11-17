@@ -2110,6 +2110,10 @@ def _too_many_sorts(count: int) -> dict:
     }
 
 
+def _too_many_in_values(column: int, count: int = 101) -> dict:
+    return _json_refusal(column, f"too many IN list values (count: {count}, max allowed: 100)")
+
+
 def _sort_field_refusal() -> dict:
     return {
         "status": "error",
@@ -3010,6 +3014,19 @@ def _nt(id, route, raw, want, object_type="companies", authed=True):
 _A_FILTER = '{"filterGroups":[{"filters":[{"propertyName":"name","operator":"EQ","value":%s}]}]}'
 _AN_OPERATOR = '"filterGroups":[{"filters":[{"propertyName":"name","operator":%s,"value":"x"}]}]'
 
+
+def _in_filter(count: int, operator: str = "IN") -> dict:
+    """A filter on `email` whose values are `"v0"` up to `"v<count - 1>"`."""
+    return {
+        "propertyName": "email",
+        "operator": operator,
+        "values": [f"v{i}" for i in range(count)],
+    }
+
+
+# A `filterGroups` member of one `IN` filter of 101 values, spaced as `json.dumps` spaces it.
+_GROUP_OF_101 = json.dumps({"filterGroups": [{"filters": [_in_filter(101)]}]})[1:-1]
+
 # fmt: off
 _TOKEN_ROWS = [
     _nt("inputs", "batch/read", '{"inputs":NaN}', _token_refusal(14, "NaN")),
@@ -3084,6 +3101,8 @@ _TOKEN_ROWS = [
     _nt("nan-then-filterGroups-string", "search", '{"query": NaN, "filterGroups": "x"}', _token_refusal(14, "NaN"), object_type="contacts"),
     _nt("blank-string-group-then-nan", "search", '{"filterGroups": [" "], "query": NaN}', _unreadable_field("filterGroups[0]"), object_type="contacts"),
     _nt("operator-13-then-nan", "search", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": 13}]}], "x": NaN}', _unreadable_field(_OPERATOR_FIELD, "13"), object_type="contacts"),
+    _nt("values-101-then-nan", "search", "{" + _GROUP_OF_101 + ', "limit": NaN}', _too_many_in_values(784), object_type="contacts"),
+    _nt("nan-then-values-101", "search", '{"limit": NaN, ' + _GROUP_OF_101 + "}", _token_refusal(14, "NaN"), object_type="contacts"),
     # a null element and the token, named where `_refuse_a_search_shape` says
     _nt("null-group-then-nan", "search", '{"filterGroups": [null], "query": NaN}', _token_refusal(38, "NaN"), object_type="contacts"),
     _nt("null-filter-then-nan", "search", '{"filterGroups": [{"filters": [null]}], "query": NaN}', _json_refusal(37, "filters element"), object_type="contacts"),
@@ -3112,9 +3131,9 @@ _TOKEN_ROWS = [
 def test_hubspot_refuses_a_non_standard_number_token(client, admin_h):
     """`_non_standard_number`'s rule, one body per row: the status and body real answered,
     including which value it names when the body also holds one `_refuse_a_batch_read_shape`,
-    `_refuse_a_search_shape` or `_refuse_an_operator` refuses, and the status for the three
-    spellings inside a string, which real reads as text (a 207 for batch/read because no company
-    has those ids)."""
+    `_refuse_a_search_shape`, `_refuse_an_operator` or `_refuse_too_many_in_values` refuses, and
+    the status for the three spellings inside a string, which real reads as text (a 207 for
+    batch/read because no company has those ids)."""
     answered, expected = {}, {}
     for row in _TOKEN_ROWS:
         route, raw, want, object_type, authed = row.values
@@ -3151,6 +3170,17 @@ _WITH_HIGH_VALUE = (
 _WITH_VALUES = (
     '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "IN", "values": %s}]}]}'
 )
+
+
+def _in_values(count: int, *extra: str) -> str:
+    """`_WITH_VALUES` holding the values of `_in_filter(count)` and then the JSON texts `extra`,
+    spaced as `json.dumps` spaces them."""
+    values = [json.dumps(f"v{i}") for i in range(count)] + list(extra)
+    return _WITH_VALUES % f"[{', '.join(values)}]"
+
+
+_EQ_X = {"propertyName": "email", "operator": "EQ", "value": "x"}
+_EQ_AVA = {"propertyName": "email", "operator": "EQ", "value": "ava@acme-health.com"}
 
 # fmt: off
 _SEARCH_BODY_ROWS = [
@@ -3299,6 +3329,31 @@ _SEARCH_BODY_ROWS = [
     _sb("values-array-element", _WITH_VALUES % "[[]]", _json_refusal(87, _ARRAY)),
     _sb("values-object-element", _WITH_VALUES % "[{}]", _json_refusal(87, _OBJECT)),
     _sb("values-string-then-array-element", _WITH_VALUES % '["x", ["y"]]', _json_refusal(92, _ARRAY)),
+    # an `IN` or `NOT_IN` of more than 100 distinct values, named at its filter's closing brace
+    _sb("values-101", _in_values(101), _too_many_in_values(784)),
+    _sb("values-994", _in_values(994), _too_many_in_values(7928, 994)),
+    _sb("not-in-values-101", json.dumps({"filterGroups": [{"filters": [_in_filter(101, "NOT_IN")]}]}), _too_many_in_values(788)),
+    _sb("values-101-and-a-repeat", _in_values(101, '"v0"'), _too_many_in_values(790)),
+    _sb("values-100-and-another-case", _in_values(100, '"V0"'), _too_many_in_values(782)),
+    _sb("values-100-and-a-space-before", _in_values(100, '" v0"'), _too_many_in_values(783)),
+    _sb("values-100-and-empty", _in_values(100, '""'), _too_many_in_values(780)),
+    _sb("values-100-and-null", _in_values(100, "null"), _too_many_in_values(782)),
+    _sb("values-100-and-true", _in_values(100, "true"), _too_many_in_values(782)),
+    _sb("values-99-and-null-as-text-and-null", _in_values(99, '"null"', "null"), _too_many_in_values(783)),
+    _sb("values-99-and-1-as-text-and-1.0", _in_values(99, '"1"', "1.0"), _too_many_in_values(779)),
+    _sb("values-99-and-10-as-text-and-1e1", _in_values(99, '"10"', "1e1"), _too_many_in_values(780)),
+    _sb("texts-1-to-100-and-101", _WITH_VALUES % json.dumps([str(i) for i in range(1, 101)] + [101]), _too_many_in_values(683)),
+    _sb("values-101-in-second-group", json.dumps({"filterGroups": [{"filters": [_EQ_X]}, {"filters": [_EQ_X, _in_filter(101)]}]}), _too_many_in_values(917)),
+    _sb("values-101-then-values-102", json.dumps({"filterGroups": [{"filters": [_in_filter(101), _in_filter(102)]}]}), _too_many_in_values(784)),
+    _sb("values-101-then-bad-operator", json.dumps({"filterGroups": [{"filters": [_in_filter(101), {**_EQ_X, "operator": "XX"}]}]}), _too_many_in_values(784)),
+    _sb("bad-operator-then-values-101", json.dumps({"filterGroups": [{"filters": [{**_EQ_X, "operator": "XX"}, _in_filter(101)]}]}), _enum_refusal(1, 70)),
+    _sb("values-101-then-query-array", "{" + _GROUP_OF_101 + ', "query": ["x"]}', _too_many_in_values(784)),
+    _sb("query-array-then-values-101", '{"query": ["x"], ' + _GROUP_OF_101 + "}", _json_refusal(11, _ARRAY)),
+    _sb("limit-201-then-values-101", '{"limit": 201, ' + _GROUP_OF_101 + "}", _too_many_in_values(798)),
+    _sb("values-101-then-limit-201", "{" + _GROUP_OF_101 + ', "limit": 201}', _too_many_in_values(784)),
+    _sb("after-then-values-101", '{"after": "10000", ' + _GROUP_OF_101 + "}", _too_many_in_values(802)),
+    _sb("two-sorts-then-values-101", '{"sorts": ["email", "lastname"], ' + _GROUP_OF_101 + "}", _too_many_in_values(816)),
+    _sb("repeated-values-1-then-101", _WITH_VALUES % ('["x"], "values": ' + json.dumps(_in_filter(101)["values"])), _too_many_in_values(801)),
     # bodies with a second member or value real cannot read
     _sb("value-array-then-bad-operator", '{"filterGroups": [{"filters": [{"propertyName": "email", "value": [], "operator": "BOGUS"}]}]}', _json_refusal(67, _ARRAY)),
     _sb("bad-operator-then-value-array", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "BOGUS", "value": []}]}]}', _enum_refusal(1, 70)),
@@ -3358,6 +3413,18 @@ _SEARCH_BODY_ROWS = [
     _sb("values-float-element", _WITH_VALUES % "[1.5]", (_WITH_VALUES % '["1.5"]', True)),
     _sb("values-true-element", _WITH_VALUES % "[true]", (_WITH_VALUES % '["true"]', True)),
     _sb("values-float-element-1.50", '{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": [1.50]}]}]}', ('{"filterGroups": [{"filters": [{"propertyName": "firstname", "operator": "IN", "values": ["1.50"]}]}]}', True)),
+    # at most 100 distinct values, each counted by the text `_scalars_as_text` reads it as
+    _sb("values-100", _in_values(100), (_in_values(1), True)),
+    _sb("values-100-and-a-repeat", _in_values(100, '"v0"'), (_in_values(1), True)),
+    _sb("values-100-and-an-escaped-repeat", _in_values(100, '"\\u00760"'), (_in_values(1), True)),
+    _sb("not-in-values-100", json.dumps({"filterGroups": [{"filters": [_in_filter(100, "NOT_IN")]}]}), ("{}", False)),
+    _sb("texts-1-to-100-and-1", _WITH_VALUES % json.dumps([str(i) for i in range(1, 101)] + [1]), (_WITH_VALUES % '["1"]', True)),
+    _sb("values-99-and-true-as-text-and-true", _in_values(99, '"true"', "true"), (_in_values(1), True)),
+    _sb("values-99-and-1.0-as-text-and-1.0", _in_values(99, '"1.0"', "1.0"), (_in_values(1), True)),
+    _sb("values-99-and-1e1-as-text-and-1e1", _in_values(99, '"1e1"', "1e1"), (_in_values(1), True)),
+    _sb("values-994-copies", _WITH_VALUES % json.dumps(["ava@acme-health.com"] * 994), (_WITH_VALUES % '["ava@acme-health.com"]', True)),
+    _sb("filters-993", json.dumps({"filterGroups": [{"filters": [_EQ_AVA] * 993}]}), (json.dumps({"filterGroups": [{"filters": [_EQ_AVA]}]}), True)),
+    _sb("repeated-values-101-then-1", _WITH_VALUES % (json.dumps(_in_filter(101)["values"]) + ', "values": ["x"]'), (_WITH_VALUES % '["x"]', True)),
     _sb("values-null", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "values": null}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
     _sb("member-not-read", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "HAS_PROPERTY", "x": []}]}]}', (_WITH_PROPERTY_NAME % '"email"', False)),
     _sb("limit-null", '{"limit": null}', ('{"limit": 0}', True)),
@@ -3402,9 +3469,10 @@ _SEARCH_BODY_CONTACTS = [
 
 def test_hubspot_search_refuses_a_body_real_cannot_read(tmp_path):
     """One body per row: for a body real refuses, the status and body it answered, including which
-    value it names when a second cannot be read (`_refuse_a_search_shape`); for a body it reads, a
-    body that answers the same page, such as one with a number or boolean as its text
-    (`_scalars_as_text`), and whether that page is narrower than `{}`'s."""
+    value it names when a second cannot be read (`_refuse_a_search_shape`) or a filter names more
+    than 100 distinct values (`_refuse_too_many_in_values`); for a body it reads, a body that
+    answers the same page, such as one with a number or boolean as its text (`_scalars_as_text`),
+    and whether that page is narrower than `{}`'s."""
     from tests._helpers import client_for
 
     s = tiny_corpus(tmp_path, _SEARCH_BODY_CONTACTS)

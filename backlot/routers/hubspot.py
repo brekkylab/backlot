@@ -1306,6 +1306,65 @@ def _refuse_an_operator(
     return None
 
 
+def _refuse_too_many_in_values(
+    raw: bytes, body: _InOrder, before: tuple[int, int] | None = None
+) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
+    """Where the first filter, in body order, whose `IN` or `NOT_IN` names more than 100
+    distinct values closes, and real's 400 for it, or `(None, None)`.
+
+    Measured against api.hubapi.com on 2026-11-15 and 2026-11-17, contacts search: real refuses
+    the count however the search is evaluated, one filter group or many, and reports it at the
+    filter's closing brace (101 values at column 784 and 994 at column 7928 of the bodies that
+    carried them, a `NOT_IN` of 101 at column 788). It counts the distinct values, each by the
+    text `_scalars_as_text` reads it as: 100 texts with a repeat of one, `"\\u00760"` beside
+    `"v0"`, `"1"` beside `1`, `"1.0"` beside `1.0`, `"1e1"` beside `1e1`, `"true"` beside `true`
+    and 994 copies of one text were served, while `"1"` beside `1.0`, `"10"` beside `1e1`, a
+    text in another case or after a space, `""`, and `null` beside `"null"` each counted once
+    more. The walk follows `_refuse_an_operator`'s, occurrences of a repeated key included, and of
+    a filter's repeated `values` the last is counted (2026-11-17). A filter closing at or past
+    `before` is left to what starts there.
+    """
+    seen: dict = {}
+    for key, groups in body.members:
+        occurrence = seen.get(key, 0)
+        seen[key] = occurrence + 1
+        if key != "filterGroups" or not isinstance(groups, list):
+            continue
+        for i, group in enumerate(groups):
+            if not isinstance(group, dict):
+                continue
+            counted: dict = {}
+            for name, filters in group.members:
+                index = counted.get(name, 0)
+                counted[name] = index + 1
+                if name != "filters" or not isinstance(filters, list):
+                    continue
+                for j, f in enumerate(filters):
+                    if not isinstance(f, dict):
+                        continue
+                    try:
+                        if _operator(f) not in ("IN", "NOT_IN"):
+                            continue
+                    except (IndexError, KeyError, AttributeError):
+                        # an operator `_operator` cannot read is the shape refusal's to name
+                        continue
+                    values = f.get("values")
+                    if not isinstance(values, list) or len(values) <= 100:
+                        continue
+                    path = ("filterGroups", i, "filters", j)
+                    at = {0: occurrence, 2: index}
+                    position = _closing_at(raw, path, at)
+                    if before is not None and position >= before:
+                        return None, None
+                    text, start, end = _token_span(raw, path + ("values",), at)
+                    spelt = json.loads(text[start:end], parse_int=str, parse_float=str)
+                    count = len({json.dumps(s) if isinstance(s, bool) else s for s in spelt})
+                    if count > 100:
+                        message = f"too many IN list values (count: {count}, max allowed: 100)"
+                        return position, _invalid(position, message)
+    return None, None
+
+
 def _java_double(x: float) -> str:
     """``x`` as real echoes it, in the form of Java's `Double.toString`: plain from 10^-3 up to
     10^7, and otherwise with one digit before the point (`1.0E7`, `1.23456789125E8`, `1.0E-4`)."""
@@ -1870,6 +1929,24 @@ def _ascii_scalar(v) -> str | None:
     return v if '"' not in v and "\\" not in v else None
 
 
+def _join_balanced(frags: list[str], op: str) -> str:
+    """`frags` joined by `op`, paired level by level so the tree stays balanced.
+
+    A flat chain is one left-deep expression tree to SQLite, which refuses it past a depth of
+    1000 (`Expression tree is too large`), and real serves a search group of 993 filters
+    (measured 2026-11-15) and an `IN` that names one value more often than such a chain holds
+    (`_refuse_too_many_in_values`). Paired, the depth grows with the logarithm of the count
+    instead. AND and OR associate, three-valued logic included, so the pairing cannot change
+    which rows the condition holds for.
+    """
+    while len(frags) > 1:
+        frags = [
+            f"({frags[i]} {op} {frags[i + 1]})" if i + 1 < len(frags) else frags[i]
+            for i in range(0, len(frags), 2)
+        ]
+    return frags[0]
+
+
 def _sql_prefilter(body: dict):
     """A SQL condition every match must satisfy, or None.
 
@@ -1906,12 +1983,12 @@ def _sql_prefilter(body: dict):
                 "(instr(lower(properties), lower(?)) > 0 OR instr(properties, char(92) || 'u') > 0)"
             )
             if op == "IN":
-                frags.append("(" + " OR ".join([needle] * len(vals)) + ")")
+                frags.append("(" + _join_balanced([needle] * len(vals), "OR") + ")")
             else:
                 frags += [needle] * len(vals)
             params += vals
         # every other operator (NEQ/NOT_*/comparisons/BETWEEN) has no safe necessary condition here
-    return (" AND ".join(frags), params) if frags else None
+    return (_join_balanced(frags, "AND"), params) if frags else None
 
 
 def _matches(row, body: dict) -> bool:
@@ -2336,8 +2413,17 @@ async def search_objects(object_type: str, request: Request):
     # Before `after`: real refuses the operator first when the cursor is one it can parse but
     # names no record (measured 2026-10-06), and a `filterGroups` or `query` it cannot read ahead of
     # such a cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
-    # refusal names, that value when it starts ahead of the non-standard token.
-    refused = _refuse_an_operator(raw, pairs, before if at is None else at) or unreadable or refused
+    # refusal names, that value when it starts ahead of the non-standard token. A filter of more
+    # than 100 distinct values is named when it closes ahead of that value or token, and an
+    # operator when it starts ahead of that filter's closing brace (2026-11-17).
+    stop = before if at is None else at
+    counted, too_many = _refuse_too_many_in_values(raw, pairs, stop)
+    refused = (
+        _refuse_an_operator(raw, pairs, stop if counted is None else counted)
+        or too_many
+        or unreadable
+        or refused
+    )
     if refused is not None:
         return refused
     body = _scalars_as_text(raw, body)

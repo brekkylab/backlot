@@ -2795,26 +2795,49 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
-def _confluence_media_token(cid) -> dict:
+def _confluence_media_token(request: Request, cid) -> dict:
     """The `mediaToken` member a body representation serves when an `expand` term names it.
 
     Measured on Confluence Cloud on 2026-11-13, on a page with no attachments: seven members in
     this order — `contentId` the page id as a string, `token`, `fileIds`, `collectionIds` the
     one `contentId-<id>`, `expiryDateTime`, `clientId` and `descriptors`. `token` was a JWT of
-    three segments whose header is `{"alg": "HS256"}`; neither its payload nor its signature
-    follows from a corpus, so the payload carries the expiry and the signature is a digest of
-    the two segments and the content id — the shape is real's, the value is this server's own.
-    `expiryDateTime` was 48 minutes after the request, with milliseconds and a `Z`. `fileIds`
-    and `descriptors` were empty on a page with no attachments; a page with attachments was
-    not measured.
+    three segments whose header is `{"alg": "HS256"}`. `expiryDateTime` was 48 minutes after the
+    request, with milliseconds and a `Z`. `fileIds` and `descriptors` were empty on a page with
+    no attachments, which every page here is: a corpus record states none
+    (`confluence_attachments`).
+
+    Measured 2026-11-17 on two pages read with an API token over Basic, the token's payload held,
+    in this order, `iss` the `clientId`, `access` granting `read` on the `collectionIds` one,
+    `exp` and `nbf` the expiry and the request in whole seconds, `aaId` the caller's account id,
+    `https://id.atlassian.com/appAccredited` false, `authType` `api-token` and
+    `https://atlassian.com/authProfile` `identity.classicApiToken`. The signature does not follow
+    from a corpus, so it is a digest of the two segments and the content id: the shape is
+    real's, the value is this server's own.
     """
-    expiry = datetime.now(timezone.utc) + timedelta(minutes=48)
+    now = datetime.now(timezone.utc)
+    expiry = now + timedelta(minutes=48)
+    client = synth.confluence_media_client_id(get_settings().org_name)
+    caller = auth.atlassian_caller(request)
 
     def b64(raw: bytes) -> str:
         return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
-    head = b64(json.dumps({"alg": "HS256"}, separators=(",", ":")).encode())
-    payload = b64(json.dumps({"exp": int(expiry.timestamp())}, separators=(",", ":")).encode())
+    def segment(claims: dict) -> str:
+        return b64(json.dumps(claims, separators=(",", ":")).encode())
+
+    head = segment({"alg": "HS256"})
+    payload = segment(
+        {
+            "iss": client,
+            "access": {f"urn:filestore:collection:contentId-{cid}": ["read"]},
+            "exp": int(expiry.timestamp()),
+            "nbf": int(now.timestamp()),
+            "aaId": synth.atlassian_account_id(caller.email or "unknown"),
+            "https://id.atlassian.com/appAccredited": False,
+            "authType": "api-token",
+            "https://atlassian.com/authProfile": "identity.classicApiToken",
+        }
+    )
     signature = b64(hashlib.sha256(f"confluence-media:{cid}:{head}.{payload}".encode()).digest())
     expiry_text = expiry.strftime("%Y-%m-%dT%H:%M:%S.") + f"{expiry.microsecond // 1000:03d}Z"
     return {
@@ -2823,7 +2846,7 @@ def _confluence_media_token(cid) -> dict:
         "fileIds": [],
         "collectionIds": [f"contentId-{cid}"],
         "expiryDateTime": expiry_text,
-        "clientId": synth.confluence_media_client_id(str(cid)),
+        "clientId": client,
         "descriptors": [],
     }
 
@@ -2852,12 +2875,13 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         term.startswith("body.storage.") and term.split(".")[2]
         for term in (expand or "").split(",")
     )
-    # The members of a body representation an `expand` term names, by representation: the
-    # third segment of `body.<representation>.<name>`, where the name is one of the three a
-    # representation carries beside `value` and `representation`. A name under a member
-    # (`body.storage.embeddedContent.x`) names the member, as real answers it with what the
-    # member alone draws. The tuple is the order real names the unserved ones under
-    # `_expandable`.
+    # representation carries beside `value` and `representation`. A name under `embeddedContent`
+    # or `mediaToken` names the member, as real answers it with what the member alone draws
+    # (2026-11-17: `x` under each, `token` under `mediaToken`). Real expands a name under
+    # `webresource` inside it instead (`uris`, `tags`, `keys` and `contexts`, and `uris`, `tags`
+    # and `metatags` under its `superbatch`, 2026-11-17), which this server does not serve: such
+    # a term draws `webresource` as the member alone is. The tuple is the order real names the
+    # unserved ones under `_expandable`.
     body_member_names = ("webresource", "embeddedContent", "mediaToken")
     body_members: dict[str, set[str]] = {}
     for term in (expand or "").split(","):
@@ -3030,7 +3054,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             members = body_members.get(name, set())
             rep = {}
             if "mediaToken" in members:
-                rep["mediaToken"] = _confluence_media_token(cid)
+                rep["mediaToken"] = _confluence_media_token(request, cid)
             rep["value"] = body_writers[name]()
             if "webresource" in members:
                 rep["webresource"] = {

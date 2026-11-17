@@ -2599,7 +2599,7 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
         "visibility": "public",
         "created": "2026-10-01T09:00:00Z",
     }
-    settings = tiny_corpus(tmp_path, [page])
+    settings = tiny_corpus(tmp_path, [page, {**page, "doc_id": "q", "title": "other"}])
     with client_for(settings, reload=True) as c:
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         api = "/atlassian/wiki/rest/api"
@@ -2665,8 +2665,9 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
             assert len(segments) == 3
             header = json.loads(base64.urlsafe_b64decode(segments[0] + "=="))
             assert header == {"alg": "HS256"}
-        # All three named together leave `content` alone under `_expandable`, and the
-        # `clientId` is the same on a second read.
+        media = read("storage", "body.storage.mediaToken.token")
+        assert list(media) == ["mediaToken", "value", "representation", "_expandable"]
+        # All three named together leave `content` alone under `_expandable`.
         storage = read(
             "storage",
             "body.storage.embeddedContent,body.storage.webresource,body.storage.mediaToken",
@@ -2680,8 +2681,29 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
             "_expandable",
         ]
         assert storage["_expandable"] == {"content": content_link}
-        again = read("storage", "body.storage.mediaToken")
-        assert again["mediaToken"]["clientId"] == storage["mediaToken"]["clientId"]
+        # The token's payload claims, and a `clientId` that is the same on another page.
+        token = storage["mediaToken"]
+        claims = token["token"].split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))
+        assert list(payload) == [
+            "iss",
+            "access",
+            "exp",
+            "nbf",
+            "aaId",
+            "https://id.atlassian.com/appAccredited",
+            "authType",
+            "https://atlassian.com/authProfile",
+        ]
+        assert payload["iss"] == token["clientId"]
+        assert payload["access"] == {f"urn:filestore:collection:contentId-{pid}": ["read"]}
+        assert payload["exp"] - payload["nbf"] == 48 * 60
+        other = c.get(
+            f"{api}/content/{served_id('confluence', 'q')}",
+            headers=h,
+            params={"expand": "body.storage.mediaToken"},
+        ).json()["body"]["storage"]["mediaToken"]
+        assert other["clientId"] == token["clientId"]
 
 
 # --- Jira ------------------------------------------------------------------------

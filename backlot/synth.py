@@ -543,14 +543,14 @@ def atlassian_cloud_id(org: str) -> str:
     return _uuid_from("cloudid:" + org)
 
 
-def confluence_media_client_id(content_id: str) -> str:
-    """The `clientId` of a body representation's `mediaToken` member.
+def confluence_media_client_id(org: str) -> str:
+    """The `clientId` of a body representation's `mediaToken` member, and its token's `iss`.
 
-    Real's was a UUID, the same on the reads compared (Confluence Cloud, 2026-11-13, one page),
-    and nothing in a corpus derives it, so it is seeded from the content id like every other
-    synthetic id here: stable across reads of a page, which is all that was measured.
+    Real's was one v4 UUID on two pages read by one account (Confluence Cloud, 2026-11-17), and
+    nothing in a corpus derives it, so it is seeded from the org name, as
+    :func:`atlassian_cloud_id` is.
     """
-    return _uuid_from("confluence-media-client:" + content_id)
+    return _uuid_from("confluence-media-client:" + org)
 
 
 def github_login(email: str) -> str:

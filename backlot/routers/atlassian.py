@@ -5783,11 +5783,14 @@ def spring_sort_failure(request: Request, status: int, headers, body: bytes) -> 
     405s, 406s and 415s among them: on Jira by its 500 page (``errors.atlassian.jira_oops_page``)
     with no `WWW-Authenticate`, an `OPTIONS` by the empty 500 and seven methods in `Allow`, whatever
     the credential; on Confluence by an empty 500 with no `content-type`. What comes before Spring
-    stands: the gateway's Connect-token 403, Tomcat's 401 for an unreadable Basic value, and on
-    Confluence's JAX-RS services Jersey's own reading of the header, its 400
-    (``errors.atlassian.not_acceptable``) or the 404's 500.
+    stands: the gateway's Connect-token 403, Jira's redirect of an unsupported browser
+    (:func:`unsupported_browser_redirect`, a `GET` and an `OPTIONS` on 2026-11-17), Tomcat's 401
+    for an unreadable Basic value, and on Confluence's JAX-RS services Jersey's own reading of the
+    header, its 400 (``errors.atlassian.not_acceptable``) or the 404's 500.
     """
     if not errors_atlassian.is_confluence(request.url.path):
+        if request.scope.get("atlassian_unsupported_browser"):
+            return None
         if status == 403 and auth.atlassian_bearer_unreadable(request):
             return None
         media = errors_atlassian.JIRA_OOPS_MEDIA_TYPE

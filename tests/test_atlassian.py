@@ -657,8 +657,8 @@ IE11 = "Mozilla/5.0 (Windows NT 6.1; Trident/7.0; rv:11.0) like Gecko"
     ],
 )
 def test_jira_redirects_internet_explorer_11_by_its_user_agent(client, user_agent, redirected):
-    """The rows of the 70 `User-Agent` values measured on a Jira Cloud site
-    that ``errors.atlassian.is_unsupported_browser`` decides."""
+    """Rows drawn from the 70 `User-Agent` values measured on a Jira Cloud site, each as
+    ``errors.atlassian.is_unsupported_browser`` decides it."""
     r = client.get(
         "/atlassian/rest/api/3/serverInfo",
         headers={"User-Agent": user_agent},
@@ -668,10 +668,11 @@ def test_jira_redirects_internet_explorer_11_by_its_user_agent(client, user_agen
 
 
 def test_jira_redirects_internet_explorer_11_ahead_of_what_it_answers(client, admin_h):
-    """Jira answers IE11 with a 302 to its unsupported-browser page in place of what it would
-    answer: a 200, its 415, its 406, its 404 for an unknown path, an `OPTIONS` and a `HEAD`, with
-    a credential that works and with none (``atlassian.unsupported_browser_redirect``)."""
+    """Jira answers IE11 with a 302 to its unsupported-browser page in place of what each row
+    would get, a `HEAD` included, with a credential that works and with none, and on a path whose
+    slashes are doubled (``main.redirect_an_unsupported_browser_off_jira`` lists the answers)."""
     ua = {"User-Agent": IE11}
+    unsortable = {"Accept": "application/json;Q=abc, text/plain"}
     requests = [
         ("GET", "/rest/api/3/serverInfo?cb=1", {}),
         ("GET", "/rest/api/3/project/search", admin_h),
@@ -681,19 +682,20 @@ def test_jira_redirects_internet_explorer_11_ahead_of_what_it_answers(client, ad
         ("GET", "/rest/nope/thing", {}),
         ("OPTIONS", "/rest/api/3/serverInfo", {}),
         ("HEAD", "/rest/api/3/serverInfo", {}),
+        ("GET", "/rest/api/3/serverInfo", unsortable),
+        ("OPTIONS", "/rest/api/3/serverInfo", unsortable),
+        ("GET", "//rest/api/3/serverInfo", {}),
     ]
     for method, path, headers in requests:
         r = client.request(
             method, f"/atlassian{path}", headers={**headers, **ua}, follow_redirects=False
         )
         assert r.status_code == 302, (method, path)
-        # the site's own origin, the query not carried
         assert r.headers["location"] == "http://testserver/unsupported-browser.jsp", path
         assert r.content == b"", path
         if method != "HEAD":
             assert r.headers["content-length"] == "0", path
         assert "content-type" not in r.headers, path
-        # Jira's request id and `timing-allow-origin` beside the gateway's, and nothing a route adds
         assert r.headers["timing-allow-origin"] == "*" and "x-arequestid" in r.headers, path
         assert r.headers["x-content-type-options"] == "nosniff", path
         for absent in ("cache-control", "x-aaccountid", "x-ratelimit-limit"):
@@ -703,7 +705,8 @@ def test_jira_redirects_internet_explorer_11_ahead_of_what_it_answers(client, ad
 def test_jira_reads_only_the_first_user_agent_and_leaves_confluence_alone(client, admin_h):
     """Two `User-Agent` headers: only the first decides, so IE11 then curl redirects and curl then
     IE11 is served, as are the two halves sent apart. Confluence answers IE11 as any client, and
-    the Connect-token 403 stands ahead of the redirect (``main.redirect_an_unsupported_browser_off_jira``)."""
+    the Connect-token 403 stands ahead of the redirect
+    (``main.redirect_an_unsupported_browser_off_jira``)."""
     url = "/atlassian/rest/api/3/serverInfo"
 
     def status(*agents, extra=()):

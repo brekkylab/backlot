@@ -617,6 +617,22 @@ def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
     assert answered == dict.fromkeys(paths, (200, None) if found else (404, refusal))
 
 
+@pytest.mark.parametrize("path", ["/rest", "//rest", "///rest"])
+def test_jira_refuses_a_bearer_it_cannot_read_on_rest_mount(client, path):
+    """The Connect-token 403 is the gateway's, which refuses `/rest` itself as it refuses a route
+    under it, reading each run of slashes as one (``main.refuse_a_bearer_jira_cannot_read``)."""
+    r = client.get(f"/atlassian{path}", headers={"Authorization": "Bearer garbage"})
+    assert r.status_code == 403, path
+    assert r.json() == {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE}, path
+
+
+def test_jira_serves_404_on_rest_mount_without_credential(client):
+    """With no credential, `/rest` is answered with Jira's 404 problem response."""
+    r = client.get("/atlassian/rest")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/problem+json")
+
+
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque

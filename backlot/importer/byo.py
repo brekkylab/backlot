@@ -324,7 +324,7 @@ def _epoch(v):
         return None
     if isinstance(v, (int, float)):
         return _seconds(v)
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     s = str(v).strip().replace("Z", "+00:00")
     try:
@@ -338,7 +338,11 @@ def _epoch(v):
         # [Errno 22] on Windows 11 (Python 3.14.0), and -86400 with `+00:00` on both.
         if written.tzinfo is None:
             written = written.replace(tzinfo=timezone.utc)
-        return int(written.timestamp())
+        # Count in integers: timestamp() rounds the last microsecond of year 9999 into
+        # year 10000. Truncate toward zero before the same range check as numeric inputs.
+        elapsed = written - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        whole, part = divmod(elapsed, timedelta(seconds=1))
+        return _seconds(whole + 1 if whole < 0 and part else whole)
     # Epoch seconds written as a string — `"1770746760"`, or the `<sec>.<frac>` a Slack
     # ts takes, which is the form an `edited.ts` next door is already in. ISO is tried
     # first, so an 8-digit basic-format date stays a date rather than becoming a second.

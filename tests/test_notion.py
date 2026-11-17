@@ -178,6 +178,8 @@ _UNPUBLISHED_ROWS = [
     ("GET", "/notion/v1/oauth/token"),
     ("POST", "/notion/v1/oauth/other"),
     ("GET", f"/notion/v1/ai/skills/{_ID}/upload"),
+    ("GET", "/notion/v1/meeting_notes"),
+    ("DELETE", f"/notion/v1/meeting_notes/{_ID}"),
     ("GET", "/notion/v1/user%73/me"),
     ("GET", "/notion/v1%2Fusers/me"),
     ("GET", "/notion/v1/users%2Fme"),
@@ -211,6 +213,8 @@ _PUBLISHED_NOT_SERVED_ROWS = [
     ("PATCH", "/notion/v1/pages/abc"),
     ("PATCH", f"/notion/v1/pages/{_ID}/"),
     ("POST", f"/notion/v1/ai/skills/{_ID}/upload"),
+    ("POST", "/notion/v1/meeting_notes"),
+    ("PATCH", f"/notion/v1/meeting_notes/{_ID}"),
 ]
 
 

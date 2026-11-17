@@ -3,7 +3,7 @@
   "endpoints": [
     "https://developers.notion.com/openapi.json"
   ],
-  "measured": "2026-11-03",
+  "measured": "2026-11-17",
   "operations": [
     {
       "operation": "DELETE /v1/agents/{}",
@@ -271,6 +271,14 @@
       "severity": "gap"
     },
     {
+      "operation": "PATCH /v1/meeting_notes/{}",
+      "id": "update-meeting-note-page",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Backlot serves none of Notion's meeting-notes operations, and with the connected integration's token a body naming a calendar event answered 403 restricted_resource `This tool is not available to space_guest_bot actors.` (2026-11-17), so no record shape could be read."
+    },
+    {
       "operation": "PATCH /v1/pages/{}",
       "id": "patch-page",
       "status": "missing",
@@ -381,6 +389,14 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "POST /v1/meeting_notes",
+      "id": "create-meeting-note-page",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Backlot serves none of Notion's meeting-notes operations, and with the connected integration's token `{}` answered 403 restricted_resource `This tool is not available to space_guest_bot actors.` (2026-11-17), so no record shape could be read."
     },
     {
       "operation": "POST /v1/oauth/introspect",

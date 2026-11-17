@@ -7117,7 +7117,11 @@ def test_confluence_refuses_an_operation_it_publishes_to_a_caller_it_cannot_name
     ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` with the headers its comment names."""
     r = client.request(method, path.format(**keys), headers={} if anonymous else admin_h)
     if refusal is None:
-        assert r.status_code == 404, r.text
+        if path.endswith("/contentbody/convert/async/bulk/tasks"):
+            assert r.status_code == 200
+            assert r.json() == []
+        else:
+            assert r.status_code == 404, r.text
         return
     assert r.status_code == 403
     assert r.headers["content-type"] == "application/json"
@@ -12995,3 +12999,65 @@ def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, ad
         answered[path] = (r.status_code, r.json()["limit"] if r.status_code == 200 else r.json())
     assert len(answered) == len(rows)
     assert answered == dict(rows)
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+@pytest.mark.parametrize(
+    "path,status,sentence",
+    [
+        (
+            "1",
+            400,
+            "api.BadRequestException: ID must match pattern: ^[\\w-:]*_-{0,1}\\w*_{0,1}\\w*$",
+        ),
+        (
+            "abc",
+            400,
+            "api.BadRequestException: ID must match pattern: ^[\\w-:]*_-{0,1}\\w*_{0,1}\\w*$",
+        ),
+        ("abc_1", None, None),
+        ("bulk/tasks", 200, None),
+        ("bulk/tasks?ids=1&ids=2", 200, None),
+        ("bulk/tasks?ids=abc_1", 200, None),
+    ],
+)
+def test_confluence_reads_conversion_tasks_that_do_not_exist(
+    client, admin_h, authenticated, path, status, sentence
+):
+    """Pin the measured task reads in `confluence_conversion_task` and
+    `confluence_conversion_tasks`: malformed ids, anonymous and authenticated callers,
+    and a FAILED entry for each bulk id, in order."""
+    response = client.get(
+        "/atlassian/wiki/rest/api/contentbody/convert/async/" + path,
+        headers=admin_h if authenticated else {},
+    )
+    if status is None:
+        status = 403 if authenticated else 401
+        sentence = (
+            "api.PermissionException: null"
+            if authenticated
+            else "AuthenticationRequiredException: User must be authenticated to get non anonymous conversion job."
+        )
+    assert response.status_code == status, response.text
+    assert response.headers["content-type"] == "application/json"
+    if status == 200:
+        ids = httpx.QueryParams(path.partition("?")[2]).get_list("ids")
+        assert response.json() == [
+            {
+                "webresource": None,
+                "embeddedContent": [],
+                "content": None,
+                "mediaToken": None,
+                "renderTaskId": task_id,
+                "status": "FAILED",
+                "error": "ID is invalid or nonexistent",
+            }
+            for task_id in ids
+        ]
+    else:
+        allowed = status != 401
+        assert response.json() == {
+            "statusCode": status,
+            "data": {"authorized": allowed, "valid": True, "errors": [], "successful": allowed},
+            "message": "com.atlassian.confluence.api.service.exceptions." + sentence,
+        }

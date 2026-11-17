@@ -55,8 +55,8 @@ async def _checked_before_the_route(request: Request) -> None:
     (:func:`_refuse_a_search_media_type`) and then the 406, ahead of an empty body's 400, an
     unbounded query's 400, a parameter's 400 and the route's own answer. `space/{key}/permission` is
     the one route this asks the 401 alone of: the 405 it answers comes before the 406. On `search`
-    a `Content-Type` its JAX-RS service will not read is refused between the 401 and the 406
-    (:func:`_refuse_the_search_media_type`).
+    and the conversion-task reads, a `Content-Type` their JAX-RS service will not read is
+    refused between the 401 and the 406 (:func:`_refuse_the_search_media_type`).
     """
     endpoint = getattr(request.scope.get("route"), "endpoint", None)
     jaxrs = False
@@ -66,7 +66,11 @@ async def _checked_before_the_route(request: Request) -> None:
             _confluence_caller(request)
         if endpoint is confluence_space_permission:
             return
-        jaxrs = endpoint is confluence_cql_search
+        jaxrs = endpoint in (
+            confluence_cql_search,
+            confluence_conversion_task,
+            confluence_conversion_tasks,
+        )
         if jaxrs:
             _refuse_the_search_media_type(request)
     elif endpoint is jira_search and request.method == "POST":
@@ -2394,6 +2398,66 @@ async def confluence_cql_search(request: Request):
             }
         ),
         media_type="application/json",
+    )
+
+
+@router.get(
+    "/wiki/rest/api/contentbody/convert/async/bulk/tasks",
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "ids",
+                "in": "query",
+                "required": False,
+                "schema": {"type": "array", "items": {"type": "string"}},
+            }
+        ]
+    },
+)
+async def confluence_conversion_tasks(request: Request):
+    """Confluence Cloud bulk conversion-task read, measured 2026-10-22: each requested
+    id names no task here and is returned as FAILED, in request order."""
+    return [
+        {
+            "webresource": None,
+            "embeddedContent": [],
+            "content": None,
+            "mediaToken": None,
+            "renderTaskId": task_id,
+            "status": "FAILED",
+            "error": "ID is invalid or nonexistent",
+        }
+        for task_id in request.query_params.getlist("ids")
+    ]
+
+
+@router.get("/wiki/rest/api/contentbody/convert/async/{task_id}")
+async def confluence_conversion_task(task_id: str, request: Request):
+    """Confluence Cloud conversion-task read, measured 2026-10-22: an id outside the
+    pattern is a 400; one naming no task is a 401 anonymously and a 403 authenticated.
+    Backlot starts no conversions, so every id names no task."""
+    pattern = r"^[\w-:]*_-{0,1}\w*_{0,1}\w*$"
+    # Keep Java's pattern in the message; Python requires the literal hyphen last.
+    if re.fullmatch(r"^[\w:-]*_-{0,1}\w*_{0,1}\w*$", task_id, re.ASCII) is None:
+        status = 400
+        message = f"api.BadRequestException: ID must match pattern: {pattern}"
+    elif auth.atlassian_caller(request).is_anonymous:
+        status = 401
+        message = (
+            "AuthenticationRequiredException: User must be authenticated "
+            "to get non anonymous conversion job."
+        )
+    else:
+        status = 403
+        message = "api.PermissionException: null"
+    allowed = status != 401
+    raise errors_atlassian.AtlassianError(
+        status,
+        {
+            "statusCode": status,
+            "data": {"authorized": allowed, "valid": True, "errors": [], "successful": allowed},
+            "message": "com.atlassian.confluence.api.service.exceptions." + message,
+        },
     )
 
 
@@ -5152,6 +5216,7 @@ _CONFLUENCE_JAXRS_GETS = _operations(
 _CONFLUENCE_JAXRS_GETS_UNTYPED = _operations(["GET /wiki/rest/api/settings/lookandfeel"])
 #: The two of them that ran with no credential: `[]` at 200 and a 404 for an id naming nothing.
 _CONFLUENCE_JAXRS_RUN = tuple(row for row in _CONFLUENCE_JAXRS_WRITES if "/contentbody/" in row)
+_CONFLUENCE_CONVERSION_WRITES = _operations(_CONFLUENCE_JAXRS_RUN)
 
 #: The Confluence services whose refusal of a caller with no credential is
 #: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` rather than the one every other operation
@@ -5978,7 +6043,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     published = _published_answer(request, vendor_path)
     if published is not None:
         return published
-    if served:
+    if served and not _is(_CONFLUENCE_CONVERSION_WRITES, request.method, vendor_path):
         raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
     if errors_atlassian.is_confluence(path):
         if (

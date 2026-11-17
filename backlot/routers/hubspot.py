@@ -1308,16 +1308,21 @@ def _refuse_an_operator(
 
 def _refuse_too_many_in_values(
     raw: bytes, body: _InOrder, before: tuple[int, int] | None = None
-) -> JSONResponse | None:
-    """Real's 400 for the first filter, in body order, whose `IN` names more than 100 values,
-    or None.
+) -> tuple[tuple[int, int], JSONResponse] | tuple[None, None]:
+    """Where the first filter, in body order, whose `IN` or `NOT_IN` names more than 100
+    distinct values closes, and real's 400 for it, or `(None, None)`.
 
-    Real refuses the count however the search is evaluated, one filter group or many, and
-    reports it at the filter's closing brace (api.hubapi.com, 2026-11-15: 101 values at
-    column 784 and 994 at column 7928 of the bodies that carried them). The walk follows
-    `_refuse_an_operator`'s, occurrences of a repeated key included, and a refusal at or past
-    `before` is left to what starts there. Which of the two refusals real gives when an
-    unreadable operator stands in another filter was not measured; the operator is read first.
+    Measured against api.hubapi.com on 2026-11-15 and 2026-11-17, contacts search: real refuses
+    the count however the search is evaluated, one filter group or many, and reports it at the
+    filter's closing brace (101 values at column 784 and 994 at column 7928 of the bodies that
+    carried them, a `NOT_IN` of 101 at column 788). It counts the distinct values, each by the
+    text `_scalars_as_text` reads it as: 100 texts with a repeat of one, `"\\u00760"` beside
+    `"v0"`, `"1"` beside `1`, `"1.0"` beside `1.0`, `"1e1"` beside `1e1`, `"true"` beside `true`
+    and 994 copies of one text were served, while `"1"` beside `1.0`, `"10"` beside `1e1`, a
+    text in another case or after a space, `""`, and `null` beside `"null"` each counted once
+    more. The walk follows `_refuse_an_operator`'s, occurrences of a repeated key included, and of
+    a filter's repeated `values` the last is counted (2026-11-17). A filter closing at or past
+    `before` is left to what starts there.
     """
     seen: dict = {}
     for key, groups in body.members:
@@ -1338,7 +1343,7 @@ def _refuse_too_many_in_values(
                     if not isinstance(f, dict):
                         continue
                     try:
-                        if _operator(f) != "IN":
+                        if _operator(f) not in ("IN", "NOT_IN"):
                             continue
                     except (IndexError, KeyError, AttributeError):
                         # an operator `_operator` cannot read is the shape refusal's to name
@@ -1346,16 +1351,18 @@ def _refuse_too_many_in_values(
                     values = f.get("values")
                     if not isinstance(values, list) or len(values) <= 100:
                         continue
-                    position = _closing_at(
-                        raw, ("filterGroups", i, "filters", j), {0: occurrence, 2: index}
-                    )
+                    path = ("filterGroups", i, "filters", j)
+                    at = {0: occurrence, 2: index}
+                    position = _closing_at(raw, path, at)
                     if before is not None and position >= before:
-                        return None
-                    return _invalid(
-                        position,
-                        f"too many IN list values (count: {len(values)}, max allowed: 100)",
-                    )
-    return None
+                        return None, None
+                    text, start, end = _token_span(raw, path + ("values",), at)
+                    spelt = json.loads(text[start:end], parse_int=str, parse_float=str)
+                    count = len({json.dumps(s) if isinstance(s, bool) else s for s in spelt})
+                    if count > 100:
+                        message = f"too many IN list values (count: {count}, max allowed: 100)"
+                        return position, _invalid(position, message)
+    return None, None
 
 
 def _java_double(x: float) -> str:
@@ -1926,10 +1933,11 @@ def _join_balanced(frags: list[str], op: str) -> str:
     """`frags` joined by `op`, paired level by level so the tree stays balanced.
 
     A flat chain is one left-deep expression tree to SQLite, which refuses it past a depth of
-    1000 (`Expression tree is too large`): a single search group of 993 filters, or one `IN`
-    of 994 values, was a 500 where real serves the search (2026-11-15). Paired, the depth
-    grows with the logarithm of the count instead. AND and OR associate, three-valued logic
-    included, so the pairing cannot change which rows the condition holds for.
+    1000 (`Expression tree is too large`), and real serves a search group of 993 filters
+    (measured 2026-11-15) and an `IN` that names one value more often than such a chain holds
+    (`_refuse_too_many_in_values`). Paired, the depth grows with the logarithm of the count
+    instead. AND and OR associate, three-valued logic included, so the pairing cannot change
+    which rows the condition holds for.
     """
     while len(frags) > 1:
         frags = [
@@ -2405,10 +2413,14 @@ async def search_objects(object_type: str, request: Request):
     # Before `after`: real refuses the operator first when the cursor is one it can parse but
     # names no record (measured 2026-10-06), and a `filterGroups` or `query` it cannot read ahead of
     # such a cursor (2026-11-09). The operator is named when it starts ahead of the value the shape
-    # refusal names, that value when it starts ahead of the non-standard token.
+    # refusal names, that value when it starts ahead of the non-standard token. A filter of more
+    # than 100 distinct values is named when it closes ahead of that value or token, and an
+    # operator when it starts ahead of that filter's closing brace (2026-11-17).
+    stop = before if at is None else at
+    counted, too_many = _refuse_too_many_in_values(raw, pairs, stop)
     refused = (
-        _refuse_an_operator(raw, pairs, before if at is None else at)
-        or _refuse_too_many_in_values(raw, pairs, before if at is None else at)
+        _refuse_an_operator(raw, pairs, stop if counted is None else counted)
+        or too_many
         or unreadable
         or refused
     )

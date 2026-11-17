@@ -1285,6 +1285,26 @@ async def route_a_github_path_the_way_github_does(request: Request, call_next):
 
 @_middleware(
     lambda scope: (
+        _url_path(scope).startswith("/atlassian/rest/")
+        and errors.atlassian.is_unsupported_browser(Headers(scope=scope).get("user-agent"))
+    )
+)
+async def redirect_an_unsupported_browser_off_jira(request: Request, call_next):
+    """Redirect a Jira REST request from Internet Explorer 11 to the unsupported-browser page, as
+    Jira does (``atlassian.unsupported_browser_redirect``), ahead of every route and every refusal
+    Jira itself gives: its 415, its 406, the body it cannot parse, its 404s and an `OPTIONS` alike.
+
+    Registered before :func:`refuse_a_bearer_jira_cannot_read`, so it runs inside it and inside the
+    front door: the Connect-token 403, the CDN's 400 for a `%00` and the edge's 400 for a `PATCH`
+    are answered first, as on real. Confluence is not here: both its mounts answered the same
+    `User-Agent` as `curl/8` (``errors.atlassian.is_unsupported_browser``).
+    """
+    request.scope["atlassian_unsupported_browser"] = True
+    return atlassian.unsupported_browser_redirect(request)
+
+
+@_middleware(
+    lambda scope: (
         scope["method"] != "OPTIONS"
         and _url_path(scope).startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(Request(scope))

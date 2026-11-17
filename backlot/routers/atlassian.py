@@ -5998,6 +5998,16 @@ def _search_options(request: Request) -> Response:
 _JIRA_WEB_PAGE = "<!DOCTYPE html><html><head><title>Jira</title></head><body></body></html>"
 
 
+def unsupported_browser_redirect(request: Request) -> Response:
+    """Jira's answer to a request from a browser it does not support
+    (``errors.atlassian.is_unsupported_browser``): `302 Found` with no body and no `content-type`,
+    to the page on the site's own origin, the query not carried. Measured on a Jira Cloud site on
+    2026-11-16 on every REST mount, every method, any credential short of a Bearer and none;
+    `/wiki` answered the same `User-Agent` as any other."""
+    location = f"{_site(request)}{errors_atlassian.UNSUPPORTED_BROWSER_PAGE}"
+    return Response(status_code=302, headers={"Location": location})
+
+
 def _site_surface(request: Request) -> Response:
     """What the site answers outside both API mounts, measured on 2026-09-30.
 
@@ -6324,6 +6334,11 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         if sends_deprecation(path, status_code) and _a_route_answers(request):
             headers.update(CONFLUENCE_DEPRECATION)
         return headers
+    if request.scope.get("atlassian_unsupported_browser"):
+        # The redirect is given ahead of the application: Jira's request id and
+        # `timing-allow-origin` beside the gateway's, and no `cache-control`, account id or quota,
+        # with a credential that resolves as with none (:func:`unsupported_browser_redirect`).
+        return {**headers, "timing-allow-origin": "*"}
     if status_code == 403 and auth.atlassian_bearer_unreadable(request):
         # The Connect-token 403 is the gateway's
         # (``backlot.main.refuse_a_bearer_jira_cannot_read``): real puts the two ids and

@@ -617,6 +617,107 @@ def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
     assert answered == dict.fromkeys(paths, (200, None) if found else (404, refusal))
 
 
+IE11 = "Mozilla/5.0 (Windows NT 6.1; Trident/7.0; rv:11.0) like Gecko"
+
+
+@pytest.mark.parametrize(
+    "user_agent, redirected",
+    [
+        (IE11, True),
+        ("Trident/7.0; rv:11.0", True),
+        # no version is checked
+        *(
+            (ua, True)
+            for ua in ("Trident/6.0; rv:11.0", "Trident/77.77; rv:11.0", "Trident/7.0; rv:1.1")
+        ),
+        # a substring: what stands around it does not matter
+        *(
+            (ua, True)
+            for ua in (
+                "Trident/7.0; rv:11.0x",
+                "xTrident/7.0; rv:11.0",
+                "Trident/7.0; rv:11.0, curl/8",
+            )
+        ),
+        # each version is digits, a dot, digits, and exactly `; ` stands between them
+        *(
+            (ua, False)
+            for ua in (
+                *("Trident/7.0", "rv:11.0", "rv:11.0 Trident/7.0;", "Trident/7; rv:11.0"),
+                *("Trident/7.0.1; rv:11.0", "Trident/7.0; rv:11", "Trident/7.0; Rv:11.0"),
+                *("Trident/7.0;rv:11.0", "Trident/7.0;  rv:11.0", "Trident/7.0; foo; rv:11.0"),
+                *("trident/7.0; rv:11.0", "TRIDENT/7.0; rv:11.0"),
+            )
+        ),
+        # real IE11 on a touch device, IE10, Firefox and curl
+        ("Mozilla/5.0 (Windows NT 10.0; Trident/7.0; Touch; rv:11.0) like Gecko", False),
+        ("Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)", False),
+        ("Mozilla/5.0 (Windows NT 6.1; rv:11.0) Gecko/20100101 Firefox/11.0", False),
+        ("curl/8", False),
+    ],
+)
+def test_jira_redirects_internet_explorer_11_by_its_user_agent(client, user_agent, redirected):
+    """The rows of the 70 `User-Agent` values measured on a Jira Cloud site
+    that ``errors.atlassian.is_unsupported_browser`` decides."""
+    r = client.get(
+        "/atlassian/rest/api/3/serverInfo",
+        headers={"User-Agent": user_agent},
+        follow_redirects=False,
+    )
+    assert r.status_code == (302 if redirected else 200), user_agent
+
+
+def test_jira_redirects_internet_explorer_11_ahead_of_what_it_answers(client, admin_h):
+    """Jira answers IE11 with a 302 to its unsupported-browser page in place of what it would
+    answer: a 200, its 415, its 406, its 404 for an unknown path, an `OPTIONS` and a `HEAD`, with
+    a credential that works and with none (``atlassian.unsupported_browser_redirect``)."""
+    ua = {"User-Agent": IE11}
+    requests = [
+        ("GET", "/rest/api/3/serverInfo?cb=1", {}),
+        ("GET", "/rest/api/3/project/search", admin_h),
+        ("GET", "/rest/api/2/serverInfo", {"Accept": "application/xml"}),
+        ("POST", "/rest/api/3/search/jql", {**admin_h, "Content-Type": "text/plain"}),
+        ("GET", "/rest/agile/1.0/board", admin_h),
+        ("GET", "/rest/nope/thing", {}),
+        ("OPTIONS", "/rest/api/3/serverInfo", {}),
+        ("HEAD", "/rest/api/3/serverInfo", {}),
+    ]
+    for method, path, headers in requests:
+        r = client.request(
+            method, f"/atlassian{path}", headers={**headers, **ua}, follow_redirects=False
+        )
+        assert r.status_code == 302, (method, path)
+        # the site's own origin, the query not carried
+        assert r.headers["location"] == "http://testserver/unsupported-browser.jsp", path
+        assert r.content == b"", path
+        if method != "HEAD":
+            assert r.headers["content-length"] == "0", path
+        assert "content-type" not in r.headers, path
+        # Jira's request id and `timing-allow-origin` beside the gateway's, and nothing a route adds
+        assert r.headers["timing-allow-origin"] == "*" and "x-arequestid" in r.headers, path
+        assert r.headers["x-content-type-options"] == "nosniff", path
+        for absent in ("cache-control", "x-aaccountid", "x-ratelimit-limit"):
+            assert absent not in r.headers, (path, absent)
+
+
+def test_jira_reads_only_the_first_user_agent_and_leaves_confluence_alone(client, admin_h):
+    """Two `User-Agent` headers: only the first decides, so IE11 then curl redirects and curl then
+    IE11 is served, as are the two halves sent apart. Confluence answers IE11 as any client, and
+    the Connect-token 403 stands ahead of the redirect (``main.redirect_an_unsupported_browser_off_jira``)."""
+    url = "/atlassian/rest/api/3/serverInfo"
+
+    def status(*agents, extra=()):
+        headers = [*(("User-Agent", a) for a in agents), *extra]
+        return client.get(url, headers=headers, follow_redirects=False).status_code
+
+    assert status(IE11, "curl/8") == 302
+    assert status("curl/8", IE11) == 200
+    assert status("Trident/7.0;", "rv:11.0") == 200
+    assert status(IE11, extra=[("Authorization", "Bearer garbage")]) == 403
+    wiki = client.get("/atlassian/wiki/rest/api/space", headers={**admin_h, "User-Agent": IE11})
+    assert wiki.status_code == 200
+
+
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque

@@ -895,9 +895,9 @@ def test_byo_epoch_handles_every_number_without_raising(tmp_path):
 )
 def test_byo_an_iso_time_reads_the_same_whatever_the_machines_zone(written, second, monkeypatch):
     """An ISO time is the same second on every machine: one with no offset is UTC, one with an
-    offset is that offset. Seconds outside years 1–9999 after truncation are refused.
-    Read under a UTC+9 zone where the platform can switch it
-    (`backlot.importer.byo._epoch` has the measurement)."""
+    offset is that offset. Seconds outside years 1–9999 after truncation are refused. Read under a
+    UTC+9 zone where the platform can switch it (`backlot.importer.byo._epoch` has the
+    measurement)."""
     import time
 
     from backlot.importer.byo import _epoch

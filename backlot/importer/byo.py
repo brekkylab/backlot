@@ -276,6 +276,43 @@ def _epoch_field(v, where, field):
     return sec
 
 
+def _hubspot_time(v, where, field):
+    """A HubSpot time as numeric seconds, keeping whole milliseconds.
+
+    ``_epoch_field`` decides whether ``v`` is a time at all and drops its fraction of a second;
+    this keeps the milliseconds. A digit below the millisecond is floored toward the earlier time
+    for ISO and numeric input alike, so the floored second is checked against the year range
+    again: ``-62135596800.0001`` truncates to year 1's first second and floors to the one before.
+    """
+    second = _epoch_field(v, where, field)
+    if second is None:
+        return None
+    from datetime import datetime, timedelta, timezone
+    from decimal import ROUND_FLOOR, Decimal
+
+    written = None
+    if not isinstance(v, (int, float)):
+        try:
+            written = datetime.fromisoformat(str(v).strip().replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    if written is None:
+        millis = int((Decimal(str(v)) * 1000).to_integral_value(rounding=ROUND_FLOOR))
+    else:
+        if written.tzinfo is None:
+            written = written.replace(tzinfo=timezone.utc)
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        millis = (written - epoch) // timedelta(milliseconds=1)
+    try:
+        synth.utc_datetime(millis // 1000)
+    except OverflowError:
+        raise SystemExit(
+            f"{where}: {field} is not a time this importer can read "
+            f"(got {v!r}; write epoch seconds or ISO 8601)"
+        ) from None
+    return millis // 1000 if millis % 1000 == 0 else millis / 1000
+
+
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
@@ -2326,8 +2363,12 @@ class _Loader:
                 extras[k] = rec[k]
         subtype = rec.get("subtype")
         parent_id = rec.get("parent")
-        created = _epoch_field(rec["created"], where, "created")
-        updated = _epoch_field(rec.get("updated"), where, "updated")
+        if src == "hubspot":
+            created = _hubspot_time(rec["created"], where, "created")
+            updated = _hubspot_time(rec.get("updated"), where, "updated")
+        else:
+            created = _epoch_field(rec["created"], where, "created")
+            updated = _epoch_field(rec.get("updated"), where, "updated")
         if src == "slack":
             _check_edited(where, rec.get("edited"), created, author)
 

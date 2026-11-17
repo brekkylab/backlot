@@ -705,13 +705,13 @@ def read_body(raw: bytes, content_type: str, content_encoding: str) -> Any:
 
     Only a JSON body is read (:func:`is_json`); any other is no body at all, whatever it holds. A
     JSON one goes through :func:`backlot.graphql.body.body_parser_text` with Notion's limit, and
-    each refusal it makes is Express's: `latin1`, `utf8` and `utf-nope` charsets and a `bogus` or
-    `br` encoding drew the 415, a body one byte past the limit and a gzip body inflating past it the
-    413, and a gzip body that was not one the 400. An empty body is no members, and a body that does
-    not open with `{` or `[`, or that ``JSON.parse`` refuses, is `invalid_json` (a JSON scalar, a
-    body of spaces, `{"a":1,}`, `NaN`, a UTF-8 body sent as `utf-16le`). `{` drew `invalid_json`
-    with no credential, a token that does not resolve, no `Notion-Version`, one it does not publish,
-    on a path no route serves, on `/` and on a `GET`, and `latin1`, `bogus` and a body of 1 MB drew
+    each refusal it makes is Express's: `latin1`, `utf8` and `utf-nope` charsets and a `bogus`
+    encoding drew the 415, a body one byte past the limit and a gzip body inflating past it the 413,
+    and a gzip body that was not one the 400. An empty body is no members, and a body that does not
+    open with `{` or `[`, or that ``JSON.parse`` refuses, is `invalid_json` (a JSON scalar, a body
+    of spaces, `{"a":1,}`, `NaN`, a UTF-8 body sent as `utf-16le`). `{` drew `invalid_json` with no
+    credential, a token that does not resolve, no `Notion-Version`, one it does not publish, on a
+    path no route serves, on `/` and on a `GET`, and `latin1`, `bogus` and a body of 1 MB drew
     theirs with no credential (2026-10-21). Returns ``"invalid_json"`` for that refusal, since its
     words are the router's."""
     if not is_json(content_type):

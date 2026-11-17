@@ -20977,8 +20977,8 @@ def _in_segment(segment, request):
     return {kind: body | {where: {"segmentId": segment, **body[where]}}}
 
 
-# Paragraphs in no list after list items (`gdocs._Nesting`), each row's Doc read back as the
-# `text/markdown` export (`markdown`) real gave of it
+# Paragraphs in no list after list items (`gdocs._Nesting`), and a list item's lines after its
+# first, each row's Doc read back as the `text/markdown` export (`markdown`) real gave of it
 _NESTED_MARKDOWN_ROWS = [
     # a paragraph in no list 36 PT in, one step, after an item goes under the item and joins it, and
     # a paragraph at no indent after it stands apart
@@ -21419,6 +21419,48 @@ _NESTED_MARKDOWN_ROWS = [
         ],
         "markdown",
         "* aa  \n* bb[^1]\n\n[^1]: yy",
+    ),
+    # a numbered item, a checkbox item and an item under another, each with a vertical tab
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\x0bz\nbb")],
+            [_bullets(1, 7, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+        ],
+        "markdown",
+        "1. aa  \n   z  \n2. bb",
+    ),
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\x0bz\nbb")],
+            [_bullets(1, 8, "BULLET_CHECKBOX")],
+        ],
+        "markdown",
+        "- [ ] aa  \n  z  \n- [ ] bb",
+    ),
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\n\tbb\x0bz")],
+            [_bullets(1, 9, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+        ],
+        "markdown",
+        "1. aa  \n   1. bb  \n      z",
+    ),
+    # a numbered item with an empty line between two vertical tabs
+    (
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\x0b\x0bz\nbb")],
+            [_bullets(1, 9, "NUMBERED_DECIMAL_ALPHA_ROMAN")],
+        ],
+        "markdown",
+        "1. aa\n\n   z  \n2. bb",
     ),
     # `cc`, 36 PT in, goes under no item after `> bb`, a quote under none; the line after the
     # vertical tab in `gg`, a quote under `* dd`, starts with its `> ` and the width of `* dd` and

@@ -20392,6 +20392,870 @@ _STYLE_DOC_ROWS = [
             None,
         ],
     ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 0, "unit": "PT"},
+                            "indentStart": {"magnitude": 36, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-start-only36",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                            "indentStart": {"magnitude": 54, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-start54-first18",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 36, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first36",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first54",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 360, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 306, "unit": "PT"},
+                    "indentStart": {"magnitude": 324, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first360-depth8",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a\nb"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 0, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                },
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 36, "unit": "PT"},
+                            "indentStart": {"magnitude": 36, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 4, "startIndex": 3},
+                    }
+                },
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 4, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            ),
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "nestingLevel": 1, "textStyle": {"underline": False}},
+            ),
+        ],
+        id="review1387-mixed0-then36",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a\nb"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 36, "unit": "PT"},
+                            "indentStart": {"magnitude": 36, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                },
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 0, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 4, "startIndex": 3},
+                    }
+                },
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 4, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "nestingLevel": 1, "textStyle": {"underline": False}},
+            ),
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            ),
+        ],
+        id="review1387-mixed36-then0",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "\ta"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 3, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 3, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 90, "unit": "PT"},
+                    "indentStart": {"magnitude": 108, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-tab-plus54",
+    ),
+    # explicit_review_table
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "\ta"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": -36, "unit": "PT"},
+                            "indentStart": {"magnitude": 36, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 3, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 3, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-tab-plus-start36-firstnegative36",
+    ),
+    # explicit_helper_measurement4583878426
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": -36, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first-36",
+    ),
+    # explicit_helper_measurement4583878426
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first18",
+    ),
+    # explicit_helper_measurement4583878426
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 27, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first27",
+    ),
+    # explicit_helper_measurement4583878426
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 35, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first35",
+    ),
+    # explicit_helper_measurement4583878426
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 45, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first45",
+    ),
+    # explicit_helper_measurement4583878426
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 72, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 90, "unit": "PT"},
+                    "indentStart": {"magnitude": 108, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first72",
+    ),
+    # explicit_helper_measurement4583878426
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 90, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 90, "unit": "PT"},
+                    "indentStart": {"magnitude": 108, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-first90",
+    ),
+    # derived_rule_control_not_enumerated_vendor_measurement
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "a"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 35.5, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 2, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-derived-under36fraction",
+    ),
+    # derived_rule_control_not_enumerated_vendor_measurement
+    pytest.param(
+        "wr-text",
+        [
+            [
+                {"deleteContentRange": {"range": {"endIndex": 24, "startIndex": 1}}},
+                {"insertText": {"location": {"index": 1}, "text": "\ta"}},
+            ],
+            [
+                {
+                    "updateParagraphStyle": {
+                        "fields": "indentStart,indentFirstLine",
+                        "paragraphStyle": {
+                            "indentFirstLine": {"magnitude": 360, "unit": "PT"},
+                            "indentStart": {"magnitude": 0, "unit": "PT"},
+                        },
+                        "range": {"endIndex": 3, "startIndex": 1},
+                    }
+                }
+            ],
+            [
+                {
+                    "createParagraphBullets": {
+                        "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
+                        "range": {"endIndex": 3, "startIndex": 1},
+                    }
+                }
+            ],
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 306, "unit": "PT"},
+                    "indentStart": {"magnitude": 324, "unit": "PT"},
+                    "namedStyleType": "NORMAL_TEXT",
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            )
+        ],
+        id="review1387-derived-tab-plus-cap8",
+    ),
+    # Public original section-break sequence: paragraph metadata read separately from Markdown.
+    pytest.param(
+        "wr-text",
+        [
+            [_del(1, 24)],
+            [_ins(1, "aa\nbb")],
+            [_bullets(1, 2)],
+            [
+                _ps(
+                    4,
+                    6,
+                    "indentStart,indentFirstLine",
+                    indentStart={"magnitude": 36, "unit": "PT"},
+                    indentFirstLine={"magnitude": 36, "unit": "PT"},
+                )
+            ],
+            [{"insertSectionBreak": {"location": {"index": 6}, "sectionType": "NEXT_PAGE"}}],
+            [_ins(8, "cc")],
+            [_bullets(8, 10)],
+        ],
+        "paragraphs",
+        [
+            [
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "indentFirstLine": {"magnitude": 18, "unit": "PT"},
+                },
+                {"listId": "$3.0", "textStyle": {"underline": False}},
+            ],
+            [
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentStart": {"magnitude": 36, "unit": "PT"},
+                    "indentFirstLine": {"magnitude": 36, "unit": "PT"},
+                },
+                None,
+            ],
+            [
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                },
+                {"listId": "$7.0", "textStyle": {"underline": False}},
+            ],
+        ],
+        id="review1387-original-section-break-paragraphs",
+    ),
 ]
 
 # What real served each paragraph of a table's cell on a Doc `insertTable` made: every member, those
@@ -21135,15 +21999,8 @@ _NESTED_MARKDOWN_ROWS = [
             [_ins(8, "cc")],
             [_bullets(8, 10)],
         ],
-        "paragraphs-and-markdown",
-        {
-            "paragraphs": [
-                ["aa\n", _PT(36), _PT(18), True, None],
-                ["bb\n", _PT(36), _PT(36), False, None],
-                ["cc\n", _PT(72), _PT(54), True, None],
-            ],
-            "markdown": "* aa  \n  bb\n\n* cc",
-        },
+        "markdown",
+        "* aa  \n  bb\n\n* cc",
     ),
     # an empty paragraph after an item does not stop the next going under it
     (
@@ -21528,23 +22385,6 @@ def _docs_served(wc, h, doc: str, part: str):
             wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": m}).text
             for m in ("text/plain", "text/markdown")
         ]
-    if part == "paragraphs-and-markdown":
-        read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
-        return {
-            "paragraphs": [
-                [
-                    "".join(pe.get("textRun", {}).get("content", "") for pe in para["elements"]),
-                    para["paragraphStyle"].get("indentStart"),
-                    para["paragraphStyle"].get("indentFirstLine"),
-                    "bullet" in para,
-                    para.get("bullet", {}).get("nestingLevel"),
-                ]
-                for para in gdocs.paragraphs_of(read["body"]["content"])
-            ],
-            "markdown": wc.get(
-                f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/markdown"}
-            ).text,
-        }
     if part == "markdown":
         return wc.get(
             f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/markdown"}

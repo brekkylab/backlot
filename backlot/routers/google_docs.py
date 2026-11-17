@@ -2183,9 +2183,10 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     missing), an unset or unknown preset, then a body's section break at 0. An empty range lists
     the paragraph it falls in.
 
-    Measured too: each paragraph not in a list loses the tabs it opens with, its level being how
-    many it had, at most 8, less the fewest any such paragraph of the request had, and a list the
-    request makes indents each level that many tabs further (paragraphs of seven tabs made a list
+    Measured too: each paragraph not in a list loses the tabs it opens with. Public review
+    measurements of 2026-11-16 add its nonnegative whole 36 PT indentFirstLine stops to those
+    tabs, at most 8; indentStart does not count. Its level is that count less the fewest any such
+    paragraph of the request had. A list the request makes indents each level that many tabs further (paragraphs of seven tabs made a list
     indented 252 PT more than its preset). The paragraphs join the list of the paragraph right
     before them (`gdocs.Body.follows_paragraph`; measured 2026-11-03, two cells listed one after
     the other in one preset made two lists) when that list's glyphs are the preset's, else the
@@ -2202,11 +2203,8 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         raise _EditorRefused("Cannot operate on the first section break in the document.")
     paragraphs = body.uncovered_paragraphs(body.paragraphs_in(start, end))
     owns = [body.bullet(p) for p in paragraphs]
-    origin = (
-        body.paragraphs[paragraphs[0]]["paragraphStyle"].get("indentStart", {}).get("magnitude", 0)
-    )
     tabs = [
-        0 if own is not None else min(body.leading_tabs(p), _DOCS_LIST_DEPTH)
+        0 if own is not None else min(body.leading_tabs(p) + _docs_stops(body, p), _DOCS_LIST_DEPTH)
         for p, own in zip(paragraphs, owns)
     ]
     fewest = min((n for n, own in zip(tabs, owns) if own is None), default=0)
@@ -2219,13 +2217,7 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
         levels
     ):
         made = before["listId"]
-    if made is None:
-        # Docs, createParagraphBullets, measured 2026-11-10: a new list on a
-        # paragraph indented 36 PT starts at 72/54 PT, still at nesting level zero.
-        levels = _docs_shifted(
-            _DOCS_PRESETS[_DOCS_BULLET_PRESET.names[preset]], fewest, origin=origin
-        )
-        made = doc.new_list(tab, levels)
+    made = made or doc.new_list(tab, levels)
     for p, n, own in zip(paragraphs, tabs, owns):
         level = n - fewest if own is None else own.get("nestingLevel", 0)
         at = _docs_levels(tab, made)[level]
@@ -2237,12 +2229,18 @@ def _docs_levels(tab: dict, list_id: str) -> list[dict]:
     return tab["lists"][list_id]["listProperties"]["nestingLevels"]
 
 
-def _docs_shifted(levels: list[dict], tabs: int, *, origin: float = 0) -> list[dict]:
-    """A preset's levels, shifted from ``origin`` by ``tabs`` tabs of 36 PT."""
+def _docs_stops(body: gdocs.Body, p: int) -> int:
+    """A paragraph's nonnegative whole 36 PT first-line stops."""
+    first = body.paragraphs[p]["paragraphStyle"].get("indentFirstLine", {}).get("magnitude", 0)
+    return max(int(first // 36), 0)
+
+
+def _docs_shifted(levels: list[dict], tabs: int) -> list[dict]:
+    """A preset's levels, shifted by ``tabs`` tabs of 36 PT."""
     out = copy.deepcopy(levels)
     for level in out:
         for key in ("indentFirstLine", "indentStart"):
-            level[key]["magnitude"] += origin + 36 * tabs
+            level[key]["magnitude"] += 36 * tabs
     return out
 
 

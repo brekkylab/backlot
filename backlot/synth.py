@@ -543,6 +543,16 @@ def atlassian_cloud_id(org: str) -> str:
     return _uuid_from("cloudid:" + org)
 
 
+def confluence_media_client_id(org: str) -> str:
+    """The `clientId` of a body representation's `mediaToken` member, and its token's `iss`.
+
+    Real's was one v4 UUID on two pages read by one account (Confluence Cloud, 2026-11-17), and
+    nothing in a corpus derives it, so it is seeded from the org name, as
+    :func:`atlassian_cloud_id` is.
+    """
+    return _uuid_from("confluence-media-client:" + org)
+
+
 def github_login(email: str) -> str:
     return email.split("@", 1)[0].replace(".", "-")
 

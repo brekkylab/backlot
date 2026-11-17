@@ -2583,6 +2583,129 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             }, name
 
 
+def test_confluence_body_representation_members_named_by_expand(tmp_path):
+    """A term naming one of a body representation's three members serves that member in place
+    of its `_expandable` name, on each of the four representations this server renders:
+    `embeddedContent` is `[]` after `representation`, `webresource` stands between `value`
+    and `representation`, and `mediaToken` stands first with its seven members (the
+    measurement `_confluence_media_token` records)."""
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [page, {**page, "doc_id": "q", "title": "other"}])
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+        content_link = f"/rest/api/content/{pid}"
+        webresource = {
+            "superbatch": {"_expandable": {"uris": "", "metatags": "", "tags": ""}},
+            "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+        }
+
+        def read(rep_name, expand):
+            return c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                "body"
+            ][rep_name]
+
+        for rep_name in ("storage", "view", "export_view", "atlas_doc_format"):
+            embedded = read(rep_name, f"body.{rep_name}.embeddedContent")
+            assert list(embedded) == [
+                "value",
+                "representation",
+                "embeddedContent",
+                "_expandable",
+            ]
+            assert embedded["embeddedContent"] == []
+            assert embedded["_expandable"] == {
+                "webresource": "",
+                "mediaToken": "",
+                "content": content_link,
+            }
+            # A name under the member names the member.
+            assert read(rep_name, f"body.{rep_name}.embeddedContent.x") == embedded
+
+            web = read(rep_name, f"body.{rep_name}.webresource")
+            assert list(web) == ["value", "webresource", "representation", "_expandable"]
+            assert web["webresource"] == webresource
+            assert web["_expandable"] == {
+                "embeddedContent": "",
+                "mediaToken": "",
+                "content": content_link,
+            }
+
+            media = read(rep_name, f"body.{rep_name}.mediaToken")
+            assert list(media) == ["mediaToken", "value", "representation", "_expandable"]
+            assert media["_expandable"] == {
+                "webresource": "",
+                "embeddedContent": "",
+                "content": content_link,
+            }
+            token = media["mediaToken"]
+            assert list(token) == [
+                "contentId",
+                "token",
+                "fileIds",
+                "collectionIds",
+                "expiryDateTime",
+                "clientId",
+                "descriptors",
+            ]
+            assert token["contentId"] == str(pid)
+            assert token["fileIds"] == [] and token["descriptors"] == []
+            assert token["collectionIds"] == [f"contentId-{pid}"]
+            segments = token["token"].split(".")
+            assert len(segments) == 3
+            header = json.loads(base64.urlsafe_b64decode(segments[0] + "=="))
+            assert header == {"alg": "HS256"}
+        media = read("storage", "body.storage.mediaToken.token")
+        assert list(media) == ["mediaToken", "value", "representation", "_expandable"]
+        # All three named together leave `content` alone under `_expandable`.
+        storage = read(
+            "storage",
+            "body.storage.embeddedContent,body.storage.webresource,body.storage.mediaToken",
+        )
+        assert list(storage) == [
+            "mediaToken",
+            "value",
+            "webresource",
+            "representation",
+            "embeddedContent",
+            "_expandable",
+        ]
+        assert storage["_expandable"] == {"content": content_link}
+        # The token's payload claims, and a `clientId` that is the same on another page.
+        token = storage["mediaToken"]
+        claims = token["token"].split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))
+        assert list(payload) == [
+            "iss",
+            "access",
+            "exp",
+            "nbf",
+            "aaId",
+            "https://id.atlassian.com/appAccredited",
+            "authType",
+            "https://atlassian.com/authProfile",
+        ]
+        assert payload["iss"] == token["clientId"]
+        assert payload["access"] == {f"urn:filestore:collection:contentId-{pid}": ["read"]}
+        assert payload["exp"] - payload["nbf"] == 48 * 60
+        other = c.get(
+            f"{api}/content/{served_id('confluence', 'q')}",
+            headers=h,
+            params={"expand": "body.storage.mediaToken"},
+        ).json()["body"]["storage"]["mediaToken"]
+        assert other["clientId"] == token["clientId"]
+
+
 # --- Jira ------------------------------------------------------------------------
 
 

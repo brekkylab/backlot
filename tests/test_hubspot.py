@@ -6,15 +6,22 @@ or call the response builder directly.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
 import uuid
 
 import pytest
 
 from backlot import store
-from tests._helpers import crawl_hubspot, db_count, outcome, sent_as, served_id, tiny_corpus
+from tests._helpers import (
+    CLOUDFLARE_BLOCK_HEADERS,
+    cloudflare_blocked,
+    crawl_hubspot,
+    db_count,
+    outcome,
+    sent_as,
+    served_id,
+    tiny_corpus,
+)
 
 HUBSPOT_OBJECT_TYPES = ("companies", "contacts", "notes")
 
@@ -1470,33 +1477,9 @@ def test_hubspot_leaves_a_path_no_route_serves_to_the_router(client, admin_h, me
     assert r.status_code == 404
 
 
-#: The SHA-256 of real's 403 block page with its Ray ID read as `<RAY>` and the address it named
-#: as `<IP>`, the same for each of the 34 answers ``hubspot._BLOCK_PAGE`` was read from.
+#: Real's 403 block page as ``cloudflare_blocked`` reads it, the same for each of the 34 answers
+#: ``hubspot._BLOCK_PAGE`` was read from.
 _BLOCK_PAGE_SHA256 = "65d57c8fa13d6703177fef36fb7b88e9ac8fcda0d0c97ff92a491840569515b8"
-_BLOCK_HEADERS = {
-    "content-type": "text/html; charset=UTF-8",
-    "cache-control": "private, max-age=0, no-store, no-cache, must-revalidate, post-check=0, "
-    "pre-check=0",
-    "expires": "Thu, 01 Jan 1970 00:00:01 GMT",
-    "referrer-policy": "same-origin",
-    "x-frame-options": "SAMEORIGIN",
-    "connection": None,
-}
-
-
-def _blocked(r) -> tuple:
-    """``r``'s status, the headers of :data:`_BLOCK_HEADERS` and the SHA-256 of its body read as
-    :data:`_BLOCK_PAGE_SHA256` reads real's, the address being the one `sent_as` sends from."""
-    body = re.sub(
-        rb'(Cloudflare Ray ID: <strong class="font-semibold">)[0-9a-f]{16}(</strong>)',
-        rb"\1<RAY>\2",
-        r.content,
-    )
-    body = re.sub(
-        rb'(<span class="hidden" id="cf-footer-ip">)127\.0\.0\.1(</span>)', rb"\1<IP>\2", body
-    )
-    headers = {name: r.headers.get(name) for name in _BLOCK_HEADERS}
-    return r.status_code, headers, hashlib.sha256(body).hexdigest()
 
 
 # Each `X-Probe` value sent to api.hubapi.com on 2026-10-30 (UTC) with no credential on the
@@ -1535,11 +1518,11 @@ _HEADER_VALUES = [
 def test_hubspot_answers_a_header_value_that_is_not_utf_8_with_cloudflares_block(client):
     def answered(value):
         r = sent_as(client, "GET", f"/hubspot{_LISTING}", [("X-Probe", value.decode("latin-1"))])
-        return _blocked(r) if r.status_code == 403 else r.status_code
+        return cloudflare_blocked(r) if r.status_code == 403 else r.status_code
 
     got = {value: outcome(answered, value) for value, _ in _HEADER_VALUES}
     assert got == {
-        value: (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256) if blocked else 401
+        value: (403, CLOUDFLARE_BLOCK_HEADERS, _BLOCK_PAGE_SHA256) if blocked else 401
         for value, blocked in _HEADER_VALUES
     }
 
@@ -1575,7 +1558,7 @@ def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(client)
         without = sent_as(client, method, f"/hubspot{path}", plain, content=body)
         if method == "HEAD":
             return r.status_code, r.headers["content-length"], without.status_code != 403
-        return (*_blocked(r), without.status_code != 403)
+        return (*cloudflare_blocked(r), without.status_code != 403)
 
     got, expected = {}, {}
     for row, method, path, sent, body, answer in _BLOCK_ROWS:
@@ -1588,7 +1571,7 @@ def test_hubspot_answers_cloudflares_block_after_cloudflares_own_answers(client)
             get = sent_as(client, "GET", f"/hubspot{path}", sent)
             expected[row] = (403, get.headers["content-length"], True)
         else:
-            expected[row] = (403, _BLOCK_HEADERS, _BLOCK_PAGE_SHA256, True)
+            expected[row] = (403, CLOUDFLARE_BLOCK_HEADERS, _BLOCK_PAGE_SHA256, True)
     assert got == expected
 
 
@@ -2127,6 +2110,24 @@ def _too_many_sorts(count: int) -> dict:
     }
 
 
+def _sort_field_refusal() -> dict:
+    return {
+        "status": "error",
+        "message": (
+            "Invalid input JSON: Cannot build SortField, "
+            "some of required attributes are not set [propertyName]"
+        ),
+    }
+
+
+def _sort_direction_refusal(direction: str) -> dict:
+    return {
+        "status": "error",
+        "message": f"Invalid input JSON: No enum constant .{direction}",
+        "category": "VALIDATION_ERROR",
+    }
+
+
 def _mismatched(kind: str, token: str) -> str:
     return f"Cannot deserialize value of type  from {kind} value (token `JsonToken.{token}`)"
 
@@ -2243,6 +2244,9 @@ _OPERATOR_ROWS = [
     _op("empty-before-unknown", _jobtitle([("", "Salesperson"), ("neq", "Salesperson")]), _empty_operator_refusal(0, 0)),
     _op("unknown-before-empty", _jobtitle([("neq", "Salesperson"), ("", "Salesperson")]), _enum_refusal(1, 68)),
     _op("repeated-operator-key", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"EQ","operator":"neq","value":"Salesperson"}]}]}', _enum_refusal(1, 84)),
+    _op("repeated-operator-key-first-unreadable", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"neq","operator":"EQ","value":"Salesperson"}]}]}', _enum_refusal(1, 68)),
+    _op("repeated-operator-array-first", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": [], "operator": "EQ", "value": "x"}]}]}', _json_refusal(70, _ARRAY)),
+    _op("repeated-filtergroups-key-first-unreadable", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"neq","value":"x"}]}],"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"EQ","value":"x"}]}]}', _enum_refusal(1, 68)),
     _op("repeated-filtergroups-key", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"EQ","value":"x"}]}],"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":"neq","value":"x"}]}]}', _enum_refusal(1, 155)),
     _op("after-an-integer-operator", '{"filterGroups":[{"filters":[{"propertyName":"jobtitle","operator":5,"value":"x"},{"propertyName":"jobtitle","operator":"neq","value":"x"}]}]}', _enum_refusal(1, 121)),
     _op("before-a-cursor-naming-no-record", _jobtitle([("neq", "x")], after="10000"), _enum_refusal(1, 68)),
@@ -2433,6 +2437,9 @@ def test_hubspot_search_sorts(client, admin_h, tmp_path):
 
     assert names("ASCENDING") == ["Acme Health", "Borealis Clinics"]  # 150 then 400
     assert names("DESCENDING") == ["Borealis Clinics", "Acme Health"]
+    assert [names(d) for d in (5, None, 0, 1, True, 1.5, [], {})] == [
+        ["Acme Health", "Borealis Clinics"]
+    ] * 8
 
     from tests._helpers import corpus_client
 
@@ -2498,11 +2505,11 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
             "created": created,
         }
         for doc_id, email, created in (
-            ("hs-c-maria", "emailmaria@hubspot.com", "2026-09-30T09:42:39Z"),
-            ("hs-c-ava", "ava@example.com", "2026-09-30T09:47:03Z"),
-            ("hs-c-bh", "bh@hubspot.com", "2026-09-30T09:42:40Z"),
-            ("hs-c-bob", "bob@example.com", "2026-09-30T09:47:44Z"),
-            ("hs-c-cara", "cara@example.org", "2026-09-30T09:48:26Z"),
+            ("hs-c-maria", "emailmaria@hubspot.com", "2026-09-30T09:42:39.215Z"),
+            ("hs-c-ava", "ava@example.com", "2026-09-30T09:47:03.441Z"),
+            ("hs-c-bh", "bh@hubspot.com", "2026-09-30T09:42:39.729Z"),
+            ("hs-c-bob", "bob@example.com", "2026-09-30T09:47:44.340Z"),
+            ("hs-c-cara", "cara@example.org", "2026-09-30T09:48:26.603Z"),
         )
     ]
     settings = tiny_corpus(tmp_path, records)
@@ -2533,6 +2540,12 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
             "bob@example.com",
             "cara@example.org",
         ]
+        # No record states `updated`, so each serves its `created` as `updatedAt` too.
+        expected_times = {r["properties"]["email"]: (r["created"], r["created"]) for r in records}
+        assert {
+            r["properties"]["email"]: (r["createdAt"], r["updatedAt"])
+            for r in search({})["results"]
+        } == expected_times
         no_sort = ({}, {"sorts": []}, {"sorts": None})
         assert [emails(body) for body in no_sort] == [oldest_first] * 3
         assert [crawl(body) for body in no_sort] == [oldest_first] * 3
@@ -2541,6 +2554,51 @@ def test_hubspot_search_with_no_sort_answers_oldest_createdate_first(tmp_path):
         assert ids != sorted(ids)
         # A sort still decides the order.
         assert emails({"sorts": [{"propertyName": "email"}]}) == sorted(oldest_first)
+
+
+def test_hubspot_a_record_serves_its_created_and_updated_to_the_millisecond(tmp_path):
+    from tests._helpers import client_for
+
+    # Corpus times no measurement of real's covers, among them times before the epoch, an `updated`
+    # of 0 and an `updated` earlier than `created`.
+    before_epoch = "1969-12-31T23:59:59.750Z"
+    epoch = "1970-01-01T00:00:00.000Z"
+    update_cases = (
+        ({"created": -0.25}, (before_epoch, before_epoch)),
+        ({"created": -0.25, "updated": 0}, (before_epoch, epoch)),
+        (
+            {"created": 1.215, "updated": 1.9},
+            ("1970-01-01T00:00:01.215Z", "1970-01-01T00:00:01.900Z"),
+        ),
+        (
+            {"created": 1.9, "updated": 1.215},
+            ("1970-01-01T00:00:01.900Z", "1970-01-01T00:00:01.215Z"),
+        ),
+        ({"created": 1, "updated": 1}, ("1970-01-01T00:00:01.000Z",) * 2),
+    )
+    settings = tiny_corpus(
+        tmp_path,
+        [
+            {
+                "source_type": "hubspot",
+                "object_type": "contacts",
+                "doc_id": f"update-{i}",
+                "record_id": str(i + 1),
+                **times,
+            }
+            for i, (times, _expected) in enumerate(update_cases)
+        ],
+    )
+    with client_for(settings, reload=True) as client:
+        observed = []
+        for i, (_times, expected) in enumerate(update_cases):
+            response = client.get(
+                f"/hubspot/crm/v3/objects/contacts/{i + 1}",
+                headers={"Authorization": f"Bearer {settings.admin_token}"},
+            )
+            body = response.json()
+            observed.append((response.status_code, (body["createdAt"], body["updatedAt"])))
+        assert observed == [(200, expected) for _times, expected in update_cases]
 
 
 _COMPANIES = "/hubspot/crm/v3/objects/companies"
@@ -3030,6 +3088,14 @@ _TOKEN_ROWS = [
     _nt("null-group-then-nan", "search", '{"filterGroups": [null], "query": NaN}', _token_refusal(38, "NaN"), object_type="contacts"),
     _nt("null-filter-then-nan", "search", '{"filterGroups": [{"filters": [null]}], "query": NaN}', _json_refusal(37, "filters element"), object_type="contacts"),
     _nt("null-filter-then-nan-in-its-group", "search", '{"filterGroups": [{"filters": [null], "x": NaN}]}', _token_refusal(47, "NaN"), object_type="contacts"),
+    # a sort object and the token, named where `_refuse_a_search_shape` says
+    _nt("nan-sort-property", "search", '{"sorts": [{"propertyName": NaN}]}', _token_refusal(32, "NaN"), object_type="contacts"),
+    _nt("nan-in-a-sort-object", "search", '{"sorts": [{"x": NaN}]}', _token_refusal(21, "NaN"), object_type="contacts"),
+    _nt("sort-direction-then-nan-in-its-object", "search", '{"sorts": [{"direction": "DESC", "x": NaN}]}', _token_refusal(42, "NaN"), object_type="contacts"),
+    _nt("nan-then-sort-direction-in-its-object", "search", '{"sorts": [{"x": NaN, "direction": "DESC"}]}', _token_refusal(21, "NaN"), object_type="contacts"),
+    _nt("empty-sort-object-then-nan", "search", '{"sorts": [{}, NaN]}', _sort_field_refusal(), object_type="contacts"),
+    _nt("empty-sort-object-then-nan-query", "search", '{"sorts": [{}], "query": NaN}', _sort_field_refusal(), object_type="contacts"),
+    _nt("null-sort-then-nan", "search", '{"sorts": [null], "query": NaN}', _token_refusal(31, "NaN"), object_type="contacts"),
     # after the type and the credential
     _nt("after-an-unknown-type", "search", '{"limit":NaN}', {"status": "error", "message": "Unable to infer object type from: nosuchtype"}, object_type="nosuchtype"),
     _nt("after-the-credential", "batch/read", '{"inputs":[NaN]}', 401, authed=False),
@@ -3095,6 +3161,7 @@ _SEARCH_BODY_ROWS = [
     _sb("filterGroups-true", '{"filterGroups": true}', _json_refusal(18, _not_a_list("Boolean", "VALUE_TRUE"))),
     _sb("string-group", '{"filterGroups": ["x"]}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
     _sb("padded-string-group", '{"filterGroups": [" x "]}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
+    _sb("lone-surrogate-string-group", '{"filterGroups": ["\\ud800"]}', _json_refusal(19, _no_creator("String", "String value ('\ud800')"))),
     _sb("blank-string-group", '{"filterGroups": [" "]}', _unreadable_field("filterGroups[0]")),
     _sb("integer-group", '{"filterGroups": [5]}', _json_refusal(19, _no_creator("int/Int", "Number value (5)"))),
     _sb("true-group", '{"filterGroups": [true]}', _json_refusal(19, _no_creator("boolean/Boolean", "boolean value (true)"))),
@@ -3115,6 +3182,39 @@ _SEARCH_BODY_ROWS = [
     # bodies with a second value real cannot read
     _sb("query-array-then-filterGroups-string", '{"query": ["x"], "filterGroups": "x"}', _json_refusal(11, _ARRAY)),
     _sb("filterGroups-string-then-query-array", '{"filterGroups": "x", "query": ["x"]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    # a key repeated, read at each occurrence; a null element named only in its key's last list
+    _sb("repeated-filterGroups-first-unreadable", '{"filterGroups": "x", "filterGroups": []}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("repeated-filterGroups-last-unreadable", '{"filterGroups": [], "filterGroups": "x"}', _json_refusal(38, _not_a_list("String", "VALUE_STRING"))),
+    _sb("repeated-query-first-unreadable", '{"query": ["x"], "query": "y"}', _json_refusal(11, _ARRAY)),
+    _sb("repeated-query-last-unreadable", '{"query": "y", "query": ["x"]}', _json_refusal(25, _ARRAY)),
+    _sb("repeated-limit-first-unreadable", '{"limit": "abc", "limit": 5}', _unreadable_field("limit", "abc")),
+    _sb("repeated-limit-last-unreadable", '{"limit": 5, "limit": "abc"}', _unreadable_field("limit", "abc")),
+    _sb("repeated-filterGroups-both-read", '{"filterGroups": [], "filterGroups": []}', ("{}", False)),
+    _sb("repeated-filters-first-unreadable", '{"filterGroups": [{"filters": "x", "filters": []}]}', _json_refusal(31, _not_a_list("String", "VALUE_STRING"))),
+    _sb("repeated-value-array-first", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": [], "value": "x"}]}]}', _json_refusal(85, _ARRAY)),
+    _sb("repeated-values-integer-first", '{"filterGroups": [{"filters": [{"propertyName": "email", "operator": "IN", "values": 5, "values": ["x"]}]}]}', _json_refusal(86, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("repeated-filterGroups-null-group-first", '{"filterGroups": [null], "filterGroups": []}', ("{}", False)),
+    _sb("repeated-filters-null-filter-first", '{"filterGroups": [{"filters": [null], "filters": []}]}', ("{}", False)),
+    _sb("repeated-filterGroups-null-filter-first", '{"filterGroups": [{"filters": [null]}], "filterGroups": [{"filters": []}]}', _json_refusal(37, "filters element")),
+    _sb("repeated-filterGroups-null-group-then-null", '{"filterGroups": [null], "filterGroups": null}', ("{}", False)),
+    _sb("repeated-filters-null-filter-then-null", '{"filterGroups": [{"filters": [null], "filters": null}]}', ("{}", False)),
+    _sb("repeated-sorts-integer-first", '{"sorts": 5, "sorts": []}', _json_refusal(11, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("repeated-sorts-integer-last", '{"sorts": [], "sorts": 5}', _json_refusal(24, _not_a_list("Integer", "VALUE_NUMBER_INT"))),
+    _sb("repeated-sorts-integer-element-first", '{"sorts": [5], "sorts": []}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("repeated-sorts-bad-direction-first", '{"sorts": [{"propertyName": "email", "direction": "x"}], "sorts": []}', _sort_direction_refusal("x")),
+    _sb("repeated-sorts-bad-direction-last", '{"sorts": [], "sorts": [{"propertyName": "email", "direction": "x"}]}', _sort_direction_refusal("x")),
+    _sb("repeated-sorts-no-property-first", '{"sorts": [{"direction": "ASCENDING"}], "sorts": ["email"]}', _sort_field_refusal()),
+    _sb("repeated-sorts-null-sort-first", '{"sorts": [null], "sorts": []}', ('{"sorts": []}', False)),
+    _sb("repeated-sorts-null-sort-last", '{"sorts": [], "sorts": [null]}', _json_refusal(30, "sorts element")),
+    _sb("repeated-sorts-null-sort-then-null", '{"sorts": [null], "sorts": null}', ("{}", False)),
+    _sb("repeated-sorts-null-sort-then-string", '{"sorts": [null], "sorts": ["email"]}', ('{"sorts": ["email"]}', True)),
+    _sb("null-sort-then-repeated-filterGroups-null-group-first", '{"sorts": [null], "filterGroups": [null], "filterGroups": []}', _json_refusal(61, "sorts element")),
+    _sb("null-group-then-repeated-sorts-null-sort-first", '{"filterGroups": [null], "sorts": [null], "sorts": []}', _json_refusal(54, "filterGroups element")),
+    _sb("repeated-filterGroups-null-group-first-then-null-sort", '{"filterGroups": [null], "filterGroups": [], "sorts": [null]}', _json_refusal(61, "sorts element")),
+    _sb("repeated-direction-bad-first", '{"sorts": [{"propertyName": "email", "direction": "x", "direction": "ASCENDING"}]}', ('{"sorts": [{"propertyName": "email", "direction": "ASCENDING"}]}', True)),
+    _sb("repeated-direction-bad-last", '{"sorts": [{"propertyName": "email", "direction": "ASCENDING", "direction": "x"}]}', _sort_direction_refusal("x")),
+    _sb("null-group-then-query", '{"filterGroups": [null], "query": "x"}', _json_refusal(38, "filterGroups element")),
+    _sb("null-filter-then-other-member", '{"filterGroups": [{"filters": [null], "x": []}]}', _json_refusal(46, "filters element")),
     _sb("bad-operator-then-string-group", '{"filterGroups": [' + _A_BOGUS_OPERATOR + ', "x"]}', _enum_refusal(1, 70)),
     _sb("string-group-then-bad-operator", '{"filterGroups": ["x", ' + _A_BOGUS_OPERATOR + ']}', _json_refusal(19, _no_creator("String", "String value ('x')"))),
     _sb("filter-then-string-filter", _A_GOOD_FILTER + ', "y"]}]}', _json_refusal(91, _no_creator("String", "String value ('y')"))),
@@ -3126,6 +3226,38 @@ _SEARCH_BODY_ROWS = [
     _sb("properties-then-filterGroups-string", '{"properties": ["email"], "filterGroups": "x"}', _json_refusal(43, _not_a_list("String", "VALUE_STRING"))),
     _sb("sorts-string-then-filterGroups-string", '{"sorts": ["email"], "filterGroups": "x"}', _json_refusal(38, _not_a_list("String", "VALUE_STRING"))),
     _sb("two-sorts-then-filterGroups-string", '{"sorts": ["email", "lastname"], "filterGroups": "x"}', _json_refusal(50, _not_a_list("String", "VALUE_STRING"))),
+    # sorts real refuses: not a list, an unreadable element, no propertyName, or a bad direction
+    _sb("sorts-string", '{"sorts": "email"}', _json_refusal(11, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-integer", '{"sorts": [5]}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-boolean", '{"sorts": [true]}', _json_refusal(12, _mismatched("Boolean", "VALUE_TRUE"))),
+    _sb("sorts-array", '{"sorts": [[]]}', _json_refusal(12, _ARRAY)),
+    _sb("sorts-null", '{"sorts": [null]}', _json_refusal(17, "sorts element")),
+    _sb("sorts-null-null", '{"sorts": [null, null]}', _json_refusal(23, "sorts element")),
+    _sb("sorts-null-then-string", '{"sorts": [null, "email"]}', _json_refusal(26, "sorts element")),
+    _sb("sorts-two-integers", '{"sorts": [5, 6]}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-integer-then-strings", '{"sorts": [5, "email", "lastname"]}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-strings-then-integer", '{"sorts": ["email", "lastname", 5]}', _json_refusal(33, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("sorts-empty-object", '{"sorts": [{}]}', _sort_field_refusal()),
+    _sb("sorts-two-empty-objects", '{"sorts": [{}, {}]}', _sort_field_refusal()),
+    _sb("sorts-object-integer-property", '{"sorts": [{"propertyName": 5}]}', _sort_field_refusal()),
+    _sb("sorts-direction-descending", '{"sorts": [{"propertyName": "email", "direction": "descending"}]}', _sort_direction_refusal("descending")),
+    _sb("sorts-direction-desc", '{"sorts": [{"propertyName": "email", "direction": "DESC"}]}', _sort_direction_refusal("DESC")),
+    _sb("sorts-direction-desc-no-property", '{"sorts": [{"direction": "DESC"}]}', _sort_direction_refusal("DESC")),
+    _sb("sorts-direction-up", '{"sorts": [{"propertyName": "email", "direction": "UP"}]}', _sort_direction_refusal("UP")),
+    _sb("sorts-direction-empty", '{"sorts": [{"propertyName": "email", "direction": ""}]}', _sort_direction_refusal("")),
+    _sb("sorts-direction-leading-space", '{"sorts": [{"propertyName": "email", "direction": " DESCENDING"}]}', _sort_direction_refusal(" DESCENDING")),
+    _sb("sorts-direction-lone-surrogate", '{"sorts": [{"propertyName": "email", "direction": "\\ud800"}]}', _sort_direction_refusal("\ud800")),
+    _sb("sorts-object-array-property", '{"sorts": [{"propertyName": []}]}', _sort_field_refusal()),
+    _sb("sorts-object-null-property", '{"sorts": [{"propertyName": null}]}', _sort_field_refusal()),
+    _sb("sorts-object-integer-property-then-direction-desc", '{"sorts": [{"propertyName": 5, "direction": "DESC"}]}', _sort_direction_refusal("DESC")),
+    _sb("sorts-strings-then-empty-object", '{"sorts": ["email", "lastname", {}]}', _sort_field_refusal()),
+    # ordering of sorts against other body refusals
+    _sb("sorts-integer-then-filterGroups-string", '{"sorts": [5], "filterGroups": "x"}', _json_refusal(12, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("filterGroups-string-then-sorts-integer", '{"filterGroups": "x", "sorts": [5]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-empty-object-then-filterGroups-string", '{"sorts": [{}], "filterGroups": "x"}', _sort_field_refusal()),
+    _sb("filterGroups-string-then-sorts-empty-object", '{"filterGroups": "x", "sorts": [{}]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
+    _sb("sorts-direction-desc-then-filterGroups-string", '{"sorts": [{"direction": "DESC"}], "filterGroups": "x"}', _sort_direction_refusal("DESC")),
+    _sb("filterGroups-string-then-sorts-direction-desc", '{"filterGroups": "x", "sorts": [{"direction": "DESC"}]}', _json_refusal(18, _not_a_list("String", "VALUE_STRING"))),
     # more than one sort, counted once per property and direction
     _sb("two-sorts", '{"sorts": ["email", "-email"]}', _too_many_sorts(2)),
     _sb("two-sorts-repeated", '{"sorts": ["lastname", "lastname", "lastname", "email", "email"]}', _too_many_sorts(2)),
@@ -3140,6 +3272,13 @@ _SEARCH_BODY_ROWS = [
     _sb("null-group-then-null-filter", '{"filterGroups": [null, {"filters": [null]}]}', _json_refusal(43, "filters element")),
     _sb("null-group-then-bad-operator", '{"filterGroups": [null, ' + _A_BOGUS_OPERATOR + ']}', _enum_refusal(1, 76)),
     _sb("null-filter-then-bad-operator", '{"filterGroups": [{"filters": [null, {"propertyName": "email", "operator": "BOGUS"}]}]}', _enum_refusal(1, 76)),
+    _sb("null-sort-then-integer-sort", '{"sorts": [null, 5]}', _json_refusal(18, _mismatched("Integer", "VALUE_NUMBER_INT"))),
+    _sb("null-sort-then-empty-object", '{"sorts": [null, {}]}', _sort_field_refusal()),
+    _sb("null-sort-then-query-array", '{"sorts": [null], "query": ["x"]}', _json_refusal(28, _ARRAY)),
+    _sb("null-sort-then-filterGroups-string", '{"sorts": [null], "filterGroups": "x"}', _json_refusal(35, _not_a_list("String", "VALUE_STRING"))),
+    _sb("null-sort-then-null-filter", '{"sorts": [null], "filterGroups": [{"filters": [null]}]}', _json_refusal(54, "filters element")),
+    _sb("null-sort-then-null-group", '{"sorts": [null], "filterGroups": [null]}', _json_refusal(41, "filterGroups element")),
+    _sb("null-group-then-null-sort", '{"filterGroups": [null], "sorts": [null]}', _json_refusal(41, "filterGroups element")),
     # filter members
     _sb("propertyName-empty-array", _WITH_PROPERTY_NAME % "[]", _json_refusal(49, _ARRAY)),
     _sb("propertyName-array", _WITH_PROPERTY_NAME % '["email"]', _json_refusal(49, _ARRAY)),

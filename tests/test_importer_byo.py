@@ -1198,6 +1198,68 @@ def test_hubspot_byo_load(tmp_path):
     assert store.get_container(conn, "hubspot", "contacts") is not None
     conn.close()
 
+    sample = {
+        "source_type": "hubspot",
+        "object_type": "contacts",
+        "doc_id": "clock",
+        "record_id": "77",
+        "properties": {"email": "clock@example.com"},
+    }
+    cases = (
+        (1, 1000),
+        (1.215, 1215),
+        (1, 1000),
+        ("1.215", 1215),
+        ("1970-01-01T00:00:00.215Z", 215),
+        ("1970-01-01T01:00:00.215+01:00", 215),
+        ("1970-01-01T00:00:00.215", 215),
+        ("1969-12-31T23:59:59.999Z", -1),
+        (-0.0001, -1),
+        ("1969-12-31T23:59:59.999900Z", -1),
+        (0.9999, 999),
+        (0, 0),
+        (20240101, 20240101000),
+        (20240101.0, 20240101000),
+        ("20240101", 1704067200000),
+        ("0001-01-01T00:00:00Z", -62135596800000),
+        ("0001-01-01T00:00:00.001Z", -62135596799999),
+        ("9999-12-31T23:59:59.999Z", 253402300799999),
+    )
+    observed = []
+    for created, _millis in cases:
+        # A full re-import replaces a row; --append deliberately has no update path.
+        load(_write(tmp_path, [{**sample, "created": created, "updated": created}]), settings)
+        with closing(store.connect_ro(settings.db_path)) as conn:
+            row = store.hubspot_by_id(conn, "77")
+            observed.append((round(row["created_ts"] * 1000), round(row["updated_ts"] * 1000)))
+    assert observed == [(millis, millis) for _created, millis in cases]
+
+    load(_write(tmp_path, [{**sample, "created": 1}]), settings)
+    load(
+        _write(tmp_path, [{**sample, "doc_id": "new", "record_id": "78", "created": 1.215}]),
+        settings,
+        reset=False,
+    )
+    with closing(store.connect_ro(settings.db_path)) as conn:
+        assert store.missing_schema(conn) == []
+        assert [
+            (r["id"], round(r["created_ts"] * 1000))
+            for r in store.list_hubspot_objects(conn, "contacts")
+        ] == [("77", 1000), ("78", 1215)]
+    before = _dump_tables(settings.db_path)
+    with pytest.raises(SystemExit, match="already claimed by a previous import"):
+        load(_write(tmp_path, [{**sample, "created": 1.729}]), settings, reset=False)
+    assert _dump_tables(settings.db_path) == before
+    with pytest.raises(SystemExit, match="created is not a time this importer can read"):
+        load(_write(tmp_path, [{**sample, "created": -62135596800.0001}]), settings)
+    assert _dump_tables(settings.db_path) == before
+    with pytest.raises(SystemExit, match="updated is not a time this importer can read"):
+        load(_write(tmp_path, [{**sample, "updated": -62135596800.0001}]), settings)
+    assert _dump_tables(settings.db_path) == before
+    with pytest.raises(SystemExit, match="updated.*None is not of type"):
+        load(_write(tmp_path, [{**sample, "updated": None}]), settings)
+    assert _dump_tables(settings.db_path) == before
+
 
 def test_hubspot_byo_associations_are_bidirectional(tmp_path):
     """A corpus declares a link once; real HubSpot exposes it from both records, so the loader

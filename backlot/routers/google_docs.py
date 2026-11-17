@@ -2184,15 +2184,16 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     the paragraph it falls in.
 
     Measured too: each paragraph not in a list loses the tabs it opens with, its level being how
-    many it had, at most 8, less the fewest any such paragraph of the request had, and a list the
-    request makes indents each level that many tabs further (paragraphs of seven tabs made a list
-    indented 252 PT more than its preset). The paragraphs join the list of the paragraph right
-    before them (`gdocs.Body.follows_paragraph`; measured 2026-11-03, two cells listed one after
-    the other in one preset made two lists) when that list's glyphs are the preset's, else the
-    list of the first of them already in one, which takes the preset whole, else one new list. A
-    paragraph is indented as its list's level is. Measured 2026-11-04, a paragraph already in a
-    list keeps its level and its tabs: one of another list joined the first one's list, and that
-    other list kept its glyphs."""
+    many it had and the stops its first line is indented past (`_docs_stops`), at most 8, less the
+    fewest any such paragraph of the request had, and a list the request makes indents each level
+    that many tabs further (paragraphs of seven tabs made a list indented 252 PT more than its
+    preset). The paragraphs join the list of the paragraph right before them
+    (`gdocs.Body.follows_paragraph`; measured 2026-11-03, two cells listed one after the other in
+    one preset made two lists) when that list's glyphs are the preset's, else the list of the first
+    of them already in one, which takes the preset whole, else one new list. A paragraph is indented
+    as its list's level is. Measured 2026-11-04, a paragraph already in a list keeps its level and
+    its tabs: one of another list joined the first one's list, and that other list kept its
+    glyphs."""
     tab, _, body, start, end = _docs_range(doc, req.get("range"), _DOCS_NO_INDEX)
     preset = req.get("bullet_preset", 0)
     if not 0 < preset < len(_DOCS_BULLET_PRESET.names):
@@ -2203,7 +2204,7 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
     paragraphs = body.uncovered_paragraphs(body.paragraphs_in(start, end))
     owns = [body.bullet(p) for p in paragraphs]
     tabs = [
-        0 if own is not None else min(body.leading_tabs(p), _DOCS_LIST_DEPTH)
+        0 if own is not None else min(body.leading_tabs(p) + _docs_stops(body, p), _DOCS_LIST_DEPTH)
         for p, own in zip(paragraphs, owns)
     ]
     fewest = min((n for n, own in zip(tabs, owns) if own is None), default=0)
@@ -2226,6 +2227,18 @@ def _docs_create_bullets(doc: gdocs.Document, req: dict) -> tuple[dict, bool]:
 
 def _docs_levels(tab: dict, list_id: str) -> list[dict]:
     return tab["lists"][list_id]["listProperties"]["nestingLevels"]
+
+
+def _docs_stops(body: gdocs.Body, p: int) -> int:
+    """How many whole tab stops of 36 PT paragraph ``p``'s first line is indented past, none when it
+    is indented less than one or outdented. Measured 2026-11-16 on a paragraph bulleted alone: a
+    first line at -36, 18, 27 or 35 PT made a list at the preset's indent, one at 36, 45 or 54 PT a
+    list one tab further in, one at 72 or 90 PT two tabs, and one at 360 PT eight, the deepest. A
+    tab before the text added one tab, and a start indented 36 PT, the first line not, none.
+    Measured 2026-11-17, a first line at 35.99 PT made a list at the preset's indent, and one at
+    36.01 or 71.5 PT a list one tab further in."""
+    first = body.paragraphs[p]["paragraphStyle"].get("indentFirstLine", {})
+    return max(int(first.get("magnitude", 0) // 36), 0)
 
 
 def _docs_shifted(levels: list[dict], tabs: int) -> list[dict]:

@@ -19990,6 +19990,118 @@ _STYLE_DOC_ROWS = [
             }
         },
     ),
+    # a first line indented 72 PT is two levels, as two tabs are
+    (
+        "wr-text",
+        [
+            _ps(13, 14, "indentFirstLine", indentFirstLine={"magnitude": 72, "unit": "PT"}),
+            _bullets(1, 14),
+        ],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            (
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 90, "unit": "PT"},
+                    "indentStart": {"magnitude": 108, "unit": "PT"},
+                },
+                {"listId": "$1.0", "nestingLevel": 2, "textStyle": {"underline": False}},
+            ),
+        ],
+    ),
+    # a first line at 54 PT is one whole stop in, and its list a tab further in
+    (
+        "wr-text",
+        [
+            _ps(1, 2, "indentFirstLine", indentFirstLine={"magnitude": 54, "unit": "PT"}),
+            _bullets(1, 2),
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 54, "unit": "PT"},
+                    "indentStart": {"magnitude": 72, "unit": "PT"},
+                },
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            "$REST",
+        ],
+    ),
+    # a first line at -36 PT is no level: the list is the preset's
+    (
+        "wr-text",
+        [
+            _ps(1, 2, "indentFirstLine", indentFirstLine={"magnitude": -36, "unit": "PT"}),
+            _bullets(1, 2),
+        ],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            "$REST",
+        ],
+    ),
+    # a first line at 35.99 PT is short of a whole stop: the list is the preset's
+    (
+        "wr-text",
+        [
+            _ps(1, 2, "indentFirstLine", indentFirstLine={"magnitude": 35.99, "unit": "PT"}),
+            _bullets(1, 2),
+        ],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            "$REST",
+        ],
+    ),
+    # a tab before a first line at 288 PT is nine, and the list is eight tabs in, the deepest
+    (
+        "wr-text",
+        [
+            {"insertText": {"location": {"index": 1}, "text": "\t"}},
+            _ps(1, 2, "indentFirstLine", indentFirstLine={"magnitude": 288, "unit": "PT"}),
+            _bullets(1, 2),
+        ],
+        "paragraphs",
+        [
+            (
+                {
+                    "namedStyleType": "NORMAL_TEXT",
+                    "direction": "LEFT_TO_RIGHT",
+                    "indentFirstLine": {"magnitude": 306, "unit": "PT"},
+                    "indentStart": {"magnitude": 324, "unit": "PT"},
+                },
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            "$REST",
+        ],
+    ),
+    # a start indented 36 PT, its first line not, leaves the list at the preset's indent
+    (
+        "wr-text",
+        [_ps(1, 2, "indentStart", indentStart={"magnitude": 36, "unit": "PT"}), _bullets(1, 2)],
+        "paragraphs",
+        [
+            (
+                {"namedStyleType": "NORMAL_TEXT", "direction": "LEFT_TO_RIGHT", **_DISC},
+                {"listId": "$1.0", "textStyle": {"underline": False}},
+            ),
+            "$REST",
+        ],
+    ),
     # the next paragraph joins a list of its preset, another preset starts a list, and a preset
     # over a list item gives the whole list its glyphs
     (
@@ -21135,8 +21247,15 @@ _NESTED_MARKDOWN_ROWS = [
             [_ins(8, "cc")],
             [_bullets(8, 10)],
         ],
-        "markdown",
-        "* aa  \n  bb\n\n* cc",
+        "paragraphs-and-markdown",
+        {
+            "paragraphs": [
+                ["aa\n", _PT(36), _PT(18), True, None],
+                ["bb\n", _PT(36), _PT(36), False, None],
+                ["cc\n", _PT(72), _PT(54), True, None],
+            ],
+            "markdown": "* aa  \n  bb\n\n* cc",
+        },
     ),
     # an empty paragraph after an item does not stop the next going under it
     (
@@ -21563,6 +21682,23 @@ def _docs_served(wc, h, doc: str, part: str):
             wc.get(f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": m}).text
             for m in ("text/plain", "text/markdown")
         ]
+    if part == "paragraphs-and-markdown":
+        read = wc.get(f"/docs/v1/documents/{did}", headers=h).json()
+        return {
+            "paragraphs": [
+                [
+                    "".join(pe.get("textRun", {}).get("content", "") for pe in para["elements"]),
+                    para["paragraphStyle"].get("indentStart"),
+                    para["paragraphStyle"].get("indentFirstLine"),
+                    "bullet" in para,
+                    para.get("bullet", {}).get("nestingLevel"),
+                ]
+                for para in gdocs.paragraphs_of(read["body"]["content"])
+            ],
+            "markdown": wc.get(
+                f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/markdown"}
+            ).text,
+        }
     if part == "markdown":
         return wc.get(
             f"/drive/v3/files/{did}/export", headers=h, params={"mimeType": "text/markdown"}

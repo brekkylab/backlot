@@ -1286,7 +1286,7 @@ async def route_a_github_path_the_way_github_does(request: Request, call_next):
 @_middleware(
     lambda scope: (
         scope["method"] != "OPTIONS"
-        and _url_path(scope).startswith("/atlassian/rest/")
+        and re.sub("/{2,}", "/", _url_path(scope)).startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(Request(scope))
     )
 )
@@ -1307,7 +1307,9 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
     `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
     one with an unreadable bearer as it answers one with none
-    (``backlot.routers.atlassian._options_answer``).
+    (``backlot.routers.atlassian._options_answer``). The path is read with each run of slashes as
+    one, since the slash rewrite runs inside this one: `//rest/api/3/serverInfo` was refused with the
+    403 on Jira Cloud on 2026-11-17.
     """
     media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
     return Response(body, status_code=403, media_type=media_type)

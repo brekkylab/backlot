@@ -658,6 +658,16 @@ def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
         assert info.status_code == 403 and info.json() == {
             "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
         }, token
+    # Runs of slashes are collapsed the way the gateway routes them, so a doubled leading slash is
+    # refused too rather than reaching the unauthenticated route.
+    for slashed in (
+        "/atlassian//rest/api/3/serverInfo",
+        "/atlassian///rest/api/3/serverInfo",
+    ):
+        slashed_info = client.get(slashed, headers={"Authorization": "Bearer usr-nope"})
+        assert slashed_info.status_code == 403 and slashed_info.json() == {
+            "error": errors_atlassian.CONNECT_TOKEN_UNREADABLE
+        }, slashed
 
 
 def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):

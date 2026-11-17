@@ -2875,6 +2875,8 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         term.startswith("body.storage.") and term.split(".")[2]
         for term in (expand or "").split(",")
     )
+    # The members of a body representation an `expand` term names, by representation: the
+    # third segment of `body.<representation>.<name>`, where the name is one of the three a
     # representation carries beside `value` and `representation`. A name under `embeddedContent`
     # or `mediaToken` names the member, as real answers it with what the member alone draws
     # (2026-11-17: `x` under each, `token` under `mediaToken`). Real expands a name under

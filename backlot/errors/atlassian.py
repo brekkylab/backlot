@@ -164,6 +164,25 @@ def serves_the_jira_api(path: str) -> bool:
     return vendor_path == JIRA_REST or vendor_path.startswith(f"{JIRA_REST}/")
 
 
+#: What Jira takes for Internet Explorer 11 in the first `User-Agent`, searched anywhere in it and
+#: case-sensitive. Measured on a Jira Cloud site on 2026-11-16 over 70 values on
+#: `GET /rest/api/3/issue/{key}`: `Trident/7.0; rv:11.0` redirects with any digits on either
+#: side and any tokens around it, and `Trident/7; rv:11.0`, `Trident/7.0;rv:11.0`,
+#: `Trident/7.0; Touch; rv:11.0`, `trident/7.0; rv:11.0` and every other browser are served.
+_UNSUPPORTED_BROWSER = re.compile(r"Trident/\d+\.\d+; rv:\d+\.\d+", re.ASCII)
+
+#: Where Jira sends the browser :data:`_UNSUPPORTED_BROWSER` matches. Backlot does not serve the
+#: page itself, so a client that follows the redirect gets the site's not-found page.
+UNSUPPORTED_BROWSER_PAGE = "/unsupported-browser.jsp"
+
+
+def is_unsupported_browser(user_agent: str | None) -> bool:
+    """Whether Jira redirects a request whose first `User-Agent` is ``user_agent`` to
+    :data:`UNSUPPORTED_BROWSER_PAGE`. Only the first header counts: `Trident/7.0; rv:11.0` then
+    `curl/8` redirected, and `curl/8` then `Trident/7.0; rv:11.0` was served."""
+    return user_agent is not None and _UNSUPPORTED_BROWSER.search(user_agent) is not None
+
+
 def is_confluence(path: str) -> bool:
     """Which of the two products serves ``path``. They answer several things differently — the
     refusal envelope below, and how a query parameter is read — and one predicate keeps the

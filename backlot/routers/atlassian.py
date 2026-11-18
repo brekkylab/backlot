@@ -2867,6 +2867,62 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
+def _confluence_media_token(request: Request, cid) -> dict:
+    """The `mediaToken` member a body representation serves when an `expand` term names it.
+
+    Measured on Confluence Cloud on 2026-11-13, on a page with no attachments: seven members in
+    this order — `contentId` the page id as a string, `token`, `fileIds`, `collectionIds` the
+    one `contentId-<id>`, `expiryDateTime`, `clientId` and `descriptors`. `token` was a JWT of
+    three segments whose header is `{"alg": "HS256"}`. `expiryDateTime` was 48 minutes after the
+    request, with milliseconds and a `Z`. `fileIds` and `descriptors` were empty on a page with
+    no attachments, which every page here is: a corpus record states none
+    (`confluence_attachments`).
+
+    Measured 2026-11-17 on two pages read with an API token over Basic, the token's payload held,
+    in this order, `iss` the `clientId`, `access` granting `read` on the `collectionIds` one,
+    `exp` and `nbf` the expiry and the request in whole seconds, `aaId` the caller's account id,
+    `https://id.atlassian.com/appAccredited` false, `authType` `api-token` and
+    `https://atlassian.com/authProfile` `identity.classicApiToken`. The signature does not follow
+    from a corpus, so it is a digest of the two segments and the content id: the shape is
+    real's, the value is this server's own.
+    """
+    now = datetime.now(timezone.utc)
+    expiry = now + timedelta(minutes=48)
+    client = synth.confluence_media_client_id(get_settings().org_name)
+    caller = auth.atlassian_caller(request)
+
+    def b64(raw: bytes) -> str:
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    def segment(claims: dict) -> str:
+        return b64(json.dumps(claims, separators=(",", ":")).encode())
+
+    head = segment({"alg": "HS256"})
+    payload = segment(
+        {
+            "iss": client,
+            "access": {f"urn:filestore:collection:contentId-{cid}": ["read"]},
+            "exp": int(expiry.timestamp()),
+            "nbf": int(now.timestamp()),
+            "aaId": synth.atlassian_account_id(caller.email or "unknown"),
+            "https://id.atlassian.com/appAccredited": False,
+            "authType": "api-token",
+            "https://atlassian.com/authProfile": "identity.classicApiToken",
+        }
+    )
+    signature = b64(hashlib.sha256(f"confluence-media:{cid}:{head}.{payload}".encode()).digest())
+    expiry_text = expiry.strftime("%Y-%m-%dT%H:%M:%S.") + f"{expiry.microsecond // 1000:03d}Z"
+    return {
+        "contentId": str(cid),
+        "token": f"{head}.{payload}.{signature}",
+        "fileIds": [],
+        "collectionIds": [f"contentId-{cid}"],
+        "expiryDateTime": expiry_text,
+        "clientId": client,
+        "descriptors": [],
+    }
+
+
 def _confluence_page(conn, request: Request, row, expand: str, search: bool = False) -> dict:
     created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
@@ -2891,6 +2947,21 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         term.startswith("body.storage.") and term.split(".")[2]
         for term in (expand or "").split(",")
     )
+    # The members of a body representation an `expand` term names, by representation: the
+    # third segment of `body.<representation>.<name>`, where the name is one of the three a
+    # representation carries beside `value` and `representation`. A name under `embeddedContent`
+    # or `mediaToken` names the member, as real answers it with what the member alone draws
+    # (2026-11-17: `x` under each, `token` under `mediaToken`). Real expands a name under
+    # `webresource` inside it instead (`uris`, `tags`, `keys` and `contexts`, and `uris`, `tags`
+    # and `metatags` under its `superbatch`, 2026-11-17), which this server does not serve: such
+    # a term draws `webresource` as the member alone is. The tuple is the order real names the
+    # unserved ones under `_expandable`.
+    body_member_names = ("webresource", "embeddedContent", "mediaToken")
+    body_members: dict[str, set[str]] = {}
+    for term in (expand or "").split(","):
+        parts = term.split(".")
+        if len(parts) >= 3 and parts[0] == "body" and parts[2] in body_member_names:
+            body_members.setdefault(parts[1], set()).add(parts[2])
     page = {
         "id": str(cid),
         "type": ctype,
@@ -3047,11 +3118,32 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             # and no `embeddedContent`: `body.storage.value` on 2026-11-03, and
             # `body.storage.representation`, `body.storage.content`, `body.storage.x`,
             # `body.storage.Value` and `body.storage.value.x` on 2026-11-13, where `body.storage.`
-            # drew the first form. A term naming `embeddedContent`, `webresource` or `mediaToken`
-            # there serves that member in place of its `_expandable` name, which this server
-            # leaves standing.
-            rep = {"value": body_writers[name](), "representation": name}
-            if name == "storage" and not storage_named:
+            # drew the first form. A term naming one of the three members serves that member in
+            # place of its `_expandable` name, on each of the four representations this server
+            # renders (2026-11-13): the members stand in the order `mediaToken`, `value`,
+            # `webresource`, `representation`, `embeddedContent`, `_expandable`, each where it
+            # is served, and `_expandable` keeps the other two names at "" and `content` — all
+            # three named together leave `content` alone, and `webresource` and `mediaToken`
+            # draw no `embeddedContent`, on `storage` as well.
+            members = body_members.get(name, set())
+            rep = {}
+            if "mediaToken" in members:
+                rep["mediaToken"] = _confluence_media_token(request, cid)
+            rep["value"] = body_writers[name]()
+            if "webresource" in members:
+                rep["webresource"] = {
+                    "superbatch": {"_expandable": {"uris": "", "metatags": "", "tags": ""}},
+                    "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                }
+            rep["representation"] = name
+            if "embeddedContent" in members:
+                rep["embeddedContent"] = []
+            if members:
+                rep["_expandable"] = {
+                    **{m: "" for m in body_member_names if m not in members},
+                    "content": f"/rest/api/content/{cid}",
+                }
+            elif name == "storage" and not storage_named:
                 rep["embeddedContent"] = []
                 rep["_expandable"] = {"content": f"/rest/api/content/{cid}"}
             else:
@@ -5766,11 +5858,14 @@ def spring_sort_failure(request: Request, status: int, headers, body: bytes) -> 
     405s, 406s and 415s among them: on Jira by its 500 page (``errors.atlassian.jira_oops_page``)
     with no `WWW-Authenticate`, an `OPTIONS` by the empty 500 and seven methods in `Allow`, whatever
     the credential; on Confluence by an empty 500 with no `content-type`. What comes before Spring
-    stands: the gateway's Connect-token 403, Tomcat's 401 for an unreadable Basic value, and on
-    Confluence's JAX-RS services Jersey's own reading of the header, its 400
-    (``errors.atlassian.not_acceptable``) or the 404's 500.
+    stands: the gateway's Connect-token 403, Jira's redirect of an unsupported browser
+    (:func:`unsupported_browser_redirect`, a `GET` and an `OPTIONS` on 2026-11-17), Tomcat's 401
+    for an unreadable Basic value, and on Confluence's JAX-RS services Jersey's own reading of the
+    header, its 400 (``errors.atlassian.not_acceptable``) or the 404's 500.
     """
     if not errors_atlassian.is_confluence(request.url.path):
+        if request.scope.get("atlassian_unsupported_browser"):
+            return None
         if status == 403 and auth.atlassian_bearer_unreadable(request):
             return None
         media = errors_atlassian.JIRA_OOPS_MEDIA_TYPE
@@ -5979,6 +6074,16 @@ def _search_options(request: Request) -> Response:
 #: A stub for the Jira web app's own pages, which real serves at `/browse/…` as a client-side shell
 #: whose script tags name the deploy; the status and the media type are what this copies.
 _JIRA_WEB_PAGE = "<!DOCTYPE html><html><head><title>Jira</title></head><body></body></html>"
+
+
+def unsupported_browser_redirect(request: Request) -> Response:
+    """Jira's answer to a request from a browser it does not support
+    (``errors.atlassian.is_unsupported_browser``): `302 Found` with no body and no `content-type`,
+    to the page on the site's own origin, the query not carried. Measured on a Jira Cloud site on
+    2026-11-16 on every REST mount, every method, any credential short of a Bearer and none;
+    `/wiki` answered the same `User-Agent` as any other."""
+    location = f"{_site(request)}{errors_atlassian.UNSUPPORTED_BROWSER_PAGE}"
+    return Response(status_code=302, headers={"Location": location})
 
 
 def _site_surface(request: Request) -> Response:
@@ -6308,6 +6413,11 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         if sends_deprecation(path, status_code) and _a_route_answers(request):
             headers.update(CONFLUENCE_DEPRECATION)
         return headers
+    if request.scope.get("atlassian_unsupported_browser"):
+        # The redirect is given ahead of the application: Jira's request id and
+        # `timing-allow-origin` beside the gateway's, and no `cache-control`, account id or quota,
+        # with a credential that resolves as with none (:func:`unsupported_browser_redirect`).
+        return {**headers, "timing-allow-origin": "*"}
     if status_code == 403 and auth.atlassian_bearer_unreadable(request):
         # The Connect-token 403 is the gateway's
         # (``backlot.main.refuse_a_bearer_jira_cannot_read``): real puts the two ids and

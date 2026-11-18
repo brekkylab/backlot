@@ -617,6 +617,118 @@ def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
     assert answered == dict.fromkeys(paths, (200, None) if found else (404, refusal))
 
 
+IE11 = "Mozilla/5.0 (Windows NT 6.1; Trident/7.0; rv:11.0) like Gecko"
+
+
+@pytest.mark.parametrize(
+    "user_agent, redirected",
+    [
+        (IE11, True),
+        ("Trident/7.0; rv:11.0", True),
+        # no version is checked
+        *(
+            (ua, True)
+            for ua in ("Trident/6.0; rv:11.0", "Trident/77.77; rv:11.0", "Trident/7.0; rv:1.1")
+        ),
+        # a substring: what stands around it does not matter
+        *(
+            (ua, True)
+            for ua in (
+                "Trident/7.0; rv:11.0x",
+                "xTrident/7.0; rv:11.0",
+                "Trident/7.0; rv:11.0, curl/8",
+            )
+        ),
+        # each version is digits, a dot, digits, and exactly `; ` stands between them
+        *(
+            (ua, False)
+            for ua in (
+                *("Trident/7.0", "rv:11.0", "rv:11.0 Trident/7.0;", "Trident/7; rv:11.0"),
+                *("Trident/7.0.1; rv:11.0", "Trident/7.0; rv:11", "Trident/7.0; Rv:11.0"),
+                *("Trident/7.0;rv:11.0", "Trident/7.0;  rv:11.0", "Trident/7.0; foo; rv:11.0"),
+                *("trident/7.0; rv:11.0", "TRIDENT/7.0; rv:11.0"),
+            )
+        ),
+        # real IE11 on a touch device, IE10, Firefox and curl
+        ("Mozilla/5.0 (Windows NT 10.0; Trident/7.0; Touch; rv:11.0) like Gecko", False),
+        ("Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)", False),
+        ("Mozilla/5.0 (Windows NT 6.1; rv:11.0) Gecko/20100101 Firefox/11.0", False),
+        ("curl/8", False),
+    ],
+)
+def test_jira_redirects_internet_explorer_11_by_its_user_agent(client, user_agent, redirected):
+    """Rows drawn from the 70 `User-Agent` values measured on a Jira Cloud site, each as
+    ``errors.atlassian.is_unsupported_browser`` decides it."""
+    r = client.get(
+        "/atlassian/rest/api/3/serverInfo",
+        headers={"User-Agent": user_agent},
+        follow_redirects=False,
+    )
+    assert r.status_code == (302 if redirected else 200), user_agent
+
+
+def test_jira_redirects_internet_explorer_11_ahead_of_what_it_answers(client, admin_h):
+    """Jira answers IE11 with a 302 to its unsupported-browser page in place of what each row
+    would get, a `HEAD` included, with a credential that works and with none, and on a path whose
+    slashes are doubled (``main.redirect_an_unsupported_browser_off_jira`` lists the answers)."""
+    ua = {"User-Agent": IE11}
+    unsortable = {"Accept": "application/json;Q=abc, text/plain"}
+    requests = [
+        ("GET", "/rest/api/3/serverInfo?cb=1", {}),
+        ("GET", "/rest/api/3/project/search", admin_h),
+        ("GET", "/rest/api/2/serverInfo", {"Accept": "application/xml"}),
+        ("POST", "/rest/api/3/search/jql", {**admin_h, "Content-Type": "text/plain"}),
+        ("GET", "/rest/agile/1.0/board", admin_h),
+        ("GET", "/rest/nope/thing", {}),
+        ("OPTIONS", "/rest/api/3/serverInfo", {}),
+        ("HEAD", "/rest/api/3/serverInfo", {}),
+        ("GET", "/rest/api/3/serverInfo", unsortable),
+        ("OPTIONS", "/rest/api/3/serverInfo", unsortable),
+        ("GET", "//rest/api/3/serverInfo", {}),
+    ]
+    for method, path, headers in requests:
+        r = client.request(
+            method, f"/atlassian{path}", headers={**headers, **ua}, follow_redirects=False
+        )
+        assert r.status_code == 302, (method, path)
+        assert r.headers["location"] == "http://testserver/unsupported-browser.jsp", path
+        assert r.content == b"", path
+        if method != "HEAD":
+            assert r.headers["content-length"] == "0", path
+        assert "content-type" not in r.headers, path
+        assert r.headers["timing-allow-origin"] == "*" and "x-arequestid" in r.headers, path
+        assert r.headers["x-content-type-options"] == "nosniff", path
+        for absent in ("cache-control", "x-aaccountid", "x-ratelimit-limit"):
+            assert absent not in r.headers, (path, absent)
+
+
+def test_jira_reads_only_the_first_user_agent_and_redirects_nothing_but_jira(client, admin_h):
+    """Two `User-Agent` headers: only the first decides, so IE11 then curl redirects and curl then
+    IE11 is served, as are the two halves sent apart. Confluence answers IE11 as any client, as does
+    `//atlassian/…`, a path of Backlot's own (``errors.atlassian.owns``), and the Connect-token 403
+    stands ahead of the redirect (``main.redirect_an_unsupported_browser_off_jira``)."""
+    url = "/atlassian/rest/api/3/serverInfo"
+
+    def status(*agents, extra=()):
+        headers = [*(("User-Agent", a) for a in agents), *extra]
+        return client.get(url, headers=headers, follow_redirects=False).status_code
+
+    assert status(IE11, "curl/8") == 302
+    assert status("curl/8", IE11) == 200
+    assert status("Trident/7.0;", "rv:11.0") == 200
+    assert status(IE11, extra=[("Authorization", "Bearer garbage")]) == 403
+    wiki = client.get("/atlassian/wiki/rest/api/space", headers={**admin_h, "User-Agent": IE11})
+    assert wiki.status_code == 200
+    # sent as a whole URL: httpx takes the `atlassian` of `//atlassian/…` for a host
+    doubled = {}
+    for agent in (IE11, "curl/8"):
+        r = client.get(
+            f"http://testserver/{url}", headers={"User-Agent": agent}, follow_redirects=False
+        )
+        doubled[agent] = (r.status_code, r.content)
+    assert doubled == dict.fromkeys((IE11, "curl/8"), (404, b'{"detail":"Not Found"}'))
+
+
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
@@ -2581,6 +2693,129 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
                 "mediaToken": "",
                 "content": f"/rest/api/content/{pid}",
             }, name
+
+
+def test_confluence_body_representation_members_named_by_expand(tmp_path):
+    """A term naming one of a body representation's three members serves that member in place
+    of its `_expandable` name, on each of the four representations this server renders:
+    `embeddedContent` is `[]` after `representation`, `webresource` stands between `value`
+    and `representation`, and `mediaToken` stands first with its seven members (the
+    measurement `_confluence_media_token` records)."""
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [page, {**page, "doc_id": "q", "title": "other"}])
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+        content_link = f"/rest/api/content/{pid}"
+        webresource = {
+            "superbatch": {"_expandable": {"uris": "", "metatags": "", "tags": ""}},
+            "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+        }
+
+        def read(rep_name, expand):
+            return c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                "body"
+            ][rep_name]
+
+        for rep_name in ("storage", "view", "export_view", "atlas_doc_format"):
+            embedded = read(rep_name, f"body.{rep_name}.embeddedContent")
+            assert list(embedded) == [
+                "value",
+                "representation",
+                "embeddedContent",
+                "_expandable",
+            ]
+            assert embedded["embeddedContent"] == []
+            assert embedded["_expandable"] == {
+                "webresource": "",
+                "mediaToken": "",
+                "content": content_link,
+            }
+            # A name under the member names the member.
+            assert read(rep_name, f"body.{rep_name}.embeddedContent.x") == embedded
+
+            web = read(rep_name, f"body.{rep_name}.webresource")
+            assert list(web) == ["value", "webresource", "representation", "_expandable"]
+            assert web["webresource"] == webresource
+            assert web["_expandable"] == {
+                "embeddedContent": "",
+                "mediaToken": "",
+                "content": content_link,
+            }
+
+            media = read(rep_name, f"body.{rep_name}.mediaToken")
+            assert list(media) == ["mediaToken", "value", "representation", "_expandable"]
+            assert media["_expandable"] == {
+                "webresource": "",
+                "embeddedContent": "",
+                "content": content_link,
+            }
+            token = media["mediaToken"]
+            assert list(token) == [
+                "contentId",
+                "token",
+                "fileIds",
+                "collectionIds",
+                "expiryDateTime",
+                "clientId",
+                "descriptors",
+            ]
+            assert token["contentId"] == str(pid)
+            assert token["fileIds"] == [] and token["descriptors"] == []
+            assert token["collectionIds"] == [f"contentId-{pid}"]
+            segments = token["token"].split(".")
+            assert len(segments) == 3
+            header = json.loads(base64.urlsafe_b64decode(segments[0] + "=="))
+            assert header == {"alg": "HS256"}
+        media = read("storage", "body.storage.mediaToken.token")
+        assert list(media) == ["mediaToken", "value", "representation", "_expandable"]
+        # All three named together leave `content` alone under `_expandable`.
+        storage = read(
+            "storage",
+            "body.storage.embeddedContent,body.storage.webresource,body.storage.mediaToken",
+        )
+        assert list(storage) == [
+            "mediaToken",
+            "value",
+            "webresource",
+            "representation",
+            "embeddedContent",
+            "_expandable",
+        ]
+        assert storage["_expandable"] == {"content": content_link}
+        # The token's payload claims, and a `clientId` that is the same on another page.
+        token = storage["mediaToken"]
+        claims = token["token"].split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))
+        assert list(payload) == [
+            "iss",
+            "access",
+            "exp",
+            "nbf",
+            "aaId",
+            "https://id.atlassian.com/appAccredited",
+            "authType",
+            "https://atlassian.com/authProfile",
+        ]
+        assert payload["iss"] == token["clientId"]
+        assert payload["access"] == {f"urn:filestore:collection:contentId-{pid}": ["read"]}
+        assert payload["exp"] - payload["nbf"] == 48 * 60
+        other = c.get(
+            f"{api}/content/{served_id('confluence', 'q')}",
+            headers=h,
+            params={"expand": "body.storage.mediaToken"},
+        ).json()["body"]["storage"]["mediaToken"]
+        assert other["clientId"] == token["clientId"]
 
 
 # --- Jira ------------------------------------------------------------------------

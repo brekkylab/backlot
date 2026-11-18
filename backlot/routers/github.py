@@ -714,12 +714,34 @@ _READS_REAL_SERVES_WITHOUT_A_CREDENTIAL = published.operations(
 _ARCHIVE_READS = published.operations(
     ("GET /repos/{}/{}/tarball/{+}", "GET /repos/{}/{}/zipball/{+}")
 )
+#: The unserved operations real serves a caller with no credential whose "Bad credentials" for
+#: a bearer after a tab counts in a window of their own (:func:`_a_tab_credential_counted_apart`).
+_UNSERVED_COUNTED_APART = published.operations(
+    (
+        "POST /markdown",
+        "GET /advisories",
+        "GET /repos/{}/{}/planning-statuses",
+    )
+)
+
+
+def _a_tab_credential_on(request: Request, operations: published.Operations) -> bool:
+    """Whether this request carries a `Bearer` or `token` credential after a tab that resolves to
+    no one, on an operation of ``operations``."""
+    if not auth.github_scheme_then_a_tab(request):
+        return False
+    if auth.github_scheme(request)[0] not in ("bearer", "token"):
+        return False
+    if not refused_a_credential(request):
+        return False
+    path = request.scope["path"].removeprefix("/github")
+    return published.includes(operations, request.method, path)
 
 
 def _a_tab_credential_on_a_read_real_serves_without_one(request: Request) -> bool:
-    """Whether this request carries a `Bearer` or `token` credential after a tab that resolves to
-    no one, on a read of :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`, which real answers "Bad
-    credentials" with the five at `limit: 60`.
+    """Whether :func:`_a_tab_credential_on` holds for this request on a read of
+    :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`, which real answers "Bad credentials" with the
+    five at `limit: 60`.
 
     Measured against api.github.com, one cache-busted request each. With no `Authorization` on
     2026-11-15 each of those reads was its 200, the archive reads their 302, and on 2026-11-16
@@ -743,14 +765,23 @@ def _a_tab_credential_on_a_read_real_serves_without_one(request: Request) -> boo
     `limit: 5000`, and `Basic<TAB>!!!!` the answer of each of the three at `limit: 60`; on
     2026-11-10 `Digest x` was the 302 of the archive reads and the 200 of the matching-refs read.
     """
-    if not auth.github_scheme_then_a_tab(request):
-        return False
-    if auth.github_scheme(request)[0] not in ("bearer", "token"):
-        return False
-    if not refused_a_credential(request):
-        return False
-    path = request.scope["path"].removeprefix("/github")
-    return published.includes(_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL, request.method, path)
+    return _a_tab_credential_on(request, _READS_REAL_SERVES_WITHOUT_A_CREDENTIAL)
+
+
+def _a_tab_credential_counted_apart(request: Request) -> bool:
+    """Whether :func:`_a_tab_credential_on` holds for this request on an operation of
+    :data:`_UNSERVED_COUNTED_APART`, which real answers "Bad credentials" with the five at
+    `limit: 60` and counts in a window apart from the one a bearer after a tab counts in on the
+    reads of :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL`.
+
+    Measured against api.github.com, one connection and a cache-buster per request. On 2026-11-15
+    `Bearer<TAB>nope` on the three read `used` 3 to 7 at one `x-ratelimit-reset`, where
+    `GET /zen` with the same header, sent around them, read 31 to 43 at another; on 2026-11-17,
+    three rounds each, so did `token<TAB>nope` and `Bearer<TAB>nope` pinned to `1999-01-01`, with
+    no echo. With no `Authorization`, `POST /markdown` was its 200, `GET /advisories` its 200 list
+    and `GET /repos/{owner}/{repo}/planning-statuses` its 404.
+    """
+    return _a_tab_credential_on(request, _UNSERVED_COUNTED_APART)
 
 
 async def refuse_an_unserved_operation(request: Request) -> None:
@@ -796,7 +827,9 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     each "Requires authentication" with none of the five and no echo, and so was a bearer that
     resolves after a tab, on the 18 `GET`s among them, which served it after a space. On the reads
     of :data:`_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL` a bearer after a tab that resolves to no one
-    is "Bad credentials" instead (:func:`_a_tab_credential_on_a_read_real_serves_without_one`). On
+    is "Bad credentials" instead (:func:`_a_tab_credential_on_a_read_real_serves_without_one`), and
+    so it is on the operations of :data:`_UNSERVED_COUNTED_APART`, which real serves without a
+    credential too, counted in a window of their own (:func:`_a_tab_credential_counted_apart`). On
     the eight operations the tests send, each pinned to `1999-01-01`, so was an empty
     `Authorization`.
 
@@ -831,7 +864,9 @@ async def refuse_an_unserved_operation(request: Request) -> None:
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
         )
         raise HTTPException(status_code=401, detail="Requires authentication")
-    tab_credential = _a_tab_credential_on_a_read_real_serves_without_one(request)
+    tab_credential = _a_tab_credential_on_a_read_real_serves_without_one(
+        request
+    ) or _a_tab_credential_counted_apart(request)
     if _a_header_without_a_credential(request) and not tab_credential:
         request.state.github_unserved_refusal = "uncounted"
         raise HTTPException(status_code=401, detail="Requires authentication")
@@ -1306,7 +1341,10 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
     never counted — see :func:`refused_without_a_window`. Callers that draw real's line themselves
     check `request.headers` for the presence of `Authorization` directly instead of asking
     `auth.github_credential`, which is `None` for a header real serves as anonymous — see
-    `refuse_a_trailing_slash_on_github`."""
+    `refuse_a_trailing_slash_on_github`.
+
+    A bearer after a tab on an operation of :data:`_UNSERVED_COUNTED_APART` is counted in a window
+    of its own (:func:`_a_tab_credential_counted_apart`), so its key carries `:unserved`."""
     token = auth.github_credential(request)
     if token is not None and auth.acl(request).resolve(token) is not None:
         return f"token:{token}", True
@@ -1316,6 +1354,8 @@ def rate_limit_caller(request: Request) -> tuple[str, bool]:
         or auth.github_scheme_then_a_tab(request)
         or auth.github_basic_token_counted(request)
     ):
+        if _a_tab_credential_counted_apart(request):
+            return f"unparseable:{host}:unserved", False
         return f"unparseable:{host}", False
     return f"host:{host}", False
 

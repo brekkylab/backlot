@@ -2415,8 +2415,10 @@ async def confluence_cql_search(request: Request):
     },
 )
 async def confluence_conversion_tasks(request: Request):
-    """Confluence Cloud bulk conversion-task read, measured 2026-10-22: each requested
-    id names no task here and is returned as FAILED, in request order."""
+    """The bulk read Confluence Cloud answered on 2026-10-22 and 2026-11-17 with a FAILED task for
+    each `ids` value, in request order with a repeat kept: `ids=a,b` is the one id `a,b`, and an
+    `ids` with an empty value or no `=` is one task with an empty id. No id names a task here
+    (:func:`confluence_conversion_task`)."""
     return [
         {
             "webresource": None,
@@ -2433,9 +2435,12 @@ async def confluence_conversion_tasks(request: Request):
 
 @router.get("/wiki/rest/api/contentbody/convert/async/{task_id}")
 async def confluence_conversion_task(task_id: str, request: Request):
-    """Confluence Cloud conversion-task read, measured 2026-10-22: an id outside the
-    pattern is a 400; one naming no task is a 401 anonymously and a 403 authenticated.
-    Backlot starts no conversions, so every id names no task."""
+    """Confluence Cloud conversion-task read, measured 2026-10-22 and 2026-11-17: an id outside the
+    pattern, a non-ASCII letter included, is a 400 with a credential or without; one inside it is a
+    403 to a caller a credential resolves, and a 401 naming the site's OAuth realm to a request with
+    no credential or a Basic pair real rejects. Backlot starts no conversions, so no id names a
+    task."""
+    headers = None
     pattern = r"^[\w-:]*_-{0,1}\w*_{0,1}\w*$"
     # Keep Java's pattern in the message; Python requires the literal hyphen last.
     if re.fullmatch(r"^[\w:-]*_-{0,1}\w*_{0,1}\w*$", task_id, re.ASCII) is None:
@@ -2447,6 +2452,8 @@ async def confluence_conversion_task(task_id: str, request: Request):
             "AuthenticationRequiredException: User must be authenticated "
             "to get non anonymous conversion job."
         )
+        realm = quote(f"{_site(request)}/wiki", safe="")
+        headers = {"WWW-Authenticate": f'OAuth realm="{realm}"'}
     else:
         status = 403
         message = "api.PermissionException: null"
@@ -2458,6 +2465,7 @@ async def confluence_conversion_task(task_id: str, request: Request):
             "data": {"authorized": allowed, "valid": True, "errors": [], "successful": allowed},
             "message": "com.atlassian.confluence.api.service.exceptions." + message,
         },
+        headers=headers,
     )
 
 
@@ -5216,6 +5224,7 @@ _CONFLUENCE_JAXRS_GETS = _operations(
 _CONFLUENCE_JAXRS_GETS_UNTYPED = _operations(["GET /wiki/rest/api/settings/lookandfeel"])
 #: The two of them that ran with no credential: `[]` at 200 and a 404 for an id naming nothing.
 _CONFLUENCE_JAXRS_RUN = tuple(row for row in _CONFLUENCE_JAXRS_WRITES if "/contentbody/" in row)
+#: The conversion writes run even when a route serves the GET on the same path.
 _CONFLUENCE_CONVERSION_WRITES = _operations(_CONFLUENCE_JAXRS_RUN)
 
 #: The Confluence services whose refusal of a caller with no credential is
@@ -6030,8 +6039,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     Those are the answers where the vendor publishes nothing for the method at the path. An
     operation it does publish is looked at first, at a served route's path as at any other, since
     real reaches it whether or not Backlot serves it (:func:`_published_answer`); a caller it would
-    run for gets the answer above. Outside both API mounts the site is its web app
-    (:func:`_site_surface`).
+    run for gets the answer above, including a write named by
+    :data:`_CONFLUENCE_CONVERSION_WRITES` whose GET route is served. Outside both API mounts the
+    site is its web app (:func:`_site_surface`).
     """
     # the path as routed, not `request.url.path`: parsing the URL again drops a decoded newline or
     # tab and ends the path at a decoded `#`, so `myse%0Alf` would be looked up as `myself`

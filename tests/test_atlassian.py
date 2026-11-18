@@ -7103,7 +7103,7 @@ def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
         ),
         # the controls: one real runs with no credential at all, and a caller whose credential
         # resolves (``backlot.routers.atlassian._confluence_refusal``)
-        ("GET", "/atlassian/wiki/rest/api/contentbody/convert/async/bulk/tasks", True, None),
+        ("POST", "/atlassian/wiki/rest/api/contentbody/convert/async/bulk/tasks", True, None),
         ("GET", "/atlassian/wiki/rest/api/user/current", False, None),
         ("GET", "/atlassian/wiki/rest/api/content/{content}/history", False, None),
     ],
@@ -7117,11 +7117,7 @@ def test_confluence_refuses_an_operation_it_publishes_to_a_caller_it_cannot_name
     ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` with the headers its comment names."""
     r = client.request(method, path.format(**keys), headers={} if anonymous else admin_h)
     if refusal is None:
-        if path.endswith("/contentbody/convert/async/bulk/tasks"):
-            assert r.status_code == 200
-            assert r.json() == []
-        else:
-            assert r.status_code == 404, r.text
+        assert r.status_code == 404, r.text
         return
     assert r.status_code == 403
     assert r.headers["content-type"] == "application/json"
@@ -13001,63 +12997,84 @@ def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, ad
     assert answered == dict(rows)
 
 
-@pytest.mark.parametrize("authenticated", [False, True])
-@pytest.mark.parametrize(
-    "path,status,sentence",
-    [
-        (
-            "1",
-            400,
-            "api.BadRequestException: ID must match pattern: ^[\\w-:]*_-{0,1}\\w*_{0,1}\\w*$",
-        ),
-        (
-            "abc",
-            400,
-            "api.BadRequestException: ID must match pattern: ^[\\w-:]*_-{0,1}\\w*_{0,1}\\w*$",
-        ),
-        ("abc_1", None, None),
-        ("bulk/tasks", 200, None),
-        ("bulk/tasks?ids=1&ids=2", 200, None),
-        ("bulk/tasks?ids=abc_1", 200, None),
-    ],
-)
-def test_confluence_reads_conversion_tasks_that_do_not_exist(
-    client, admin_h, authenticated, path, status, sentence
-):
-    """Pin the measured task reads in `confluence_conversion_task` and
-    `confluence_conversion_tasks`: malformed ids, anonymous and authenticated callers,
-    and a FAILED entry for each bulk id, in order."""
-    response = client.get(
-        "/atlassian/wiki/rest/api/contentbody/convert/async/" + path,
-        headers=admin_h if authenticated else {},
+def test_confluence_reads_conversion_tasks_that_do_not_exist(client, admin_h):
+    """Pins ``backlot.routers.atlassian.confluence_conversion_task``,
+    ``backlot.routers.atlassian.confluence_conversion_tasks`` and the 405
+    ``errors.atlassian.method_not_allowed`` answers on their paths, row by row."""
+    callers = {"none": {}, "rejected": FAILED_PAIR, "admin": admin_h}
+    json_type = "application/json"
+    realm = 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"'
+    allow = "HEAD,POST,GET,OPTIONS"
+    pattern = (
+        rb'{"statusCode":400,"data":{"authorized":true,"valid":true,"errors":[],"successful":true},'
+        rb'"message":"com.atlassian.confluence.api.service.exceptions.api.BadRequestException: '
+        rb'ID must match pattern: ^[\\w-:]*_-{0,1}\\w*_{0,1}\\w*$"}'
     )
-    if status is None:
-        status = 403 if authenticated else 401
-        sentence = (
-            "api.PermissionException: null"
-            if authenticated
-            else "AuthenticationRequiredException: User must be authenticated to get non anonymous conversion job."
+    unauthenticated = (
+        rb'{"statusCode":401,"data":{"authorized":false,"valid":true,"errors":[],'
+        rb'"successful":false},"message":"com.atlassian.confluence.api.service.exceptions.'
+        rb"AuthenticationRequiredException: User must be authenticated to get non anonymous "
+        rb'conversion job."}'
+    )
+    forbidden = (
+        rb'{"statusCode":403,"data":{"authorized":true,"valid":true,"errors":[],"successful":true},'
+        rb'"message":"com.atlassian.confluence.api.service.exceptions.api.PermissionException: '
+        rb'null"}'
+    )
+
+    def tasks(*ids):
+        task = (
+            '{{"webresource":null,"embeddedContent":[],"content":null,"mediaToken":null,'
+            '"renderTaskId":"{}","status":"FAILED","error":"ID is invalid or nonexistent"}}'
         )
-    assert response.status_code == status, response.text
-    assert response.headers["content-type"] == "application/json"
-    if status == 200:
-        ids = httpx.QueryParams(path.partition("?")[2]).get_list("ids")
-        assert response.json() == [
-            {
-                "webresource": None,
-                "embeddedContent": [],
-                "content": None,
-                "mediaToken": None,
-                "renderTaskId": task_id,
-                "status": "FAILED",
-                "error": "ID is invalid or nonexistent",
-            }
-            for task_id in ids
-        ]
-    else:
-        allowed = status != 401
-        assert response.json() == {
-            "statusCode": status,
-            "data": {"authorized": allowed, "valid": True, "errors": [], "successful": allowed},
-            "message": "com.atlassian.confluence.api.service.exceptions." + sentence,
-        }
+        return ("[" + ",".join(task.format(task_id) for task_id in ids) + "]").encode()
+
+    rows = [
+        (("GET", "1", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "1", "admin"), (400, json_type, pattern, None, None)),
+        (("GET", "abc", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "bulk", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "abc_%C3%A9", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "abc_1%0A", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "abc_1", "none"), (401, json_type, unauthenticated, realm, None)),
+        (("GET", "abc_1/", "none"), (401, json_type, unauthenticated, realm, None)),
+        (("GET", "a:b-c_1", "none"), (401, json_type, unauthenticated, realm, None)),
+        (("GET", "abc_1", "rejected"), (401, json_type, unauthenticated, realm, None)),
+        (("HEAD", "abc_1", "none"), (401, json_type, b"", realm, None)),
+        (("GET", "abc_1", "admin"), (403, json_type, forbidden, None, None)),
+        (("GET", "bulk/tasks", "none"), (200, json_type, b"[]", None, None)),
+        (("GET", "bulk/tasks/", "none"), (200, json_type, b"[]", None, None)),
+        (
+            ("GET", "bulk/tasks?ids=b_2&ids=a_1", "none"),
+            (200, json_type, tasks("b_2", "a_1"), None, None),
+        ),
+        (
+            ("GET", "bulk/tasks?ids=abc_1&ids=abc_1", "none"),
+            (200, json_type, tasks("abc_1", "abc_1"), None, None),
+        ),
+        (("GET", "bulk/tasks?ids=a,b", "none"), (200, json_type, tasks("a,b"), None, None)),
+        (("GET", "bulk/tasks?ids=", "none"), (200, json_type, tasks(""), None, None)),
+        (("GET", "bulk/tasks?ids", "none"), (200, json_type, tasks(""), None, None)),
+        (("GET", "bulk/tasks?ids=abc_1", "rejected"), (200, json_type, tasks("abc_1"), None, None)),
+        (("GET", "bulk/tasks?ids=abc_1", "admin"), (200, json_type, tasks("abc_1"), None, None)),
+        (("PUT", "bulk/tasks", "none"), (405, None, b"", None, allow)),
+        (("DELETE", "bulk/tasks", "admin"), (405, None, b"", None, allow)),
+        (("DELETE", "abc_1", "none"), (405, None, b"", None, allow)),
+        (("PUT", "abc_1", "admin"), (405, None, b"", None, allow)),
+    ]
+    answered = {}
+    for method, path, caller in (key for key, _ in rows):
+        r = client.request(
+            method,
+            f"/atlassian/wiki/rest/api/contentbody/convert/async/{path}",
+            headers=callers[caller],
+        )
+        answered[method, path, caller] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            r.headers.get("www-authenticate"),
+            r.headers.get("allow"),
+        )
+    assert len(answered) == len(rows)
+    assert answered == dict(rows)

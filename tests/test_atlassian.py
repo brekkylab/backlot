@@ -702,11 +702,11 @@ def test_jira_redirects_internet_explorer_11_ahead_of_what_it_answers(client, ad
             assert absent not in r.headers, (path, absent)
 
 
-def test_jira_reads_only_the_first_user_agent_and_leaves_confluence_alone(client, admin_h):
+def test_jira_reads_only_the_first_user_agent_and_redirects_nothing_but_jira(client, admin_h):
     """Two `User-Agent` headers: only the first decides, so IE11 then curl redirects and curl then
-    IE11 is served, as are the two halves sent apart. Confluence answers IE11 as any client, and
-    the Connect-token 403 stands ahead of the redirect
-    (``main.redirect_an_unsupported_browser_off_jira``)."""
+    IE11 is served, as are the two halves sent apart. Confluence answers IE11 as any client, as does
+    `//atlassian/…`, a path of Backlot's own (``errors.atlassian.owns``), and the Connect-token 403
+    stands ahead of the redirect (``main.redirect_an_unsupported_browser_off_jira``)."""
     url = "/atlassian/rest/api/3/serverInfo"
 
     def status(*agents, extra=()):
@@ -719,6 +719,14 @@ def test_jira_reads_only_the_first_user_agent_and_leaves_confluence_alone(client
     assert status(IE11, extra=[("Authorization", "Bearer garbage")]) == 403
     wiki = client.get("/atlassian/wiki/rest/api/space", headers={**admin_h, "User-Agent": IE11})
     assert wiki.status_code == 200
+    # sent as a whole URL: httpx takes the `atlassian` of `//atlassian/…` for a host
+    doubled = {}
+    for agent in (IE11, "curl/8"):
+        r = client.get(
+            f"http://testserver/{url}", headers={"User-Agent": agent}, follow_redirects=False
+        )
+        doubled[agent] = (r.status_code, r.content)
+    assert doubled == dict.fromkeys((IE11, "curl/8"), (404, b'{"detail":"Not Found"}'))
 
 
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):

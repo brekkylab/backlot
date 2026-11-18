@@ -791,8 +791,18 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
     assert conf.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
 
 
-def test_jira_refuses_a_bearer_it_cannot_read_on_a_run_of_slashes(client):
+def test_jira_refuses_a_bearer_it_cannot_read_on_rest_and_a_run_of_slashes(client):
     refused = (403, {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE})
+    no_endpoint = (
+        404,
+        {
+            "type": "about:blank",
+            "title": "Not Found",
+            "status": 404,
+            "detail": "No endpoint GET /rest.",
+            "instance": "/rest",
+        },
+    )
     not_found = (404, {"detail": "Not Found"})
     expected = {
         # a run of slashes under the mount, which the gateway reads as one
@@ -802,6 +812,13 @@ def test_jira_refuses_a_bearer_it_cannot_read_on_a_run_of_slashes(client):
         ("/atlassian///rest/api/3/serverInfo", "Bearer garbage"): refused,
         ("/atlassian//rest/api/3/serverInfo", None): (200, None),
         ("/atlassian///rest/api/3/serverInfo", None): (200, None),
+        # `/rest` itself, after one slash and after a run of them, with a bearer and with none
+        ("/atlassian/rest", "Bearer garbage"): refused,
+        ("/atlassian//rest", "Bearer garbage"): refused,
+        ("/atlassian///rest", "Bearer garbage"): refused,
+        ("/atlassian/rest", None): no_endpoint,
+        ("/atlassian//rest", None): no_endpoint,
+        ("/atlassian///rest", None): no_endpoint,
         # the mount doubled, a path of Backlot's own (``errors.atlassian.owns``) with a bearer as
         # with none, sent as a whole URL: httpx takes the `atlassian` of `//atlassian/…` for a host
         ("http://testserver//atlassian/rest/api/3/serverInfo", "Bearer garbage"): not_found,

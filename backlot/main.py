@@ -1312,7 +1312,7 @@ async def redirect_an_unsupported_browser_off_jira(request: Request, call_next):
     lambda scope: (
         scope["method"] != "OPTIONS"
         and errors.atlassian.owns(_url_path(scope))
-        and re.sub("/{2,}", "/", _url_path(scope)).startswith("/atlassian/rest/")
+        and errors.atlassian.serves_the_jira_api(re.sub("/{2,}", "/", _url_path(scope)))
         and auth.atlassian_bearer_unreadable(Request(scope))
     )
 )
@@ -1334,9 +1334,10 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
     one with an unreadable bearer as it answers one with none
     (``backlot.routers.atlassian._options_answer``). The path under the mount is read with each run
-    of slashes as one, as the gateway routes it, since the slash rewrite runs inside this one:
-    `//rest/api/3/serverInfo` and `///rest/api/3/serverInfo` were refused as
-    `/rest/api/3/serverInfo` was (Jira Cloud, 2026-11-17).
+    of slashes as one, as the gateway routes it, since the slash rewrite runs inside this one, and
+    is refused when ``errors.atlassian.serves_the_jira_api`` puts it under Jira's REST mount,
+    `/rest` itself included: `//rest/api/3/serverInfo`, `///rest/api/3/serverInfo`, `/rest`,
+    `//rest` and `///rest` were refused as `/rest/api/3/serverInfo` was (Jira Cloud, 2026-11-17).
     """
     media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
     return Response(body, status_code=403, media_type=media_type)

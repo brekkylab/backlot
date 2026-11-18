@@ -5224,7 +5224,8 @@ _CONFLUENCE_JAXRS_GETS = _operations(
 _CONFLUENCE_JAXRS_GETS_UNTYPED = _operations(["GET /wiki/rest/api/settings/lookandfeel"])
 #: The two of them that ran with no credential: `[]` at 200 and a 404 for an id naming nothing.
 _CONFLUENCE_JAXRS_RUN = tuple(row for row in _CONFLUENCE_JAXRS_WRITES if "/contentbody/" in row)
-#: The conversion writes run even when a route serves the GET on the same path.
+#: ``_CONFLUENCE_JAXRS_RUN`` as operations, for :func:`unmatched_path`: real runs these writes, so a
+#: route serving the GET on their path is no reason to answer them with a 405.
 _CONFLUENCE_CONVERSION_WRITES = _operations(_CONFLUENCE_JAXRS_RUN)
 
 #: The Confluence services whose refusal of a caller with no credential is
@@ -6039,9 +6040,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     Those are the answers where the vendor publishes nothing for the method at the path. An
     operation it does publish is looked at first, at a served route's path as at any other, since
     real reaches it whether or not Backlot serves it (:func:`_published_answer`); a caller it would
-    run for gets the answer above, including a write named by
-    :data:`_CONFLUENCE_CONVERSION_WRITES` whose GET route is served. Outside both API mounts the
-    site is its web app (:func:`_site_surface`).
+    run for gets the answer above, and a write :data:`_CONFLUENCE_CONVERSION_WRITES` names gets the
+    answer of a path with no route though a route serves the GET on its path. Outside both API
+    mounts the site is its web app (:func:`_site_surface`).
     """
     # the path as routed, not `request.url.path`: parsing the URL again drops a decoded newline or
     # tab and ends the path at a decoded `#`, so `myse%0Alf` would be looked up as `myself`

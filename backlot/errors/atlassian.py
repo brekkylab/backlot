@@ -2379,8 +2379,9 @@ _CONFLUENCE_ALLOW_PATTERNS = tuple((route_regex(t), allow) for t, allow in _CONF
 #: 2026-10-13, `POST search` under `text/html` and under `application/json`.
 _CONFLUENCE_SEARCH = "/wiki/rest/api/search"
 _CONFLUENCE_SEARCH_ALLOW = "HEAD,GET,OPTIONS"
-#: Confluence Cloud, 2026-11-17: PUT and DELETE on both paths, with a credential and without,
-#: return an empty 405, no content-type, and this Allow.
+#: The conversion-task reads are JAX-RS services: a method they do not take is a 405 with no body
+#: under no `content-type`, and an `Allow` of the methods their paths take. Measured 2026-11-17
+#: with `PUT` and `DELETE` on both paths, with a credential and without.
 _CONFLUENCE_CONVERSION_TASK = re.compile(
     r"/wiki/rest/api/contentbody/convert/async/(?:bulk/tasks|[^/]+)"
 )

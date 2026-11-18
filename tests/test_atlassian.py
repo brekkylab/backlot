@@ -2694,6 +2694,46 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             ["id", "type", "status", "title", *searched, *last],
         ]
         assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
+        # The content-relative expansions measured in backlot.routers.atlassian.confluence_cql_search.
+        rows = [
+            ("content.space", "space"),
+            ("content.version", "version"),
+            ("content.history", "history"),
+            ("content.body.storage", "body"),
+            ("content.body.storage.embeddedContent", "body"),
+            ("body.storage", None),
+            ("content.unknown", None),
+            ("", None),
+        ]
+        answered = {}
+        expected = {}
+        for expansion, member in rows:
+            expanded = c.get(
+                api + "/search",
+                headers=h,
+                params={"cql": f"id={pid}", "expand": expansion},
+            ).json()["results"][0]["content"]
+            if member is None:
+                answered[expansion] = expanded
+                expected[expansion] = hit
+            else:
+                direct = c.get(
+                    f"{api}/content/{pid}",
+                    headers=h,
+                    params={"expand": expansion.removeprefix("content.")},
+                ).json()
+                answered[expansion] = (expanded.get(member), list(expanded))
+                members = (
+                    ["macroRenderedOutput", "body"]
+                    if member == "body"
+                    else [member, "macroRenderedOutput"]
+                )
+                expected[expansion] = (
+                    direct[member],
+                    ["id", "type", "status", "title", *members, *last],
+                )
+        assert answered == expected
+
         # The members each served body representation carries.
         storage = c.get(
             f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}

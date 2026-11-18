@@ -2358,9 +2358,16 @@ async def confluence_cql_search(request: Request):
     reached = position + max(len(rows), 1)
     if reached < total and start + max(len(rows), 1) > 2**31 - 1:
         raise errors_atlassian.search_next_out_of_range()
+    # Confluence Cloud search, 2026-11-17: expansions are relative to the search row,
+    # so content.space and content.body.storage name members of its content.
+    content_expand = ",".join(
+        term.removeprefix("content.")
+        for term in (_str_param(request, "expand", "") or "").split(",")
+        if term.startswith("content.")
+    )
     results = []
     for r in rows:
-        page = _confluence_page(conn, request, r, "", search=True)
+        page = _confluence_page(conn, request, r, content_expand, search=True)
         results.append(
             {
                 "content": page,
@@ -3032,7 +3039,10 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         }
         # A search row's content carries these three, each empty, right after `title`, measured
         # on Confluence Cloud on page, blog post, comment and attachment rows on 2026-11-12.
-        page.update(childTypes={}, macroRenderedOutput={}, restrictions={})
+        if wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}:
+            page["macroRenderedOutput"] = {}
+        else:
+            page.update(childTypes={}, macroRenderedOutput={}, restrictions={})
     else:
         links = {
             "container": f"/rest/api/space/{key}",
@@ -3200,6 +3210,18 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
     # it, and `_links` is moved after it: real serves the two last, `_expandable` then `_links`, on
     # `content/{id}` (bare and with `expand=space,version`), a `content` row and a search row's
     # `content`, measured on Confluence Cloud on 2026-11-12.
+    if search and wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}:
+        # The scalar expansions precede macroRenderedOutput, and the body follows it.
+        page = {
+            **{
+                name: value
+                for name, value in page.items()
+                if name not in ("_links", "macroRenderedOutput", "body")
+            },
+            "macroRenderedOutput": {},
+            **({"body": page["body"]} if "body" in page else {}),
+            "_links": page["_links"],
+        }
     page["_expandable"] = expandable
     page["_links"] = page.pop("_links")
     return page

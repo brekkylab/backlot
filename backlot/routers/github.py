@@ -673,6 +673,41 @@ _PUBLISHED_NOT_SERVED = published.operations(
     for op in published.missing_operations("github")
     if op not in _NOT_ROUTED
 )
+_BASIC_WITHOUT_A_TOKEN_HIDDEN_404S = (
+    (
+        "PATCH /repos/{}/{}",
+        "https://docs.github.com/rest/repos/repos#update-a-repository",
+    ),
+    (
+        "DELETE /repos/{}/{}",
+        "https://docs.github.com/rest/repos/repos#delete-a-repository",
+    ),
+    (
+        "POST /repos/{}/{}/forks",
+        "https://docs.github.com/rest/repos/forks#create-a-fork",
+    ),
+    (
+        "PUT /teams/{}/repos/{}/{}",
+        "https://docs.github.com/rest/teams/teams#add-or-update-team-repository-permissions-legacy",
+    ),
+    (
+        "POST /repos/{}/{}/git/trees",
+        "https://docs.github.com/rest/git/trees#create-a-tree",
+    ),
+    (
+        "GET /repos/{}/{}/actions/artifacts/{}/zip",
+        "https://docs.github.com/rest/actions/artifacts#download-an-artifact",
+    ),
+    (
+        "GET /orgs/{}/settings/billing/usage",
+        "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
+    ),
+)
+_BASIC_WITHOUT_A_TOKEN_HIDDEN_404_PATTERNS = tuple(
+    (method, pattern, documentation_url)
+    for operation, documentation_url in _BASIC_WITHOUT_A_TOKEN_HIDDEN_404S
+    for method, pattern in published.operations((operation,))
+)
 #: The two operations api.github.com routes though its description does not publish them,
 #: matched one segment at a time: `GET /agents/automations/{available-tools,available-triggers,1}`
 #: and `…/1/tasks` were 401 "Requires authentication" with no credential, 401 "Bad credentials"
@@ -839,7 +874,13 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     `GET /user/packages` and `DELETE /user/keys/1`, and on the other six a 400, a 403, a 404 or the
     401 "You must be logged in to do that.". Pinned to `1999-01-01`, `GET /user/packages`,
     `DELETE /user/keys/1`, `POST /user/gpg_keys` and `GET /gists/starred` were the version's 400,
-    counted. Here it is :func:`_require`'s 401 after the version, carrying both.
+    counted. Measured again against api.github.com on 2026-10-26, a valid `Basic` value naming no
+    token was a 404 with the operation's documentation URL on a hidden repository or organization
+    for each of the seven measured repository and organization operations, except `PATCH
+    /repos/{owner}/{repo}` with no body, which was a 400 "Body should be a JSON object". On
+    `PATCH /repos/{owner}/{repo}`, api.github.com also gave that 400 for valid JSON `[]` and `null`,
+    but a malformed `{` and `{}` were 404 (2026-11-18). This handler chooses that hidden-resource
+    answer; the four user-scoped operations retain their 401.
 
     A `Basic` value holding a token in one of real's shapes (``backlot.auth._GITHUB_TOKEN_SHAPE``)
     that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
@@ -876,6 +917,33 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         request.state.github_unserved_refusal = "reported"
     await _validate_bad_credential(request)
     await _validate_api_version(request)
+    if auth.github_basic_names_no_token(request):
+        path = request.scope["path"].removeprefix("/github")
+        documentation_url = next(
+            (
+                url
+                for method, pattern, url in _BASIC_WITHOUT_A_TOKEN_HIDDEN_404_PATTERNS
+                if method == request.method and pattern.fullmatch(path)
+            ),
+            None,
+        )
+        if documentation_url is not None:
+            status_code, message = 404, "Not Found"
+            if request.method == "PATCH":
+                body = await request.body()
+                try:
+                    is_json_object = isinstance(json.loads(body), dict) if body else False
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    is_json_object = True
+                if not is_json_object:
+                    status_code, message = 400, "Body should be a JSON object"
+            exc = HTTPException(status_code=status_code, detail=message)
+            exc.github_body = {
+                "message": message,
+                "documentation_url": documentation_url,
+                "status": str(status_code),
+            }
+            raise exc
     _require(request)
 
 

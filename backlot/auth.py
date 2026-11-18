@@ -161,6 +161,15 @@ def github_credential(request: Request) -> str | None:
     return None
 
 
+def github_basic_names_no_token(request: Request) -> bool:
+    """Whether a well-formed Basic value names no resolved or token-shaped GitHub credential."""
+    scheme, rest = github_scheme(request)
+    if repeated_authorization(request) or scheme != "basic":
+        return False
+    value = rest.lstrip(" \t").replace(" ", "")
+    return bool(value and _GITHUB_BASE64.fullmatch(value)) and github_credential(request) is None
+
+
 def github_basic_token_counted(request: Request) -> bool:
     """Whether the request's `Authorization` is `Basic` naming a token of
     :data:`_GITHUB_COUNTED_TOKEN_SHAPE` that resolves to no one: the "Bad credentials" 401 real

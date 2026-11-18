@@ -2819,6 +2819,105 @@ _UNSERVED_ROWS = [
     ("GET", "/agents/repos/{org}/codebase/nosuch", False, 404),
 ]
 
+_BASIC_UNKNOWN_TOKEN_ROWS = [
+    (
+        "PATCH",
+        "/github/repos/{org}/codebase",
+        None,
+        400,
+        "Body should be a JSON object",
+        "https://docs.github.com/rest/repos/repos#update-a-repository",
+    ),
+    (
+        "PATCH",
+        "/github/repos/{org}/codebase",
+        b"{}",
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/repos/repos#update-a-repository",
+    ),
+    (
+        "PATCH",
+        "/github/repos/{org}/codebase",
+        b"[]",
+        400,
+        "Body should be a JSON object",
+        "https://docs.github.com/rest/repos/repos#update-a-repository",
+    ),
+    (
+        "PATCH",
+        "/github/repos/{org}/codebase",
+        b"null",
+        400,
+        "Body should be a JSON object",
+        "https://docs.github.com/rest/repos/repos#update-a-repository",
+    ),
+    (
+        "PATCH",
+        "/github/repos/{org}/codebase",
+        b"{",
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/repos/repos#update-a-repository",
+    ),
+    (
+        "DELETE",
+        "/github/repos/{org}/codebase",
+        None,
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/repos/repos#delete-a-repository",
+    ),
+    (
+        "POST",
+        "/github/repos/{org}/codebase/forks",
+        None,
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/repos/forks#create-a-fork",
+    ),
+    (
+        "PUT",
+        "/github/teams/1/repos/{org}/codebase",
+        None,
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/teams/teams#add-or-update-team-repository-permissions-legacy",
+    ),
+    (
+        "POST",
+        "/github/repos/{org}/codebase/git/trees",
+        None,
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/git/trees#create-a-tree",
+    ),
+    (
+        "GET",
+        "/github/repos/{org}/codebase/actions/artifacts/1/zip",
+        None,
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/actions/artifacts#download-an-artifact",
+    ),
+    (
+        "GET",
+        "/github/orgs/ghost-zz-org-9876/settings/billing/usage",
+        None,
+        404,
+        "Not Found",
+        "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
+    ),
+]
+_BASIC_UNKNOWN_TOKEN_DEFAULT_STATUSES = {
+    (method, path): status
+    for method, path, body, status, _, _ in _BASIC_UNKNOWN_TOKEN_ROWS
+    if body is None
+}
+_BASIC_UNKNOWN_TOKEN_DEFAULT_STATUSES[("GET", "/github/organizations/1/settings/billing/usage")] = (
+    404
+)
+
 
 @pytest.mark.parametrize("method, path, refused, status", _UNSERVED_ROWS)
 def test_github_an_unserved_operation_is_refused_for_its_credential_first(
@@ -2889,7 +2988,8 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
     basic = {"Authorization": "Basic Zm9vOmJhcg=="}
     agents = url.startswith("/github/agents")
-    for headers, answered in ((gh_admin_h, status), (basic, 401)):
+    basic_status = _BASIC_UNKNOWN_TOKEN_DEFAULT_STATUSES.get((method, path), 401)
+    for headers, answered in ((gh_admin_h, status), (basic, basic_status)):
         r = c.request(method, url, headers=headers)
         assert r.status_code == answered, headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
@@ -2907,6 +3007,42 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         unversioned = c.request(method, url, headers={**headers, **bad_version})
         assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+
+
+@pytest.mark.parametrize(
+    "method, path, body, status, message, documentation_url", _BASIC_UNKNOWN_TOKEN_ROWS
+)
+def test_github_a_basic_value_without_a_token_answers_unserved_repo_operations(
+    gh_client, gh_org, method, path, body, status, message, documentation_url
+):
+    c, _ = gh_client
+    kwargs = {} if body is None else {"content": body}
+    response = c.request(
+        method,
+        path.format(org=gh_org),
+        headers={
+            "Authorization": "Basic eDp5",
+            "Content-Type": "application/json",
+        },
+        **kwargs,
+    )
+    assert response.status_code == status
+    assert response.json() == {
+        "message": message,
+        "documentation_url": documentation_url,
+        "status": str(status),
+    }
+    assert response.headers["x-github-api-version-selected"] == "2022-11-28"
+    assert all(
+        header in response.headers
+        for header in (
+            "x-ratelimit-limit",
+            "x-ratelimit-remaining",
+            "x-ratelimit-reset",
+            "x-ratelimit-resource",
+            "x-ratelimit-used",
+        )
+    )
 
 
 #: (method, path, whether a request with no `Authorization` header is counted) on the paths

@@ -1286,6 +1286,7 @@ async def route_a_github_path_the_way_github_does(request: Request, call_next):
 @_middleware(
     lambda scope: (
         scope["method"] != "OPTIONS"
+        and errors.atlassian.owns(_url_path(scope))
         and re.sub("/{2,}", "/", _url_path(scope)).startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(Request(scope))
     )
@@ -1307,9 +1308,10 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
     `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
     `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
     one with an unreadable bearer as it answers one with none
-    (``backlot.routers.atlassian._options_answer``). The path is read with each run of slashes as
-    one, as the gateway routes it, since the slash rewrite runs inside this one:
-    `//rest/api/3/serverInfo` was refused as `/rest/api/3/serverInfo` was (Jira Cloud, 2026-11-17).
+    (``backlot.routers.atlassian._options_answer``). The path under the mount is read with each run
+    of slashes as one, as the gateway routes it, since the slash rewrite runs inside this one:
+    `//rest/api/3/serverInfo` and `///rest/api/3/serverInfo` were refused as
+    `/rest/api/3/serverInfo` was (Jira Cloud, 2026-11-17).
     """
     media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
     return Response(body, status_code=403, media_type=media_type)

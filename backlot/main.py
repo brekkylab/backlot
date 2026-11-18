@@ -1285,6 +1285,31 @@ async def route_a_github_path_the_way_github_does(request: Request, call_next):
 
 @_middleware(
     lambda scope: (
+        errors.atlassian.owns(_url_path(scope))
+        and re.sub("/{2,}", "/", _url_path(scope)).startswith("/atlassian/rest/")
+        and errors.atlassian.is_unsupported_browser(Headers(scope=scope).get("user-agent"))
+    )
+)
+async def redirect_an_unsupported_browser_off_jira(request: Request, call_next):
+    """Redirect a Jira REST request from Internet Explorer 11 to the unsupported-browser page, as
+    Jira does (``atlassian.unsupported_browser_redirect``), ahead of every route and every refusal
+    Jira itself gives: its 415, its 406, the body it cannot parse, its 404s, an `OPTIONS` and
+    Spring's 500 for an `Accept` it cannot sort alike.
+
+    Registered before :func:`refuse_a_bearer_jira_cannot_read`, so it runs inside it and inside the
+    front door: the Connect-token 403, the CDN's 400 for a `%00` and the edge's 400 for a `PATCH`
+    are answered first, as on real. Confluence is not here: both its mounts answered the same
+    `User-Agent` as `curl/8` (``errors.atlassian.is_unsupported_browser``). The path under the mount
+    is read with each run of slashes as one, as the gateway routes it, since the slash rewrite runs
+    inside this one: `//rest/api/3/serverInfo` and `///rest/api/3/serverInfo` redirected too (Jira
+    Cloud, 2026-11-17).
+    """
+    request.scope["atlassian_unsupported_browser"] = True
+    return atlassian.unsupported_browser_redirect(request)
+
+
+@_middleware(
+    lambda scope: (
         scope["method"] != "OPTIONS"
         and _url_path(scope).startswith("/atlassian/rest/")
         and auth.atlassian_bearer_unreadable(Request(scope))

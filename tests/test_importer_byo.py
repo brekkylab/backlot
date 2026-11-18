@@ -729,7 +729,8 @@ def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
     synthesized `epoch(doc_id)` for a typo without a word, so a record whose author
     wrote a real date loaded with a hash of its id instead and read as one that had
     been left blank. Every time field whose absence gets a default in its place now
-    refuses an unreadable value, across source types."""
+    refuses an unreadable value, across source types, and so do a GitHub `closed_at`, a
+    Jira `resolutiondate` and the six Linear issue times, whose absence stores NULL."""
     base = {
         "source_type": "confluence",
         "title": "T",
@@ -738,6 +739,14 @@ def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
         "author_email": "b@a.com",
         "visibility": "public",
     }
+    linear_times = (
+        "archivedAt",
+        "autoArchivedAt",
+        "autoClosedAt",
+        "canceledAt",
+        "completedAt",
+        "startedAt",
+    )
     cases = [
         ("created", {**base, "doc_id": "c1", "created": "2026-13-01T00:00:00Z"}),
         ("updated", {**base, "doc_id": "c2", "updated": "2026-05-01 03:00 PM"}),
@@ -766,6 +775,16 @@ def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
         # the numeric door: json.loads reads a bare Infinity as a float
         ("created", {**base, "doc_id": "c4", "created": float("inf")}),
         ("created", {**base, "doc_id": "c5", "created": "0001-01-01T00:00:00+01:00"}),
+        ("closed_at", {"source_type": "github", "doc_id": "g2", "closed_at": "yesterday"}),
+        (
+            "resolutiondate",
+            {"source_type": "jira", "doc_id": "j1", "resolutiondate": "9999-12-31T23:30:00-01:00"},
+        ),
+        # milliseconds where seconds belong
+        *(
+            (field, {"source_type": "linear", "doc_id": f"l-{field}", field: 1770746760000})
+            for field in linear_times
+        ),
     ]
     for field, rec in cases:
         corpus = _write(tmp_path, [rec])
@@ -781,6 +800,42 @@ def test_byo_record_level_clocks_refuse_an_unreadable_value(tmp_path):
         with pytest.raises(SystemExit, match=f"{field} is not a time this importer can read"):
             byo._epoch_field("", "a record", field)
     assert byo._epoch_field(None, "a record", "updated") is None
+
+    # Each time read through `_optional_epoch_field`, written as "" (which `_time_given` reads as
+    # unwritten) and as a readable value: "" stores NULL, and the value its second.
+    records = [
+        {
+            "source_type": src,
+            "doc_id": f"{src}-{title}",
+            "title": title,
+            **dict.fromkeys(fields, at),
+        }
+        for title, at in (("blank", ""), ("written", "2026-02-10T19:00:00Z"))
+        for src, fields in (
+            ("github", ("closed_at",)),
+            ("jira", ("resolutiondate",)),
+            ("linear", linear_times),
+        )
+    ]
+    settings = build_corpus(tmp_path / "optional", records)
+    with closing(sqlite3.connect(settings.db_path)) as conn:
+        stored = [
+            conn.execute(f"SELECT title, {columns} FROM {table} ORDER BY title").fetchall()
+            for table, columns in (
+                ("github_items", "closed_ts"),
+                ("jira_issues", "resolution_ts"),
+                (
+                    "linear_issues",
+                    "archived_ts, auto_archived_ts, auto_closed_ts, canceled_ts, completed_ts, "
+                    "started_ts",
+                ),
+            )
+        ]
+    assert stored == [
+        [("blank", None), ("written", 1770750000)],
+        [("blank", None), ("written", 1770750000)],
+        [("blank", *[None] * 6), ("written", *[1770750000] * 6)],
+    ]
 
 
 def test_byo_a_stated_epoch_zero_is_a_second_not_a_missing_value(tmp_path):

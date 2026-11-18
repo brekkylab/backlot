@@ -260,8 +260,6 @@ def _epoch_field(v, where, field):
     previous message's second, the root's clock plus an hour. Taking that default for a
     typo means the record loads with a time nobody wrote and no way to tell it apart from
     one that was left blank on purpose, which is the whole reason a reply's clock refuses.
-    Optional fields whose absence stores NULL use ``_optional_epoch_field``: left out or
-    written as ``""``, they store NULL, but an unreadable value is refused as a typo.
 
     An empty string is unreadable HERE, though ``_time_given`` calls it unwritten: a field whose
     key the schema requires cannot be left blank by writing nothing into it, and the row it would
@@ -277,21 +275,10 @@ def _epoch_field(v, where, field):
 
 
 def _optional_epoch_field(v, where, field):
-    """An optional corpus-supplied time, refusing a value that is filled in but unreadable.
-
-    Left out, or written as `""` (which ``_time_given`` calls unwritten), answers None so the
-    store holds NULL. A field the author filled in with something this importer cannot read is
-    refused with the message ``_epoch_field`` gives.
-    """
-    if not _time_given(v):
-        return None
-    sec = _epoch(v)
-    if sec is None:
-        raise SystemExit(
-            f"{where}: {field} is not a time this importer can read "
-            f"(got {v!r}; write epoch seconds or ISO 8601)"
-        )
-    return sec
+    """None when ``_time_given`` calls ``v`` unwritten (left out, or written as ``""``), so the
+    store holds NULL; otherwise ``_epoch_field``'s second, which refuses a value this importer
+    cannot read rather than store it as the field left out."""
+    return _epoch_field(v, where, field) if _time_given(v) else None
 
 
 def _hubspot_time(v, where, field):
@@ -334,8 +321,7 @@ def _hubspot_time(v, where, field):
 def _epoch(v):
     """Parse a BYO time (epoch seconds int/float, or ISO 8601 string) -> unix seconds.
 
-    None for a value this cannot read, which the caller decides what to do about: a field whose
-    absence stores NULL takes it as absence, and ``_epoch_field`` refuses it."""
+    None for a value this cannot read, which ``_epoch_field`` refuses."""
     if not _time_given(v):
         return None
     if isinstance(v, bool):
@@ -461,7 +447,8 @@ def _service_columns(
     created=None,
     updated=None,
     owner_display=None,
-    where=None,
+    *,
+    where,
 ) -> dict:
     """Map generic BYO fields to the target service table's own columns.
 
@@ -471,7 +458,8 @@ def _service_columns(
     resolving a jira parent needs keys that are only assigned once the whole corpus has been seen.
 
     ``created``/``updated`` are pre-parsed epoch seconds (or None); slack/gmail carry only
-    ``created_ts``.
+    ``created_ts``. ``where`` names the record in the refusal of an optional time this cannot read
+    (``_optional_epoch_field``).
 
     ``owner_display`` is the owner's name AS THE CORPUS WROTE IT, which the caller reads from
     whichever field the service names it in (``author_name``, gmail's ``mailbox_owner``, fireflies'
@@ -480,7 +468,6 @@ def _service_columns(
     ``<slug>@<domain>``. slack/msteams/notion/s3 have no such column — those APIs carry the sender's
     display name on the message itself (Graph's ``from.user.displayName``), which the principal
     roster already answers, or expose no owner name at all."""
-    at = where or f"{src} {seed!r}"
     if src == "msteams":
         # `reply_to_id` is deliberately absent here: it is the thread ROOT's own id, and that value
         # is only known once the root has been inserted and probed, so the caller sets it.
@@ -561,7 +548,7 @@ def _service_columns(
             "reactions": _j(ex.get("reactions")),
             "created_ts": created,
             "updated_ts": updated,
-            "closed_ts": _optional_epoch_field(ex.get("closed_at"), at, "closed_at"),
+            "closed_ts": _optional_epoch_field(ex.get("closed_at"), where, "closed_at"),
             "closed_by": ex.get("closed_by"),
             "merged_by": ex.get("merged_by"),
             "milestone": ex.get("milestone"),
@@ -584,7 +571,9 @@ def _service_columns(
             "assignee_email": ex.get("assignee"),
             "reporter_email": ex.get("reporter"),
             "resolution": ex.get("resolution"),
-            "resolution_ts": _optional_epoch_field(ex.get("resolutiondate"), at, "resolutiondate"),
+            "resolution_ts": _optional_epoch_field(
+                ex.get("resolutiondate"), where, "resolutiondate"
+            ),
             "duedate": ex.get("duedate"),
             "fix_versions": _j(ex.get("fix_versions")),
             "key": ex.get("key"),
@@ -652,14 +641,14 @@ def _service_columns(
             "due_date": ex.get("dueDate"),
             "created_ts": created,
             "updated_ts": updated,
-            "archived_ts": _optional_epoch_field(ex.get("archivedAt"), at, "archivedAt"),
+            "archived_ts": _optional_epoch_field(ex.get("archivedAt"), where, "archivedAt"),
             "auto_archived_ts": _optional_epoch_field(
-                ex.get("autoArchivedAt"), at, "autoArchivedAt"
+                ex.get("autoArchivedAt"), where, "autoArchivedAt"
             ),
-            "auto_closed_ts": _optional_epoch_field(ex.get("autoClosedAt"), at, "autoClosedAt"),
-            "canceled_ts": _optional_epoch_field(ex.get("canceledAt"), at, "canceledAt"),
-            "completed_ts": _optional_epoch_field(ex.get("completedAt"), at, "completedAt"),
-            "started_ts": _optional_epoch_field(ex.get("startedAt"), at, "startedAt"),
+            "auto_closed_ts": _optional_epoch_field(ex.get("autoClosedAt"), where, "autoClosedAt"),
+            "canceled_ts": _optional_epoch_field(ex.get("canceledAt"), where, "canceledAt"),
+            "completed_ts": _optional_epoch_field(ex.get("completedAt"), where, "completedAt"),
+            "started_ts": _optional_epoch_field(ex.get("startedAt"), where, "startedAt"),
             "assignee_email": ex.get("assignee"),
             "assignee_display": ex.get("assigneeName"),
             "owner_display": owner_display,
@@ -2473,7 +2462,18 @@ class _Loader:
                 self._parent_seeds.setdefault(src, {})[did] = par
                 par = synth.notion_id(par)
             cols = _service_columns(
-                src, ex or {}, sub, par, did, gmail_thread, seq, org_domain, cts, uts, odisp, where
+                src,
+                ex or {},
+                sub,
+                par,
+                did,
+                gmail_thread,
+                seq,
+                org_domain,
+                cts,
+                uts,
+                odisp,
+                where=where,
             )
             cols.update(author_email=email, content=body)
             if src not in store.TITLELESS:

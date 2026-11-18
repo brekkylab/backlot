@@ -272,19 +272,30 @@ def _request(record: dict) -> str:
     return json.dumps([req["method"], req["url"], req["headers"], req["body"]])
 
 
-def _pairs(old: dict, new: dict) -> tuple[list[tuple], list, list]:
+def _answer(record: dict) -> str:
+    return json.dumps([_request(record), record.get("status"), record.get("body")])
+
+
+def _pairs(old: dict, new: dict, by_answer: bool = False) -> tuple[list[tuple], list, list]:
     """Each exchange of one run paired with its counterpart in another, and those of each run left
     unpaired. A request a shared fixture or cache sends lands in whichever test needs it first, and
     shifts the position of every request after it there, so exchanges pair by their request: within
     their test, then across tests, then what is left of a test in order (a signed or dated request
-    differs between runs)."""
+    differs between runs). ``by_answer`` first pairs those whose status and body match too, so a
+    fixture's copy of a request is not taken for the test's own copy, answered otherwise."""
     pairs: list[tuple] = []
     left_old, left_new = sorted(old), sorted(new)
-    for scope in (
+    scopes = [
         lambda key, record: (key[0], _request(record)),
         lambda key, record: _request(record),
         lambda key, record: key[0],
-    ):
+    ]
+    if by_answer:
+        scopes[:0] = [
+            lambda key, record: (key[0], _answer(record)),
+            lambda key, record: _answer(record),
+        ]
+    for scope in scopes:
         groups: dict = {}
         for key in left_new:
             groups.setdefault(scope(key, new[key]), []).append(key)
@@ -328,7 +339,7 @@ def _noise(base: dict, calibration: dict) -> tuple[dict[str, bool], dict]:
     exchange of the base."""
     names: dict[str, bool] = {}
     parts: dict[tuple[str, int], set[str]] = {}
-    for key, other in _pairs(base, calibration)[0]:
+    for key, other in _pairs(base, calibration, by_answer=True)[0]:
         old, new = _view(base[key]), _view(calibration[other])
         for part in set(old) | set(new):
             if old.get(part) != new.get(part):

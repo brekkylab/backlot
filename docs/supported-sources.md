@@ -15,7 +15,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 <!-- generated:sources start -->
 | `source_type` | Service | URL prefix | Endpoints | Record schema | What one record is |
 |---|---|---|---|---|---|
-| `confluence` | Confluence | `/atlassian/wiki/rest/api` | 10 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
+| `confluence` | Confluence | `/atlassian/wiki/rest/api` | 12 | [`confluence.schema.json`](../backlot/schemas/confluence.schema.json) | A Confluence page or blogpost. |
 | `fireflies` | Fireflies | `/fireflies/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`fireflies.schema.json`](../backlot/schemas/fireflies.schema.json) | A Fireflies.ai meeting transcript. |
 | `github` | GitHub | `/github` | 34 | [`github.schema.json`](../backlot/schemas/github.schema.json) | A GitHub issue, pull request, file, or the repository itself. |
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
@@ -44,6 +44,8 @@ Ordered as the table above, by `source_type`.
 | `content/{id}/child/page` | |
 | `content/{id}/label` | |
 | `content/{id}/restriction/byOperation` | |
+| `contentbody/convert/async/{id}` | Invalid ids get the pattern's 400; a valid id naming no task gets 401 anonymously or 403 authenticated |
+| `contentbody/convert/async/bulk/tasks` | One FAILED task per `ids` value in request order, or an empty list. No route starts conversions |
 | `search` | CQL |
 | `space` | `spaceKey` (one or more keys, any case; a key naming no space lists nothing), `expand=description,permissions` |
 | `space/{key}` | `expand=description,permissions` |

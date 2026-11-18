@@ -791,6 +791,29 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
     assert conf.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
 
 
+def test_jira_refuses_a_bearer_it_cannot_read_on_a_run_of_slashes(client):
+    refused = (403, {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE})
+    not_found = (404, {"detail": "Not Found"})
+    expected = {
+        # a run of slashes under the mount, which the gateway reads as one
+        # (``backlot.main.refuse_a_bearer_jira_cannot_read``), and the same paths with no credential
+        # as the control
+        ("/atlassian//rest/api/3/serverInfo", "Bearer garbage"): refused,
+        ("/atlassian///rest/api/3/serverInfo", "Bearer garbage"): refused,
+        ("/atlassian//rest/api/3/serverInfo", None): (200, None),
+        ("/atlassian///rest/api/3/serverInfo", None): (200, None),
+        # the mount doubled, a path of Backlot's own (``errors.atlassian.owns``) with a bearer as
+        # with none, sent as a whole URL: httpx takes the `atlassian` of `//atlassian/…` for a host
+        ("http://testserver//atlassian/rest/api/3/serverInfo", "Bearer garbage"): not_found,
+        ("http://testserver//atlassian/rest/api/3/serverInfo", None): not_found,
+    }
+    answered = {}
+    for url, authorization in expected:
+        r = client.get(url, headers={"Authorization": authorization} if authorization else {})
+        answered[url, authorization] = (r.status_code, None if r.status_code == 200 else r.json())
+    assert answered == expected
+
+
 _SCHEMES = [
     "bearer usr-nope",
     "BEARER usr-nope",

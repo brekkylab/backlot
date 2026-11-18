@@ -617,6 +617,118 @@ def test_jira_role_routes_find_a_project_by_its_key_as_written_or_its_id(
     assert answered == dict.fromkeys(paths, (200, None) if found else (404, refusal))
 
 
+IE11 = "Mozilla/5.0 (Windows NT 6.1; Trident/7.0; rv:11.0) like Gecko"
+
+
+@pytest.mark.parametrize(
+    "user_agent, redirected",
+    [
+        (IE11, True),
+        ("Trident/7.0; rv:11.0", True),
+        # no version is checked
+        *(
+            (ua, True)
+            for ua in ("Trident/6.0; rv:11.0", "Trident/77.77; rv:11.0", "Trident/7.0; rv:1.1")
+        ),
+        # a substring: what stands around it does not matter
+        *(
+            (ua, True)
+            for ua in (
+                "Trident/7.0; rv:11.0x",
+                "xTrident/7.0; rv:11.0",
+                "Trident/7.0; rv:11.0, curl/8",
+            )
+        ),
+        # each version is digits, a dot, digits, and exactly `; ` stands between them
+        *(
+            (ua, False)
+            for ua in (
+                *("Trident/7.0", "rv:11.0", "rv:11.0 Trident/7.0;", "Trident/7; rv:11.0"),
+                *("Trident/7.0.1; rv:11.0", "Trident/7.0; rv:11", "Trident/7.0; Rv:11.0"),
+                *("Trident/7.0;rv:11.0", "Trident/7.0;  rv:11.0", "Trident/7.0; foo; rv:11.0"),
+                *("trident/7.0; rv:11.0", "TRIDENT/7.0; rv:11.0"),
+            )
+        ),
+        # real IE11 on a touch device, IE10, Firefox and curl
+        ("Mozilla/5.0 (Windows NT 10.0; Trident/7.0; Touch; rv:11.0) like Gecko", False),
+        ("Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)", False),
+        ("Mozilla/5.0 (Windows NT 6.1; rv:11.0) Gecko/20100101 Firefox/11.0", False),
+        ("curl/8", False),
+    ],
+)
+def test_jira_redirects_internet_explorer_11_by_its_user_agent(client, user_agent, redirected):
+    """Rows drawn from the 70 `User-Agent` values measured on a Jira Cloud site, each as
+    ``errors.atlassian.is_unsupported_browser`` decides it."""
+    r = client.get(
+        "/atlassian/rest/api/3/serverInfo",
+        headers={"User-Agent": user_agent},
+        follow_redirects=False,
+    )
+    assert r.status_code == (302 if redirected else 200), user_agent
+
+
+def test_jira_redirects_internet_explorer_11_ahead_of_what_it_answers(client, admin_h):
+    """Jira answers IE11 with a 302 to its unsupported-browser page in place of what each row
+    would get, a `HEAD` included, with a credential that works and with none, and on a path whose
+    slashes are doubled (``main.redirect_an_unsupported_browser_off_jira`` lists the answers)."""
+    ua = {"User-Agent": IE11}
+    unsortable = {"Accept": "application/json;Q=abc, text/plain"}
+    requests = [
+        ("GET", "/rest/api/3/serverInfo?cb=1", {}),
+        ("GET", "/rest/api/3/project/search", admin_h),
+        ("GET", "/rest/api/2/serverInfo", {"Accept": "application/xml"}),
+        ("POST", "/rest/api/3/search/jql", {**admin_h, "Content-Type": "text/plain"}),
+        ("GET", "/rest/agile/1.0/board", admin_h),
+        ("GET", "/rest/nope/thing", {}),
+        ("OPTIONS", "/rest/api/3/serverInfo", {}),
+        ("HEAD", "/rest/api/3/serverInfo", {}),
+        ("GET", "/rest/api/3/serverInfo", unsortable),
+        ("OPTIONS", "/rest/api/3/serverInfo", unsortable),
+        ("GET", "//rest/api/3/serverInfo", {}),
+    ]
+    for method, path, headers in requests:
+        r = client.request(
+            method, f"/atlassian{path}", headers={**headers, **ua}, follow_redirects=False
+        )
+        assert r.status_code == 302, (method, path)
+        assert r.headers["location"] == "http://testserver/unsupported-browser.jsp", path
+        assert r.content == b"", path
+        if method != "HEAD":
+            assert r.headers["content-length"] == "0", path
+        assert "content-type" not in r.headers, path
+        assert r.headers["timing-allow-origin"] == "*" and "x-arequestid" in r.headers, path
+        assert r.headers["x-content-type-options"] == "nosniff", path
+        for absent in ("cache-control", "x-aaccountid", "x-ratelimit-limit"):
+            assert absent not in r.headers, (path, absent)
+
+
+def test_jira_reads_only_the_first_user_agent_and_redirects_nothing_but_jira(client, admin_h):
+    """Two `User-Agent` headers: only the first decides, so IE11 then curl redirects and curl then
+    IE11 is served, as are the two halves sent apart. Confluence answers IE11 as any client, as does
+    `//atlassian/…`, a path of Backlot's own (``errors.atlassian.owns``), and the Connect-token 403
+    stands ahead of the redirect (``main.redirect_an_unsupported_browser_off_jira``)."""
+    url = "/atlassian/rest/api/3/serverInfo"
+
+    def status(*agents, extra=()):
+        headers = [*(("User-Agent", a) for a in agents), *extra]
+        return client.get(url, headers=headers, follow_redirects=False).status_code
+
+    assert status(IE11, "curl/8") == 302
+    assert status("curl/8", IE11) == 200
+    assert status("Trident/7.0;", "rv:11.0") == 200
+    assert status(IE11, extra=[("Authorization", "Bearer garbage")]) == 403
+    wiki = client.get("/atlassian/wiki/rest/api/space", headers={**admin_h, "User-Agent": IE11})
+    assert wiki.status_code == 200
+    # sent as a whole URL: httpx takes the `atlassian` of `//atlassian/…` for a host
+    doubled = {}
+    for agent in (IE11, "curl/8"):
+        r = client.get(
+            f"http://testserver/{url}", headers={"User-Agent": agent}, follow_redirects=False
+        )
+        doubled[agent] = (r.status_code, r.content)
+    assert doubled == dict.fromkeys((IE11, "curl/8"), (404, b'{"detail":"Not Found"}'))
+
+
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
@@ -677,6 +789,29 @@ def test_jira_answers_a_jwt_shaped_bearer_with_the_403_too(client):
     conf = client.get("/atlassian/wiki/rest/api/space", headers={"Authorization": f"Bearer {jws}"})
     assert conf.status_code == 403
     assert conf.json()["message"] == errors_atlassian.CONFLUENCE_FORBIDDEN
+
+
+def test_jira_refuses_a_bearer_it_cannot_read_on_a_run_of_slashes(client):
+    refused = (403, {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE})
+    not_found = (404, {"detail": "Not Found"})
+    expected = {
+        # a run of slashes under the mount, which the gateway reads as one
+        # (``backlot.main.refuse_a_bearer_jira_cannot_read``), and the same paths with no credential
+        # as the control
+        ("/atlassian//rest/api/3/serverInfo", "Bearer garbage"): refused,
+        ("/atlassian///rest/api/3/serverInfo", "Bearer garbage"): refused,
+        ("/atlassian//rest/api/3/serverInfo", None): (200, None),
+        ("/atlassian///rest/api/3/serverInfo", None): (200, None),
+        # the mount doubled, a path of Backlot's own (``errors.atlassian.owns``) with a bearer as
+        # with none, sent as a whole URL: httpx takes the `atlassian` of `//atlassian/…` for a host
+        ("http://testserver//atlassian/rest/api/3/serverInfo", "Bearer garbage"): not_found,
+        ("http://testserver//atlassian/rest/api/3/serverInfo", None): not_found,
+    }
+    answered = {}
+    for url, authorization in expected:
+        r = client.get(url, headers={"Authorization": authorization} if authorization else {})
+        answered[url, authorization] = (r.status_code, None if r.status_code == 200 else r.json())
+    assert answered == expected
 
 
 _SCHEMES = [
@@ -7226,7 +7361,7 @@ def test_atlassian_serves_a_path_the_gateway_normalises(client, admin_h, path):
         ),
         # the controls: one real runs with no credential at all, and a caller whose credential
         # resolves (``backlot.routers.atlassian._confluence_refusal``)
-        ("GET", "/atlassian/wiki/rest/api/contentbody/convert/async/bulk/tasks", True, None),
+        ("POST", "/atlassian/wiki/rest/api/contentbody/convert/async/bulk/tasks", True, None),
         ("GET", "/atlassian/wiki/rest/api/user/current", False, None),
         ("GET", "/atlassian/wiki/rest/api/content/{content}/history", False, None),
     ],
@@ -13116,5 +13251,88 @@ def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, ad
     for path, _ in rows:
         r = client.get(f"{api}/{path.format(id=cid)}", headers=admin_h)
         answered[path] = (r.status_code, r.json()["limit"] if r.status_code == 200 else r.json())
+    assert len(answered) == len(rows)
+    assert answered == dict(rows)
+
+
+def test_confluence_reads_conversion_tasks_that_do_not_exist(client, admin_h):
+    """Pins ``backlot.routers.atlassian.confluence_conversion_task``,
+    ``backlot.routers.atlassian.confluence_conversion_tasks`` and the 405
+    ``errors.atlassian.method_not_allowed`` answers on their paths, row by row."""
+    callers = {"none": {}, "rejected": FAILED_PAIR, "admin": admin_h}
+    json_type = "application/json"
+    realm = 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"'
+    allow = "HEAD,POST,GET,OPTIONS"
+    pattern = (
+        rb'{"statusCode":400,"data":{"authorized":true,"valid":true,"errors":[],"successful":true},'
+        rb'"message":"com.atlassian.confluence.api.service.exceptions.api.BadRequestException: '
+        rb'ID must match pattern: ^[\\w-:]*_-{0,1}\\w*_{0,1}\\w*$"}'
+    )
+    unauthenticated = (
+        rb'{"statusCode":401,"data":{"authorized":false,"valid":true,"errors":[],'
+        rb'"successful":false},"message":"com.atlassian.confluence.api.service.exceptions.'
+        rb"AuthenticationRequiredException: User must be authenticated to get non anonymous "
+        rb'conversion job."}'
+    )
+    forbidden = (
+        rb'{"statusCode":403,"data":{"authorized":true,"valid":true,"errors":[],"successful":true},'
+        rb'"message":"com.atlassian.confluence.api.service.exceptions.api.PermissionException: '
+        rb'null"}'
+    )
+
+    def tasks(*ids):
+        task = (
+            '{{"webresource":null,"embeddedContent":[],"content":null,"mediaToken":null,'
+            '"renderTaskId":"{}","status":"FAILED","error":"ID is invalid or nonexistent"}}'
+        )
+        return ("[" + ",".join(task.format(task_id) for task_id in ids) + "]").encode()
+
+    rows = [
+        (("GET", "1", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "1", "admin"), (400, json_type, pattern, None, None)),
+        (("GET", "abc", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "bulk", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "abc_%C3%A9", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "abc_1%0A", "none"), (400, json_type, pattern, None, None)),
+        (("GET", "abc_1", "none"), (401, json_type, unauthenticated, realm, None)),
+        (("GET", "abc_1/", "none"), (401, json_type, unauthenticated, realm, None)),
+        (("GET", "a:b-c_1", "none"), (401, json_type, unauthenticated, realm, None)),
+        (("GET", "abc_1", "rejected"), (401, json_type, unauthenticated, realm, None)),
+        (("HEAD", "abc_1", "none"), (401, json_type, b"", realm, None)),
+        (("GET", "abc_1", "admin"), (403, json_type, forbidden, None, None)),
+        (("GET", "bulk/tasks", "none"), (200, json_type, b"[]", None, None)),
+        (("GET", "bulk/tasks/", "none"), (200, json_type, b"[]", None, None)),
+        (
+            ("GET", "bulk/tasks?ids=b_2&ids=a_1", "none"),
+            (200, json_type, tasks("b_2", "a_1"), None, None),
+        ),
+        (
+            ("GET", "bulk/tasks?ids=abc_1&ids=abc_1", "none"),
+            (200, json_type, tasks("abc_1", "abc_1"), None, None),
+        ),
+        (("GET", "bulk/tasks?ids=a,b", "none"), (200, json_type, tasks("a,b"), None, None)),
+        (("GET", "bulk/tasks?ids=", "none"), (200, json_type, tasks(""), None, None)),
+        (("GET", "bulk/tasks?ids", "none"), (200, json_type, tasks(""), None, None)),
+        (("GET", "bulk/tasks?ids=abc_1", "rejected"), (200, json_type, tasks("abc_1"), None, None)),
+        (("GET", "bulk/tasks?ids=abc_1", "admin"), (200, json_type, tasks("abc_1"), None, None)),
+        (("PUT", "bulk/tasks", "none"), (405, None, b"", None, allow)),
+        (("DELETE", "bulk/tasks", "admin"), (405, None, b"", None, allow)),
+        (("DELETE", "abc_1", "none"), (405, None, b"", None, allow)),
+        (("PUT", "abc_1", "admin"), (405, None, b"", None, allow)),
+    ]
+    answered = {}
+    for method, path, caller in (key for key, _ in rows):
+        r = client.request(
+            method,
+            f"/atlassian/wiki/rest/api/contentbody/convert/async/{path}",
+            headers=callers[caller],
+        )
+        answered[method, path, caller] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.content,
+            r.headers.get("www-authenticate"),
+            r.headers.get("allow"),
+        )
     assert len(answered) == len(rows)
     assert answered == dict(rows)

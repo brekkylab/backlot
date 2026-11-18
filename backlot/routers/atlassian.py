@@ -55,8 +55,8 @@ async def _checked_before_the_route(request: Request) -> None:
     (:func:`_refuse_a_search_media_type`) and then the 406, ahead of an empty body's 400, an
     unbounded query's 400, a parameter's 400 and the route's own answer. `space/{key}/permission` is
     the one route this asks the 401 alone of: the 405 it answers comes before the 406. On `search`
-    a `Content-Type` its JAX-RS service will not read is refused between the 401 and the 406
-    (:func:`_refuse_the_search_media_type`).
+    and the conversion-task reads, a `Content-Type` their JAX-RS service will not read is
+    refused between the 401 and the 406 (:func:`_refuse_the_search_media_type`).
     """
     endpoint = getattr(request.scope.get("route"), "endpoint", None)
     jaxrs = False
@@ -66,7 +66,11 @@ async def _checked_before_the_route(request: Request) -> None:
             _confluence_caller(request)
         if endpoint is confluence_space_permission:
             return
-        jaxrs = endpoint is confluence_cql_search
+        jaxrs = endpoint in (
+            confluence_cql_search,
+            confluence_conversion_task,
+            confluence_conversion_tasks,
+        )
         if jaxrs:
             _refuse_the_search_media_type(request)
     elif endpoint is jira_search and request.method == "POST":
@@ -2394,6 +2398,74 @@ async def confluence_cql_search(request: Request):
             }
         ),
         media_type="application/json",
+    )
+
+
+@router.get(
+    "/wiki/rest/api/contentbody/convert/async/bulk/tasks",
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "ids",
+                "in": "query",
+                "required": False,
+                "schema": {"type": "array", "items": {"type": "string"}},
+            }
+        ]
+    },
+)
+async def confluence_conversion_tasks(request: Request):
+    """The bulk read Confluence Cloud answered on 2026-10-22 and 2026-11-17 with a FAILED task for
+    each `ids` value, in request order with a repeat kept: `ids=a,b` is the one id `a,b`, and an
+    `ids` with an empty value or no `=` is one task with an empty id. No id names a task here
+    (:func:`confluence_conversion_task`)."""
+    return [
+        {
+            "webresource": None,
+            "embeddedContent": [],
+            "content": None,
+            "mediaToken": None,
+            "renderTaskId": task_id,
+            "status": "FAILED",
+            "error": "ID is invalid or nonexistent",
+        }
+        for task_id in request.query_params.getlist("ids")
+    ]
+
+
+@router.get("/wiki/rest/api/contentbody/convert/async/{task_id}")
+async def confluence_conversion_task(task_id: str, request: Request):
+    """Confluence Cloud conversion-task read, measured 2026-10-22 and 2026-11-17: an id outside the
+    pattern, a non-ASCII letter included, is a 400 with a credential or without; one inside it is a
+    403 to a caller a credential resolves, and a 401 naming the site's OAuth realm to a request with
+    no credential or a Basic pair real rejects. Backlot starts no conversions, so no id names a
+    task."""
+    headers = None
+    pattern = r"^[\w-:]*_-{0,1}\w*_{0,1}\w*$"
+    # Keep Java's pattern in the message; Python requires the literal hyphen last.
+    if re.fullmatch(r"^[\w:-]*_-{0,1}\w*_{0,1}\w*$", task_id, re.ASCII) is None:
+        status = 400
+        message = f"api.BadRequestException: ID must match pattern: {pattern}"
+    elif auth.atlassian_caller(request).is_anonymous:
+        status = 401
+        message = (
+            "AuthenticationRequiredException: User must be authenticated "
+            "to get non anonymous conversion job."
+        )
+        realm = quote(f"{_site(request)}/wiki", safe="")
+        headers = {"WWW-Authenticate": f'OAuth realm="{realm}"'}
+    else:
+        status = 403
+        message = "api.PermissionException: null"
+    allowed = status != 401
+    raise errors_atlassian.AtlassianError(
+        status,
+        {
+            "statusCode": status,
+            "data": {"authorized": allowed, "valid": True, "errors": [], "successful": allowed},
+            "message": "com.atlassian.confluence.api.service.exceptions." + message,
+        },
+        headers=headers,
     )
 
 
@@ -5244,6 +5316,9 @@ _CONFLUENCE_JAXRS_GETS = _operations(
 _CONFLUENCE_JAXRS_GETS_UNTYPED = _operations(["GET /wiki/rest/api/settings/lookandfeel"])
 #: The two of them that ran with no credential: `[]` at 200 and a 404 for an id naming nothing.
 _CONFLUENCE_JAXRS_RUN = tuple(row for row in _CONFLUENCE_JAXRS_WRITES if "/contentbody/" in row)
+#: ``_CONFLUENCE_JAXRS_RUN`` as operations, for :func:`unmatched_path`: real runs these writes, so a
+#: route serving the GET on their path is no reason to answer them with a 405.
+_CONFLUENCE_CONVERSION_WRITES = _operations(_CONFLUENCE_JAXRS_RUN)
 
 #: The Confluence services whose refusal of a caller with no credential is
 #: ``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY`` rather than the one every other operation
@@ -5783,11 +5858,14 @@ def spring_sort_failure(request: Request, status: int, headers, body: bytes) -> 
     405s, 406s and 415s among them: on Jira by its 500 page (``errors.atlassian.jira_oops_page``)
     with no `WWW-Authenticate`, an `OPTIONS` by the empty 500 and seven methods in `Allow`, whatever
     the credential; on Confluence by an empty 500 with no `content-type`. What comes before Spring
-    stands: the gateway's Connect-token 403, Tomcat's 401 for an unreadable Basic value, and on
-    Confluence's JAX-RS services Jersey's own reading of the header, its 400
-    (``errors.atlassian.not_acceptable``) or the 404's 500.
+    stands: the gateway's Connect-token 403, Jira's redirect of an unsupported browser
+    (:func:`unsupported_browser_redirect`, a `GET` and an `OPTIONS` on 2026-11-17), Tomcat's 401
+    for an unreadable Basic value, and on Confluence's JAX-RS services Jersey's own reading of the
+    header, its 400 (``errors.atlassian.not_acceptable``) or the 404's 500.
     """
     if not errors_atlassian.is_confluence(request.url.path):
+        if request.scope.get("atlassian_unsupported_browser"):
+            return None
         if status == 403 and auth.atlassian_bearer_unreadable(request):
             return None
         media = errors_atlassian.JIRA_OOPS_MEDIA_TYPE
@@ -5998,6 +6076,16 @@ def _search_options(request: Request) -> Response:
 _JIRA_WEB_PAGE = "<!DOCTYPE html><html><head><title>Jira</title></head><body></body></html>"
 
 
+def unsupported_browser_redirect(request: Request) -> Response:
+    """Jira's answer to a request from a browser it does not support
+    (``errors.atlassian.is_unsupported_browser``): `302 Found` with no body and no `content-type`,
+    to the page on the site's own origin, the query not carried. Measured on a Jira Cloud site on
+    2026-11-16 on every REST mount, every method, any credential short of a Bearer and none;
+    `/wiki` answered the same `User-Agent` as any other."""
+    location = f"{_site(request)}{errors_atlassian.UNSUPPORTED_BROWSER_PAGE}"
+    return Response(status_code=302, headers={"Location": location})
+
+
 def _site_surface(request: Request) -> Response:
     """What the site answers outside both API mounts, measured on 2026-09-30.
 
@@ -6057,8 +6145,9 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     Those are the answers where the vendor publishes nothing for the method at the path. An
     operation it does publish is looked at first, at a served route's path as at any other, since
     real reaches it whether or not Backlot serves it (:func:`_published_answer`); a caller it would
-    run for gets the answer above. Outside both API mounts the site is its web app
-    (:func:`_site_surface`).
+    run for gets the answer above, and a write :data:`_CONFLUENCE_CONVERSION_WRITES` names gets the
+    answer of a path with no route though a route serves the GET on its path. Outside both API
+    mounts the site is its web app (:func:`_site_surface`).
     """
     # the path as routed, not `request.url.path`: parsing the URL again drops a decoded newline or
     # tab and ends the path at a decoded `#`, so `myse%0Alf` would be looked up as `myself`
@@ -6070,7 +6159,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     published = _published_answer(request, vendor_path)
     if published is not None:
         return published
-    if served:
+    if served and not _is(_CONFLUENCE_CONVERSION_WRITES, request.method, vendor_path):
         raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
     if errors_atlassian.is_confluence(path):
         if (
@@ -6324,6 +6413,11 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
         if sends_deprecation(path, status_code) and _a_route_answers(request):
             headers.update(CONFLUENCE_DEPRECATION)
         return headers
+    if request.scope.get("atlassian_unsupported_browser"):
+        # The redirect is given ahead of the application: Jira's request id and
+        # `timing-allow-origin` beside the gateway's, and no `cache-control`, account id or quota,
+        # with a credential that resolves as with none (:func:`unsupported_browser_redirect`).
+        return {**headers, "timing-allow-origin": "*"}
     if status_code == 403 and auth.atlassian_bearer_unreadable(request):
         # The Connect-token 403 is the gateway's
         # (``backlot.main.refuse_a_bearer_jira_cannot_read``): real puts the two ids and

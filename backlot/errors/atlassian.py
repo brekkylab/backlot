@@ -164,6 +164,25 @@ def serves_the_jira_api(path: str) -> bool:
     return vendor_path == JIRA_REST or vendor_path.startswith(f"{JIRA_REST}/")
 
 
+#: What Jira takes for Internet Explorer 11 in the first `User-Agent`, searched anywhere in it and
+#: case-sensitive. Measured on a Jira Cloud site on 2026-11-16 over 70 values on
+#: `GET /rest/api/3/issue/{key}`: `Trident/7.0; rv:11.0` redirects with any digits on either
+#: side and any tokens around it, and `Trident/7; rv:11.0`, `Trident/7.0;rv:11.0`,
+#: `Trident/7.0; Touch; rv:11.0`, `trident/7.0; rv:11.0` and every other browser are served.
+_UNSUPPORTED_BROWSER = re.compile(r"Trident/\d+\.\d+; rv:\d+\.\d+", re.ASCII)
+
+#: Where Jira sends the browser :data:`_UNSUPPORTED_BROWSER` matches. Backlot does not serve the
+#: page itself, so a client that follows the redirect gets the site's not-found page.
+UNSUPPORTED_BROWSER_PAGE = "/unsupported-browser.jsp"
+
+
+def is_unsupported_browser(user_agent: str | None) -> bool:
+    """Whether Jira redirects a request whose first `User-Agent` is ``user_agent`` to
+    :data:`UNSUPPORTED_BROWSER_PAGE`. Only the first header counts: `Trident/7.0; rv:11.0` then
+    `curl/8` redirected, and `curl/8` then `Trident/7.0; rv:11.0` was served."""
+    return user_agent is not None and _UNSUPPORTED_BROWSER.search(user_agent) is not None
+
+
 def is_confluence(path: str) -> bool:
     """Which of the two products serves ``path``. They answer several things differently — the
     refusal envelope below, and how a query parameter is read — and one predicate keeps the
@@ -2379,6 +2398,13 @@ _CONFLUENCE_ALLOW_PATTERNS = tuple((route_regex(t), allow) for t, allow in _CONF
 #: 2026-10-13, `POST search` under `text/html` and under `application/json`.
 _CONFLUENCE_SEARCH = "/wiki/rest/api/search"
 _CONFLUENCE_SEARCH_ALLOW = "HEAD,GET,OPTIONS"
+#: The conversion-task reads are JAX-RS services: a method they do not take is a 405 with no body
+#: under no `content-type`, and an `Allow` of the methods their paths take. Measured 2026-11-17
+#: with `PUT` and `DELETE` on both paths, with a credential and without.
+_CONFLUENCE_CONVERSION_TASK = re.compile(
+    r"/wiki/rest/api/contentbody/convert/async/(?:bulk/tasks|[^/]+)"
+)
+_CONFLUENCE_CONVERSION_TASK_ALLOW = "HEAD,POST,GET,OPTIONS"
 
 
 def method_not_allowed(path: str, method: str) -> AtlassianError:
@@ -2396,7 +2422,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
     A Jira path carrying a bracket is Tomcat's 405 page instead (:func:`_jira_tomcat_refusal`).
     A client reading `errors[0]["code"]` is the one Confluence's 405 serves; Confluence's
     served-route envelope (:func:`_confluence_envelope`) has no `errors` at all. Confluence's
-    `search` is neither (:data:`_CONFLUENCE_SEARCH_ALLOW`).
+    `search` and conversion-task reads are neither (:data:`_CONFLUENCE_SEARCH_ALLOW`,
+    :data:`_CONFLUENCE_CONVERSION_TASK_ALLOW`).
 
     ``headers`` of ``{}`` is the empty header set, not "no opinion": real sends no `Allow` on a path
     no row names. Starlette would compute one there from the catch-all
@@ -2409,6 +2436,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
         vendor_path = _instance(path).rstrip("/")
         if vendor_path == _CONFLUENCE_SEARCH:
             return AtlassianError(405, b"", headers={"Allow": _CONFLUENCE_SEARCH_ALLOW})
+        if _CONFLUENCE_CONVERSION_TASK.fullmatch(vendor_path):
+            return AtlassianError(405, b"", headers={"Allow": _CONFLUENCE_CONVERSION_TASK_ALLOW})
         allow = next(
             (
                 allow

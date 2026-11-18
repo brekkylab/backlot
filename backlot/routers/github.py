@@ -681,6 +681,36 @@ _PUBLISHED_NOT_SERVED = published.operations(
 _ROUTED_UNPUBLISHED = published.operations(
     ("GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
+_BASIC_NO_TOKEN_NOT_FOUND = (
+    (
+        published.operations(("PATCH /repos/{}/{}",)),
+        "https://docs.github.com/rest/repos/repos#update-a-repository",
+    ),
+    (
+        published.operations(("DELETE /repos/{}/{}",)),
+        "https://docs.github.com/rest/repos/repos#delete-a-repository",
+    ),
+    (
+        published.operations(("POST /repos/{}/{}/forks",)),
+        "https://docs.github.com/rest/repos/forks#create-a-fork",
+    ),
+    (
+        published.operations(("PUT /teams/{}/repos/{}/{}",)),
+        "https://docs.github.com/rest/teams/teams#add-or-update-team-repository-permissions-legacy",
+    ),
+    (
+        published.operations(("POST /repos/{}/{}/git/trees",)),
+        "https://docs.github.com/rest/git/trees#create-a-tree",
+    ),
+    (
+        published.operations(("GET /repos/{}/{}/actions/artifacts/{}/zip",)),
+        "https://docs.github.com/rest/actions/artifacts#download-an-artifact",
+    ),
+    (
+        published.operations(("GET /orgs/{}/settings/billing/usage",)),
+        "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
+    ),
+)
 #: The unserved reads real was measured serving a caller with no credential
 #: (:func:`_a_tab_credential_on_a_read_real_serves_without_one`).
 _READS_REAL_SERVES_WITHOUT_A_CREDENTIAL = published.operations(
@@ -833,13 +863,16 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     the eight operations the tests send, each pinned to `1999-01-01`, so was an empty
     `Authorization`.
 
-    A `Basic` value that names no token is the caller a served route serves with no credential: on
-    those eight, `Basic Zm9vOmJhcg==` was each operation's own answer to that caller, carrying the
-    echo and the five, on every method (2026-10-16). That answer was "Requires authentication" on
-    `GET /user/packages` and `DELETE /user/keys/1`, and on the other six a 400, a 403, a 404 or the
-    401 "You must be logged in to do that.". Pinned to `1999-01-01`, `GET /user/packages`,
-    `DELETE /user/keys/1`, `POST /user/gpg_keys` and `GET /gists/starred` were the version's 400,
-    counted. Here it is :func:`_require`'s 401 after the version, carrying both.
+    A `Basic` value naming no token gets a 404 and the operation's own documentation anchor on these
+    seven operations, measured against api.github.com on 2026-11-18 (UTC): `PATCH` and `DELETE`
+    `/repos/{owner}/{repo}`, `POST …/forks`, `PUT /teams/{team_id}/repos/{owner}/{repo}`,
+    `POST …/git/trees`, `GET …/actions/artifacts/{artifact_id}/zip` and
+    `GET /orgs/{org}/settings/billing/usage`. On the repository `PATCH`, no body and `[]` were the
+    400 "Body should be a JSON object", `x` was the 400 "Problems parsing JSON", and `{}` was the
+    404. Each carried the version echo and the five `x-ratelimit-*`. On 2026-10-26,
+    `DELETE /user/keys/1`, `POST /user/gpg_keys`, `GET /user/packages` and `GET /gists/starred`
+    remained 401 "Requires authentication" with a `Basic` value naming no token. Other unserved
+    operations keep the 401 this function gives them; the ones not measured are not inferred.
 
     A `Basic` value holding a token in one of real's shapes (``backlot.auth._GITHUB_TOKEN_SHAPE``)
     that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
@@ -876,6 +909,42 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         request.state.github_unserved_refusal = "reported"
     await _validate_bad_credential(request)
     await _validate_api_version(request)
+    if auth.github_scheme(request)[0] == "basic" and auth.github_credential(request) is None:
+        path = request.scope["path"].removeprefix("/github")
+        documentation_url = next(
+            (
+                docs
+                for operations, docs in _BASIC_NO_TOKEN_NOT_FOUND
+                if published.includes(operations, request.method, path)
+            ),
+            None,
+        )
+        if documentation_url is not None:
+            if request.method == "PATCH":
+                raw = await request.body()
+                try:
+                    body = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    message = "Problems parsing JSON" if raw else "Body should be a JSON object"
+                else:
+                    message = None if isinstance(body, dict) else "Body should be a JSON object"
+                if message is not None:
+                    request.state.github_unserved_refusal = "reported"
+                    exc = HTTPException(status_code=400, detail=message)
+                    exc.github_body = {
+                        "message": message,
+                        "documentation_url": documentation_url,
+                        "status": "400",
+                    }
+                    raise exc
+            request.state.github_unserved_refusal = "reported"
+            exc = HTTPException(status_code=404, detail="Not Found")
+            exc.github_body = {
+                "message": "Not Found",
+                "documentation_url": documentation_url,
+                "status": "404",
+            }
+            raise exc
     _require(request)
 
 

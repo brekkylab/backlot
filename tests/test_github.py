@@ -2819,6 +2819,16 @@ _UNSERVED_ROWS = [
     ("GET", "/agents/repos/{org}/codebase/nosuch", False, 404),
 ]
 
+_BASIC_NO_TOKEN_NOT_FOUND = {
+    ("PATCH", "/github/repos/{org}/codebase"),
+    ("DELETE", "/github/repos/{org}/codebase"),
+    ("POST", "/github/repos/{org}/codebase/forks"),
+    ("PUT", "/github/teams/1/repos/{org}/codebase"),
+    ("POST", "/github/repos/{org}/codebase/git/trees"),
+    ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip"),
+    ("GET", "/github/organizations/1/settings/billing/usage"),
+}
+
 
 @pytest.mark.parametrize("method, path, refused, status", _UNSERVED_ROWS)
 def test_github_an_unserved_operation_is_refused_for_its_credential_first(
@@ -2889,7 +2899,10 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
     basic = {"Authorization": "Basic Zm9vOmJhcg=="}
     agents = url.startswith("/github/agents")
-    for headers, answered in ((gh_admin_h, status), (basic, 401)):
+    basic_status = (
+        (400 if method == "PATCH" else 404) if (method, path) in _BASIC_NO_TOKEN_NOT_FOUND else 401
+    )
+    for headers, answered in ((gh_admin_h, status), (basic, basic_status)):
         r = c.request(method, url, headers=headers)
         assert r.status_code == answered, headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
@@ -2907,6 +2920,107 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         unversioned = c.request(method, url, headers={**headers, **bad_version})
         assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+
+
+@pytest.mark.parametrize(
+    "method, path, documentation_url, body",
+    [
+        (
+            "PATCH",
+            "/github/repos/{org}/codebase",
+            "https://docs.github.com/rest/repos/repos#update-a-repository",
+            {},
+        ),
+        (
+            "DELETE",
+            "/github/repos/{org}/codebase",
+            "https://docs.github.com/rest/repos/repos#delete-a-repository",
+            None,
+        ),
+        (
+            "POST",
+            "/github/repos/{org}/codebase/forks",
+            "https://docs.github.com/rest/repos/forks#create-a-fork",
+            None,
+        ),
+        (
+            "PUT",
+            "/github/teams/1/repos/{org}/codebase",
+            "https://docs.github.com/rest/teams/teams#add-or-update-team-repository-permissions-legacy",
+            None,
+        ),
+        (
+            "POST",
+            "/github/repos/{org}/codebase/git/trees",
+            "https://docs.github.com/rest/git/trees#create-a-tree",
+            {},
+        ),
+        (
+            "GET",
+            "/github/repos/{org}/codebase/actions/artifacts/1/zip",
+            "https://docs.github.com/rest/actions/artifacts#download-an-artifact",
+            None,
+        ),
+        (
+            "GET",
+            "/github/orgs/{org}/settings/billing/usage",
+            "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
+            None,
+        ),
+    ],
+)
+def test_github_a_basic_value_without_a_token_gets_an_unserved_operation_404(
+    gh_client, gh_org, method, path, documentation_url, body
+):
+    """Each operation's status and documentation anchor match the api.github.com measurement
+    recorded by :func:`backlot.routers.github.refuse_an_unserved_operation`. PATCH without an object
+    is the route's 400 first.
+    """
+    c, _ = gh_client
+    url = path.format(org=gh_org)
+    headers = {"Authorization": "Basic eDp5"}
+    if method == "PATCH":
+        headers["Content-Type"] = "application/json"
+    kwargs = {} if body is None else {"json": body}
+    response = c.request(method, url, headers=headers, **kwargs)
+    assert (response.status_code, response.json()) == (
+        404,
+        {
+            "message": "Not Found",
+            "documentation_url": documentation_url,
+            "status": "404",
+        },
+    )
+    assert response.headers["x-github-api-version-selected"] == "2022-11-28"
+    assert "x-ratelimit-limit" in response.headers
+
+    if method == "PATCH":
+        for kwargs, message in (
+            ({}, "Body should be a JSON object"),
+            ({"json": []}, "Body should be a JSON object"),
+        ):
+            refused = c.patch(url, headers=headers, **kwargs)
+            assert (refused.status_code, refused.json()) == (
+                400,
+                {
+                    "message": message,
+                    "documentation_url": documentation_url,
+                    "status": "400",
+                },
+            )
+            assert refused.headers["x-github-api-version-selected"] == "2022-11-28"
+            assert "x-ratelimit-limit" in refused.headers
+        malformed = c.patch(url, headers=headers, content=b"x")
+        assert (malformed.status_code, malformed.json()) == (
+            400,
+            {
+                "message": "Problems parsing JSON",
+                "documentation_url": documentation_url,
+                "status": "400",
+            },
+        )
+        assert malformed.headers["x-github-api-version-selected"] == "2022-11-28"
+        assert "x-ratelimit-limit" in malformed.headers
 
 
 #: (method, path, whether a request with no `Authorization` header is counted) on the paths

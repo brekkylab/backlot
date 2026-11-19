@@ -935,6 +935,31 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
     # Confluence carries no Seraph header on any of its answers.
     refused = client.get("/atlassian/wiki/rest/api/space", headers=FAILED_PAIR)
     assert "x-seraph-loginreason" not in refused.headers
+    refused_web = client.get("/atlassian/wiki/nope", headers=FAILED_PAIR, follow_redirects=False)
+    assert refused_web.status_code == 302
+    assert "x-seraph-loginreason" not in refused_web.headers
+
+    # Real Jira Cloud also sends the header on the site's web pages for a failed Basic pair:
+    # 404 HTML at unserved paths, 200 HTML at /browse, 302 redirect at /
+    for path, status in (
+        ("/atlassian/restx", 404),
+        ("/atlassian/foo", 404),
+        ("/atlassian/ex/jira/x", 404),
+        ("/atlassian/Rest", 404),
+        ("/atlassian/wikix", 404),
+        ("/atlassian/browse", 200),
+        ("/atlassian/", 302),
+        ("/atlassian/rest/nope", 404),
+    ):
+        r = client.get(path, headers=FAILED_PAIR, follow_redirects=False)
+        assert r.status_code == status, (path, r.status_code)
+        assert r.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
+
+    # With no Authorization header, web pages carry no Seraph header
+    for path in ("/atlassian/foo", "/atlassian/restx"):
+        r = client.get(path, follow_redirects=False)
+        assert r.status_code == 404
+        assert "x-seraph-loginreason" not in r.headers
 
 
 def test_atlassian_error_keeps_the_atlassian_error_envelope(client):

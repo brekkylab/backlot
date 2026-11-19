@@ -187,7 +187,8 @@ def is_confluence(path: str) -> bool:
     """Which of the two products serves ``path``. They answer several things differently — the
     refusal envelope below, and how a query parameter is read — and one predicate keeps the
     callers from drifting apart on what counts as Confluence."""
-    return path.startswith(WIKI)
+    instance = _instance(path)
+    return instance == "/wiki" or instance.startswith("/wiki/")
 
 
 #: What real Jira puts on a JSON body. Measured on a live Jira Cloud site, 2026-09-15 and

@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-12",
+  "measured": "2026-11-19",
   "root": {
     "query": "Query"
   },
@@ -713,6 +713,20 @@
         },
         "nin": {
           "status": "implemented"
+        },
+        "timezone": {
+          "status": "missing",
+          "type": "String",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Timezone for calendar dates. Saved views use one timezone for all date filters.\" `DateComparator` does not declare it, so a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED`; a date operand without an offset is read in UTC (`backlot.graphql.linear_filters.parse_datetime_or_duration`). Measured against api.linear.app on 2026-11-19: `issues(first: 1, filter: {createdAt: {timezone: \"Not/AZone\"}})` answers 200 with one `Argument Validation Error` (`INVALID_INPUT`), `{createdAt: {today: false, timezone: \"Asia/Seoul\"}}` answers 200 with no error, and `{createdAt: {zzBogus: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`."
+        },
+        "today": {
+          "status": "missing",
+          "type": "Boolean",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Matches today's calendar day, or its complement when false. Uses timezone, defaulting to UTC.\" `backlot.graphql.linear_filters` compiles no calendar-day match, so `DateComparator` does not declare it and a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED` rather than dropped. Measured against api.linear.app on 2026-11-19: `issues(first: 1, filter: {createdAt: {today: true}})` answers 200 with an empty `nodes`, `{createdAt: {today: false, timezone: \"Asia/Seoul\"}}` answers 200 with a node, and `{createdAt: {zzBogus: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`. No issue the key reads matched `today: true`, so where the day starts and ends under a `timezone` is not measured."
         }
       }
     },
@@ -3993,6 +4007,20 @@
         },
         "null": {
           "status": "implemented"
+        },
+        "timezone": {
+          "status": "missing",
+          "type": "String",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Timezone for calendar dates. Saved views use one timezone for all date filters.\" `NullableDateComparator` does not declare it, so a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED`; a date operand without an offset is read in UTC (`backlot.graphql.linear_filters.parse_datetime_or_duration`). Measured against api.linear.app on 2026-11-19: `issues(first: 1, filter: {completedAt: {timezone: \"Not/AZone\"}})` answers 200 with one `Argument Validation Error` (`INVALID_INPUT`), `{completedAt: {today: false, timezone: \"Asia/Seoul\"}}` answers 200 with no error, and `{completedAt: {zzBogus: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`."
+        },
+        "today": {
+          "status": "missing",
+          "type": "Boolean",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Matches today's calendar day, or its complement when false. Uses timezone, defaulting to UTC.\" `backlot.graphql.linear_filters` compiles no calendar-day match, so `NullableDateComparator` does not declare it and a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED` rather than dropped. Measured against api.linear.app on 2026-11-19: `issues(first: 1, filter: {completedAt: {today: true}})` answers 200 with an empty `nodes`, `{completedAt: {today: false, timezone: \"Asia/Seoul\"}}` answers 200 with a node, and `{completedAt: {zzBogus: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`. No issue the key reads matched `today: true`, so where the day starts and ends under a `timezone` is not measured."
         }
       }
     },
@@ -4487,6 +4515,20 @@
         },
         "null": {
           "status": "implemented"
+        },
+        "timezone": {
+          "status": "missing",
+          "type": "String",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Timezone for calendar dates. Saved views use one timezone for all date filters.\" `NullableTimelessDateComparator` does not declare it, so a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED`; a date operand without an offset is read in UTC (`backlot.graphql.linear_filters.parse_datetime_or_duration`). Measured against api.linear.app on 2026-11-19: `issues(first: 1, filter: {dueDate: {timezone: \"Not/AZone\"}})` answers 200 with one `Argument Validation Error` (`INVALID_INPUT`), `{dueDate: {today: false, timezone: \"Asia/Seoul\"}}` answers 200 with no error, and `{dueDate: {zzBogus: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`."
+        },
+        "today": {
+          "status": "missing",
+          "type": "Boolean",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Matches today's calendar day, or its complement when false. Uses timezone, defaulting to UTC.\" `backlot.graphql.linear_filters` compiles no calendar-day match, so `NullableTimelessDateComparator` does not declare it and a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED` rather than dropped. Measured against api.linear.app on 2026-11-19: `issues(first: 1, filter: {dueDate: {today: true}})` answers 200 with an empty `nodes`, `{dueDate: {today: false, timezone: \"Asia/Seoul\"}}` answers 200 with a node, and `{dueDate: {zzBogus: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`. No issue the key reads matched `today: true`, so where the day starts and ends under a `timezone` is not measured."
         }
       }
     },

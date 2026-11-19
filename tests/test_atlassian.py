@@ -832,41 +832,61 @@ def test_jira_refuses_a_bearer_it_cannot_read_on_rest_and_a_run_of_slashes(clien
 
 
 def test_jira_refuses_a_bearer_it_cannot_read_outside_rest_too(client):
-    """The Connect-token 403 reaches Jira's web surface, not only its REST mount
-    (``errors.atlassian.jira_gateway_path``): each path in the table is refused with an
-    unreadable bearer and answered as itself with none, and each path after it is answered
-    with the bearer exactly as with none."""
-    refused = (403, {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE})
+    """Each request in the table is refused with an unreadable bearer and answered as itself
+    with none, and a `GET` on each path after it is answered with the bearer exactly as with
+    none."""
+    refused = (403, errors_atlassian.connect_token_answer(None)[1])
     expected = {
-        ("/atlassian/", "bearer"): refused,
-        ("/atlassian/", None): (302, None),
-        ("/atlassian/browse", "bearer"): refused,
-        ("/atlassian/browse", None): (200, None),
-        ("/atlassian/jira", "bearer"): refused,
-        ("/atlassian/jira", None): (404, None),
-        ("/atlassian/foo", "bearer"): refused,
-        ("/atlassian/foo", None): (404, None),
-        ("/atlassian/res", "bearer"): refused,
-        ("/atlassian/res", None): (404, None),
-        ("/atlassian/xrest", "bearer"): refused,
-        ("/atlassian/xrest", None): (404, None),
-        ("/atlassian/restx", "bearer"): refused,
-        ("/atlassian/restx", None): (404, None),
-        ("/atlassian/Rest", "bearer"): refused,
-        ("/atlassian/Rest", None): (404, None),
-        ("/atlassian/ex/jira/x", "bearer"): refused,
-        ("/atlassian/ex/jira/x", None): (404, None),
+        ("GET", "/atlassian/", "bearer"): refused,
+        ("GET", "/atlassian/", None): (302, None),
+        ("GET", "/atlassian/browse", "bearer"): refused,
+        ("GET", "/atlassian/browse", None): (200, None),
+        ("GET", "/atlassian/jira", "bearer"): refused,
+        ("GET", "/atlassian/jira", None): (404, None),
+        ("GET", "/atlassian/foo", "bearer"): refused,
+        ("GET", "/atlassian/foo", None): (404, None),
+        ("GET", "/atlassian/res", "bearer"): refused,
+        ("GET", "/atlassian/res", None): (404, None),
+        ("GET", "/atlassian/xrest", "bearer"): refused,
+        ("GET", "/atlassian/xrest", None): (404, None),
+        ("GET", "/atlassian/restx", "bearer"): refused,
+        ("GET", "/atlassian/restx", None): (404, None),
+        ("GET", "/atlassian/Rest", "bearer"): refused,
+        ("GET", "/atlassian/Rest", None): (404, None),
+        ("GET", "/atlassian/ex/jira/x", "bearer"): refused,
+        ("GET", "/atlassian/ex/jira/x", None): (404, None),
+        ("GET", "/atlassian/browse%2F", "bearer"): refused,
+        ("GET", "/atlassian/browse%2F", None): (200, None),
+        ("HEAD", "/atlassian/browse/", "bearer"): (403, b""),
+        ("HEAD", "/atlassian/browse/", None): (200, None),
+        ("POST", "/atlassian/browse/", "bearer"): refused,
+        ("POST", "/atlassian/browse/", None): (200, None),
+        ("PUT", "/atlassian/browse/", "bearer"): refused,
+        ("PUT", "/atlassian/browse/", None): (200, None),
+        ("DELETE", "/atlassian/browse/", "bearer"): refused,
+        ("DELETE", "/atlassian/browse/", None): (200, None),
     }
     answered = {}
-    for url, authorization in expected:
+    for method, url, authorization in expected:
         headers = {"Authorization": "Bearer usr-nope"} if authorization else {}
-        r = client.get(url, headers=headers, follow_redirects=False)
-        answered[url, authorization] = (
+        r = client.request(method, url, headers=headers, follow_redirects=False)
+        answered[method, url, authorization] = (
             r.status_code,
-            r.json() if r.status_code == 403 else None,
+            r.content if r.status_code == 403 else None,
         )
     assert answered == expected
-    for path in ("/browse/", "/wiki", "/wiki/", "/wiki/nope", "/wikix", "/Wiki/nope"):
+    for path in (
+        "/browse/",
+        "/browse/x",
+        "/Browse/",
+        "/brows%65/x",
+        "/wiki",
+        "/wiki/",
+        "/wiki/nope",
+        "/wikix",
+        "/Wiki/nope",
+        "/wiki%2Fnope",
+    ):
         url = f"/atlassian{path}"
         with_bearer = client.get(
             url, headers={"Authorization": "Bearer usr-nope"}, follow_redirects=False

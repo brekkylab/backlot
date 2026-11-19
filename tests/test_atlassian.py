@@ -2928,6 +2928,97 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
         assert other["clientId"] == token["clientId"]
 
 
+def test_confluence_content_expands_metadata_container_and_children(client, admin_h):
+    """`content/{id}` expands `metadata`, `container` and `children`:
+    - `metadata` alone carries only `_expandable` with eleven names each "", and `metadata.labels`
+      carries `labels` with `_links.self` and the other ten under `_expandable`;
+    - `container` is the page's space and stands after `title` (or after `space` when both are
+      expanded, the two being equal);
+    - `children` carries its eight child types under `_expandable` and `_links.self`;
+    - each served property leaves the page's `_expandable`;
+    - a CQL search row expands the three under `content.` with `macroRenderedOutput` between them
+      and `metadata`."""
+    api = "/atlassian/wiki/rest/api"
+    hit = client.get(f"{api}/search?cql=type=page&limit=1", headers=admin_h).json()
+    pid = hit["results"][0]["content"]["id"]
+
+    # 1. expand=metadata: holds only `_expandable` with eleven names, each ""; leaves page expandable
+    page_meta = client.get(f"{api}/content/{pid}?expand=metadata", headers=admin_h).json()
+    assert "metadata" in page_meta and "metadata" not in page_meta["_expandable"]
+    assert list(page_meta["metadata"]) == ["_expandable"]
+    meta_names = [
+        "lastEditedTime",
+        "currentuser",
+        "comments",
+        "createdBySpaceBlueprint",
+        "isActiveLiveEditSession",
+        "sourceTemplateEntityId",
+        "simple",
+        "properties",
+        "frontend",
+        "labels",
+        "likes",
+    ]
+    assert list(page_meta["metadata"]["_expandable"]) == meta_names
+    assert all(v == "" for v in page_meta["metadata"]["_expandable"].values())
+
+    # 2. expand=metadata.labels: holds labels and then _expandable with the other ten names
+    page_labels = client.get(f"{api}/content/{pid}?expand=metadata.labels", headers=admin_h).json()
+    assert "metadata" in page_labels and "metadata" not in page_labels["_expandable"]
+    assert list(page_labels["metadata"]) == ["labels", "_expandable"]
+    assert list(page_labels["metadata"]["_expandable"]) == [n for n in meta_names if n != "labels"]
+    labels = page_labels["metadata"]["labels"]
+    assert list(labels) == ["results", "start", "limit", "size", "_links"]
+    assert labels["_links"]["self"].endswith(f"/wiki/rest/api/content/{pid}/label")
+
+    # 3. expand=container: served after title, equal to space
+    page_container = client.get(f"{api}/content/{pid}?expand=container", headers=admin_h).json()
+    assert "container" in page_container and "container" not in page_container["_expandable"]
+    page_space = client.get(f"{api}/content/{pid}?expand=space", headers=admin_h).json()
+    assert page_container["container"] == page_space["space"]
+
+    # 4. expand=container,space: space then container after title, and both are equal
+    page_both = client.get(f"{api}/content/{pid}?expand=container,space", headers=admin_h).json()
+    after_title = list(page_both)[
+        list(page_both).index("title") + 1 : list(page_both).index("title") + 3
+    ]
+    assert after_title == ["space", "container"]
+    assert page_both["space"] == page_both["container"]
+    assert "space" not in page_both["_expandable"] and "container" not in page_both["_expandable"]
+
+    # 5. expand=children: eight child types under _expandable and self link
+    page_children = client.get(f"{api}/content/{pid}?expand=children", headers=admin_h).json()
+    assert "children" in page_children and "children" not in page_children["_expandable"]
+    expected_children = [
+        "database",
+        "folder",
+        "attachment",
+        "slide",
+        "comment",
+        "page",
+        "embed",
+        "whiteboard",
+    ]
+    assert list(page_children["children"]["_expandable"]) == expected_children
+    assert all(
+        page_children["children"]["_expandable"][t] == f"/rest/api/content/{pid}/child/{t}"
+        for t in expected_children
+    )
+    assert page_children["children"]["_links"]["self"].endswith(
+        f"/wiki/rest/api/content/{pid}/child"
+    )
+
+    # 6. CQL search: expanding under content. matches content read
+    search_hit = client.get(
+        f"{api}/search?cql=id={pid}&expand=content.metadata,content.container,content.children",
+        headers=admin_h,
+    ).json()
+    content = search_hit["results"][0]["content"]
+    assert content["container"] == page_container["container"]
+    assert content["children"] == page_children["children"]
+    assert content["metadata"] == page_meta["metadata"]
+
+
 # --- Jira ------------------------------------------------------------------------
 
 

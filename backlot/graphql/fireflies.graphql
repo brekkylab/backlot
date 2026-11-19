@@ -275,7 +275,7 @@ type MeetingAttendeeModel {
 
 type MeetingAttendance {
   name: String!
-  join_time: String!
+  join_time: String
   leave_time: String
 }
 

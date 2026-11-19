@@ -5053,15 +5053,26 @@ _LONG_TARGET_ROWS = [
     ("GET", "/repos/{org}/{pad}/collaborators", "path", 4_097, "no credential", 401),
     ("GET", "/repos/{org}/gateway/collaborators?x={pad}", "target", 8_180, "no credential", 401),
     ("GET", "/repos/{org}/gateway/issues/{pad}", "path", 4_097, "no credential", "path"),
-    # `/rate_limit` with no credential is the `fasthttp` front's, which serves a long target and
-    # answers a `HEAD` with its 404; with a credential, or past a trailing slash, the 414 stands
+    # `/rate_limit` with no credential is not refused for its query's length
+    # (`backlot.main._github_rate_limit_front`); with a credential, on `/RATE_LIMIT` or
+    # `/rate%5Flimit`, or with a path of 8,192 bytes, the 414 stands
+    ("GET", "/rate_limit?a={pad}", "target", 8_180, "no credential", 200),
     ("GET", "/rate_limit?a={pad}", "target", 8_192, "no credential", 200),
     ("GET", "/rate_limit?a={pad}", "target", 16_384, "no credential", 200),
     ("GET", "/rate_limit?a={pad}", "target", 32_768, "no credential", 200),
     ("GET", "/rate_limit?a={pad}", "target", 8_192, "a bad token", "json"),
-    ("GET", "/rate_limit/?a={pad}", "target", 8_192, "no credential", "json"),
+    ("GET", "/rate%5Flimit?a={pad}", "target", 8_192, "no credential", "json"),
+    ("GET", "/RATE_LIMIT?a={pad}", "target", 8_192, "no credential", "json"),
+    ("GET", "/rate_limit/{pad}", "target", 8_192, "no credential", "json"),
+    ("GET", "/rate_limitx{pad}", "target", 8_192, "no credential", "json"),
+    ("GET", "/rate_limit/?a={pad}", "target", 8_192, "no credential", 404),
+    ("GET", "/rate_limitx?a={pad}", "target", 8_192, "no credential", 404),
+    ("GET", "/rate_limit%2F?a={pad}", "target", 8_192, "no credential", 404),
     ("HEAD", "/rate_limit", "target", 11, "no credential", 404),
     ("HEAD", "/rate_limit?a={pad}", "target", 8_192, "no credential", 404),
+    ("POST", "/rate_limit?a={pad}", "target", 8_192, "no credential", 404),
+    ("HEAD", "/rate_limit/{pad}", "target", 8_192, "no credential", "json"),
+    ("POST", "/rate_limit/{pad}", "target", 8_192, "no credential", "json"),
 ]
 
 

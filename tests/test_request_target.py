@@ -1691,29 +1691,35 @@ def test_a_request_line_with_multiple_spaces_after_the_method(live_server):
 
 
 def test_github_rate_limit_a_long_target_and_a_head_over_a_socket(live_server):
-    """A `GET /rate_limit` with no `Authorization` whose target past the usual bound is served by
-    the `fasthttp` front that answers that path, and a `HEAD` of it is that front's `text/plain`
-    404 (``backlot.main.answer_a_head_on_github_rate_limit``): the lengths are the target's,
-    counted from after `/github` as ``backlot.routers.github.target_length`` counts them. The
-    front's 431 at 65,536 bytes and its 414 at 131,072 are not sent here: the HTTP parser refuses
-    a head that long before the app reads it, on this path as on every other."""
+    """Rows of the `fasthttp` front (``backlot.main._github_rate_limit_front``) over a socket, a
+    length being the target's from after `/github`."""
     base_url, _settings = live_server
 
-    def target(length: int) -> bytes:
-        return b"/github/rate_limit?a=" + b"x" * (length - len("/rate_limit?a="))
+    def target(path: bytes, length: int) -> bytes:
+        return b"/github" + path + b"?a=" + b"x" * (length - len(path + b"?a="))
 
+    served = (200, "application/json; charset=utf-8", None, None)
+    front = (404, "text/plain; charset=utf-8", "13", b"404 Not Found")
+    head = (404, "text/plain; charset=utf-8", "13", b"")
     rows = [
-        (b"GET", target(8_192), (200, "application/json; charset=utf-8", None)),
-        (b"GET", target(32_768), (200, "application/json; charset=utf-8", None)),
-        (b"HEAD", b"/github/rate_limit", (404, "text/plain; charset=utf-8", b"")),
-        (b"HEAD", target(8_192), (404, "text/plain; charset=utf-8", b"")),
+        (b"GET", target(b"/rate_limit", 8_192), served),
+        (b"GET", target(b"/rate_limit", 32_768), served),
+        (b"HEAD", b"/github/rate_limit", head),
+        (b"HEAD", target(b"/rate_limit", 8_192), head),
+        (b"POST", b"/github/rate_limit", front),
+        (b"GET", b"/github/rate_limitx", front),
+        (b"GET", target(b"/rate_limit/", 8_192), front),
     ]
     got, expected = {}, {}
     for method, sent, answer in rows:
         status, headers, body = _send(base_url, method, sent, None)
-        key = (method, len(sent) - len(b"/github"))
-        got[key] = (status, headers.get("content-type"), None if answer[2] is None else body)
+        key = (method, sent[: len(b"/github/rate_limit") + 1], len(sent) - len(b"/github"))
+        length = None if answer[2] is None else headers.get("content-length")
+        got[key] = (
+            status,
+            headers.get("content-type"),
+            length,
+            None if answer[3] is None else body,
+        )
         expected[key] = answer
-        if method == b"HEAD":
-            assert headers.get("content-length") == "13"
     assert got == expected

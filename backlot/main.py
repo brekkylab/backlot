@@ -33,7 +33,6 @@ from backlot import (
     bracketed_host,
     errors,
     express_http,
-    head_bounds,
     openapi,
     overlay,
     request_target,
@@ -2124,30 +2123,49 @@ async def refuse_a_broken_escape_in_a_github_path(request: Request, call_next):
 
 
 def _github_rate_limit_front(scope: Scope) -> bool:
-    """Whether the request is one the `fasthttp` front that serves `/rate_limit` itself answers:
-    a `GET` or a `HEAD` on that path with no `Authorization` header at all. Any header of that
-    name counts as a credential here, an empty one included, as on real
-    (:func:`answer_a_github_request_target_past_its_bound`)."""
+    """Whether the request is one the `fasthttp` front that serves `/rate_limit` itself answers: a
+    `GET`, a `HEAD` or a `POST` with no `Authorization` header, on a path that starts `/rate_limit`
+    as sent and is shorter than 8,192 bytes, whatever its query. A header of that name counts as a
+    credential here, an empty one included.
+
+    Measured against api.github.com over raw HTTP/1.1 on TLS, "the 414" below being the JSON one
+    :func:`answer_a_github_request_target_past_its_bound` gives. On 2026-11-10 that front served a
+    `GET /rate_limit` whose target was 8,192, 16,384 or 32,768 bytes with the 200 and a `HEAD` of
+    8,192 bytes with its 404; with an `Authorization`, a bearer, a `Digest` or an empty one, the
+    8,192-byte `GET` was the 414. On 2026-11-19, with no `Authorization`, a `HEAD` of 16,384 and of
+    32,768 bytes was that 404 as well, and bare and with a target of 8,192 bytes that front answered
+    a `POST` of `/rate_limit` and a `GET` of `/rate_limit/`, `/rate_limit/x`, `/rate_limitx`,
+    `/rate_limit.json`, `/rate_limit;x`, `/rate_limit%20`, `/rate_limit%3F`, `/rate_limit%2F`,
+    `/rate_limit%2f` and `/rate_limit%2Fx`. A path of 8,192 bytes was the 414, under a `GET` of
+    `/rate_limit/…` and of `/rate_limitx…` and under a `POST` and a `HEAD` of `/rate_limit/…`. The
+    rest of the API, with its JSON 404 bare (a 204 to the `OPTIONS`) and the 414 at 8,192 bytes,
+    answered a `GET` of `/RATE_LIMIT`, `/Rate_Limit`, `//rate_limit`, `/rate%5Flimit`,
+    `/rate%5flimit` and `/%72ate_limit`, and `/rate_limit` under `PUT`, `PATCH`, `DELETE` and
+    `OPTIONS`. With a bearer that does not resolve, a bare `HEAD` and `POST` of `/rate_limit` were
+    the rest of the API's as well, a 401 and a JSON 404."""
+    path = scope["raw_path"]
     return (
-        scope["method"] in ("GET", "HEAD")
-        and _url_path(scope) == github.RATE_LIMIT_PATH
+        scope["method"] in ("GET", "HEAD", "POST")
+        and path.startswith(b"/github/rate_limit")
+        and len(path) - len(b"/github") < 8_192
         and not any(name == b"authorization" for name, _ in scope["headers"])
     )
 
 
-@_middleware(lambda scope: _github_rate_limit_front(scope) and scope["method"] == "HEAD")
-async def answer_a_head_on_github_rate_limit(request: Request, call_next):
-    """Answer a `HEAD /rate_limit` with no `Authorization` as the `fasthttp` front that serves
-    that path does: `404 Not Found` in `text/plain`, 13 bytes, with an `x-github-request-id` and
-    none of the five `x-ratelimit-*`, and never counted. Registered inside
-    :func:`answer_a_github_request_target_past_its_bound`, which lets such a request through,
-    and inside :func:`put_a_request_id_on_github_answers`, so the answer carries its request id,
-    and outside :func:`report_github_rate_limit`, so it is not counted. A `HEAD` carrying any
-    `Authorization` is read on to the route's own answer, as is a `GET`.
-
-    Measured against api.github.com on 2026-11-10 over raw HTTP/1.1 on TLS: a bare
-    `HEAD /rate_limit` and one whose target was 8,192 bytes both answered the `text/plain` 404,
-    where Backlot answered the first with the `GET`'s 200 and the second with the 414."""
+@_middleware(
+    lambda scope: (
+        _github_rate_limit_front(scope)
+        and not (scope["method"] == "GET" and scope["raw_path"] == b"/github/rate_limit")
+    )
+)
+async def answer_a_github_rate_limit_front_404(request: Request, call_next):
+    """Answer a request :func:`_github_rate_limit_front` names, but a `GET` of `/rate_limit`
+    itself, as that front answered each one measured whose path was under 7,110 bytes:
+    `404 Not Found` in `text/plain`, 13 bytes, with an `x-github-request-id` and none of the five
+    `x-ratelimit-*`. Registered inside :func:`answer_a_github_request_target_past_its_bound`,
+    which lets such a request through, and inside :func:`put_a_request_id_on_github_answers`, so
+    the answer carries its request id, and outside :func:`report_github_rate_limit`, so it is not
+    counted."""
     return PlainTextResponse("404 Not Found", status_code=404)
 
 
@@ -2192,32 +2210,10 @@ async def answer_a_github_request_target_past_its_bound(request: Request, call_n
     (:func:`answer_a_raw_byte_in_the_request_target`) ahead of it. Real's status line reads
     `414 Request-URI Too Large`, and the answer carries no rate limit.
 
-    `/rate_limit` with no `Authorization` is not this front door's to refuse: the `fasthttp` front
-    that serves that path (:func:`_github_rate_limit_front`) serves a `GET` whose target is 8,192,
-    16,384 or 32,768 bytes with the 200, answers one of 65,536 bytes with its `text/html` 431 and
-    one of 131,072 with its `text/html` 414 (api.github.com, 2026-11-10, over raw HTTP/1.1), and
-    answers a `HEAD` with its `text/plain` 404 at any of those lengths
-    (:func:`answer_a_head_on_github_rate_limit`), so such a request is let through to it below the
-    431's length and answered with the front's own pages at and past it. With any `Authorization`
-    — a bearer, a `Digest` or an empty one — the 8,192-byte `GET` was this 414 on both, and a
-    `GET /rate_limit/…` at 8,192 bytes was this 414 with no credential too."""
+    A request :func:`_github_rate_limit_front` names is not this front door's to refuse, however
+    long its query."""
     if _github_rate_limit_front(request.scope):
-        if request.method == "HEAD":
-            return await call_next(request)
-        length = github.target_length(request.scope)
-        if length < 65_536:
-            return await call_next(request)
-        if length < 131_072:
-            return Response(
-                head_bounds.GITHUB_PAGE_431,
-                status_code=431,
-                headers={"Content-Type": "text/html"},
-            )
-        return Response(
-            head_bounds.GITHUB_PAGE_414,
-            status_code=414,
-            headers={"Content-Type": "text/html"},
-        )
+        return await call_next(request)
     if github.target_past_its_bound(request.scope):
         return Response(
             _GITHUB_TARGET_TOO_LONG,

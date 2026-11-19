@@ -152,19 +152,14 @@ _LONG_LINE_PAGE = (
 _UNRESERVED_ESCAPE = re.compile(rb"%(?:2[DEde]|3[0-9]|[46][1-9A-Fa-f]|[57][0-9Aa]|5[Ff]|7[Ee])")
 
 
-def target_length(scope: Scope) -> int:
-    """The length of a `/github` request's target as :func:`target_past_its_bound` counts it,
-    from after `/github`, a `?` counted when a query follows it."""
-    query = scope["query_string"]
-    return len(scope["raw_path"][len(router.prefix) :]) + (len(query) + 1 if query else 0)
-
-
 def target_past_its_bound(scope: Scope) -> bool:
     """Whether a `/github` request's target is too long for real's front door, which answers it
     with a 414 of its own: 8,174 bytes on `/search/code` and 8,192 on every other path, counted as
     :func:`_refuse_a_long_line_or_path` counts the request line's, from after `/github`."""
+    query = scope["query_string"]
+    target = scope["raw_path"][len(router.prefix) :] + (b"?" + query if query else b"")
     bound = 8_174 if scope["path"] == f"{router.prefix}/search/code" else 8_192
-    return target_length(scope) >= bound
+    return len(target) >= bound
 
 
 async def _refuse_a_long_line_or_path(request: Request) -> None:
@@ -185,11 +180,9 @@ async def _refuse_a_long_line_or_path(request: Request) -> None:
     `Content-Length: 0` where none did; it is the second here."""
     if request.scope["route"].path in _SERVED_HOWEVER_LONG:
         return
-    # `/rate_limit` with no `Authorization` is served by the `fasthttp` front that answers that
-    # path itself, ahead of this front door's bounds: a `GET` whose target is 8,192, 16,384 or
-    # 32,768 bytes was the 200 there (api.github.com, 2026-11-10), where the line below would
-    # refuse it. `backlot.main.answer_a_github_request_target_past_its_bound` holds the lengths
-    # that front answers instead, and lets only a shorter one through to here.
+    # `/rate_limit` with no `Authorization` is answered ahead of this front door's bounds
+    # (`backlot.main._github_rate_limit_front`): a `GET` whose target was 8,180 bytes, past the
+    # request line's bound below, was the 200 (api.github.com, 2026-11-19).
     if request.url.path == RATE_LIMIT_PATH and "authorization" not in request.headers:
         return
     method = "HEAD" if getattr(request.state, "answering_head", False) else request.method

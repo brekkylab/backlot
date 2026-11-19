@@ -50,6 +50,10 @@ Ordered as the table above, by `source_type`.
 | `space` | `spaceKey` (one or more keys, any case; a key naming no space lists nothing), `expand=description,permissions` |
 | `space/{key}` | `expand=description,permissions` |
 
+Page reads and listings carry `ari` and `base64EncodedAri` using the space's cloud id.
+The page's `ari` names `page/{id}`, while its encoded ARI names `content/{id}`.
+Comment rows use `comment/{id}` in both forms.
+
 `expand=permissions` carries the space's permission roster on either read, one entry per ACL grant
 — a user grant naming that user, a group or org grant naming none — for `read`/`space`, the only
 operation an ACL states.

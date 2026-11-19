@@ -2615,6 +2615,7 @@ async def confluence_comments(content_id: str, request: Request):
                 "type": "comment",
                 "status": "current",
                 "title": f"Re: {content_id}",
+                **_confluence_content_aris(cid, "comment"),
                 "body": {
                     "storage": {"value": _storage(c["body"]), "representation": "storage"},
                     "view": {"value": _view(c["body"]), "representation": "view"},
@@ -2932,6 +2933,16 @@ def _confluence_media_token(request: Request, cid) -> dict:
     }
 
 
+def _confluence_content_aris(content_id, kind: str) -> dict:
+    """Confluence Cloud GET content/{id} and content/{id}/child/comment, measured
+    2026-10-23: a page's ARI uses page, its base64 ARI content; a comment uses comment
+    for both."""
+    prefix = f"ari:cloud:confluence:{synth.atlassian_cloud_id(get_settings().org_name)}:"
+    encoded_kind = "content" if kind == "page" else kind
+    encoded = base64.b64encode(f"{prefix}{encoded_kind}/{content_id}".encode()).decode("ascii")
+    return {"ari": f"{prefix}{kind}/{content_id}", "base64EncodedAri": encoded}
+
+
 def _confluence_page(conn, request: Request, row, expand: str, search: bool = False) -> dict:
     created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
@@ -2977,6 +2988,8 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         "status": "current",
         "title": row["title"],
     }
+    if not search and ctype == "page":
+        page.update(_confluence_content_aris(cid, "page"))
     if "space" in wanted:
         page["space"] = {
             "id": synth.github_user_id(row["space"]),

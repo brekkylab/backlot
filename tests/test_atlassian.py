@@ -1369,6 +1369,12 @@ def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
         ]
         assert cc["id"].isdigit()
         assert cc["_links"]["webui"].endswith(f"focusedCommentId={cc['id']}")
+        space = synth.confluence_space_key("handbook")
+        prefix = c.get(f"/atlassian/wiki/rest/api/space/{space}", headers=h).json()["ari"]
+        prefix = prefix.partition(":space/")[0]
+        ari = f"{prefix}:comment/{cc['id']}"
+        assert cc["ari"] == ari
+        assert base64.b64decode(cc["base64EncodedAri"]).decode() == ari
 
 
 def test_confluence_dates_an_epoch_zero_page_on_both_routes(tmp_path):
@@ -2686,9 +2692,20 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         spaced = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "space,version"}).json()
         paged = c.get(api + "/content", headers=h, params={"type": "page"}).json()["results"]
         paged_row = next(r for r in paged if str(r["id"]) == str(pid))
+        prefix = c.get(f"{api}/space/ENG", headers=h).json()["ari"].partition(":space/")[0]
+        children = c.get(f"{api}/content/{pid}/child/page", headers=h).json()["results"]
+        for content in (bare, spaced, paged_row, *children):
+            assert content["ari"] == f"{prefix}:page/{content['id']}"
+            assert base64.b64decode(content["base64EncodedAri"]).decode() == (
+                f"{prefix}:content/{content['id']}"
+            )
+        assert "ari" not in hit and "base64EncodedAri" not in hit
         last = ["_expandable", "_links"]
         searched = ["childTypes", "macroRenderedOutput", "restrictions"]
-        assert [list(bare), list(spaced), list(paged_row), list(hit)] == [
+        assert [
+            [name for name in row if name not in {"ari", "base64EncodedAri"}]
+            for row in (bare, spaced, paged_row, hit)
+        ] == [
             ["id", "type", "status", "title", "space", "history", "version", *last],
             ["id", "type", "status", "title", "space", "version", *last],
             ["id", "type", "status", "title", *last],

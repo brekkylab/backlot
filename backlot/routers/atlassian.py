@@ -2358,8 +2358,8 @@ async def confluence_cql_search(request: Request):
     reached = position + max(len(rows), 1)
     if reached < total and start + max(len(rows), 1) > 2**31 - 1:
         raise errors_atlassian.search_next_out_of_range()
-    # Confluence Cloud search, 2026-11-17: expansions are relative to the search row,
-    # so content.space and content.body.storage name members of its content.
+    # A search's expand names members of the row: only a term under content. names a member
+    # inside its content, measured on Confluence Cloud on 2026-11-17 and 2026-11-18.
     content_expand = ",".join(
         term.removeprefix("content.")
         for term in (_str_param(request, "expand", "") or "").split(",")
@@ -3023,7 +3023,9 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
     # serves. Real orders a content read's by how many are left: twelve or fewer in `few`'s order,
     # as on the bare read and after `expand=body,metadata,ancestors`, and thirteen or more in
     # `many`'s, as on a listing row and after `expand=body,metadata` (2026-11-03 and 2026-11-09).
-    if search:
+    # A search term under content. takes the content read's expandable set, even for an
+    # unserved name such as unknown or a padded space, measured on 2026-11-18.
+    if search and not wanted:
         expandable = {
             "container": "",
             "metadata": "",
@@ -3039,10 +3041,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         }
         # A search row's content carries these three, each empty, right after `title`, measured
         # on Confluence Cloud on page, blog post, comment and attachment rows on 2026-11-12.
-        if wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}:
-            page["macroRenderedOutput"] = {}
-        else:
-            page.update(childTypes={}, macroRenderedOutput={}, restrictions={})
+        page.update(childTypes={}, macroRenderedOutput={}, restrictions={})
     else:
         links = {
             "container": f"/rest/api/space/{key}",
@@ -3206,22 +3205,13 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
         expandable.pop("ancestors")
-    # `_expandable` is assigned after every property, so a property served above has already left
-    # it, and `_links` is moved after it: real serves the two last, `_expandable` then `_links`, on
-    # `content/{id}` (bare and with `expand=space,version`), a `content` row and a search row's
-    # `content`, measured on Confluence Cloud on 2026-11-12.
-    if search and wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}:
-        # The scalar expansions precede macroRenderedOutput, and the body follows it.
-        page = {
-            **{
-                name: value
-                for name, value in page.items()
-                if name not in ("_links", "macroRenderedOutput", "body")
-            },
-            "macroRenderedOutput": {},
-            **({"body": page["body"]} if "body" in page else {}),
-            "_links": page["_links"],
-        }
+    # Expanded search rows put body and metadata after macroRenderedOutput, in that order,
+    # as Confluence Cloud answered on 2026-11-17 and 2026-11-18.
+    if search and wanted:
+        after = {name: page.pop(name) for name in ("body", "metadata") if name in page}
+        page.update(macroRenderedOutput={}, **after)
+    # _expandable follows every property, so a served property has already left it.
+    # Real serves these two last on content reads, listings and search rows (2026-11-12).
     page["_expandable"] = expandable
     page["_links"] = page.pop("_links")
     return page

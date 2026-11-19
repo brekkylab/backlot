@@ -2451,7 +2451,7 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
     """`content/{id}` expands what `confluence_content_get` and `_confluence_page` say real
     expands for each `expand`, and the rows of `content`, `content/{id}/child/page` and the CQL
-    search carry none of the four; a search row carries `childTypes`, `macroRenderedOutput` and
+    search carry none of the four unasked; a bare search row carries `childTypes`, `macroRenderedOutput` and
     `restrictions` right after `title`, each empty."""
     page = {
         "source_type": "confluence",
@@ -2694,46 +2694,75 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             ["id", "type", "status", "title", *searched, *last],
         ]
         assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
-        # The content-relative expansions measured in backlot.routers.atlassian.confluence_cql_search.
+        # (search `expand`, the content read's `expand` it stands for in `confluence_cql_search`,
+        # the members after `title`).
         rows = [
-            ("content.space", "space"),
-            ("content.version", "version"),
-            ("content.history", "history"),
-            ("content.body.storage", "body"),
-            ("content.body.storage.embeddedContent", "body"),
-            ("body.storage", None),
-            ("content.unknown", None),
-            ("", None),
+            ("content.space", "space", ["space", "macroRenderedOutput"]),
+            ("content.version", "version", ["version", "macroRenderedOutput"]),
+            ("content.history", "history", ["history", "macroRenderedOutput"]),
+            ("content.ancestors", "ancestors", ["ancestors", "macroRenderedOutput"]),
+            ("content.body", "body", ["macroRenderedOutput", "body"]),
+            ("content.body.storage", "body.storage", ["macroRenderedOutput", "body"]),
+            (
+                "content.body.storage.embeddedContent",
+                "body.storage.embeddedContent",
+                ["macroRenderedOutput", "body"],
+            ),
+            (
+                "content.metadata,content.body.storage",
+                "metadata,body.storage",
+                ["macroRenderedOutput", "body", "metadata"],
+            ),
+            (
+                "content.space,content.version",
+                "space,version",
+                ["space", "version", "macroRenderedOutput"],
+            ),
+            (
+                "content.body.storage,content.space",
+                "body.storage,space",
+                ["space", "macroRenderedOutput", "body"],
+            ),
+            ("content.space,body.storage", "space", ["space", "macroRenderedOutput"]),
+            ("content.unknown", "unknown", ["macroRenderedOutput"]),
+            ("content.space ", "space ", ["macroRenderedOutput"]),
         ]
-        answered = {}
-        expected = {}
-        for expansion, member in rows:
+        answered, expected = [], []
+        for expansion, read, members in rows:
             expanded = c.get(
-                api + "/search",
-                headers=h,
-                params={"cql": f"id={pid}", "expand": expansion},
+                api + "/search", headers=h, params={"cql": f"id={pid}", "expand": expansion}
             ).json()["results"][0]["content"]
-            if member is None:
-                answered[expansion] = expanded
-                expected[expansion] = hit
-            else:
-                direct = c.get(
-                    f"{api}/content/{pid}",
-                    headers=h,
-                    params={"expand": expansion.removeprefix("content.")},
-                ).json()
-                answered[expansion] = (expanded.get(member), list(expanded))
-                members = (
-                    ["macroRenderedOutput", "body"]
-                    if member == "body"
-                    else [member, "macroRenderedOutput"]
+            direct = c.get(f"{api}/content/{pid}", headers=h, params={"expand": read}).json()
+            answered.append(
+                (
+                    expansion,
+                    list(expanded),
+                    list(expanded["_expandable"].items()),
+                    {m: expanded[m] for m in members},
                 )
-                expected[expansion] = (
-                    direct[member],
+            )
+            expected.append(
+                (
+                    expansion,
                     ["id", "type", "status", "title", *members, *last],
+                    list(direct["_expandable"].items()),
+                    {
+                        "macroRenderedOutput": {},
+                        **{m: direct[m] for m in members if m != "macroRenderedOutput"},
+                    },
                 )
+            )
         assert answered == expected
-
+        # A term outside `content.`, and `content.` naming nothing, leaves the bare search row.
+        bare_rows = [" content.space", "content", "content.", "body.storage", ""]
+        assert [
+            list(
+                c.get(api + "/search", headers=h, params={"cql": f"id={pid}", "expand": expansion})
+                .json()["results"][0]["content"]
+                .items()
+            )
+            for expansion in bare_rows
+        ] == [list(hit.items())] * len(bare_rows)
         # The members each served body representation carries.
         storage = c.get(
             f"{api}/content/{pid}", headers=h, params={"expand": "body.storage"}

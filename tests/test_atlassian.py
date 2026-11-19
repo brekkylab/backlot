@@ -2451,8 +2451,9 @@ def test_atlassian_responses_unchanged_by_enrichment(client, admin_h):
 def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
     """`content/{id}` expands what `confluence_content_get` and `_confluence_page` say real
     expands for each `expand`, and the rows of `content`, `content/{id}/child/page` and the CQL
-    search carry none of the four unasked; a bare search row carries `childTypes`, `macroRenderedOutput` and
-    `restrictions` right after `title`, each empty."""
+    search carry none of the four unasked; a search row carries `childTypes`, `macroRenderedOutput`
+    and `restrictions` right after `title`, each empty, unless its `expand` names anything under
+    `content.`."""
     page = {
         "source_type": "confluence",
         "doc_id": "p",

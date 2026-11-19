@@ -1688,3 +1688,32 @@ def test_a_request_line_with_multiple_spaces_after_the_method(live_server):
         resets = zip(_RESET.findall(one_body), _RESET.findall(multi_body))
         assert {int(second) - int(first) for first, second in resets} <= apart
         assert one_status.startswith("HTTP/1.1 200")
+
+
+def test_github_rate_limit_a_long_target_and_a_head_over_a_socket(live_server):
+    """A `GET /rate_limit` with no `Authorization` whose target past the usual bound is served by
+    the `fasthttp` front that answers that path, and a `HEAD` of it is that front's `text/plain`
+    404 (``backlot.main.answer_a_head_on_github_rate_limit``): the lengths are the target's,
+    counted from after `/github` as ``backlot.routers.github.target_length`` counts them. The
+    front's 431 at 65,536 bytes and its 414 at 131,072 are not sent here: the HTTP parser refuses
+    a head that long before the app reads it, on this path as on every other."""
+    base_url, _settings = live_server
+
+    def target(length: int) -> bytes:
+        return b"/github/rate_limit?a=" + b"x" * (length - len("/rate_limit?a="))
+
+    rows = [
+        (b"GET", target(8_192), (200, "application/json; charset=utf-8", None)),
+        (b"GET", target(32_768), (200, "application/json; charset=utf-8", None)),
+        (b"HEAD", b"/github/rate_limit", (404, "text/plain; charset=utf-8", b"")),
+        (b"HEAD", target(8_192), (404, "text/plain; charset=utf-8", b"")),
+    ]
+    got, expected = {}, {}
+    for method, sent, answer in rows:
+        status, headers, body = _send(base_url, method, sent, None)
+        key = (method, len(sent) - len(b"/github"))
+        got[key] = (status, headers.get("content-type"), None if answer[2] is None else body)
+        expected[key] = answer
+        if method == b"HEAD":
+            assert headers.get("content-length") == "13"
+    assert got == expected

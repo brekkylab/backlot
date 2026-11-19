@@ -164,6 +164,18 @@ def serves_the_jira_api(path: str) -> bool:
     return vendor_path == JIRA_REST or vendor_path.startswith(f"{JIRA_REST}/")
 
 
+def jira_gateway_path(path: str) -> bool:
+    """Whether the site's gateway puts ``path`` on Jira's side for the Connect-token refusal
+    (:func:`backlot.main.refuse_a_bearer_jira_cannot_read`), which reaches past the REST mount
+    to the product's own web surface. Measured on a Jira Cloud site on 2026-11-17 with an
+    unreadable bearer: `/`, `/browse`, `/jira`, `/foo`, `/res`, `/xrest`, `/restx`, `/Rest` and
+    `/ex/jira/x` were refused with the 403, where `/browse/` and every path beginning `/wiki`
+    in any case — `/wiki`, `/wiki/`, `/wiki/nope`, `/wikix`, `/Wiki/nope` and `/wiki%2Fnope` —
+    were answered as the same path with no credential."""
+    vendor_path = _instance(path)
+    return not vendor_path.lower().startswith("/wiki") and vendor_path != "/browse/"
+
+
 #: What Jira takes for Internet Explorer 11 in the first `User-Agent`, searched anywhere in it and
 #: case-sensitive. Measured on a Jira Cloud site on 2026-11-16 over 70 values on
 #: `GET /rest/api/3/issue/{key}`: `Trident/7.0; rv:11.0` redirects with any digits on either

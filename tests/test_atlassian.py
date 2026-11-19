@@ -831,6 +831,53 @@ def test_jira_refuses_a_bearer_it_cannot_read_on_rest_and_a_run_of_slashes(clien
     assert answered == expected
 
 
+def test_jira_refuses_a_bearer_it_cannot_read_outside_rest_too(client):
+    """The Connect-token 403 reaches Jira's web surface, not only its REST mount
+    (``errors.atlassian.jira_gateway_path``): each path in the table is refused with an
+    unreadable bearer and answered as itself with none, and each path after it is answered
+    with the bearer exactly as with none."""
+    refused = (403, {"error": errors_atlassian.CONNECT_TOKEN_UNREADABLE})
+    expected = {
+        ("/atlassian/", "bearer"): refused,
+        ("/atlassian/", None): (302, None),
+        ("/atlassian/browse", "bearer"): refused,
+        ("/atlassian/browse", None): (200, None),
+        ("/atlassian/jira", "bearer"): refused,
+        ("/atlassian/jira", None): (404, None),
+        ("/atlassian/foo", "bearer"): refused,
+        ("/atlassian/foo", None): (404, None),
+        ("/atlassian/res", "bearer"): refused,
+        ("/atlassian/res", None): (404, None),
+        ("/atlassian/xrest", "bearer"): refused,
+        ("/atlassian/xrest", None): (404, None),
+        ("/atlassian/restx", "bearer"): refused,
+        ("/atlassian/restx", None): (404, None),
+        ("/atlassian/Rest", "bearer"): refused,
+        ("/atlassian/Rest", None): (404, None),
+        ("/atlassian/ex/jira/x", "bearer"): refused,
+        ("/atlassian/ex/jira/x", None): (404, None),
+    }
+    answered = {}
+    for url, authorization in expected:
+        headers = {"Authorization": "Bearer usr-nope"} if authorization else {}
+        r = client.get(url, headers=headers, follow_redirects=False)
+        answered[url, authorization] = (
+            r.status_code,
+            r.json() if r.status_code == 403 else None,
+        )
+    assert answered == expected
+    for path in ("/browse/", "/wiki", "/wiki/", "/wiki/nope", "/wikix", "/Wiki/nope"):
+        url = f"/atlassian{path}"
+        with_bearer = client.get(
+            url, headers={"Authorization": "Bearer usr-nope"}, follow_redirects=False
+        )
+        without = client.get(url, follow_redirects=False)
+        assert (with_bearer.status_code, with_bearer.content) == (
+            without.status_code,
+            without.content,
+        ), path
+
+
 _SCHEMES = [
     "bearer usr-nope",
     "BEARER usr-nope",

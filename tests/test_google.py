@@ -15282,6 +15282,11 @@ _GMAIL_BRACE_ROWS = [
     ('{Rollout subject:"()"}', ["plan"]),
     ('{Rollout to:"()"}', ["plan"]),
     ('-{Rollout "()"}', ["deck", "lunch"]),
+    ("subject:{Rollout}", ["plan"]),
+    ("subject:{Rollout from:me}", ["plan", "lunch"]),
+    ("subject:{Rollout} label:inbox", ["plan"]),
+    ('"{Rollout from:me}"', ["plan", "lunch"]),
+    ('"{Rollout}"', ["plan"]),
 ]
 
 
@@ -15312,6 +15317,50 @@ def test_gmail_brace_groups_and_quoted_punctuation_values(tmp_path):
     settings = tiny_corpus(tmp_path, records)
     token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
     rows = _GMAIL_BRACE_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
+_GMAIL_SUBJECT_BRACE_ROWS = [
+    ("Rollout", ["plan", "decoy"]),
+    ("subject:Rollout", ["plan"]),
+    ("subject:{Rollout}", ["plan"]),
+    ("subject:{Rollout from:me}", ["plan", "lunch"]),
+    ("subject:{Rollout} label:inbox", ["plan"]),
+    ('"{Rollout from:me}"', ["plan", "lunch", "decoy"]),
+    ('"{Rollout}"', ["plan", "decoy"]),
+    ("{Rollout from:me}", ["plan", "lunch", "decoy"]),
+]
+
+
+def test_gmail_subject_and_quoted_brace_groups(tmp_path):
+    """A `subject:` in front of a brace group binds only the group's first term, the rest
+    keeping their own reading, and a quoted brace group reads as the group without its quotes
+    (the comment at `_gmail_brace_leads`). `decoy` holds `Rollout` in its body but not its
+    subject, so it tells a subject search from a free-text one. A plain second word inside a
+    `subject:` brace group is unmeasured, so no row asserts what it answers."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": author,
+            "to": to,
+            "label_ids": [label],
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content, author, to, label in [
+            ("plan", "Rollout plan", "probe attached", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("deck", "Q4 deck", "final numbers", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("lunch", "Lunch probe", "Friday?", "ava@acme.com", "bob@acme.com", "SENT"),
+            ("decoy", "Q4 numbers", "Rollout delayed", "bob@acme.com", "ava@acme.com", "INBOX"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_SUBJECT_BRACE_ROWS
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 

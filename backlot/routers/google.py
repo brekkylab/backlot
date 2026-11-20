@@ -1274,6 +1274,102 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
             negated.append(inner)
 
 
+def _gmail_matching(q: str, i: int, closer: str) -> int | None:
+    """The index just past the bracket closing the one at ``i`` (`{` closed by `}` or `(` by
+    `)`), or None when no bracket closes it. Quotes inside are skipped, brackets nest."""
+    opener = {"}": "{", ")": "("}[closer]
+    depth, j, n = 1, i + 1, len(q)
+    while j < n and depth:
+        if q[j] == '"':
+            k = q.find('"', j + 1)
+            j = n if k == -1 else k + 1
+            continue
+        depth += {opener: 1, closer: -1}.get(q[j], 0)
+        j += 1
+    return j if depth == 0 else None
+
+
+def _gmail_not_before(head: str) -> bool:
+    """Whether ``head`` ends with a capital `NOT`, each `-` touching one included, as
+    :data:`_GMAIL_NOT_TERM` reads it."""
+    words = head.split()
+    return bool(words) and _GMAIL_NOT_TERM.fullmatch(words[-1]) is not None
+
+
+# A quote that opens an operator's value, `subject: "..."` or `label: " inbox` with the space
+# after the colon: the quote belongs to the operator, not to a phrase, so a `{…}` inside it is
+# not the quoted group :func:`_gmail_brace_leads` reads.
+_GMAIL_OPERATOR_VALUE_QUOTE = re.compile(
+    r"(?:^|[\s(])(?:from|to|cc|bcc|subject|label|in|has|after|before|newer|older|newer_than|older_than):[ \t]*\Z",
+    re.IGNORECASE,
+)
+
+
+def _gmail_brace_leads(q: str) -> str:
+    """``q`` with a `subject:` in front of a `{…}` group moved inside it, before the group's
+    first term, and a quoted `{…}` group on its own read as the group without its quotes, so
+    :func:`_gmail_braces` then reads both as the group they are. Only `subject:` is moved, and
+    only onto the first term: the rest of the group keeps its own reading, each term an operator
+    or a free-text word of the `OR`. A group inside a `(…)` group, one a `subject:` with a space
+    before its `{` opens, a `-` or a capital `NOT` in front of the `subject:`, a quoted group
+    after anything but whitespace or opening an operator's value, and an empty group are left as
+    they are: none of those was measured. Measured against gmail.googleapis.com with a Workspace
+    member's OAuth token, comparing `messages.list` id sets on 2026-11-19 (834 messages):
+    `subject:{probe}` answered the ids of `subject:probe`, `subject:{probe from:me}` those of
+    `subject:probe` or `from:me`, and `"{probe from:me}"` those of `probe OR from:me`, where
+    `"probe from:me"` without the braces answered nothing. Whether `subject:` binds a plain
+    second word inside its braces was not measured, so the move puts it before the first term
+    only."""
+    out, i, n = "", 0, len(q)
+    while i < n:
+        c = q[i]
+        if c == '"':
+            j = q.find('"', i + 1)
+            if j == -1:
+                return out + q[i:]
+            content = q[i + 1 : j]
+            close = _gmail_matching(content, 0, "}") if content.startswith("{") else None
+            if (
+                close is not None
+                and close == len(content)
+                and content[1 : close - 1].strip()
+                and (not out or out[-1] in " \t\n\r\f\v")
+                and not _GMAIL_OPERATOR_VALUE_QUOTE.search(out)
+                and not _gmail_not_before(out)
+            ):
+                out += content
+            else:
+                out += q[i : j + 1]
+            i = j + 1
+            continue
+        if c == "(":
+            close = _gmail_matching(q, i, ")")
+            if close is None:
+                return out + q[i:]
+            out += q[i:close]
+            i = close
+            continue
+        if c == "{":
+            close = _gmail_matching(q, i, "}")
+            if close is None:
+                return out + q[i:]
+            head = out
+            if (
+                head[-8:].lower() == "subject:"
+                and (len(head) == 8 or head[-9] in " \t\n\r\f\v)")
+                and q[i + 1 : close - 1].strip()
+                and not _gmail_not_before(head[:-8])
+            ):
+                out = head[:-8] + "{" + head[-8:] + q[i + 1 : close - 1] + "}"
+            else:
+                out += q[i:close]
+            i = close
+            continue
+        out += c
+        i += 1
+    return out
+
+
 def _gmail_braces(q: str) -> tuple[str, list[str], list[str]]:
     """``q`` with each `{…}` group outside a `-(…)` taken out, and the inner texts of the plain and
     the negated groups. A `{…}` group is an `OR` of its top-level terms, and a run of `-` touching
@@ -1286,7 +1382,9 @@ def _gmail_braces(q: str) -> tuple[str, list[str], list[str]]:
     but those of `probe OR from:me`; `{probe from:me` and `-{probe from:me`, with no `}`, what
     `(probe from:me` and `-(probe from:me` answer, so such a `{` is read as a `(`; and
     `-(label:inbox {probe from:me})` what `-(label:inbox (probe OR from:me))` answers, so a `-(…)`
-    keeps its braces for the search of its own that reads it (:func:`_gmail_flatten`)."""
+    keeps its braces for the search of its own that reads it (:func:`_gmail_flatten`). A `subject:`
+    in front of a group, and quotes around one, are read before this
+    (:func:`_gmail_brace_leads`)."""
     if "{" not in q:
         return q, [], []
     chars, opened, i, n = list(q), [], 0, len(q)
@@ -1419,6 +1517,7 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
     matched full-text."""
+    q = _gmail_brace_leads(q)
     q, any_groups, not_any_groups = _gmail_braces(q)
     q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
     lone = _GMAIL_LONE_QUOTE_UNCLOSED.search(q)

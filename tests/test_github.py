@@ -2694,6 +2694,56 @@ def test_github_an_escaped_slash_is_read_where_real_reads_it(gh_client, gh_admin
     assert answered == expected
 
 
+#: A `/github/rate_limit` whose `rate_limit` segment holds an escape, a spelling real routes as
+#: a path no route serves
+#: (``backlot.main.route_a_github_rate_limit_spelt_with_an_escape_as_sent``), and the spelling it
+#: answers as. The last row's query makes the target 8,180 bytes, past the request line's bound
+#: but short of the target's.
+_ESCAPED_RATE_LIMIT_ROWS = [
+    ("/rate%5Flimit", "/RATE_LIMIT"),
+    ("/rate%5flimit", "/RATE_LIMIT"),
+    ("/%72ate_limit", "/RATE_LIMIT"),
+    ("/rate%5Flimit?a=" + "q" * 8164, "/RATE_LIMIT?a=" + "q" * 8164),
+]
+
+
+def test_github_an_escaped_letter_in_rate_limit_is_no_route(gh_client, gh_admin_h):
+    """Each row's spelling answers here with the 404 of the spelling beside it, byte for byte,
+    with no credential and with a token: the five `x-ratelimit-*` ride on the no-credential
+    answer and on neither token's, as they ride for a path real does not route.
+
+    The dated measurement is recorded on
+    ``backlot.main.route_a_github_rate_limit_spelt_with_an_escape_as_sent``."""
+    c, _ = gh_client
+    senders = (("no credential", {}), ("admin", gh_admin_h))
+
+    def layered(response):
+        return [n for n in response.headers if n.startswith(("x-ratelimit-", "x-github-api-v"))]
+
+    answered, expected = {}, {}
+    for sent, control in _ESCAPED_RATE_LIMIT_ROWS:
+        for label, headers in senders:
+            r = c.get(f"/github{sent}", headers=headers)
+            same = c.get(f"/github{control}", headers=headers)
+            # the row is what went on the wire, not a spelling the client normalised first
+            wire = r.request.url.raw_path.decode()
+            answered[(sent, label)] = (
+                wire,
+                r.status_code,
+                same.status_code,
+                r.content,
+                layered(r),
+            )
+            expected[(sent, label)] = (
+                f"/github{sent}",
+                404,
+                404,
+                same.content,
+                layered(same),
+            )
+    assert answered == expected
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which

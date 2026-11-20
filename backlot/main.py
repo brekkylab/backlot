@@ -1283,6 +1283,39 @@ async def route_a_github_path_the_way_github_does(request: Request, call_next):
     return await call_next(request)
 
 
+def _a_github_rate_limit_spelt_with_an_escape(scope: Scope) -> bool:
+    """Whether this scope's path is `/github/rate_limit` as decoded but not as sent: an escape
+    in the `rate_limit` segment, in either case of hex."""
+    raw = scope.get("raw_path") or b""
+    return scope["path"] == github.RATE_LIMIT_PATH and raw != github.RATE_LIMIT_PATH.encode()
+
+
+@_middleware(_a_github_rate_limit_spelt_with_an_escape)
+async def route_a_github_rate_limit_spelt_with_an_escape_as_sent(request: Request, call_next):
+    """Route a `/github/rate_limit` whose `rate_limit` segment holds an escape as real routes
+    it: as a path no route serves, not as the `rate_limit` route.
+
+    Measured against api.github.com on 2026-11-19 over raw HTTP/1.1 on TLS with no
+    `Authorization`: a `GET` of `/rate%5Flimit`, `/rate%5flimit` and `/%72ate_limit`, and of
+    `/rate%5Flimit` with a query that made the target 8,180 bytes, each drew the JSON 404 of a
+    path no route serves (`application/json; charset=utf-8`, GitHub's `Not Found` body, with an
+    `x-github-request-id` and the five `x-ratelimit-*`), where Backlot served the route's 200 —
+    or, for the 8,180-byte target, the request line's 414. Whether real reads an escaped letter
+    otherwise on its other routes was not measured — only `/rate_limit` was sent one — so only
+    it is routed as sent here. The other half of the issue, the `fasthttp` 431 for a long path under
+    `/rate_limit`, is not settled by this change: the bound it draws moved between runs.
+
+    The rewrite is of the scope's path alone, to the spelling as sent, so the request answers as
+    `/RATE_LIMIT` does: the router matches no route, and the five `x-ratelimit-*` ride only where
+    they ride for a path real does not route. Registered after
+    :func:`route_a_github_path_the_way_github_does`, which makes it the outer of the two, and the
+    two never meet: a path this reads holds no `%2F`, since one in the segment would decode to a
+    `/` and the decoded path would not be `/rate_limit`.
+    """
+    request.scope["path"] = request.scope["raw_path"].decode("latin-1")
+    return await call_next(request)
+
+
 @_middleware(
     lambda scope: (
         errors.atlassian.owns(_url_path(scope))

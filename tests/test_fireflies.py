@@ -1699,12 +1699,6 @@ def test_fireflies_stubbed_fields_are_null_not_invented(fireflies_corpus):
 
 
 def test_fireflies_user_is_the_organizer_and_counts_organized_transcripts(tmp_path):
-    """`Transcript.user` is the organizer, not the host, and the User counts are over the
-    transcripts a user ORGANIZED — not the ones they hosted.
-
-    The measurements behind both halves are recorded where they are used: the `Transcript.user`
-    half in the comment in `_transcript`, the counts half on `_user_stats` — both in
-    backlot/graphql/fireflies_resolvers.py."""
     records = [
         {**FIREFLIES_CORPUS[0], "doc_id": "ff-user-1", "title": "First"},
         {
@@ -1760,8 +1754,6 @@ def test_fireflies_user_is_the_organizer_and_counts_organized_transcripts(tmp_pa
 
 
 def test_fireflies_user_counts_are_scoped_to_what_the_caller_may_read(tmp_path):
-    """The counts are scoped to what the caller may read — the reason is on `_user_stats`'s
-    docstring in backlot/graphql/fireflies_resolvers.py."""
     import yaml
 
     base = {

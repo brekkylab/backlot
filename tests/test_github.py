@@ -2819,14 +2819,17 @@ _UNSERVED_ROWS = [
     ("GET", "/agents/repos/{org}/codebase/nosuch", False, 404),
 ]
 
-_BASIC_NO_TOKEN_NOT_FOUND = {
-    ("PATCH", "/github/repos/{org}/codebase"),
-    ("DELETE", "/github/repos/{org}/codebase"),
-    ("POST", "/github/repos/{org}/codebase/forks"),
-    ("PUT", "/github/teams/1/repos/{org}/codebase"),
-    ("POST", "/github/repos/{org}/codebase/git/trees"),
-    ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip"),
-    ("GET", "/github/organizations/1/settings/billing/usage"),
+#: (method, path): real's status for a `Basic` value that names no token, sent with no body, where
+#: it is not the 401 "Requires authentication"
+#: (`backlot.routers.github.refuse_an_unserved_operation`).
+_BASIC_NO_TOKEN_STATUS = {
+    ("PATCH", "/github/repos/{org}/codebase"): 400,
+    ("DELETE", "/github/repos/{org}/codebase"): 404,
+    ("POST", "/github/repos/{org}/codebase/forks"): 404,
+    ("PUT", "/github/teams/1/repos/{org}/codebase"): 404,
+    ("POST", "/github/repos/{org}/codebase/git/trees"): 404,
+    ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip"): 404,
+    ("GET", "/github/organizations/1/settings/billing/usage"): 404,
 }
 
 
@@ -2899,9 +2902,7 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
     basic = {"Authorization": "Basic Zm9vOmJhcg=="}
     agents = url.startswith("/github/agents")
-    basic_status = (
-        (400 if method == "PATCH" else 404) if (method, path) in _BASIC_NO_TOKEN_NOT_FOUND else 401
-    )
+    basic_status = _BASIC_NO_TOKEN_STATUS.get((method, path), 401)
     for headers, answered in ((gh_admin_h, status), (basic, basic_status)):
         r = c.request(method, url, headers=headers)
         assert r.status_code == answered, headers
@@ -2972,9 +2973,8 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
 def test_github_a_basic_value_without_a_token_gets_an_unserved_operation_404(
     gh_client, gh_org, method, path, documentation_url, body
 ):
-    """Each operation's status and documentation anchor match the api.github.com measurement
-    recorded by :func:`backlot.routers.github.refuse_an_unserved_operation`. PATCH without an object
-    is the route's 400 first.
+    """Each operation's answer and documentation anchor match the api.github.com measurement
+    recorded by :func:`backlot.routers.github.refuse_an_unserved_operation`, each request counted.
     """
     c, _ = gh_client
     url = path.format(org=gh_org)
@@ -2992,35 +2992,59 @@ def test_github_a_basic_value_without_a_token_gets_an_unserved_operation_404(
         },
     )
     assert response.headers["x-github-api-version-selected"] == "2022-11-28"
-    assert "x-ratelimit-limit" in response.headers
+    used = int(response.headers["x-ratelimit-used"])
+    again = c.request(method, url, headers=headers, **kwargs)
+    assert int(again.headers["x-ratelimit-used"]) == used + 1
 
-    if method == "PATCH":
-        for kwargs, message in (
-            ({}, "Body should be a JSON object"),
-            ({"json": []}, "Body should be a JSON object"),
-        ):
-            refused = c.patch(url, headers=headers, **kwargs)
-            assert (refused.status_code, refused.json()) == (
-                400,
-                {
-                    "message": message,
-                    "documentation_url": documentation_url,
-                    "status": "400",
-                },
-            )
-            assert refused.headers["x-github-api-version-selected"] == "2022-11-28"
-            assert "x-ratelimit-limit" in refused.headers
-        malformed = c.patch(url, headers=headers, content=b"x")
-        assert (malformed.status_code, malformed.json()) == (
-            400,
-            {
-                "message": "Problems parsing JSON",
-                "documentation_url": documentation_url,
-                "status": "400",
-            },
+
+#: Bodies of `PATCH /repos/{owner}/{repo}` sent with `Authorization: Basic eDp5` and
+#: `Content-Type: application/json` to a repository that does not exist, each with real's status and
+#: message (`backlot.routers.github._a_repository_update_refusal`).
+_REPOSITORY_UPDATE_BODIES = [
+    (b"[]", 400, "Body should be a JSON object"),
+    (b"null", 400, "Body should be a JSON object"),
+    (b'"x"', 400, "Body should be a JSON object"),
+    (b"[" * 1000 + b"]" * 1000, 400, "Body should be a JSON object"),
+    (b" ", 400, "Body should be a JSON object"),
+    (b"\t", 400, "Body should be a JSON object"),
+    (b"\n", 400, "Body should be a JSON object"),
+    (b"\r\n", 400, "Body should be a JSON object"),
+    (b"\x0b", 400, "Body should be a JSON object"),
+    (b"\x0c", 400, "Body should be a JSON object"),
+    (b"x", 400, "Problems parsing JSON"),
+    (b'{"a":1}x', 400, "Problems parsing JSON"),
+    (b'{"a":NaN}', 400, "Problems parsing JSON"),
+    (b'{"a":"\xff"}', 400, "Problems parsing JSON"),
+    (b"{}", 404, "Not Found"),
+    (b"  {}  ", 404, "Not Found"),
+    (b'{"value":' + b"9" * 5000 + b"}", 404, "Not Found"),
+    (b'{"a":' + b"[" * 1000 + b"]" * 1000 + b"}", 404, "Not Found"),
+    (b'{"a":' + b"[" * 50 + b"]" * 50 + b"}", 404, "Not Found"),
+]
+
+
+def test_github_a_basic_value_without_a_token_updating_a_repository_is_answered_by_its_body(
+    gh_client, gh_org
+):
+    """Each body is answered as `_REPOSITORY_UPDATE_BODIES` records real, each request counted."""
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/codebase"
+    headers = {"Authorization": "Basic eDp5", "Content-Type": "application/json"}
+    documentation_url = "https://docs.github.com/rest/repos/repos#update-a-repository"
+    answers = []
+    for content, _, _ in _REPOSITORY_UPDATE_BODIES:
+        r = c.patch(url, headers=headers, content=content)
+        echo = r.headers["x-github-api-version-selected"]
+        answers.append((r.status_code, r.json(), echo, r.headers["x-ratelimit-used"]))
+    assert answers == [
+        (
+            status,
+            {"message": message, "documentation_url": documentation_url, "status": str(status)},
+            "2022-11-28",
+            str(used),
         )
-        assert malformed.headers["x-github-api-version-selected"] == "2022-11-28"
-        assert "x-ratelimit-limit" in malformed.headers
+        for used, (_, status, message) in enumerate(_REPOSITORY_UPDATE_BODIES, start=1)
+    ]
 
 
 #: (method, path, whether a request with no `Authorization` header is counted) on the paths

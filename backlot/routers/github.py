@@ -27,6 +27,7 @@ from starlette.types import Scope
 from backlot import auth, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
+from backlot.graphql import body as request_body
 from backlot.pagination import (
     PageParam,
     clamp_page,
@@ -681,6 +682,9 @@ _PUBLISHED_NOT_SERVED = published.operations(
 _ROUTED_UNPUBLISHED = published.operations(
     ("GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
+#: The operations real answers a `Basic` value naming no token with the 404 "Not Found" on a
+#: repository the caller cannot see, each with its own `documentation_url`
+#: (:func:`refuse_an_unserved_operation`).
 _BASIC_NO_TOKEN_NOT_FOUND = (
     (
         published.operations(("PATCH /repos/{}/{}",)),
@@ -711,6 +715,28 @@ _BASIC_NO_TOKEN_NOT_FOUND = (
         "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
     ),
 )
+
+
+def _a_repository_update_refusal(raw: bytes) -> str | None:
+    """The message of real's 400 for ``raw`` as the body of `PATCH /repos/{owner}/{repo}` from a
+    `Basic` value that names no token, or `None` for a body that is a JSON object.
+
+    Measured against api.github.com on 2026-11-18 (UTC) on a repository that does not exist, each
+    body sent with `Content-Type: application/json`. No body, `[]`, `null`, `"x"`, an array nested
+    1,000 deep, and a space, a tab, a line feed, CR LF, a vertical tab or a form feed alone were
+    "Body should be a JSON object". `x`, `{"a":1}x`, `{"a":NaN}` and an object holding the byte
+    0xFF in a string were "Problems parsing JSON". `{}`, `  {}  `, an object holding a 5,000-digit
+    integer and one holding an array nested 1,000 deep were the 404.
+    """
+    if not raw.strip():
+        return "Body should be a JSON object"
+    try:
+        body = request_body.parse(raw.decode())
+    except (UnicodeDecodeError, request_body.NotJson):
+        return "Problems parsing JSON"
+    return None if isinstance(body, dict) else "Body should be a JSON object"
+
+
 #: The unserved reads real was measured serving a caller with no credential
 #: (:func:`_a_tab_credential_on_a_read_real_serves_without_one`).
 _READS_REAL_SERVES_WITHOUT_A_CREDENTIAL = published.operations(
@@ -863,16 +889,20 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     the eight operations the tests send, each pinned to `1999-01-01`, so was an empty
     `Authorization`.
 
-    A `Basic` value naming no token gets a 404 and the operation's own documentation anchor on these
-    seven operations, measured against api.github.com on 2026-11-18 (UTC): `PATCH` and `DELETE`
-    `/repos/{owner}/{repo}`, `POST …/forks`, `PUT /teams/{team_id}/repos/{owner}/{repo}`,
-    `POST …/git/trees`, `GET …/actions/artifacts/{artifact_id}/zip` and
-    `GET /orgs/{org}/settings/billing/usage`. On the repository `PATCH`, no body and `[]` were the
-    400 "Body should be a JSON object", `x` was the 400 "Problems parsing JSON", and `{}` was the
-    404. Each carried the version echo and the five `x-ratelimit-*`. On 2026-10-26,
+    A `Basic` value that names no token, on a repository or organization that does not exist (which
+    real answers as one the caller cannot see), was answered on the seven operations of
+    :data:`_BASIC_NO_TOKEN_NOT_FOUND` with the 404 "Not Found" and the operation's own
+    `documentation_url`, and on `PATCH /repos/{owner}/{repo}` with the 400 of
+    :func:`_a_repository_update_refusal` ahead of it, each with the echo and the five and each
+    moving `x-ratelimit-used` by one (api.github.com, `Basic eDp5`, 2026-11-18 UTC). On a public
+    repository real answered `DELETE /repos/{owner}/{repo}` with the 403 "Must have admin rights to
+    Repository.", `POST …/forks` with the 401 "You must be logged in to do that." and
+    `GET …/actions/artifacts/{artifact_id}/zip` with the 403 "You must have the actions scope to
+    download artifacts." (2026-10-26); here every repository is answered as one the caller cannot
+    see, as the served routes answer this caller as if every repository needed a credential. On
     `DELETE /user/keys/1`, `POST /user/gpg_keys`, `GET /user/packages` and `GET /gists/starred`
-    remained 401 "Requires authentication" with a `Basic` value naming no token. Other unserved
-    operations keep the 401 this function gives them; the ones not measured are not inferred.
+    real's answer was the 401 "Requires authentication" (2026-10-26); on those four and on each
+    operation not measured, it is :func:`_require`'s 401 after the version, carrying both.
 
     A `Basic` value holding a token in one of real's shapes (``backlot.auth._GITHUB_TOKEN_SHAPE``)
     that resolves to no one is "Bad credentials" with neither the echo nor the five, ahead of the
@@ -920,29 +950,15 @@ async def refuse_an_unserved_operation(request: Request) -> None:
             None,
         )
         if documentation_url is not None:
+            message = None
             if request.method == "PATCH":
-                raw = await request.body()
-                try:
-                    body = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    message = "Problems parsing JSON" if raw else "Body should be a JSON object"
-                else:
-                    message = None if isinstance(body, dict) else "Body should be a JSON object"
-                if message is not None:
-                    request.state.github_unserved_refusal = "reported"
-                    exc = HTTPException(status_code=400, detail=message)
-                    exc.github_body = {
-                        "message": message,
-                        "documentation_url": documentation_url,
-                        "status": "400",
-                    }
-                    raise exc
-            request.state.github_unserved_refusal = "reported"
-            exc = HTTPException(status_code=404, detail="Not Found")
+                message = _a_repository_update_refusal(await request.body())
+            status, message = (404, "Not Found") if message is None else (400, message)
+            exc = HTTPException(status_code=status, detail=message)
             exc.github_body = {
-                "message": "Not Found",
+                "message": message,
                 "documentation_url": documentation_url,
-                "status": "404",
+                "status": str(status),
             }
             raise exc
     _require(request)

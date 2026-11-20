@@ -14,6 +14,7 @@ import base64
 import datetime
 import functools
 import hashlib
+import html
 import json
 import quopri
 import re
@@ -494,6 +495,42 @@ def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
 
 
 _PUBLISHED_NOT_SERVED = _published_not_served()
+
+
+def front_end_not_found(request: Request) -> Response:
+    """Google's front end's 404 for a path and method no operation serves. Measured on Google
+    Drive, 2026-10-22, with a Workspace member's token and with none, and on Gmail, 2026-10-23,
+    with a Workspace member's token.
+    On Drive, 2026-11-20, the echoed target decoded escapes of unreserved characters in the path
+    and query and uppercased the other escapes, kept a trailing slash and an empty `?`, dropped
+    a raw `#` and what followed it, and escaped `&` and quotes as HTML. A credential, `callback`
+    and `$.xgafv` do not change the page.
+    """
+    from backlot import request_target
+
+    scope = request.scope
+    fragment = scope.get(request_target.WITH_A_FRAGMENT)
+    if fragment is not None:
+        target = fragment.partition(b"#")[0]
+    else:
+        target = scope.get("raw_path") or scope["path"].encode()
+        if not request_target.path_ends_the_target(scope):
+            target += b"?" + scope["query_string"]
+    target = _batch_escapes(target.decode("latin-1"), "-._~")
+    echoed = html.escape(target).replace("&#x27;", "&#39;").replace("&quot;", "&#34;")
+    body = request_target.google_page(
+        404,
+        "Not Found",
+        b"The requested URL <code>"
+        + echoed.encode("utf-8")
+        + b"</code> was not found on this server.  "
+        b"<ins>That\xe2\x80\x99s all we know.</ins>\n",
+    )
+    return Response(
+        body,
+        status_code=404,
+        headers={"content-type": "text/html; charset=UTF-8", "server": "ESF"},
+    )
 
 
 def refuse_an_unserved_operation(request: Request) -> None:

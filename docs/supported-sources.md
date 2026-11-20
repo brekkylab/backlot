@@ -54,6 +54,12 @@ Ordered as the table above, by `source_type`.
 — a user grant naming that user, a group or org grant naming none — for `read`/`space`, the only
 operation an ACL states.
 
+`ari` and `base64EncodedAri` follow `type` on a page's `content/{id}`, on its rows in `content` and
+`content/{id}/child/page` and on its `search` row when `expand` names something under `content.`,
+and on a comment's row in `content/{id}/child/comment`. Both carry the cloud id a space read's `ari`
+carries: a page's `ari` names `page/{id}` and its `base64EncodedAri` encodes `content/{id}`, and a
+comment's two name `comment/{id}`.
+
 A JSON body is the bare `application/json` on every Confluence route served. The charset Jira names
 is Jira's alone.
 
@@ -192,7 +198,11 @@ ahead of an unsupported version's 400, where the served `/user/repos` checks the
 missing credential. A token that resolves, and a `Basic` value that names no token, are checked for
 the version first; the token then reaches the 404 or 405 of an operation Backlot cannot run, and the
 `Basic` value is the 401 a served route gives a caller with no credential, with the version echo and
-the five `x-ratelimit-*`. The operations are those the GitHub baseline marks `missing`, but
+the five `x-ratelimit-*`, except on the operations of
+`backlot.routers.github._BASIC_NO_TOKEN_NOT_FOUND`, where it is answered as real answers it on a
+repository the caller cannot see, measured on 2026-11-18: the 404 with the operation's own
+`documentation_url`, after the 400 for a `PATCH /repos/{owner}/{repo}` body that is not a JSON
+object. The operations are those the GitHub baseline marks `missing`, but
 `POST …/releases/{id}/assets`, which api.github.com does not route, and with
 `artifacts/{id}/{archive_format}` taken as `zip`. `Authorization` is read as real reads it, a space
 and a tab the only whitespace in it, and a tab right after the scheme sets the header apart unless a

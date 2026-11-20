@@ -1388,9 +1388,13 @@ def test_fireflies_introspection_describes_the_schema(client, admin_h):
     assert sentence["start_time"] == "Float" and sentence["end_time"] == "Float"
     assert sentence["speaker_id"] == "Int"
     assert sentence["ai_filters"] == "AIFilters"
+    # the three fields as the vendor's introspection described them on 2026-11-19 (UTC)
     attendance = {f["name"]: f["type"] for f in data["attendance"]["fields"]}
-    assert attendance["join_time"] == {"name": "String", "kind": "SCALAR"}
-    assert attendance["leave_time"] == {"name": "String", "kind": "SCALAR"}
+    assert attendance == {
+        "name": {"name": None, "kind": "NON_NULL"},
+        "join_time": {"name": "String", "kind": "SCALAR"},
+        "leave_time": {"name": "String", "kind": "SCALAR"},
+    }
 
 
 def test_fireflies_mcp_tools_derive_from_the_served_introspection(client, admin_h):

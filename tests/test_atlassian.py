@@ -729,16 +729,6 @@ def test_jira_reads_only_the_first_user_agent_and_redirects_nothing_but_jira(cli
     assert doubled == dict.fromkeys((IE11, "curl/8"), (404, b'{"detail":"Not Found"}'))
 
 
-@pytest.mark.parametrize("path", ["/rest", "//rest", "///rest", "/rest/nope"])
-def test_jira_reports_a_failed_basic_login_on_rest_itself(client, path):
-    """A Basic pair Jira cannot resolve gets `X-Seraph-LoginReason` on the 404 at `/rest` and its
-    doubled spellings as on any path below it (``main.report_failed_jira_login``)."""
-    basic = "Basic " + base64.b64encode(b"nobody@example.com:x").decode()
-    r = client.get(f"/atlassian{path}", headers={"Authorization": basic})
-    assert r.status_code == 404, path
-    assert r.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED", path
-
-
 def test_jira_refuses_a_bearer_it_cannot_read_as_a_connect_token(client):
     """A bearer is not the Basic pair: Jira does not go anonymous for one it cannot resolve, it
     refuses with 403 and a body that is neither API's envelope. A Backlot token is an opaque
@@ -937,8 +927,17 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
     response including the 200s. The header is keyed on the username: a value carrying a non-empty
     user before its first colon gets it, and one without a colon, or with an empty user, does not
     — neither does a request that sent no credential at all."""
-    carries = client.get("/atlassian/rest/api/3/project/search", headers=FAILED_PAIR)
-    assert carries.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
+    answers = {}
+    for path in ("/rest/api/3/project/search", "/rest/nope", "/rest", "//rest", "///rest"):
+        r = client.get(f"/atlassian{path}", headers=FAILED_PAIR)
+        answers[path] = (r.status_code, r.headers.get("x-seraph-loginreason"))
+    assert answers == {
+        "/rest/api/3/project/search": (200, "AUTHENTICATED_FAILED"),
+        "/rest/nope": (404, "AUTHENTICATED_FAILED"),
+        "/rest": (404, "AUTHENTICATED_FAILED"),
+        "//rest": (404, "AUTHENTICATED_FAILED"),
+        "///rest": (404, "AUTHENTICATED_FAILED"),
+    }
     for headers in ({}, _basic(":wrongtoken"), _basic("nobody@example.com")):
         answer = client.get("/atlassian/rest/api/3/project/search", headers=headers)
         assert "x-seraph-loginreason" not in answer.headers

@@ -927,8 +927,17 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
     response including the 200s. The header is keyed on the username: a value carrying a non-empty
     user before its first colon gets it, and one without a colon, or with an empty user, does not
     — neither does a request that sent no credential at all."""
-    carries = client.get("/atlassian/rest/api/3/project/search", headers=FAILED_PAIR)
-    assert carries.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
+    answers = {}
+    for path in ("/rest/api/3/project/search", "/rest/nope", "/rest", "//rest", "///rest"):
+        r = client.get(f"/atlassian{path}", headers=FAILED_PAIR)
+        answers[path] = (r.status_code, r.headers.get("x-seraph-loginreason"))
+    assert answers == {
+        "/rest/api/3/project/search": (200, "AUTHENTICATED_FAILED"),
+        "/rest/nope": (404, "AUTHENTICATED_FAILED"),
+        "/rest": (404, "AUTHENTICATED_FAILED"),
+        "//rest": (404, "AUTHENTICATED_FAILED"),
+        "///rest": (404, "AUTHENTICATED_FAILED"),
+    }
     for headers in ({}, _basic(":wrongtoken"), _basic("nobody@example.com")):
         answer = client.get("/atlassian/rest/api/3/project/search", headers=headers)
         assert "x-seraph-loginreason" not in answer.headers

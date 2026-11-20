@@ -23,6 +23,7 @@ import pytest
 import backlot
 from backlot import store, telemetry
 from backlot.config import get_settings
+from backlot.errors.atlassian import tomcat_page
 from backlot.server import HELLO_CORPUS
 from backlot.telemetry import clients, enabled, errors, naming, notice, recorder
 from backlot.telemetry.errors import error_class
@@ -359,6 +360,7 @@ def test_jerseys_out_of_bounds_500_carries_its_own_code():
             b'{"message":"No content found with id: ContentId{id=1}"}',
             "content_not_found",
         ),
+        ("confluence", 406, tomcat_page(406).encode(), ""),
         (
             "fireflies",
             200,

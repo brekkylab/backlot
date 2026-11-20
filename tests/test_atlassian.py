@@ -977,15 +977,17 @@ def test_confluence_refuses_an_unresolvable_credential_with_its_own_403(client, 
 def test_confluence_answers_401_to_a_basic_credential_it_cannot_parse(client, raw):
     """Confluence's 403 is for a credential it read and rejected. A Basic value that is not one
     non-empty user and one non-empty password separated by a single colon is not one it can read,
-    and that is a 401 carrying the site's own OAuth realm — measured on both sites for each shape
-    below, and for a value that is not base64 at all. Backlot answers it in Confluence's JSON
-    envelope (`errors.atlassian.http_body`), where the real 401 is Tomcat's HTML page."""
+    and that is Tomcat's 401 page carrying the site's own OAuth realm — measured on both sites
+    for each shape below, and for a value that is not base64 at all."""
     r = client.get("/atlassian/wiki/rest/api/space", headers=_basic(raw))
     assert r.status_code == 401
-    # The literal, not the constant: comparing the body against the same constant the router
-    # emits passes whatever that constant says, and its value is the measured part — the title of
-    # the Tomcat page real answers with, kept because this envelope is JSON where that page is not.
-    assert r.json()["message"] == "Unauthorized"
+    assert r.headers["content-type"] == errors_atlassian.TOMCAT_MEDIA_TYPE
+    assert r.headers["content-language"] == "en"
+    # The literal title, not ``tomcat_page``'s output alone: comparing the body against the same
+    # template the router emits passes whatever that template says, and its title is the measured
+    # part — the page real answers with.
+    assert "<title>HTTP Status 401 – Unauthorized</title>" in r.text
+    assert r.text == errors_atlassian.tomcat_page(401)
     assert r.headers["www-authenticate"] == 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"'
 
 
@@ -8702,7 +8704,8 @@ _OPERATION_REFUSALS = [
     ("POST", "/wiki/rest/api/space/abc123/permission", None, _JSON_TYPE, 403)
     + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
     # Tomcat's 401 for a Basic value it cannot read comes before the 415
-    ("POST", "/wiki/rest/api/content/abc123/child/attachment", "Basic !!!", _JSON_TYPE, 401, None),
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", "Basic !!!", _JSON_TYPE, 401)
+    + (errors_atlassian.tomcat_page(401).encode(),),
     # a Spring write that checks nothing first refuses the caller with or without a body
     ("DELETE", "/wiki/rest/api/space/abc123", None, None, 403)
     + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
@@ -8950,11 +8953,10 @@ def _operation_refusal(client, method, vendor_path, authorization, ctype, status
     the document, before it runs, in the order and shape ``_published_answer``,
     ``_CONFLUENCE_CONSUMES``, ``_CONFLUENCE_JAXRS_WRITES``, ``_CONFLUENCE_NOT_PERMITTED_GETS`` and
     ``_CONFLUENCE_OUTSIDE_THE_DOCUMENT`` in ``backlot.routers.atlassian`` carry the measurement for.
-    A 415's ``body`` is the reason Spring gives; the 401 is asserted by status alone, its body being
-    JSON here where real's is Tomcat's page. An `OPTIONS` at a published write's path is the 404
-    real answers it, not a refusal, and `/wiki/rest/api/nosuch`, at which no operation is, the 404
-    or the 400 page ``_confluence_not_found`` gives. A ``ctype`` of two values sends the header
-    twice."""
+    A 415's ``body`` is the reason Spring gives; the 401's is Tomcat's page, as real's is. An
+    `OPTIONS` at a published write's path is the 404 real answers it, not a refusal, and
+    `/wiki/rest/api/nosuch`, at which no operation is, the 404 or the 400 page
+    ``_confluence_not_found`` gives. A ``ctype`` of two values sends the header twice."""
     ctypes = () if ctype is None else (ctype,) if isinstance(ctype, str) else ctype
     headers = [("Content-Type", value) for value in ctypes]
     if authorization is not None:
@@ -8976,7 +8978,7 @@ def _operation_refusal(client, method, vendor_path, authorization, ctype, status
             None
             if body == b""
             else errors_atlassian.TOMCAT_MEDIA_TYPE
-            if status == 400
+            if status in (400, 401)
             else _JSON_TYPE
         )
 
@@ -9617,10 +9619,19 @@ _ACCEPT_ROWS = [
     ("GET", _SPACES, "none", _UNREAD_BESIDE_JSON, None, 406, None, b"", {}),
     ("GET", _SPACES, "none", "application/*+json", None, 403, _JSON, None, {}),
     ("GET", _SPACES, "none", None, None, 403, _JSON, None, {}),
-    ("GET", _SPACES, "unparseable-basic", _HTML, None, 401, _JSON, None)
-    + ({"deprecation": None, "warning": None},),
-    ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _JSON)
-    + (None, {}),
+    # Tomcat's 401 page for a Basic value it cannot read is answered on a served route too, under
+    # any `Accept`, ahead of the route's checks — the permission read's 405 included
+    ("GET", _SPACES, "unparseable-basic", _HTML, None, 401, _TOMCAT, "page")
+    + (
+        {
+            "deprecation": None,
+            "warning": None,
+            "content-language": "en",
+            "www-authenticate": 'OAuth realm="http%3A%2F%2Ftestserver%2Fwiki"',
+        },
+    ),
+    ("GET", f"{_SPACES}/{{space}}/permission", "unparseable-basic", _HTML, None, 401, _TOMCAT)
+    + ("page", {"content-language": "en", "www-authenticate": _PRESENT}),
     # -- Confluence: a Basic value Tomcat cannot read is its 401 page where no operation answers,
     # under any `Accept`, and the gateway's `PATCH` 405 comes ahead of it
     (
@@ -10112,7 +10123,10 @@ _ACCEPT_ROWS = [
     ("HEAD", f"{_SPACES}/NOPESUCH", "admin", _Q2, None, 404, errors_atlassian.HTML_MEDIA_TYPE, b"")
     + ({"content-length": None},),
     ("OPTIONS", _CQL, "admin", _Q2, None, 400, "text/plain", _unparsed(_Q2), {}),
-    ("GET", _SPACES, "unparseable-basic", _Q2, None, 401, _JSON, None, {}),
+    ("GET", _SPACES, "unparseable-basic", _Q2, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
+    ("OPTIONS", _SPACES, "unparseable-basic", _Q2, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
     ("OPTIONS", "/atlassian/wiki/rest/api/nope<script>", "admin", _Q2, None, 403, "text/html", None)
     + ({"content-length": "919"},),
     ("GET", _CQL, "admin", 'application/json;x="a;b"', None, 200, _JSON, None, {}),
@@ -10249,7 +10263,8 @@ _ACCEPT_ROWS = [
     ),
     ("GET", "/atlassian/wiki/rest/api/audit", "none", _SORT_FAILS, None, 400, "text/plain")
     + (_unparsed(_SORT_FAILS), {}),
-    ("GET", _SPACES, "unparseable-basic", _SORT_FAILS, None, 401, _JSON, None, {}),
+    ("GET", _SPACES, "unparseable-basic", _SORT_FAILS, None, 401, _TOMCAT, "page")
+    + ({"content-language": "en", "www-authenticate": _PRESENT},),
 ]
 
 _ACCEPT_CREDENTIALS = {

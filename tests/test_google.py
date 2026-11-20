@@ -15282,11 +15282,6 @@ _GMAIL_BRACE_ROWS = [
     ('{Rollout subject:"()"}', ["plan"]),
     ('{Rollout to:"()"}', ["plan"]),
     ('-{Rollout "()"}', ["deck", "lunch"]),
-    ("subject:{Rollout}", ["plan"]),
-    ("subject:{Rollout from:me}", ["plan", "lunch"]),
-    ("subject:{Rollout} label:inbox", ["plan"]),
-    ('"{Rollout from:me}"', ["plan", "lunch"]),
-    ('"{Rollout}"', ["plan"]),
 ]
 
 
@@ -15329,15 +15324,32 @@ _GMAIL_SUBJECT_BRACE_ROWS = [
     ('"{Rollout from:me}"', ["plan", "lunch", "decoy"]),
     ('"{Rollout}"', ["plan", "decoy"]),
     ("{Rollout from:me}", ["plan", "lunch", "decoy"]),
+    ("subject:{Rollout numbers}", ["plan", "decoy"]),
+    ("subject:{Rollout OR numbers}", ["plan", "decoy"]),
+    ('subject:{Rollout "numbers"}', ["plan", "decoy"]),
+    ("subject:{Rollout NOT numbers}", ["plan", "decoy"]),
+    ("subject:{Rollout -numbers}", ["plan", "deck", "lunch"]),
+    ("subject:{Rollout {numbers Lunch}}", ["plan", "lunch", "decoy"]),
+    ("subject:{Rollout (Q4 numbers)}", ["plan", "decoy"]),
+    ("subject:{from:me Rollout}", ["plan"]),
+    ("subject:{Rollout label:inbox}", ["plan"]),
+    ("subject:{Rollout -from:me}", ["plan", "deck", "decoy"]),
+    ("subject: {Rollout from:me}", ["plan", "lunch"]),
+    ("-subject:{Rollout from:me}", ["deck", "decoy"]),
+    ("NOT subject:{Rollout}", ["deck", "lunch", "decoy"]),
+    ("(subject:{Rollout from:me})", ["plan", "lunch"]),
+    ('subject:"{Rollout from:me}"', ["plan", "lunch"]),
+    ('-"{Rollout from:me}"', ["deck"]),
+    ('NOT "{Rollout from:me}"', ["deck"]),
+    ('numbers"{Rollout from:me}"', ["decoy"]),
+    ("subject:{}", ["plan", "deck", "lunch", "decoy"]),
 ]
 
 
 def test_gmail_subject_and_quoted_brace_groups(tmp_path):
-    """A `subject:` in front of a brace group binds only the group's first term, the rest
-    keeping their own reading, and a quoted brace group reads as the group without its quotes
-    (the comment at `_gmail_brace_leads`). `decoy` holds `Rollout` in its body but not its
-    subject, so it tells a subject search from a free-text one. A plain second word inside a
-    `subject:` brace group is unmeasured, so no row asserts what it answers."""
+    """Each row is how the comments on `_gmail_brace_leads` and `_gmail_subject_terms` read its
+    query, over both listings. `decoy` holds `Rollout` in its body but not its subject, so it
+    tells a subject search from a free-text one."""
     records = [
         {
             "source_type": "gmail",

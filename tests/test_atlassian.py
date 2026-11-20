@@ -831,6 +831,73 @@ def test_jira_refuses_a_bearer_it_cannot_read_on_rest_and_a_run_of_slashes(clien
     assert answered == expected
 
 
+def test_jira_refuses_a_bearer_it_cannot_read_outside_rest_too(client):
+    """Each request in the table is refused with an unreadable bearer and answered as itself
+    with none, and a `GET` on each path after it is answered with the bearer exactly as with
+    none."""
+    refused = (403, errors_atlassian.connect_token_answer(None)[1])
+    expected = {
+        ("GET", "/atlassian/", "bearer"): refused,
+        ("GET", "/atlassian/", None): (302, None),
+        ("GET", "/atlassian/browse", "bearer"): refused,
+        ("GET", "/atlassian/browse", None): (200, None),
+        ("GET", "/atlassian/jira", "bearer"): refused,
+        ("GET", "/atlassian/jira", None): (404, None),
+        ("GET", "/atlassian/foo", "bearer"): refused,
+        ("GET", "/atlassian/foo", None): (404, None),
+        ("GET", "/atlassian/res", "bearer"): refused,
+        ("GET", "/atlassian/res", None): (404, None),
+        ("GET", "/atlassian/xrest", "bearer"): refused,
+        ("GET", "/atlassian/xrest", None): (404, None),
+        ("GET", "/atlassian/restx", "bearer"): refused,
+        ("GET", "/atlassian/restx", None): (404, None),
+        ("GET", "/atlassian/Rest", "bearer"): refused,
+        ("GET", "/atlassian/Rest", None): (404, None),
+        ("GET", "/atlassian/ex/jira/x", "bearer"): refused,
+        ("GET", "/atlassian/ex/jira/x", None): (404, None),
+        ("GET", "/atlassian/browse%2F", "bearer"): refused,
+        ("GET", "/atlassian/browse%2F", None): (200, None),
+        ("HEAD", "/atlassian/browse/", "bearer"): (403, b""),
+        ("HEAD", "/atlassian/browse/", None): (200, None),
+        ("POST", "/atlassian/browse/", "bearer"): refused,
+        ("POST", "/atlassian/browse/", None): (200, None),
+        ("PUT", "/atlassian/browse/", "bearer"): refused,
+        ("PUT", "/atlassian/browse/", None): (200, None),
+        ("DELETE", "/atlassian/browse/", "bearer"): refused,
+        ("DELETE", "/atlassian/browse/", None): (200, None),
+    }
+    answered = {}
+    for method, url, authorization in expected:
+        headers = {"Authorization": "Bearer usr-nope"} if authorization else {}
+        r = client.request(method, url, headers=headers, follow_redirects=False)
+        answered[method, url, authorization] = (
+            r.status_code,
+            r.content if r.status_code == 403 else None,
+        )
+    assert answered == expected
+    for path in (
+        "/browse/",
+        "/browse/x",
+        "/Browse/",
+        "/brows%65/x",
+        "/wiki",
+        "/wiki/",
+        "/wiki/nope",
+        "/wikix",
+        "/Wiki/nope",
+        "/wiki%2Fnope",
+    ):
+        url = f"/atlassian{path}"
+        with_bearer = client.get(
+            url, headers={"Authorization": "Bearer usr-nope"}, follow_redirects=False
+        )
+        without = client.get(url, follow_redirects=False)
+        assert (with_bearer.status_code, with_bearer.content) == (
+            without.status_code,
+            without.content,
+        ), path
+
+
 _SCHEMES = [
     "bearer usr-nope",
     "BEARER usr-nope",

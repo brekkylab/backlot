@@ -2819,6 +2819,19 @@ _UNSERVED_ROWS = [
     ("GET", "/agents/repos/{org}/codebase/nosuch", False, 404),
 ]
 
+#: (method, path): real's status for a `Basic` value that names no token, sent with no body, where
+#: it is not the 401 "Requires authentication"
+#: (`backlot.routers.github.refuse_an_unserved_operation`).
+_BASIC_NO_TOKEN_STATUS = {
+    ("PATCH", "/github/repos/{org}/codebase"): 400,
+    ("DELETE", "/github/repos/{org}/codebase"): 404,
+    ("POST", "/github/repos/{org}/codebase/forks"): 404,
+    ("PUT", "/github/teams/1/repos/{org}/codebase"): 404,
+    ("POST", "/github/repos/{org}/codebase/git/trees"): 404,
+    ("GET", "/github/repos/{org}/codebase/actions/artifacts/1/zip"): 404,
+    ("GET", "/github/organizations/1/settings/billing/usage"): 404,
+}
+
 
 @pytest.mark.parametrize("method, path, refused, status", _UNSERVED_ROWS)
 def test_github_an_unserved_operation_is_refused_for_its_credential_first(
@@ -2889,7 +2902,8 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
     basic = {"Authorization": "Basic Zm9vOmJhcg=="}
     agents = url.startswith("/github/agents")
-    for headers, answered in ((gh_admin_h, status), (basic, 401)):
+    basic_status = _BASIC_NO_TOKEN_STATUS.get((method, path), 401)
+    for headers, answered in ((gh_admin_h, status), (basic, basic_status)):
         r = c.request(method, url, headers=headers)
         assert r.status_code == answered, headers
         assert any(name.startswith("x-ratelimit-") for name in r.headers), headers
@@ -2907,6 +2921,130 @@ def test_github_an_unserved_operation_is_refused_for_its_credential_first(
         unversioned = c.request(method, url, headers={**headers, **bad_version})
         assert (unversioned.status_code, unversioned.json()["message"]) == (400, "Bad Request")
         assert any(name.startswith("x-ratelimit-") for name in unversioned.headers), headers
+
+
+@pytest.mark.parametrize(
+    "method, path, documentation_url, body",
+    [
+        (
+            "PATCH",
+            "/github/repos/{org}/codebase",
+            "https://docs.github.com/rest/repos/repos#update-a-repository",
+            {},
+        ),
+        (
+            "DELETE",
+            "/github/repos/{org}/codebase",
+            "https://docs.github.com/rest/repos/repos#delete-a-repository",
+            None,
+        ),
+        (
+            "POST",
+            "/github/repos/{org}/codebase/forks",
+            "https://docs.github.com/rest/repos/forks#create-a-fork",
+            None,
+        ),
+        (
+            "PUT",
+            "/github/teams/1/repos/{org}/codebase",
+            "https://docs.github.com/rest/teams/teams#add-or-update-team-repository-permissions-legacy",
+            None,
+        ),
+        (
+            "POST",
+            "/github/repos/{org}/codebase/git/trees",
+            "https://docs.github.com/rest/git/trees#create-a-tree",
+            {},
+        ),
+        (
+            "GET",
+            "/github/repos/{org}/codebase/actions/artifacts/1/zip",
+            "https://docs.github.com/rest/actions/artifacts#download-an-artifact",
+            None,
+        ),
+        (
+            "GET",
+            "/github/orgs/{org}/settings/billing/usage",
+            "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
+            None,
+        ),
+    ],
+)
+def test_github_a_basic_value_without_a_token_gets_an_unserved_operation_404(
+    gh_client, gh_org, method, path, documentation_url, body
+):
+    """Each operation's answer and documentation anchor match the api.github.com measurement
+    recorded by :func:`backlot.routers.github.refuse_an_unserved_operation`, each request counted.
+    """
+    c, _ = gh_client
+    url = path.format(org=gh_org)
+    headers = {"Authorization": "Basic eDp5"}
+    if method == "PATCH":
+        headers["Content-Type"] = "application/json"
+    kwargs = {} if body is None else {"json": body}
+    response = c.request(method, url, headers=headers, **kwargs)
+    assert (response.status_code, response.json()) == (
+        404,
+        {
+            "message": "Not Found",
+            "documentation_url": documentation_url,
+            "status": "404",
+        },
+    )
+    assert response.headers["x-github-api-version-selected"] == "2022-11-28"
+    used = int(response.headers["x-ratelimit-used"])
+    again = c.request(method, url, headers=headers, **kwargs)
+    assert int(again.headers["x-ratelimit-used"]) == used + 1
+
+
+#: Bodies of `PATCH /repos/{owner}/{repo}` sent with `Authorization: Basic eDp5` and
+#: `Content-Type: application/json` to a repository that does not exist, each with real's status and
+#: message (`backlot.routers.github._a_repository_update_refusal`).
+_REPOSITORY_UPDATE_BODIES = [
+    (b"[]", 400, "Body should be a JSON object"),
+    (b"null", 400, "Body should be a JSON object"),
+    (b'"x"', 400, "Body should be a JSON object"),
+    (b"[" * 1000 + b"]" * 1000, 400, "Body should be a JSON object"),
+    (b" ", 400, "Body should be a JSON object"),
+    (b"\t", 400, "Body should be a JSON object"),
+    (b"\n", 400, "Body should be a JSON object"),
+    (b"\r\n", 400, "Body should be a JSON object"),
+    (b"\x0b", 400, "Body should be a JSON object"),
+    (b"\x0c", 400, "Body should be a JSON object"),
+    (b"x", 400, "Problems parsing JSON"),
+    (b'{"a":1}x', 400, "Problems parsing JSON"),
+    (b'{"a":NaN}', 400, "Problems parsing JSON"),
+    (b'{"a":"\xff"}', 400, "Problems parsing JSON"),
+    (b"{}", 404, "Not Found"),
+    (b"  {}  ", 404, "Not Found"),
+    (b'{"value":' + b"9" * 5000 + b"}", 404, "Not Found"),
+    (b'{"a":' + b"[" * 1000 + b"]" * 1000 + b"}", 404, "Not Found"),
+    (b'{"a":' + b"[" * 50 + b"]" * 50 + b"}", 404, "Not Found"),
+]
+
+
+def test_github_a_basic_value_without_a_token_updating_a_repository_is_answered_by_its_body(
+    gh_client, gh_org
+):
+    """Each body is answered as `_REPOSITORY_UPDATE_BODIES` records real, each request counted."""
+    c, _ = gh_client
+    url = f"/github/repos/{gh_org}/codebase"
+    headers = {"Authorization": "Basic eDp5", "Content-Type": "application/json"}
+    documentation_url = "https://docs.github.com/rest/repos/repos#update-a-repository"
+    answers = []
+    for content, _, _ in _REPOSITORY_UPDATE_BODIES:
+        r = c.patch(url, headers=headers, content=content)
+        echo = r.headers["x-github-api-version-selected"]
+        answers.append((r.status_code, r.json(), echo, r.headers["x-ratelimit-used"]))
+    assert answers == [
+        (
+            status,
+            {"message": message, "documentation_url": documentation_url, "status": str(status)},
+            "2022-11-28",
+            str(used),
+        )
+        for used, (_, status, message) in enumerate(_REPOSITORY_UPDATE_BODIES, start=1)
+    ]
 
 
 #: (method, path, whether a request with no `Authorization` header is counted) on the paths

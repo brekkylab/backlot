@@ -2613,6 +2613,7 @@ async def confluence_comments(content_id: str, request: Request):
             {
                 "id": cid,
                 "type": "comment",
+                **_confluence_content_aris(cid, "comment"),
                 "status": "current",
                 "title": f"Re: {content_id}",
                 "body": {
@@ -2932,6 +2933,18 @@ def _confluence_media_token(request: Request, cid) -> dict:
     }
 
 
+def _confluence_content_aris(content_id, kind: str) -> dict:
+    """The `ari` and `base64EncodedAri` real serves between the `type` and `status` of a page or a
+    comment, under the cloud id a space read's `ari` carries: a page's `ari` names `page/<id>` and
+    its `base64EncodedAri` encodes `content/<id>`, and both of a comment's name `comment/<id>`. The
+    values were measured on Confluence Cloud on 2026-10-23 and the position on 2026-11-17,
+    2026-11-18 and 2026-11-19."""
+    prefix = f"ari:cloud:confluence:{synth.atlassian_cloud_id(get_settings().org_name)}:"
+    encoded_kind = "content" if kind == "page" else kind
+    encoded = base64.b64encode(f"{prefix}{encoded_kind}/{content_id}".encode()).decode("ascii")
+    return {"ari": f"{prefix}{kind}/{content_id}", "base64EncodedAri": encoded}
+
+
 def _confluence_page(conn, request: Request, row, expand: str, search: bool = False) -> dict:
     created = row["created_ts"] if row["created_ts"] is not None else synth.epoch(str(row["id"]))
     updated = row["updated_ts"] if row["updated_ts"] is not None else created
@@ -2971,19 +2984,46 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         parts = term.split(".")
         if len(parts) >= 3 and parts[0] == "body" and parts[2] in body_member_names:
             body_members.setdefault(parts[1], set()).add(parts[2])
+    space_obj = {
+        "id": synth.github_user_id(row["space"]),
+        "key": key,
+        "name": row["space"],
+        "type": "global",
+        "_links": {"webui": f"/spaces/{key}"},
+    }
     page = {
         "id": str(cid),
         "type": ctype,
         "status": "current",
         "title": row["title"],
     }
+    # A search row's `content` carries `ari` and `base64EncodedAri` only when the search's
+    # `expand` names something under `content.`, measured on Confluence Cloud on 2026-11-18.
+    if ctype == "page" and (not search or wanted):
+        page.update(_confluence_content_aris(cid, "page"))
+        page["status"] = page.pop("status")
+        page["title"] = page.pop("title")
     if "space" in wanted:
-        page["space"] = {
-            "id": synth.github_user_id(row["space"]),
-            "key": key,
-            "name": row["space"],
-            "type": "global",
-            "_links": {"webui": f"/spaces/{key}"},
+        page["space"] = space_obj
+    # A page's `container` is its space, equal to what `space` serves, and its `children` names
+    # eight child types under `_expandable`, each with the link of its child listing, measured on
+    # Confluence Cloud on 2026-11-18.
+    if "container" in wanted:
+        page["container"] = space_obj
+    if "children" in wanted:
+        child_types = (
+            "database",
+            "folder",
+            "attachment",
+            "slide",
+            "comment",
+            "page",
+            "embed",
+            "whiteboard",
+        )
+        page["children"] = {
+            "_expandable": {t: f"/rest/api/content/{cid}/child/{t}" for t in child_types},
+            "_links": {"self": f"{_site(request)}/wiki/rest/api/content/{cid}/child"},
         }
     page["_links"] = {
         "webui": webui,
@@ -3088,13 +3128,24 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             "ancestors",
             "draftVersion",
         )
-        # The six an `expand` serves, each of which leaves `_expandable` below.
-        served = wanted.keys() & {"space", "history", "version", "body", "metadata", "ancestors"}
+        # The eight an `expand` serves, each of which leaves `_expandable` below.
+        served = wanted.keys() & {
+            "space",
+            "container",
+            "children",
+            "history",
+            "version",
+            "body",
+            "metadata",
+            "ancestors",
+        }
         order = few if len(few) - len(served) <= 12 else many
         expandable = {name: links.get(name, "") for name in order}
-    # `space` was served above, before this dict existed, so it leaves `_expandable` here.
-    if "space" in wanted:
-        expandable.pop("space")
+    # `space`, `container` and `children` were served above, before this dict existed, so they
+    # leave `_expandable` here.
+    for name in ("space", "container", "children"):
+        if name in wanted:
+            expandable.pop(name)
     # A property that is served leaves `_expandable`: on the bare read real's `_expandable` lists
     # `body` and none of the three that read expanded, measured on 2026-10-23.
     if "history" in wanted:
@@ -3169,24 +3220,51 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         unexpanded = [name for name in body_representations if name not in body_named]
         body["_expandable"] = dict.fromkeys(unexpanded, "")
         page["body"] = body
+    # `metadata` holds an `_expandable` of eleven names, each "", and a term naming `labels` under
+    # it serves `labels` before that `_expandable`, which then lists the other ten, measured on
+    # Confluence Cloud on 2026-11-18. `labels` is the first page of the content's `label` listing,
+    # whose `_links` carry a `next` before `self` even on a page with no label, measured on
+    # `content/{id}` on 2026-11-18; that `next` is at `start=200` in nine search rows, each a page
+    # with no label, on 2026-11-19.
     if "metadata" in wanted:
-        labels = store.jcol(row, "labels")
-        page["metadata"] = {
-            "labels": {
-                "results": [
-                    {
-                        "prefix": "global",
-                        "name": lbl,
-                        "id": str(synth.confluence_id(lbl)),
-                        "label": lbl,
-                    }
-                    for lbl in labels
-                ],
-                "start": 0,
-                "limit": 200,
-                "size": len(labels),
+        metadata_expandable_names = (
+            "lastEditedTime",
+            "currentuser",
+            "comments",
+            "createdBySpaceBlueprint",
+            "isActiveLiveEditSession",
+            "sourceTemplateEntityId",
+            "simple",
+            "properties",
+            "frontend",
+            "labels",
+            "likes",
+        )
+        if "labels" in wanted["metadata"]:
+            labels = store.jcol(row, "labels")[:200]
+            page["metadata"] = {
+                "labels": {
+                    "results": [
+                        {
+                            "prefix": "global",
+                            "name": lbl,
+                            "id": str(synth.confluence_id(lbl)),
+                            "label": lbl,
+                        }
+                        for lbl in labels
+                    ],
+                    "start": 0,
+                    "limit": 200,
+                    "size": len(labels),
+                    "_links": {
+                        "next": f"/rest/api/content/{cid}/label?next=true&limit=200&start=200",
+                        "self": f"{_site(request)}/wiki/rest/api/content/{cid}/label",
+                    },
+                },
+                "_expandable": {name: "" for name in metadata_expandable_names if name != "labels"},
             }
-        }
+        else:
+            page["metadata"] = {"_expandable": dict.fromkeys(metadata_expandable_names, "")}
         expandable.pop("metadata")
     if "ancestors" in wanted:
         ancestors, pid = [], row["parent_id"]
@@ -3208,12 +3286,26 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
             pid = prow["parent_id"]
         page["ancestors"] = ancestors
         expandable.pop("ancestors")
-    # A search row whose `expand` names anything under `content.` carries `macroRenderedOutput`,
-    # empty, after each property it serves but `body` and `metadata`, which follow it in that
-    # order, measured on Confluence Cloud on 2026-11-17 and 2026-11-18.
-    if search and wanted:
-        after = {name: page.pop(name) for name in ("body", "metadata") if name in page}
-        page.update(macroRenderedOutput={}, **after)
+    # Real serves what an `expand` names in this order, the same with all eight named in two
+    # orders, measured on Confluence Cloud on 2026-11-19. A search row whose `expand` names
+    # anything under `content.` carries `macroRenderedOutput`, empty, before `body` and `metadata`,
+    # measured on 2026-11-17 and 2026-11-18.
+    if wanted:
+        if search:
+            page["macroRenderedOutput"] = {}
+        for name in (
+            "space",
+            "history",
+            "version",
+            "ancestors",
+            "children",
+            "container",
+            "macroRenderedOutput",
+            "body",
+            "metadata",
+        ):
+            if name in page:
+                page[name] = page.pop(name)
     # `_expandable` is assigned after every property, so a property served above has already left
     # it, and `_links` is moved after it: real serves the two last, `_expandable` then `_links`, on
     # `content/{id}` (bare and with `expand=space,version`), a `content` row and a search row's

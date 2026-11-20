@@ -2690,8 +2690,8 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             "draftVersion",
         ]
         # (`expand`, the properties served after `title`, the names left under `_expandable`), less
-        # the members this server does not serve on a content read (`ari`, `base64EncodedAri`,
-        # `macroRenderedOutput` and `extensions`).
+        # the members this server does not serve on a content read (`macroRenderedOutput` and
+        # `extensions`).
         expansions = [
             (
                 "container",
@@ -2798,8 +2798,9 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()
             for expand, _members, _names in expansions
         ]
+        first = ["id", "type", "ari", "base64EncodedAri", "status", "title"]
         assert [(list(j), list(j["_expandable"])) for j in reads] == [
-            (["id", "type", "status", "title", *members, "_expandable", "_links"], names)
+            ([*first, *members, "_expandable", "_links"], names)
             for _expand, members, names in expansions
         ]
         # What `container`, `children` and `metadata` hold.

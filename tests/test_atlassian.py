@@ -944,6 +944,32 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
     # Confluence carries no Seraph header on any of its answers.
     refused = client.get("/atlassian/wiki/rest/api/space", headers=FAILED_PAIR)
     assert "x-seraph-loginreason" not in refused.headers
+    # The site's web pages carry the header too, `/wikix` among them rather than Confluence's.
+    # Each row is a path and whether the failed pair was sent, with the status, media type and
+    # header real answered on Jira Cloud on 2026-11-19 (UTC).
+    page, seraph = "text/html;charset=utf-8", "AUTHENTICATED_FAILED"
+    pages = {
+        ("/atlassian/restx", True): (404, page, seraph),
+        ("/atlassian/foo", True): (404, page, seraph),
+        ("/atlassian/ex/jira/x", True): (404, page, seraph),
+        ("/atlassian/Rest", True): (404, page, seraph),
+        ("/atlassian/wikix", True): (404, page, seraph),
+        ("/atlassian/browse", True): (200, "text/html;charset=UTF-8", seraph),
+        ("/atlassian/", True): (302, None, seraph),
+        ("/atlassian/rest/nope", True): (404, "application/problem+json;charset=UTF-8", seraph),
+        ("/atlassian/wiki/nope", True): (302, None, None),
+        ("/atlassian/foo", False): (404, page, None),
+        ("/atlassian/restx", False): (404, page, None),
+    }
+    answered = {}
+    for path, failed in pages:
+        r = client.get(path, headers=FAILED_PAIR if failed else {}, follow_redirects=False)
+        answered[path, failed] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.headers.get("x-seraph-loginreason"),
+        )
+    assert answered == pages
 
 
 def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
@@ -9018,6 +9044,19 @@ def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, 
 
 def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
     assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
+    # Two of the table's requests sent outside the mount, where `/wiki` is a path of Backlot's own:
+    # FastAPI's 404, where under the mount they are Tomcat's 401 and the empty 500.
+    outside = {}
+    for path, credential in (("/wiki/rest/api/nosuch", "Basic !!!"), ("/wiki/api/v2/nope", None)):
+        headers = [("Content-Type", _EMPTY_CHARSET)]
+        if credential is not None:
+            headers.append(("Authorization", credential))
+        r = sent_as(client, "GET", path, headers)
+        outside[path] = (r.status_code, r.content)
+    assert outside == {
+        "/wiki/rest/api/nosuch": (404, b'{"detail":"Not Found"}'),
+        "/wiki/api/v2/nope": (404, b'{"detail":"Not Found"}'),
+    }
 
 
 def _plugins_mount(client, admin_h, method, vendor_path, authorization, status, media, body):

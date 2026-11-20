@@ -1638,9 +1638,10 @@ async def report_failed_jira_login(request: Request, call_next):
     a site with no public project on 2026-09-04.
     """
     response = await call_next(request)
-    # the path once the slash rewrite inside this has run, at or under `/rest`: real sent the header
-    # on the 404 at `/rest`, `//rest` and `///rest` as at `/rest/nope` (Jira Cloud, 2026-11-17)
-    if errors.atlassian.serves_the_jira_api(request.url.path):
+    # the path once the slash rewrite inside this has run, anywhere but Confluence's: real sent the
+    # header at `/rest`, `//rest` and `///rest` as at `/rest/nope` (2026-11-17), and on the site's
+    # web pages and at `/wikix` (2026-11-19), Jira Cloud both days
+    if not errors.atlassian.is_confluence(request.url.path):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
     return response

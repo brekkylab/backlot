@@ -181,6 +181,11 @@ async def _refuse_a_long_line_or_path(request: Request) -> None:
     `Content-Length: 0` where none did; it is the second here."""
     if request.scope["route"].path in _SERVED_HOWEVER_LONG:
         return
+    # `/rate_limit` with no `Authorization` is answered ahead of this front door's bounds
+    # (`backlot.main._github_rate_limit_front`): a `GET` whose target was 8,180 bytes, past the
+    # request line's bound below, was the 200 (api.github.com, 2026-11-19).
+    if request.url.path == RATE_LIMIT_PATH and "authorization" not in request.headers:
+        return
     method = "HEAD" if getattr(request.state, "answering_head", False) else request.method
     query = request.scope["query_string"]
     path = request.scope["raw_path"][len(router.prefix) :]

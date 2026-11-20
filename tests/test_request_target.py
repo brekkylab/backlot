@@ -1688,3 +1688,38 @@ def test_a_request_line_with_multiple_spaces_after_the_method(live_server):
         resets = zip(_RESET.findall(one_body), _RESET.findall(multi_body))
         assert {int(second) - int(first) for first, second in resets} <= apart
         assert one_status.startswith("HTTP/1.1 200")
+
+
+def test_github_rate_limit_a_long_target_and_a_head_over_a_socket(live_server):
+    """Rows of the `fasthttp` front (``backlot.main._github_rate_limit_front``) over a socket, a
+    length being the target's from after `/github`."""
+    base_url, _settings = live_server
+
+    def target(path: bytes, length: int) -> bytes:
+        return b"/github" + path + b"?a=" + b"x" * (length - len(path + b"?a="))
+
+    served = (200, "application/json; charset=utf-8", None, None)
+    front = (404, "text/plain; charset=utf-8", "13", b"404 Not Found")
+    head = (404, "text/plain; charset=utf-8", "13", b"")
+    rows = [
+        (b"GET", target(b"/rate_limit", 8_192), served),
+        (b"GET", target(b"/rate_limit", 32_768), served),
+        (b"HEAD", b"/github/rate_limit", head),
+        (b"HEAD", target(b"/rate_limit", 8_192), head),
+        (b"POST", b"/github/rate_limit", front),
+        (b"GET", b"/github/rate_limitx", front),
+        (b"GET", target(b"/rate_limit/", 8_192), front),
+    ]
+    got, expected = {}, {}
+    for method, sent, answer in rows:
+        status, headers, body = _send(base_url, method, sent, None)
+        key = (method, sent[: len(b"/github/rate_limit") + 1], len(sent) - len(b"/github"))
+        length = None if answer[2] is None else headers.get("content-length")
+        got[key] = (
+            status,
+            headers.get("content-type"),
+            length,
+            None if answer[3] is None else body,
+        )
+        expected[key] = answer
+    assert got == expected

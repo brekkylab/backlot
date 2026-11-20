@@ -2464,7 +2464,9 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         "visibility": "public",
         "created": "2026-10-01T09:00:00Z",
     }
-    child = {**page, "doc_id": "c", "parent": "p", "title": "probe child"}
+    # The child carries one label more than `metadata.labels` serves.
+    labels = [f"l{n:03d}" for n in range(201)]
+    child = {**page, "doc_id": "c", "parent": "p", "title": "probe child", "labels": labels}
     settings = tiny_corpus(tmp_path, [page, child])
     four = ("space", "history", "version", "body")
     # Real's ten `body` representations, in real's order (see `_confluence_page`).
@@ -2660,6 +2662,184 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             "ancestors",
             "draftVersion",
         ]
+        # (`expand`, the properties served after `title`, the names left under `_expandable`), less
+        # the members this server does not serve on a content read (`ari`, `base64EncodedAri`,
+        # `macroRenderedOutput` and `extensions`).
+        expansions = [
+            (
+                "container",
+                ["container"],
+                [
+                    "metadata",
+                    "restrictions",
+                    "history",
+                    "body",
+                    "version",
+                    "descendants",
+                    "space",
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "children",
+                    "ancestors",
+                    "draftVersion",
+                ],
+            ),
+            (
+                "children",
+                ["children"],
+                [
+                    "container",
+                    "metadata",
+                    "restrictions",
+                    "history",
+                    "body",
+                    "version",
+                    "descendants",
+                    "space",
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "ancestors",
+                    "draftVersion",
+                ],
+            ),
+            (
+                "metadata.labels",
+                ["metadata"],
+                [
+                    "container",
+                    "restrictions",
+                    "history",
+                    "body",
+                    "version",
+                    "descendants",
+                    "space",
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "children",
+                    "ancestors",
+                    "draftVersion",
+                ],
+            ),
+            (
+                "children,container,space",
+                ["space", "children", "container"],
+                [
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "metadata",
+                    "operations",
+                    "schedulePublishDate",
+                    "restrictions",
+                    "history",
+                    "ancestors",
+                    "body",
+                    "version",
+                    "draftVersion",
+                    "descendants",
+                ],
+            ),
+            (
+                "version,space,metadata,history,container,children,body.storage,ancestors",
+                [
+                    "space",
+                    "history",
+                    "version",
+                    "ancestors",
+                    "children",
+                    "container",
+                    "body",
+                    "metadata",
+                ],
+                [
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "restrictions",
+                    "draftVersion",
+                    "descendants",
+                ],
+            ),
+        ]
+        reads = [
+            c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()
+            for expand, _members, _names in expansions
+        ]
+        assert [(list(j), list(j["_expandable"])) for j in reads] == [
+            (["id", "type", "status", "title", *members, "_expandable", "_links"], names)
+            for _expand, members, names in expansions
+        ]
+        # What `container`, `children` and `metadata` hold.
+        both = reads[3]
+        assert both["container"] == both["space"]
+        assert list(both["children"]["_expandable"].items()) == [
+            (kind, f"/rest/api/content/{pid}/child/{kind}")
+            for kind in (
+                "database",
+                "folder",
+                "attachment",
+                "slide",
+                "comment",
+                "page",
+                "embed",
+                "whiteboard",
+            )
+        ]
+        assert both["children"]["_links"] == {
+            "self": f"http://testserver/wiki/rest/api/content/{pid}/child"
+        }
+        eleven = [
+            "lastEditedTime",
+            "currentuser",
+            "comments",
+            "createdBySpaceBlueprint",
+            "isActiveLiveEditSession",
+            "sourceTemplateEntityId",
+            "simple",
+            "properties",
+            "frontend",
+            "labels",
+            "likes",
+        ]
+        metadata = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "metadata"}).json()
+        assert list(metadata["metadata"]) == ["_expandable"]
+        assert list(metadata["metadata"]["_expandable"].items()) == [(n, "") for n in eleven]
+        labelled = reads[2]["metadata"]
+        assert list(labelled) == ["labels", "_expandable"]
+        assert list(labelled["_expandable"]) == [n for n in eleven if n != "labels"]
+        assert list(labelled["labels"].items()) == [
+            ("results", []),
+            ("start", 0),
+            ("limit", 200),
+            ("size", 0),
+            (
+                "_links",
+                {
+                    "next": f"/rest/api/content/{pid}/label?next=true&limit=200&start=200",
+                    "self": f"http://testserver/wiki/rest/api/content/{pid}/label",
+                },
+            ),
+        ]
+        assert list(labelled["labels"]["_links"]) == ["next", "self"]
+        # A page with more labels than `limit` holds serves the first 200, and its `next` lists
+        # the rest.
+        child_labels = c.get(
+            f"{api}/content/{cid}", headers=h, params={"expand": "metadata.labels"}
+        ).json()["metadata"]["labels"]
+        rest = c.get("/atlassian/wiki" + child_labels["_links"]["next"], headers=h).json()[
+            "results"
+        ]
+        assert [
+            [label["name"] for label in child_labels["results"]],
+            child_labels["size"],
+            [label["name"] for label in rest],
+        ] == [labels[:200], 200, labels[200:]]
         hit = c.get(api + "/search", headers=h, params={"cql": f"id={pid}"}).json()["results"][0][
             "content"
         ]
@@ -2702,6 +2882,10 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             ("content.version", "version", ["version", "macroRenderedOutput"]),
             ("content.history", "history", ["history", "macroRenderedOutput"]),
             ("content.ancestors", "ancestors", ["ancestors", "macroRenderedOutput"]),
+            ("content.container", "container", ["container", "macroRenderedOutput"]),
+            ("content.children", "children", ["children", "macroRenderedOutput"]),
+            ("content.metadata", "metadata", ["macroRenderedOutput", "metadata"]),
+            ("content.metadata.labels", "metadata.labels", ["macroRenderedOutput", "metadata"]),
             ("content.body", "body", ["macroRenderedOutput", "body"]),
             ("content.body.storage", "body.storage", ["macroRenderedOutput", "body"]),
             (
@@ -2926,97 +3110,6 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
             params={"expand": "body.storage.mediaToken"},
         ).json()["body"]["storage"]["mediaToken"]
         assert other["clientId"] == token["clientId"]
-
-
-def test_confluence_content_expands_metadata_container_and_children(client, admin_h):
-    """`content/{id}` expands `metadata`, `container` and `children`:
-    - `metadata` alone carries only `_expandable` with eleven names each "", and `metadata.labels`
-      carries `labels` with `_links.self` and the other ten under `_expandable`;
-    - `container` is the page's space and stands after `title` (or after `space` when both are
-      expanded, the two being equal);
-    - `children` carries its eight child types under `_expandable` and `_links.self`;
-    - each served property leaves the page's `_expandable`;
-    - a CQL search row expands the three under `content.` with `macroRenderedOutput` between them
-      and `metadata`."""
-    api = "/atlassian/wiki/rest/api"
-    hit = client.get(f"{api}/search?cql=type=page&limit=1", headers=admin_h).json()
-    pid = hit["results"][0]["content"]["id"]
-
-    # 1. expand=metadata: holds only `_expandable` with eleven names, each ""; leaves page expandable
-    page_meta = client.get(f"{api}/content/{pid}?expand=metadata", headers=admin_h).json()
-    assert "metadata" in page_meta and "metadata" not in page_meta["_expandable"]
-    assert list(page_meta["metadata"]) == ["_expandable"]
-    meta_names = [
-        "lastEditedTime",
-        "currentuser",
-        "comments",
-        "createdBySpaceBlueprint",
-        "isActiveLiveEditSession",
-        "sourceTemplateEntityId",
-        "simple",
-        "properties",
-        "frontend",
-        "labels",
-        "likes",
-    ]
-    assert list(page_meta["metadata"]["_expandable"]) == meta_names
-    assert all(v == "" for v in page_meta["metadata"]["_expandable"].values())
-
-    # 2. expand=metadata.labels: holds labels and then _expandable with the other ten names
-    page_labels = client.get(f"{api}/content/{pid}?expand=metadata.labels", headers=admin_h).json()
-    assert "metadata" in page_labels and "metadata" not in page_labels["_expandable"]
-    assert list(page_labels["metadata"]) == ["labels", "_expandable"]
-    assert list(page_labels["metadata"]["_expandable"]) == [n for n in meta_names if n != "labels"]
-    labels = page_labels["metadata"]["labels"]
-    assert list(labels) == ["results", "start", "limit", "size", "_links"]
-    assert labels["_links"]["self"].endswith(f"/wiki/rest/api/content/{pid}/label")
-
-    # 3. expand=container: served after title, equal to space
-    page_container = client.get(f"{api}/content/{pid}?expand=container", headers=admin_h).json()
-    assert "container" in page_container and "container" not in page_container["_expandable"]
-    page_space = client.get(f"{api}/content/{pid}?expand=space", headers=admin_h).json()
-    assert page_container["container"] == page_space["space"]
-
-    # 4. expand=container,space: space then container after title, and both are equal
-    page_both = client.get(f"{api}/content/{pid}?expand=container,space", headers=admin_h).json()
-    after_title = list(page_both)[
-        list(page_both).index("title") + 1 : list(page_both).index("title") + 3
-    ]
-    assert after_title == ["space", "container"]
-    assert page_both["space"] == page_both["container"]
-    assert "space" not in page_both["_expandable"] and "container" not in page_both["_expandable"]
-
-    # 5. expand=children: eight child types under _expandable and self link
-    page_children = client.get(f"{api}/content/{pid}?expand=children", headers=admin_h).json()
-    assert "children" in page_children and "children" not in page_children["_expandable"]
-    expected_children = [
-        "database",
-        "folder",
-        "attachment",
-        "slide",
-        "comment",
-        "page",
-        "embed",
-        "whiteboard",
-    ]
-    assert list(page_children["children"]["_expandable"]) == expected_children
-    assert all(
-        page_children["children"]["_expandable"][t] == f"/rest/api/content/{pid}/child/{t}"
-        for t in expected_children
-    )
-    assert page_children["children"]["_links"]["self"].endswith(
-        f"/wiki/rest/api/content/{pid}/child"
-    )
-
-    # 6. CQL search: expanding under content. matches content read
-    search_hit = client.get(
-        f"{api}/search?cql=id={pid}&expand=content.metadata,content.container,content.children",
-        headers=admin_h,
-    ).json()
-    content = search_hit["results"][0]["content"]
-    assert content["container"] == page_container["container"]
-    assert content["children"] == page_children["children"]
-    assert content["metadata"] == page_meta["metadata"]
 
 
 # --- Jira ------------------------------------------------------------------------

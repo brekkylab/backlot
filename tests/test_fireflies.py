@@ -1702,11 +1702,9 @@ def test_fireflies_user_is_the_organizer_and_counts_organized_transcripts(tmp_pa
     """`Transcript.user` is the organizer, not the host, and the User counts are over the
     transcripts a user ORGANIZED — not the ones they hosted.
 
-    Measured against api.fireflies.ai — the dated measurement is recorded on `_user_stats` in
-    backlot/graphql/fireflies_resolvers.py: over 4 transcripts whose host and organizer differed,
-    `user.email` was the organizer's on all 4; the key's user organized 2 and answered
-    num_transcripts 2, with recent_meeting and recent_transcript the same id — the newest of the
-    two by date. The corpus cannot tell the two recents apart, so both are that one id here."""
+    The measurements behind both halves are recorded where they are used: the `Transcript.user`
+    half in the comment in `_transcript`, the counts half on `_user_stats` — both in
+    backlot/graphql/fireflies_resolvers.py."""
     records = [
         {**FIREFLIES_CORPUS[0], "doc_id": "ff-user-1", "title": "First"},
         {
@@ -1762,9 +1760,8 @@ def test_fireflies_user_is_the_organizer_and_counts_organized_transcripts(tmp_pa
 
 
 def test_fireflies_user_counts_are_scoped_to_what_the_caller_may_read(tmp_path):
-    """The counts count what the CALLER may read, like `transcripts` itself: a transcript the
-    caller is denied is indistinguishable from one that does not exist, so it contributes to
-    neither the count nor the recents."""
+    """The counts are scoped to what the caller may read — the reason is on `_user_stats`'s
+    docstring in backlot/graphql/fireflies_resolvers.py."""
     import yaml
 
     base = {
@@ -1881,8 +1878,8 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
     a token — so serving all of them would be wrong (they have no Fireflies account) AND a 1.6 MB
     unpaginated response. The real query takes no pagination args, so scoping is what bounds it.
 
-    `user(id:)` must still resolve a display-only principal, or a transcript whose host never had
-    an account would serve `user: null`.
+    `user(id:)` must still resolve a display-only principal, and the organizer a transcript's
+    `user` names.
     """
 
     from backlot import store, synth
@@ -1920,11 +1917,23 @@ def test_fireflies_users_is_the_workspace_roster_not_every_named_person(tmp_path
         )["data"]["user"]
         assert got["email"] == "ghost@acme.com" and got["name"] == "Ghost Person"
 
+        # ...and so is a transcript's user, its organizer, whom no record hosts
+        (t,) = _ff(client, settings, "{ transcripts { user { user_id email } } }")["data"][
+            "transcripts"
+        ]
+        assert t["user"]["email"] == "ops@acme.com"
+        got = _ff(
+            client,
+            settings,
+            "query($i:String){ user(id:$i) { email } }",
+            i=t["user"]["user_id"],
+        )["data"]["user"]
+        assert got == {"email": "ops@acme.com"}
+
     # No probe: `synth.fireflies_user_id` draws 80 bits from the digest, so the raw seed is
     # stored as-is -- a forced collision between two DIFFERENT users must fail the import loudly
     # through `idx_fireflies_user_served`, not silently let one user's row overwrite the other's.
-    # A fresh two-host corpus, not FIREFLIES_CORPUS: that fixture's only ACCOUNT is ava (organizer
-    # ops@acme.com never becomes a `type='user'` principal), so it has just one row to collide.
+    # Two hosts, so two user principals take the one patched id.
     monkeypatch.setattr(synth, "fireflies_user_id", lambda email: "dup-user-id")
     collide_docs = [
         {

@@ -757,11 +757,14 @@ def _user_stats(info, email: str) -> tuple[float, str | None]:
 
     Counted over the transcripts the user ORGANIZED: the `organizers:` filter matches
     COALESCE(organizer_email, author_email), so a meeting with no distinct organizer counts for
-    its host, and the count is scoped to what the caller may read, like `transcripts` itself.
-    Measured against api.fireflies.ai on 2026-11-20: the key's user organized 2 of 4 transcripts
-    and answered num_transcripts 2, with recent_meeting and recent_transcript the same id — the
-    newest of the two by date. The corpus cannot tell the two fields apart, so both resolve to
-    that one id; a user who organized nothing answers 0 with both recents null."""
+    its host. Measured against api.fireflies.ai on 2026-11-20: the key's user organized 2 of the
+    4 transcripts the key lists and answered num_transcripts 2, with recent_meeting and
+    recent_transcript the same id, the newer of the two by date. The corpus cannot tell the two
+    fields apart, so both resolve to that one id; a user who organized nothing answers 0 with both
+    recents null. The other organizer of the four answered 15 and a recent_transcript outside
+    them, so real counts transcripts the key does not list. This counts what the caller may read,
+    as CONTRIBUTING's ACL rule asks, so a scoped token learns no count or id of a transcript it
+    cannot read."""
     ctx = _ctx(info)
     cache = ctx.setdefault(_USER_STATS, {})
     if email not in cache:
@@ -815,8 +818,9 @@ def resolve_users(_root, info, **_ignored):
     `users.list` documents. Scoping to the roster is what bounds it, rather than inventing `limit`
     arguments the vendor's schema does not have.
 
-    `user(id:)` deliberately still resolves ANY principal: a transcript's host is a real reference
-    even when that person never had an account, so `Transcript.user` must not come back null.
+    `user(id:)` deliberately still resolves ANY principal: a transcript's `user`, its organizer or
+    else its host, is a real reference even when that person never had an account, so `user(id:)`
+    on its `user_id` must not come back null.
     """
     ctx = _ctx(info)
     roster = ctx.get("roster")

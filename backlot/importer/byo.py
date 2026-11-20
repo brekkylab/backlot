@@ -2237,6 +2237,9 @@ class _Loader:
         # against the API needs no renaming (the generic `author_email` still works).
         author = rec.get("author_email") or (rec.get("host_email") if src == "fireflies" else None)
         register(author, rec.get("author_name") or rec.get("host_name"))
+        if src == "fireflies":
+            # A transcript's `user` is its organizer, a principal as its host is.
+            register(rec.get("organizer_email"))
         for g in rec.get("author_groups", []):
             if not closed:
                 groups.add(g)

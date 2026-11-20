@@ -1312,7 +1312,10 @@ async def redirect_an_unsupported_browser_off_jira(request: Request, call_next):
     lambda scope: (
         scope["method"] != "OPTIONS"
         and errors.atlassian.owns(_url_path(scope))
-        and errors.atlassian.serves_the_jira_api(re.sub("/{2,}", "/", _url_path(scope)))
+        and errors.atlassian.jira_gateway_path(
+            (scope.get("raw_path") or scope["path"].encode()).decode("latin-1"),
+            "HEAD" if getattr(Request(scope).state, "answering_head", False) else scope["method"],
+        )
         and auth.atlassian_bearer_unreadable(Request(scope))
     )
 )
@@ -1329,15 +1332,16 @@ async def refuse_a_bearer_jira_cannot_read(request: Request, call_next):
 
     The body is spelled the way real spells it, a space after the colon (fifteen of them on
     2026-09-30), or is the XML for the `Accept` values ``errors.atlassian.connect_token_answer``
-    names, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a
-    `HEAD` is refused as its GET is and so carries no `content-length`, as real's did on
+    names, and this runs inside :func:`answer_head_as_the_get_without_its_body`: a `HEAD` is read as
+    the `HEAD` it was sent as, and a refused one carries no `content-length`, as real's did on
     `serverInfo` and on `nopesuchroute` the same day. An `OPTIONS` is not refused here: real answers
     one with an unreadable bearer as it answers one with none
-    (``backlot.routers.atlassian._options_answer``). The path under the mount is read with each run
-    of slashes as one, as the gateway routes it, since the slash rewrite runs inside this one, and
-    is refused when ``errors.atlassian.serves_the_jira_api`` puts it under Jira's REST mount,
-    `/rest` itself included: `//rest/api/3/serverInfo`, `///rest/api/3/serverInfo`, `/rest`,
-    `//rest` and `///rest` were refused as `/rest/api/3/serverInfo` was (Jira Cloud, 2026-11-17).
+    (``backlot.routers.atlassian._options_answer``), and did on `/`, `/foo`, `/browse/` and
+    `/browse/x` (Jira Cloud, 2026-11-19). The path under the mount is read as sent, since the slash
+    rewrite runs inside this one, and the request is refused when
+    ``errors.atlassian.jira_gateway_path`` puts it on Jira's side of the site, `/rest` itself
+    included: `//rest/api/3/serverInfo`, `///rest/api/3/serverInfo`, `/rest`, `//rest` and `///rest`
+    were refused as `/rest/api/3/serverInfo` was (Jira Cloud, 2026-11-17).
     """
     media_type, body = errors.atlassian.connect_token_answer(request.headers.get("accept"))
     return Response(body, status_code=403, media_type=media_type)
@@ -1638,8 +1642,10 @@ async def report_failed_jira_login(request: Request, call_next):
     a site with no public project on 2026-09-04.
     """
     response = await call_next(request)
-    # the path once the slash rewrite inside this has run
-    if request.url.path.startswith("/atlassian/rest/"):
+    # the path once the slash rewrite inside this has run, anywhere but Confluence's: real sent the
+    # header at `/rest`, `//rest` and `///rest` as at `/rest/nope` (2026-11-17), and on the site's
+    # web pages and at `/wikix` (2026-11-19), Jira Cloud both days
+    if not errors.atlassian.is_confluence(request.url.path):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
     return response

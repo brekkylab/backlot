@@ -164,6 +164,29 @@ def serves_the_jira_api(path: str) -> bool:
     return vendor_path == JIRA_REST or vendor_path.startswith(f"{JIRA_REST}/")
 
 
+def jira_gateway_path(raw_path: str, method: str) -> bool:
+    """Whether the site's gateway puts ``raw_path``, as sent, on Jira's side for the Connect-token
+    refusal under ``method``, which reaches past the REST mount to the product's own web surface:
+    every path but one beginning `/wiki` in any case, under any method, and one beginning
+    `/browse/` in any case under a `GET`. The path is read with each run of slashes as one and each
+    escape decoded but an escaped `/`, which separates no segment.
+
+    Measured on a Jira Cloud site with an unreadable bearer beside no credential. On 2026-11-17,
+    `/`, `/browse`, `/jira`, `/foo`, `/res`, `/xrest`, `/restx`, `/Rest` and `/ex/jira/x` were
+    refused with the 403, where `/browse/`, `/wiki`, `/wiki/`, `/wiki/nope`, `/wikix`, `/Wiki/nope`
+    and `/wiki%2Fnope` were answered as with no credential. On 2026-11-19, a `GET` on
+    `/browse/NOPE-1`, `/browse/x`, `/browse/x/y`, `/Browse/`, `/BROWSE/`, `/browse//`, `/brows%65/`
+    and `/brows%65/x` was answered as with no credential, as `/WIKI`, `/wIkI/nope`, `/WIKIX` and
+    `/%77iki/nope` were, and `/wiki/nope` and `/WIKI` were under `HEAD`, `POST`, `PUT`, `DELETE`
+    and `OPTIONS`; a `HEAD`, `POST`, `PUT` or `DELETE` on `/browse/` or `/browse/x` was refused, as
+    a `GET` on `/browsex/`, `/browse%2F` and `/browse%2Fx` was."""
+    vendor_path = _instance(re.sub("/{2,}", "/", unquote(re.sub("%2[Ff]", "%252F", raw_path))))
+    lowered = vendor_path.lower()
+    return not lowered.startswith("/wiki") and not (
+        method == "GET" and lowered.startswith("/browse/")
+    )
+
+
 #: What Jira takes for Internet Explorer 11 in the first `User-Agent`, searched anywhere in it and
 #: case-sensitive. Measured on a Jira Cloud site on 2026-11-16 over 70 values on
 #: `GET /rest/api/3/issue/{key}`: `Trident/7.0; rv:11.0` redirects with any digits on either
@@ -186,8 +209,11 @@ def is_unsupported_browser(user_agent: str | None) -> bool:
 def is_confluence(path: str) -> bool:
     """Which of the two products serves ``path``. They answer several things differently — the
     refusal envelope below, and how a query parameter is read — and one predicate keeps the
-    callers from drifting apart on what counts as Confluence."""
-    return path.startswith(WIKI)
+    callers from drifting apart on what counts as Confluence. The segment has to end at `wiki`:
+    real answers `/wikix` as Jira answers `/foo`, a `404` on `text/html;charset=utf-8` with
+    `X-Seraph-LoginReason` for a failed Basic pair (Jira Cloud, 2026-11-19). A `/wiki` path
+    outside the mount is one of Backlot's own."""
+    return path == WIKI or path.startswith(f"{WIKI}/")
 
 
 #: What real Jira puts on a JSON body. Measured on a live Jira Cloud site, 2026-09-15 and

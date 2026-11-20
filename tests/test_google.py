@@ -15260,6 +15260,61 @@ def test_gmail_a_stray_quote_beside_an_operator(tmp_path):
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
+_GMAIL_BRACE_ROWS = [
+    ("{Rollout from:me}", ["plan", "lunch"]),
+    ("{Rollout}", ["plan"]),
+    ("{Q4 Rollout}", ["plan", "deck"]),
+    ("{Rollout from:me} label:inbox", ["plan"]),
+    ("-{Rollout from:me}", ["deck"]),
+    ("{}", ["plan", "deck", "lunch"]),
+    ("{ }", ["plan", "deck", "lunch"]),
+    ('{"()"}', ["plan", "deck", "lunch"]),
+    ('subject:"()"', ["plan", "deck", "lunch"]),
+    ('subject:"( )"', ["plan", "deck", "lunch"]),
+    ('subject:"."', ["plan", "deck", "lunch"]),
+    ('label:"()"', ["plan", "deck", "lunch"]),
+    ('subject:"()" label:inbox', ["plan", "deck"]),
+    ("--{Rollout from:me}", ["deck"]),
+    ("{probe from:me", ["lunch"]),
+    ("-{probe from:me", ["plan", "deck"]),
+    ("-(label:inbox {Rollout from:me})", ["deck", "lunch"]),
+    ('{Rollout "()"}', ["plan"]),
+    ('{Rollout subject:"()"}', ["plan"]),
+    ('{Rollout to:"()"}', ["plan"]),
+    ('-{Rollout "()"}', ["deck", "lunch"]),
+]
+
+
+def test_gmail_brace_groups_and_quoted_punctuation_values(tmp_path):
+    """Each row is how the comments on `_gmail_braces` and `_gmail_brace_ids` and in
+    `_parse_gmail_q` read its query, over both listings. `plan` and `deck` are from bob to the
+    caller in the inbox, `lunch` from the caller to bob in sent; `Rollout` is in `plan`'s title
+    alone, `Q4` in `deck`'s, and `probe` in `plan`'s body and `lunch`'s title."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": author,
+            "to": to,
+            "label_ids": [label],
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content, author, to, label in [
+            ("plan", "Rollout plan", "probe attached", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("deck", "Q4 deck", "final numbers", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("lunch", "Lunch probe", "Friday?", "ava@acme.com", "bob@acme.com", "SENT"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_BRACE_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
 def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path):
     """Ignoring an empty address operator must not edit a quoted value or change empty subjects."""
     records = [

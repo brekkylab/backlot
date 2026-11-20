@@ -2934,10 +2934,11 @@ def _confluence_media_token(request: Request, cid) -> dict:
 
 
 def _confluence_content_aris(content_id, kind: str) -> dict:
-    """The ARIs Confluence Cloud serves between type and status for a page or comment.
-    Both carry the site's cloud id from the space ARI. A page's ARI names page/<id> and
-    its encoded ARI names content/<id>; both comment forms name comment/<id>.
-    Values were measured on 2026-10-23, and position on 2026-11-17 through 2026-11-19."""
+    """The `ari` and `base64EncodedAri` real serves between the `type` and `status` of a page or a
+    comment, under the cloud id a space read's `ari` carries: a page's `ari` names `page/<id>` and
+    its `base64EncodedAri` encodes `content/<id>`, and both of a comment's name `comment/<id>`. The
+    values were measured on Confluence Cloud on 2026-10-23 and the position on 2026-11-17,
+    2026-11-18 and 2026-11-19."""
     prefix = f"ari:cloud:confluence:{synth.atlassian_cloud_id(get_settings().org_name)}:"
     encoded_kind = "content" if kind == "page" else kind
     encoded = base64.b64encode(f"{prefix}{encoded_kind}/{content_id}".encode()).decode("ascii")
@@ -2989,8 +2990,8 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         "status": "current",
         "title": row["title"],
     }
-    # Confluence Cloud search, 2026-11-18: a term under content. adds the identifiers,
-    # including an unknown or padded name, just as it selects the content-read shape below.
+    # A search row's `content` carries `ari` and `base64EncodedAri` only when the search's
+    # `expand` names something under `content.`, measured on Confluence Cloud on 2026-11-18.
     if ctype == "page" and (not search or wanted):
         page.update(_confluence_content_aris(cid, "page"))
         page["status"] = page.pop("status")

@@ -1112,6 +1112,10 @@ _GMAIL_NOT_ALL = "-()"
 # The `ops` key holding each word a leading `-` or a capital `NOT` leaves out
 # (:func:`_gmail_take_negated_words`). No operator can be named this either.
 _GMAIL_NOT_WORD = "-w"
+# The `ops` keys holding the inner text of each `{…}` group and each `-{…}` group
+# (:func:`_gmail_braces`). No operator can be named these either.
+_GMAIL_ANY = "{}"
+_GMAIL_NOT_ANY = "-{}"
 _GMAIL_DASHED_WORD = re.compile(r'-+(?:"([^"]*)"|([^ ]+))\Z')
 # A free-text term: a quoted stretch, spaces and all, with what touches it, or a run of other
 # characters between spaces.
@@ -1270,6 +1274,81 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
             negated.append(inner)
 
 
+def _gmail_braces(q: str) -> tuple[str, list[str], list[str]]:
+    """``q`` with each `{…}` group outside a `-(…)` taken out, and the inner texts of the plain and
+    the negated groups. A `{…}` group is an `OR` of its top-level terms, and a run of `-` touching
+    its `{` negates the whole group. Measured against gmail.googleapis.com with a Workspace member's
+    OAuth token, comparing `messages.list` id sets: on 2026-11-10 (751 messages), `{probe from:me}`
+    answered the ids of `probe OR from:me`, `{probe}` those of `probe`,
+    `{probe from:me} label:inbox` those of `(probe OR from:me) label:inbox` and `-{probe from:me}`
+    those of `-(probe OR from:me)`, and `{}`, `{ }` and `{"()"}` answered every message. On
+    2026-11-19 (834 messages), `--{probe from:me}` and `---{probe from:me}` answered every message
+    but those of `probe OR from:me`; `{probe from:me` and `-{probe from:me`, with no `}`, what
+    `(probe from:me` and `-(probe from:me` answer, so such a `{` is read as a `(`; and
+    `-(label:inbox {probe from:me})` what `-(label:inbox (probe OR from:me))` answers, so a `-(…)`
+    keeps its braces for the search of its own that reads it (:func:`_gmail_flatten`)."""
+    if "{" not in q:
+        return q, [], []
+    chars, opened, i, n = list(q), [], 0, len(q)
+    while i < n:
+        if q[i] == '"':
+            k = q.find('"', i + 1)
+            i = n if k == -1 else k + 1
+            continue
+        if q[i] == "{":
+            opened.append(i)
+        elif q[i] == "}" and opened:
+            opened.pop()
+        i += 1
+    for k in opened:
+        chars[k] = "("
+    q = "".join(chars)
+    out: list[str] = []
+    any_groups: list[str] = []
+    not_groups: list[str] = []
+    i = 0
+    while i < n:
+        if q[i] == '"':
+            j = q.find('"', i + 1)
+            if j == -1:
+                out.append(q[i:])
+                break
+            out.append(q[i : j + 1])
+            i = j + 1
+            continue
+        if q[i] not in "({":
+            out.append(q[i])
+            i += 1
+            continue
+        d = len(out)
+        while d and out[d - 1] == "-":
+            d -= 1
+        negated = d < len(out) and (d == 0 or out[d - 1][-1:] in ("", " ", "\t", "("))
+        if q[i] == "(" and not negated:
+            out.append("(")
+            i += 1
+            continue
+        closer = ")" if q[i] == "(" else "}"
+        depth, j = 1, i + 1
+        while j < n and depth:
+            if q[j] == '"':
+                k = q.find('"', j + 1)
+                j = n if k == -1 else k + 1
+                continue
+            depth += {q[i]: 1, closer: -1}.get(q[j], 0)
+            j += 1
+        if q[i] == "(":
+            out.append(q[i:j])
+            i = j
+            continue
+        if negated:
+            del out[d:]
+        (not_groups if negated else any_groups).append(q[i + 1 : j - 1])
+        out.append(" ")
+        i = j
+    return "".join(out), any_groups, not_groups
+
+
 def _gmail_groups(q: str) -> tuple[str, list[str]]:
     """``q`` with its `(…)` groups read (`_gmail_flatten`), and the inner text of each `-(…)` of
     several terms."""
@@ -1340,6 +1419,7 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
     matched full-text."""
+    q, any_groups, not_any_groups = _gmail_braces(q)
     q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
     lone = _GMAIL_LONE_QUOTE_UNCLOSED.search(q)
     if lone and lone.group(3).count("(") > lone.group(3).count(")"):
@@ -1415,6 +1495,18 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                     if plus:
                         ops.setdefault(stored, []).append(value)
                         return f" +{term} "
+            # A quoted `subject:`, `label:` or address value holding no letter, digit, `_` or `&`
+            # is no term. Measured with the queries at `_gmail_braces`: on 2026-11-10,
+            # `subject:"()"`, `subject:"( )"`, `subject:"."`, `label:"()"` and `from:"()"`
+            # answered every message, as `subject:""` did, and on 2026-11-19 `to:"()"`,
+            # `cc:"()"` and `bcc:"()"` did too, where `subject:"&"`, `subject:"_"`, `label:"&"`
+            # and `from:"&"` did not.
+            if (
+                stored in ("subject", "label", *_GMAIL_ADDRESS_KEYS)
+                and value.startswith('"')
+                and not _GMAIL_ADDRESS_WORD.search(value)
+            ):
+                return " "
             # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
             quoted = (
                 key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'
@@ -1439,6 +1531,10 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q, groups = _gmail_groups(q)
     if groups:
         ops[_GMAIL_NOT_ALL] = groups
+    if any_groups:
+        ops[_GMAIL_ANY] = any_groups
+    if not_any_groups:
+        ops[_GMAIL_NOT_ANY] = not_any_groups
     q = _GMAIL_CLOSED_QUOTE.sub(_gmail_closed_quote, q)
     q = _GMAIL_LONE_QUOTE.sub(_gmail_lone_quote, q)
     q = _GMAIL_NOT.sub(_gmail_not, q)
@@ -1667,6 +1763,8 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
     present; otherwise the mailbox listing). The caller paginates the returned rows."""
     free, ops = _parse_gmail_q(q)
     groups = ops.pop(_GMAIL_NOT_ALL, [])
+    any_groups = ops.pop(_GMAIL_ANY, [])
+    not_any_groups = ops.pop(_GMAIL_NOT_ANY, [])
     negated_words = ops.pop(_GMAIL_NOT_WORD, [])
     if caller_email:
         # `me` reads through quotes: on 2026-10-19, `op:"me"` and `-op:"me"` answered what `op:me`
@@ -1722,7 +1820,36 @@ def _gmail_query(conn, mailbox, ids, q: str, caller_email: str | None = None) ->
     for group in groups:
         out = {r["id"] for r in _gmail_query(conn, mailbox, ids, group, caller_email)}
         rows = [r for r in rows if r["id"] not in out]
+    for inner in any_groups:
+        keep = _gmail_brace_ids(conn, mailbox, ids, inner, caller_email)
+        if keep is not None:
+            rows = [r for r in rows if r["id"] in keep]
+    for inner in not_any_groups:
+        out = _gmail_brace_ids(conn, mailbox, ids, inner, caller_email) or set()
+        rows = [r for r in rows if r["id"] not in out]
     return rows
+
+
+def _gmail_brace_ids(conn, mailbox, ids, inner: str, caller_email: str | None) -> set | None:
+    """The ids a `{…}` group's inner text answers: the union of what each of its top-level terms
+    answers read as a search of its own, `(…)` groups among them keeping their brackets
+    (:func:`_gmail_group_items` splits the terms), or None when none of them is a term. A term
+    `_parse_gmail_q` reads as nothing is left out of the union: on 2026-11-19 (the queries at
+    `_gmail_braces`), `{probe "()"}`, `{probe ""}`, `{probe subject:"()"}` and
+    `{probe to:"()"}` answered what `probe` answers, and `-{probe "()"}` what `-probe` answers."""
+    out: set | None = None
+    for item in _gmail_group_items(inner):
+        if isinstance(item, str):
+            term = item
+        else:
+            negated, sub = item
+            term = f"-({sub})" if negated else f"({sub})"
+        free, ops = _parse_gmail_q(term)
+        if free or ops:
+            out = (out or set()) | {
+                r["id"] for r in _gmail_query(conn, mailbox, ids, term, caller_email)
+            }
+    return out
 
 
 # --- Gmail ids ------------------------------------------------------------------------------

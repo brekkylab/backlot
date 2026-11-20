@@ -2613,9 +2613,9 @@ async def confluence_comments(content_id: str, request: Request):
             {
                 "id": cid,
                 "type": "comment",
+                **_confluence_content_aris(cid, "comment"),
                 "status": "current",
                 "title": f"Re: {content_id}",
-                **_confluence_content_aris(cid, "comment"),
                 "body": {
                     "storage": {"value": _storage(c["body"]), "representation": "storage"},
                     "view": {"value": _view(c["body"]), "representation": "view"},
@@ -2934,9 +2934,10 @@ def _confluence_media_token(request: Request, cid) -> dict:
 
 
 def _confluence_content_aris(content_id, kind: str) -> dict:
-    """Confluence Cloud GET content/{id} and content/{id}/child/comment, measured
-    2026-10-23: a page's ARI uses page, its base64 ARI content; a comment uses comment
-    for both."""
+    """The ARIs Confluence Cloud serves between type and status for a page or comment.
+    Both carry the site's cloud id from the space ARI. A page's ARI names page/<id> and
+    its encoded ARI names content/<id>; both comment forms name comment/<id>.
+    Values were measured on 2026-10-23, and position on 2026-11-17 through 2026-11-19."""
     prefix = f"ari:cloud:confluence:{synth.atlassian_cloud_id(get_settings().org_name)}:"
     encoded_kind = "content" if kind == "page" else kind
     encoded = base64.b64encode(f"{prefix}{encoded_kind}/{content_id}".encode()).decode("ascii")
@@ -2988,8 +2989,12 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
         "status": "current",
         "title": row["title"],
     }
-    if not search and ctype == "page":
+    # Confluence Cloud search, 2026-11-18: a term under content. adds the identifiers,
+    # including an unknown or padded name, just as it selects the content-read shape below.
+    if ctype == "page" and (not search or wanted):
         page.update(_confluence_content_aris(cid, "page"))
+        page["status"] = page.pop("status")
+        page["title"] = page.pop("title")
     if "space" in wanted:
         page["space"] = {
             "id": synth.github_user_id(row["space"]),

@@ -1373,6 +1373,18 @@ def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
         prefix = c.get(f"/atlassian/wiki/rest/api/space/{space}", headers=h).json()["ari"]
         prefix = prefix.partition(":space/")[0]
         ari = f"{prefix}:comment/{cc['id']}"
+        assert list(cc) == [
+            "id",
+            "type",
+            "ari",
+            "base64EncodedAri",
+            "status",
+            "title",
+            "body",
+            "version",
+            "extensions",
+            "_links",
+        ]
         assert cc["ari"] == ari
         assert base64.b64decode(cc["base64EncodedAri"]).decode() == ari
 
@@ -2699,16 +2711,13 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             assert base64.b64decode(content["base64EncodedAri"]).decode() == (
                 f"{prefix}:content/{content['id']}"
             )
-        assert "ari" not in hit and "base64EncodedAri" not in hit
         last = ["_expandable", "_links"]
         searched = ["childTypes", "macroRenderedOutput", "restrictions"]
-        assert [
-            [name for name in row if name not in {"ari", "base64EncodedAri"}]
-            for row in (bare, spaced, paged_row, hit)
-        ] == [
-            ["id", "type", "status", "title", "space", "history", "version", *last],
-            ["id", "type", "status", "title", "space", "version", *last],
-            ["id", "type", "status", "title", *last],
+        aris = ["ari", "base64EncodedAri"]
+        assert [list(bare), list(spaced), list(paged_row), list(hit)] == [
+            ["id", "type", *aris, "status", "title", "space", "history", "version", *last],
+            ["id", "type", *aris, "status", "title", "space", "version", *last],
+            ["id", "type", *aris, "status", "title", *last],
             ["id", "type", "status", "title", *searched, *last],
         ]
         assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
@@ -2756,15 +2765,16 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
                     expansion,
                     list(expanded),
                     list(expanded["_expandable"].items()),
-                    {m: expanded[m] for m in members},
+                    {m: expanded[m] for m in [*aris, *members]},
                 )
             )
             expected.append(
                 (
                     expansion,
-                    ["id", "type", "status", "title", *members, *last],
+                    ["id", "type", *aris, "status", "title", *members, *last],
                     list(direct["_expandable"].items()),
                     {
+                        **{m: direct[m] for m in aris},
                         "macroRenderedOutput": {},
                         **{m: direct[m] for m in members if m != "macroRenderedOutput"},
                     },

@@ -50,13 +50,14 @@ Ordered as the table above, by `source_type`.
 | `space` | `spaceKey` (one or more keys, any case; a key naming no space lists nothing), `expand=description,permissions` |
 | `space/{key}` | `expand=description,permissions` |
 
-Page reads and listings carry `ari` and `base64EncodedAri` using the space's cloud id.
-The page's `ari` names `page/{id}`, while its encoded ARI names `content/{id}`.
-Comment rows use `comment/{id}` in both forms.
-
 `expand=permissions` carries the space's permission roster on either read, one entry per ACL grant
 — a user grant naming that user, a group or org grant naming none — for `read`/`space`, the only
 operation an ACL states.
+
+`ari` and `base64EncodedAri` follow `type` on page reads, content and child-page listings,
+and search rows whose `expand` names something under `content.`. Comment rows carry both too.
+Both use the site's cloud id, the one a space read's `ari` carries. A page's `ari` names
+`page/{id}` and its encoded ARI names `content/{id}`; both comment forms name `comment/{id}`.
 
 A JSON body is the bare `application/json` on every Confluence route served. The charset Jira names
 is Jira's alone.

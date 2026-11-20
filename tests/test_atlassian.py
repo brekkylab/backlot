@@ -927,8 +927,17 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
     response including the 200s. The header is keyed on the username: a value carrying a non-empty
     user before its first colon gets it, and one without a colon, or with an empty user, does not
     — neither does a request that sent no credential at all."""
-    carries = client.get("/atlassian/rest/api/3/project/search", headers=FAILED_PAIR)
-    assert carries.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
+    answers = {}
+    for path in ("/rest/api/3/project/search", "/rest/nope", "/rest", "//rest", "///rest"):
+        r = client.get(f"/atlassian{path}", headers=FAILED_PAIR)
+        answers[path] = (r.status_code, r.headers.get("x-seraph-loginreason"))
+    assert answers == {
+        "/rest/api/3/project/search": (200, "AUTHENTICATED_FAILED"),
+        "/rest/nope": (404, "AUTHENTICATED_FAILED"),
+        "/rest": (404, "AUTHENTICATED_FAILED"),
+        "//rest": (404, "AUTHENTICATED_FAILED"),
+        "///rest": (404, "AUTHENTICATED_FAILED"),
+    }
     for headers in ({}, _basic(":wrongtoken"), _basic("nobody@example.com")):
         answer = client.get("/atlassian/rest/api/3/project/search", headers=headers)
         assert "x-seraph-loginreason" not in answer.headers
@@ -1395,6 +1404,24 @@ def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
         ]
         assert cc["id"].isdigit()
         assert cc["_links"]["webui"].endswith(f"focusedCommentId={cc['id']}")
+        space = synth.confluence_space_key("handbook")
+        prefix = c.get(f"/atlassian/wiki/rest/api/space/{space}", headers=h).json()["ari"]
+        prefix = prefix.partition(":space/")[0]
+        ari = f"{prefix}:comment/{cc['id']}"
+        assert list(cc) == [
+            "id",
+            "type",
+            "ari",
+            "base64EncodedAri",
+            "status",
+            "title",
+            "body",
+            "version",
+            "extensions",
+            "_links",
+        ]
+        assert cc["ari"] == ari
+        assert base64.b64decode(cc["base64EncodedAri"]).decode() == ari
 
 
 def test_confluence_dates_an_epoch_zero_page_on_both_routes(tmp_path):
@@ -2490,7 +2517,9 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         "visibility": "public",
         "created": "2026-10-01T09:00:00Z",
     }
-    child = {**page, "doc_id": "c", "parent": "p", "title": "probe child"}
+    # The child carries one label more than `metadata.labels` serves.
+    labels = [f"l{n:03d}" for n in range(201)]
+    child = {**page, "doc_id": "c", "parent": "p", "title": "probe child", "labels": labels}
     settings = tiny_corpus(tmp_path, [page, child])
     four = ("space", "history", "version", "body")
     # Real's ten `body` representations, in real's order (see `_confluence_page`).
@@ -2686,6 +2715,185 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             "ancestors",
             "draftVersion",
         ]
+        # (`expand`, the properties served after `title`, the names left under `_expandable`), less
+        # the members this server does not serve on a content read (`macroRenderedOutput` and
+        # `extensions`).
+        expansions = [
+            (
+                "container",
+                ["container"],
+                [
+                    "metadata",
+                    "restrictions",
+                    "history",
+                    "body",
+                    "version",
+                    "descendants",
+                    "space",
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "children",
+                    "ancestors",
+                    "draftVersion",
+                ],
+            ),
+            (
+                "children",
+                ["children"],
+                [
+                    "container",
+                    "metadata",
+                    "restrictions",
+                    "history",
+                    "body",
+                    "version",
+                    "descendants",
+                    "space",
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "ancestors",
+                    "draftVersion",
+                ],
+            ),
+            (
+                "metadata.labels",
+                ["metadata"],
+                [
+                    "container",
+                    "restrictions",
+                    "history",
+                    "body",
+                    "version",
+                    "descendants",
+                    "space",
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "children",
+                    "ancestors",
+                    "draftVersion",
+                ],
+            ),
+            (
+                "children,container,space",
+                ["space", "children", "container"],
+                [
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "metadata",
+                    "operations",
+                    "schedulePublishDate",
+                    "restrictions",
+                    "history",
+                    "ancestors",
+                    "body",
+                    "version",
+                    "draftVersion",
+                    "descendants",
+                ],
+            ),
+            (
+                "version,space,metadata,history,container,children,body.storage,ancestors",
+                [
+                    "space",
+                    "history",
+                    "version",
+                    "ancestors",
+                    "children",
+                    "container",
+                    "body",
+                    "metadata",
+                ],
+                [
+                    "childTypes",
+                    "schedulePublishInfo",
+                    "operations",
+                    "schedulePublishDate",
+                    "restrictions",
+                    "draftVersion",
+                    "descendants",
+                ],
+            ),
+        ]
+        reads = [
+            c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()
+            for expand, _members, _names in expansions
+        ]
+        first = ["id", "type", "ari", "base64EncodedAri", "status", "title"]
+        assert [(list(j), list(j["_expandable"])) for j in reads] == [
+            ([*first, *members, "_expandable", "_links"], names)
+            for _expand, members, names in expansions
+        ]
+        # What `container`, `children` and `metadata` hold.
+        both = reads[3]
+        assert both["container"] == both["space"]
+        assert list(both["children"]["_expandable"].items()) == [
+            (kind, f"/rest/api/content/{pid}/child/{kind}")
+            for kind in (
+                "database",
+                "folder",
+                "attachment",
+                "slide",
+                "comment",
+                "page",
+                "embed",
+                "whiteboard",
+            )
+        ]
+        assert both["children"]["_links"] == {
+            "self": f"http://testserver/wiki/rest/api/content/{pid}/child"
+        }
+        eleven = [
+            "lastEditedTime",
+            "currentuser",
+            "comments",
+            "createdBySpaceBlueprint",
+            "isActiveLiveEditSession",
+            "sourceTemplateEntityId",
+            "simple",
+            "properties",
+            "frontend",
+            "labels",
+            "likes",
+        ]
+        metadata = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "metadata"}).json()
+        assert list(metadata["metadata"]) == ["_expandable"]
+        assert list(metadata["metadata"]["_expandable"].items()) == [(n, "") for n in eleven]
+        labelled = reads[2]["metadata"]
+        assert list(labelled) == ["labels", "_expandable"]
+        assert list(labelled["_expandable"]) == [n for n in eleven if n != "labels"]
+        assert list(labelled["labels"].items()) == [
+            ("results", []),
+            ("start", 0),
+            ("limit", 200),
+            ("size", 0),
+            (
+                "_links",
+                {
+                    "next": f"/rest/api/content/{pid}/label?next=true&limit=200&start=200",
+                    "self": f"http://testserver/wiki/rest/api/content/{pid}/label",
+                },
+            ),
+        ]
+        assert list(labelled["labels"]["_links"]) == ["next", "self"]
+        # A page with more labels than `limit` holds serves the first 200, and its `next` lists
+        # the rest.
+        child_labels = c.get(
+            f"{api}/content/{cid}", headers=h, params={"expand": "metadata.labels"}
+        ).json()["metadata"]["labels"]
+        rest = c.get("/atlassian/wiki" + child_labels["_links"]["next"], headers=h).json()[
+            "results"
+        ]
+        assert [
+            [label["name"] for label in child_labels["results"]],
+            child_labels["size"],
+            [label["name"] for label in rest],
+        ] == [labels[:200], 200, labels[200:]]
         hit = c.get(api + "/search", headers=h, params={"cql": f"id={pid}"}).json()["results"][0][
             "content"
         ]
@@ -2712,12 +2920,20 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         spaced = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "space,version"}).json()
         paged = c.get(api + "/content", headers=h, params={"type": "page"}).json()["results"]
         paged_row = next(r for r in paged if str(r["id"]) == str(pid))
+        prefix = c.get(f"{api}/space/ENG", headers=h).json()["ari"].partition(":space/")[0]
+        children = c.get(f"{api}/content/{pid}/child/page", headers=h).json()["results"]
+        for content in (bare, spaced, paged_row, *children):
+            assert content["ari"] == f"{prefix}:page/{content['id']}"
+            assert base64.b64decode(content["base64EncodedAri"]).decode() == (
+                f"{prefix}:content/{content['id']}"
+            )
         last = ["_expandable", "_links"]
         searched = ["childTypes", "macroRenderedOutput", "restrictions"]
+        aris = ["ari", "base64EncodedAri"]
         assert [list(bare), list(spaced), list(paged_row), list(hit)] == [
-            ["id", "type", "status", "title", "space", "history", "version", *last],
-            ["id", "type", "status", "title", "space", "version", *last],
-            ["id", "type", "status", "title", *last],
+            ["id", "type", *aris, "status", "title", "space", "history", "version", *last],
+            ["id", "type", *aris, "status", "title", "space", "version", *last],
+            ["id", "type", *aris, "status", "title", *last],
             ["id", "type", "status", "title", *searched, *last],
         ]
         assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
@@ -2728,6 +2944,10 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
             ("content.version", "version", ["version", "macroRenderedOutput"]),
             ("content.history", "history", ["history", "macroRenderedOutput"]),
             ("content.ancestors", "ancestors", ["ancestors", "macroRenderedOutput"]),
+            ("content.container", "container", ["container", "macroRenderedOutput"]),
+            ("content.children", "children", ["children", "macroRenderedOutput"]),
+            ("content.metadata", "metadata", ["macroRenderedOutput", "metadata"]),
+            ("content.metadata.labels", "metadata.labels", ["macroRenderedOutput", "metadata"]),
             ("content.body", "body", ["macroRenderedOutput", "body"]),
             ("content.body.storage", "body.storage", ["macroRenderedOutput", "body"]),
             (
@@ -2765,15 +2985,16 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
                     expansion,
                     list(expanded),
                     list(expanded["_expandable"].items()),
-                    {m: expanded[m] for m in members},
+                    {m: expanded[m] for m in [*aris, *members]},
                 )
             )
             expected.append(
                 (
                     expansion,
-                    ["id", "type", "status", "title", *members, *last],
+                    ["id", "type", *aris, "status", "title", *members, *last],
                     list(direct["_expandable"].items()),
                     {
+                        **{m: direct[m] for m in aris},
                         "macroRenderedOutput": {},
                         **{m: direct[m] for m in members if m != "macroRenderedOutput"},
                     },

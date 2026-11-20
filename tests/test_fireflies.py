@@ -1698,6 +1698,119 @@ def test_fireflies_stubbed_fields_are_null_not_invented(fireflies_corpus):
         assert t["user"]["minutes_consumed"] is None and t["user"]["is_admin"] is None
 
 
+def test_fireflies_user_is_the_organizer_and_counts_organized_transcripts(tmp_path):
+    """`Transcript.user` is the organizer, not the host, and the User counts are over the
+    transcripts a user ORGANIZED — not the ones they hosted.
+
+    Measured against api.fireflies.ai — the dated measurement is recorded on `_user_stats` in
+    backlot/graphql/fireflies_resolvers.py: over 4 transcripts whose host and organizer differed,
+    `user.email` was the organizer's on all 4; the key's user organized 2 and answered
+    num_transcripts 2, with recent_meeting and recent_transcript the same id — the newest of the
+    two by date. The corpus cannot tell the two recents apart, so both are that one id here."""
+    records = [
+        {**FIREFLIES_CORPUS[0], "doc_id": "ff-user-1", "title": "First"},
+        {
+            **FIREFLIES_CORPUS[0],
+            "doc_id": "ff-user-2",
+            "title": "Second",
+            "created": "2026-04-03T15:00:00Z",
+        },
+        # No distinct organizer: the host is the organizer, so this one counts for ava.
+        {k: v for k, v in FIREFLIES_CORPUS[0].items() if k != "organizer_email"}
+        | {"doc_id": "ff-user-3", "title": "Third", "created": "2026-04-04T15:00:00Z"},
+    ]
+    roster = {
+        "departments": {
+            "Sales": [
+                {"name": "Ava Chen", "email": "ava@acme.com"},
+                {"name": "Ops", "email": "ops@acme.com"},
+                {"name": "Bob", "email": "bob@acme.com"},
+            ]
+        }
+    }
+    with corpus_client(tmp_path, records, roster=roster) as (client, settings):
+        by_title = {
+            t["title"]: t
+            for t in _ff(
+                client,
+                settings,
+                "{ transcripts { id title user { email } } }",
+            )["data"]["transcripts"]
+        }
+        assert by_title["First"]["user"]["email"] == "ops@acme.com"
+        assert by_title["Second"]["user"]["email"] == "ops@acme.com"
+        assert by_title["Third"]["user"]["email"] == "ava@acme.com"
+        users = {
+            u["email"]: u
+            for u in _ff(
+                client,
+                settings,
+                "{ users { email num_transcripts recent_meeting recent_transcript } }",
+            )["data"]["users"]
+        }
+        # ops organized two; ava hosted all three but organized only the one she also hosted
+        assert users["ops@acme.com"]["num_transcripts"] == 2
+        assert users["ops@acme.com"]["recent_meeting"] == by_title["Second"]["id"]
+        assert users["ops@acme.com"]["recent_transcript"] == by_title["Second"]["id"]
+        assert users["ava@acme.com"]["num_transcripts"] == 1
+        assert users["ava@acme.com"]["recent_meeting"] == by_title["Third"]["id"]
+        assert users["ava@acme.com"]["recent_transcript"] == by_title["Third"]["id"]
+        # bob organized nothing: 0, with both recents null rather than invented
+        assert users["bob@acme.com"]["num_transcripts"] == 0
+        assert users["bob@acme.com"]["recent_meeting"] is None
+        assert users["bob@acme.com"]["recent_transcript"] is None
+
+
+def test_fireflies_user_counts_are_scoped_to_what_the_caller_may_read(tmp_path):
+    """The counts count what the CALLER may read, like `transcripts` itself: a transcript the
+    caller is denied is indistinguishable from one that does not exist, so it contributes to
+    neither the count nor the recents."""
+    import yaml
+
+    base = {
+        **FIREFLIES_CORPUS[0],
+        "visibility": "public",
+    }
+    records = [
+        {**base, "doc_id": "ff-acl-1", "title": "Public"},
+        {
+            **base,
+            "doc_id": "ff-acl-2",
+            "title": "Eng only",
+            "created": "2026-04-03T15:00:00Z",
+            "visibility": "group",
+            "group": "engineering",
+        },
+    ]
+    roster = {
+        "departments": {
+            "Sales": [
+                {"name": "Ava Chen", "email": "ava@acme.com"},
+                {"name": "Ops", "email": "ops@acme.com"},
+            ]
+        }
+    }
+    with corpus_client(tmp_path, records, roster=roster) as (client, settings):
+        tokens = yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8"))
+        ava = next(u["token"] for u in tokens["users"] if u["email"] == "ava@acme.com")
+        query = "{ users { email num_transcripts recent_transcript } }"
+
+        def by_email(data):
+            return {u["email"]: u for u in data["users"]}
+
+        admin = by_email(_ff(client, settings, query)["data"])
+        scoped = by_email(gql(client, "/fireflies/graphql", query, f"Bearer {ava}").json()["data"])
+        public_id = next(
+            t["id"]
+            for t in _ff(client, settings, "{ transcripts { id title } }")["data"]["transcripts"]
+            if t["title"] == "Public"
+        )
+        assert admin["ops@acme.com"]["num_transcripts"] == 2
+        # ava cannot read "Eng only", so for her ops organized one and the recent is the public one
+        assert scoped["ops@acme.com"]["num_transcripts"] == 1
+        assert scoped["ops@acme.com"]["recent_transcript"] == public_id
+
+
 def test_fireflies_analytics_sentiments_sum_to_one_hundred(fireflies_corpus):
     """Synthesized, never derived from the text — but it still has to be internally coherent, or a
     consumer charting it gets nonsense."""

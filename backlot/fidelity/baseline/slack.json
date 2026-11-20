@@ -3,7 +3,7 @@
   "endpoints": [
     "https://docs.slack.dev/reference/methods.md"
   ],
-  "measured": "2026-11-10",
+  "measured": "2026-11-19",
   "operations": [
     {
       "operation": "admin.analytics.getFile",
@@ -11,6 +11,22 @@
       "status": "missing",
       "kind": "missing_operation",
       "severity": "gap"
+    },
+    {
+      "operation": "admin.analytics.members.activity",
+      "id": "admin.analytics.members.activity",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-11-19 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, `missing_scope` naming `admin.analytics:read` to a user token without that scope, and `not_allowed_token_type` to a bot token, where `admin.analytics.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those four credentials. Slack's reference says the method is only available on an Enterprise plan, and no credential in the environment holds that scope or belongs to an Enterprise organization (`auth.test` names no `enterprise_id`), so a successful response shape rests on the reference alone."
+    },
+    {
+      "operation": "admin.analytics.members.metadata",
+      "id": "admin.analytics.members.metadata",
+      "status": "missing",
+      "kind": "missing_operation",
+      "severity": "gap",
+      "note": "Measured against slack.com on 2026-11-19 by `GET` and by `POST`: it answers `not_authed` with no token, `invalid_auth` with a bogus one, `missing_scope` naming `admin.analytics:read` to a user token without that scope, and `not_allowed_token_type` to a bot token, where `admin.analytics.nosuchthing`, a name Slack does not have, answers `unknown_method` with each of those four credentials. Slack's reference says the method is only available on an Enterprise plan, and no credential in the environment holds that scope or belongs to an Enterprise organization (`auth.test` names no `enterprise_id`), so a successful response shape rests on the reference alone."
     },
     {
       "operation": "admin.analytics.messages.activity",

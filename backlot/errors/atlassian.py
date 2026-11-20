@@ -186,9 +186,11 @@ def is_unsupported_browser(user_agent: str | None) -> bool:
 def is_confluence(path: str) -> bool:
     """Which of the two products serves ``path``. They answer several things differently — the
     refusal envelope below, and how a query parameter is read — and one predicate keeps the
-    callers from drifting apart on what counts as Confluence."""
-    instance = _instance(path)
-    return instance == "/wiki" or instance.startswith("/wiki/")
+    callers from drifting apart on what counts as Confluence. The segment has to end at `wiki`:
+    real answers `/wikix` as Jira answers `/foo`, a `404` on `text/html;charset=utf-8` with
+    `X-Seraph-LoginReason` for a failed Basic pair (Jira Cloud, 2026-11-19). A `/wiki` path
+    outside the mount is one of Backlot's own."""
+    return path == WIKI or path.startswith(f"{WIKI}/")
 
 
 #: What real Jira puts on a JSON body. Measured on a live Jira Cloud site, 2026-09-15 and

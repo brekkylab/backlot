@@ -1639,7 +1639,7 @@ async def report_failed_jira_login(request: Request, call_next):
     """
     response = await call_next(request)
     # the path once the slash rewrite inside this has run
-    if not errors.atlassian.is_confluence(request.url.path):
+    if request.url.path.startswith("/atlassian/rest/"):
         if auth.atlassian_caller(request).is_anonymous:
             response.headers["X-Seraph-LoginReason"] = "AUTHENTICATED_FAILED"
     return response

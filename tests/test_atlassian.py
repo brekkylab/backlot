@@ -935,31 +935,32 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
     # Confluence carries no Seraph header on any of its answers.
     refused = client.get("/atlassian/wiki/rest/api/space", headers=FAILED_PAIR)
     assert "x-seraph-loginreason" not in refused.headers
-    refused_web = client.get("/atlassian/wiki/nope", headers=FAILED_PAIR, follow_redirects=False)
-    assert refused_web.status_code == 302
-    assert "x-seraph-loginreason" not in refused_web.headers
-
-    # Real Jira Cloud also sends the header on the site's web pages for a failed Basic pair:
-    # 404 HTML at unserved paths, 200 HTML at /browse, 302 redirect at /
-    for path, status in (
-        ("/atlassian/restx", 404),
-        ("/atlassian/foo", 404),
-        ("/atlassian/ex/jira/x", 404),
-        ("/atlassian/Rest", 404),
-        ("/atlassian/wikix", 404),
-        ("/atlassian/browse", 200),
-        ("/atlassian/", 302),
-        ("/atlassian/rest/nope", 404),
-    ):
-        r = client.get(path, headers=FAILED_PAIR, follow_redirects=False)
-        assert r.status_code == status, (path, r.status_code)
-        assert r.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
-
-    # With no Authorization header, web pages carry no Seraph header
-    for path in ("/atlassian/foo", "/atlassian/restx"):
-        r = client.get(path, follow_redirects=False)
-        assert r.status_code == 404
-        assert "x-seraph-loginreason" not in r.headers
+    # The site's web pages carry the header too, `/wikix` among them rather than Confluence's.
+    # Each row is a path and whether the failed pair was sent, with the status, media type and
+    # header real answered on Jira Cloud on 2026-11-19 (UTC).
+    page, seraph = "text/html;charset=utf-8", "AUTHENTICATED_FAILED"
+    pages = {
+        ("/atlassian/restx", True): (404, page, seraph),
+        ("/atlassian/foo", True): (404, page, seraph),
+        ("/atlassian/ex/jira/x", True): (404, page, seraph),
+        ("/atlassian/Rest", True): (404, page, seraph),
+        ("/atlassian/wikix", True): (404, page, seraph),
+        ("/atlassian/browse", True): (200, "text/html;charset=UTF-8", seraph),
+        ("/atlassian/", True): (302, None, seraph),
+        ("/atlassian/rest/nope", True): (404, "application/problem+json;charset=UTF-8", seraph),
+        ("/atlassian/wiki/nope", True): (302, None, None),
+        ("/atlassian/foo", False): (404, page, None),
+        ("/atlassian/restx", False): (404, page, None),
+    }
+    answered = {}
+    for path, failed in pages:
+        r = client.get(path, headers=FAILED_PAIR if failed else {}, follow_redirects=False)
+        answered[path, failed] = (
+            r.status_code,
+            r.headers.get("content-type"),
+            r.headers.get("x-seraph-loginreason"),
+        )
+    assert answered == pages
 
 
 def test_atlassian_error_keeps_the_atlassian_error_envelope(client):
@@ -8822,6 +8823,19 @@ def _spring_charset(client, admin_h, method, vendor_path, ctype, authorization, 
 
 def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client, admin_h):
     assert _failures(_spring_charset, _SPRING_CHARSET, client, admin_h) == {}
+    # Two of the table's requests sent outside the mount, where `/wiki` is a path of Backlot's own:
+    # FastAPI's 404, where under the mount they are Tomcat's 401 and the empty 500.
+    outside = {}
+    for path, credential in (("/wiki/rest/api/nosuch", "Basic !!!"), ("/wiki/api/v2/nope", None)):
+        headers = [("Content-Type", _EMPTY_CHARSET)]
+        if credential is not None:
+            headers.append(("Authorization", credential))
+        r = sent_as(client, "GET", path, headers)
+        outside[path] = (r.status_code, r.content)
+    assert outside == {
+        "/wiki/rest/api/nosuch": (404, b'{"detail":"Not Found"}'),
+        "/wiki/api/v2/nope": (404, b'{"detail":"Not Found"}'),
+    }
 
 
 def _plugins_mount(client, admin_h, method, vendor_path, authorization, status, media, body):

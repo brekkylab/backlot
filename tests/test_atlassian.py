@@ -927,8 +927,17 @@ def test_jira_reports_a_failed_credential_in_the_seraph_header(client):
     response including the 200s. The header is keyed on the username: a value carrying a non-empty
     user before its first colon gets it, and one without a colon, or with an empty user, does not
     — neither does a request that sent no credential at all."""
-    carries = client.get("/atlassian/rest/api/3/project/search", headers=FAILED_PAIR)
-    assert carries.headers["x-seraph-loginreason"] == "AUTHENTICATED_FAILED"
+    answers = {}
+    for path in ("/rest/api/3/project/search", "/rest/nope", "/rest", "//rest", "///rest"):
+        r = client.get(f"/atlassian{path}", headers=FAILED_PAIR)
+        answers[path] = (r.status_code, r.headers.get("x-seraph-loginreason"))
+    assert answers == {
+        "/rest/api/3/project/search": (200, "AUTHENTICATED_FAILED"),
+        "/rest/nope": (404, "AUTHENTICATED_FAILED"),
+        "/rest": (404, "AUTHENTICATED_FAILED"),
+        "//rest": (404, "AUTHENTICATED_FAILED"),
+        "///rest": (404, "AUTHENTICATED_FAILED"),
+    }
     for headers in ({}, _basic(":wrongtoken"), _basic("nobody@example.com")):
         answer = client.get("/atlassian/rest/api/3/project/search", headers=headers)
         assert "x-seraph-loginreason" not in answer.headers
@@ -1369,6 +1378,24 @@ def test_atlassian_comment_ids_are_numeric_on_the_wire(tmp_path):
         ]
         assert cc["id"].isdigit()
         assert cc["_links"]["webui"].endswith(f"focusedCommentId={cc['id']}")
+        space = synth.confluence_space_key("handbook")
+        prefix = c.get(f"/atlassian/wiki/rest/api/space/{space}", headers=h).json()["ari"]
+        prefix = prefix.partition(":space/")[0]
+        ari = f"{prefix}:comment/{cc['id']}"
+        assert list(cc) == [
+            "id",
+            "type",
+            "ari",
+            "base64EncodedAri",
+            "status",
+            "title",
+            "body",
+            "version",
+            "extensions",
+            "_links",
+        ]
+        assert cc["ari"] == ari
+        assert base64.b64decode(cc["base64EncodedAri"]).decode() == ari
 
 
 def test_confluence_dates_an_epoch_zero_page_on_both_routes(tmp_path):
@@ -2866,12 +2893,20 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
         spaced = c.get(f"{api}/content/{pid}", headers=h, params={"expand": "space,version"}).json()
         paged = c.get(api + "/content", headers=h, params={"type": "page"}).json()["results"]
         paged_row = next(r for r in paged if str(r["id"]) == str(pid))
+        prefix = c.get(f"{api}/space/ENG", headers=h).json()["ari"].partition(":space/")[0]
+        children = c.get(f"{api}/content/{pid}/child/page", headers=h).json()["results"]
+        for content in (bare, spaced, paged_row, *children):
+            assert content["ari"] == f"{prefix}:page/{content['id']}"
+            assert base64.b64decode(content["base64EncodedAri"]).decode() == (
+                f"{prefix}:content/{content['id']}"
+            )
         last = ["_expandable", "_links"]
         searched = ["childTypes", "macroRenderedOutput", "restrictions"]
+        aris = ["ari", "base64EncodedAri"]
         assert [list(bare), list(spaced), list(paged_row), list(hit)] == [
-            ["id", "type", "status", "title", "space", "history", "version", *last],
-            ["id", "type", "status", "title", "space", "version", *last],
-            ["id", "type", "status", "title", *last],
+            ["id", "type", *aris, "status", "title", "space", "history", "version", *last],
+            ["id", "type", *aris, "status", "title", "space", "version", *last],
+            ["id", "type", *aris, "status", "title", *last],
             ["id", "type", "status", "title", *searched, *last],
         ]
         assert hit["childTypes"] == hit["macroRenderedOutput"] == hit["restrictions"] == {}
@@ -2923,15 +2958,16 @@ def test_confluence_content_expands_exactly_what_expand_names(tmp_path):
                     expansion,
                     list(expanded),
                     list(expanded["_expandable"].items()),
-                    {m: expanded[m] for m in members},
+                    {m: expanded[m] for m in [*aris, *members]},
                 )
             )
             expected.append(
                 (
                     expansion,
-                    ["id", "type", "status", "title", *members, *last],
+                    ["id", "type", *aris, "status", "title", *members, *last],
                     list(direct["_expandable"].items()),
                     {
+                        **{m: direct[m] for m in aris},
                         "macroRenderedOutput": {},
                         **{m: direct[m] for m in members if m != "macroRenderedOutput"},
                     },

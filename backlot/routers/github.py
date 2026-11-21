@@ -3293,7 +3293,7 @@ _INT64_MAX = 2**63 - 1
 _LEADING_INT_RE = re.compile(r"[ \t\n\v\f\r]*\+?(?:0[dD])?([0-9]+(?:_[0-9]+)*)")
 _LEADING_DIGITS_RE = re.compile(r"[ \t\n\v\f\r]*([0-9]+)")
 _LEADING_DECIMAL_RE = re.compile(
-    r"[ \t\n\v\f\r]*\+?([0-9]+(?:[.][0-9]+)?|[.][0-9]+)(?:[eE]([+-]?[0-9]+))?"
+    r"[ \t\n\v\f\r]*\+?([0-9]+(?:[.][0-9]*)?|[.][0-9]+)(?:[eE]([+-]?[0-9]+))?"
 )
 
 
@@ -3327,13 +3327,13 @@ def _read_path_number(value, *, mode: str = "ruby") -> int:
 
     Two routes depart from that. ``pulls/{number}`` (``mode="digits"``) reads leading ASCII digits
     after ASCII whitespace with no ``+``, no ``0d`` and no ``_`` grouping, so ``pulls/+1`` and
-    ``pulls/0d1`` 404 while ``pulls/1.5`` and ``pulls/1abc`` are served.
-    ``pulls/{number}/reviews`` (``mode="decimal"``) reads a leading non-negative decimal or
-    scientific number (optional ``+``, no ``0d`` or ``_``) and accepts it only when its value is a
-    whole integer — so ``1.0``, ``1.x``, ``1e0``, ``1148e1``, ``1.148e4`` and ``114800e-1`` are
-    served while ``1.5`` and ``1.9`` 404.
+    ``pulls/0d1`` 404 while ``pulls/1.5`` and ``pulls/1abc`` are served. ``pulls/{number}/reviews``
+    (``mode="decimal"``) reads a leading non-negative decimal or scientific number (optional ``+``,
+    no ``0d`` or ``_``) and accepts it only when its value is a whole integer — so ``1.0``, ``1.x``,
+    ``1e0``, ``1148e1``, ``1148.e1``, ``1.148e4`` and ``114800e-1`` are served while ``1.5``,
+    ``1.9`` and ``1.e99999`` 404.
 
-    Measured against api.github.com on 2026-10-10 and 2026-11-20 with a token on
+    Measured against api.github.com on 2026-10-10, 2026-11-20 and 2026-11-21 with a token on
     octocat/Hello-World, each request with its own cache-buster.
 
     A ``BeforeValidator`` rather than a ``str`` annotation keeps the parameter an ``integer`` in

@@ -2693,6 +2693,8 @@ def test_github_path_number_spellings(gh_client, gh_admin_h, gh_org):
             f"{s}e%2B0": ok,
             f"{s}e99999": miss if mode == "decimal" else ok,
             f"{s}e-99999": miss if mode == "decimal" else ok,
+            f"{s}0.e-1": ok if mode == "decimal" else miss,
+            f"{s}.e99999": miss if mode == "decimal" else ok,
             f"-{s}": miss,
             f"-0{s}": miss,
             f"%C2%A0{s}": miss,

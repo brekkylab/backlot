@@ -3108,6 +3108,149 @@ def test_github_a_basic_value_without_a_token_updating_a_repository_is_answered_
     ]
 
 
+_UNSERVED_SEARCH_PATHS = (
+    "/github/search/commits",
+    "/github/search/labels",
+    "/github/search/repositories",
+    "/github/search/topics",
+    "/github/search/users",
+)
+_MISSING_Q_BODY = {
+    "message": "Validation Failed",
+    "documentation_url": "https://docs.github.com/v3/search",
+    "errors": [{"resource": "Search", "field": "q", "code": "missing"}],
+    "status": "422",
+}
+_MISSING_REPO_ID_BODY = {
+    "message": "Validation Failed",
+    "documentation_url": "https://docs.github.com/rest/search/search#search-labels",
+    "status": "422",
+}
+
+
+@pytest.mark.parametrize("path", _UNSERVED_SEARCH_PATHS)
+def test_github_unserved_searches_refuse_missing_query_ahead_of_credential(
+    gh_client, gh_admin_h, path
+):
+    """Real answers a missing or blank `q` on the five unserved searches with its 422 ahead of a
+    credential, echoing the API version and counting against `search`
+    (`backlot.routers.github._an_unserved_search_refusal`), while `Bearer nope` stays `401 Bad
+    credentials` and a non-blank `q` on the four non-label searches keeps `401` without a token."""
+    c, _ = gh_client
+    bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
+
+    for query in ("", "?q=", "?q=%20"):
+        for headers, limit in (
+            ({}, "10"),
+            ({"Authorization": "Digest x"}, "10"),
+            (gh_admin_h, "30"),
+        ):
+            r = c.get(path + query, headers=headers)
+            assert (r.status_code, r.json()) == (422, _MISSING_Q_BODY), (query, headers)
+            assert r.headers["x-github-api-version-selected"] == "2022-11-28", (query, headers)
+            assert (r.headers["x-ratelimit-resource"], r.headers["x-ratelimit-limit"]) == (
+                "search",
+                limit,
+            ), (query, headers)
+
+    for value in ("nope", "", "Basic eDp5", "Basic\t!!!!"):
+        r = c.get(path, headers={"Authorization": value})
+        assert (r.status_code, r.json()) == (422, _MISSING_Q_BODY), value
+        assert r.headers["x-github-api-version-selected"] == "2022-11-28", value
+        assert (r.headers["x-ratelimit-resource"], r.headers["x-ratelimit-limit"]) == (
+            "search",
+            "10",
+        ), value
+
+    # Unsupported version runs ahead of the missing-q 422 and carries no echo.
+    for headers, limit in (
+        (bad_version, "10"),
+        ({"Authorization": "Digest x", **bad_version}, "10"),
+        ({**gh_admin_h, **bad_version}, "30"),
+    ):
+        r = c.get(path, headers=headers)
+        assert (r.status_code, r.json()["message"]) == (400, "Bad Request"), headers
+        assert "x-github-api-version-selected" not in r.headers, headers
+        assert (r.headers["x-ratelimit-resource"], r.headers["x-ratelimit-limit"]) == (
+            "search",
+            limit,
+        ), headers
+
+    # A credential that arrived and did not resolve is refused ahead of version and query.
+    for headers in (
+        {"Authorization": "Bearer nope"},
+        {"Authorization": "Bearer nope", **bad_version},
+        _TOKEN_SHAPED,
+    ):
+        bad = c.get(path, headers=headers)
+        assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials"), headers
+        assert "x-github-api-version-selected" not in bad.headers, headers
+        assert not any(name.startswith("x-ratelimit-") for name in bad.headers), headers
+
+    tab_bad = c.get(path, headers={"Authorization": "Bearer\tnope"})
+    assert (tab_bad.status_code, tab_bad.json()["message"]) == (401, "Bad credentials")
+    assert "x-github-api-version-selected" not in tab_bad.headers
+    assert (tab_bad.headers["x-ratelimit-resource"], tab_bad.headers["x-ratelimit-limit"]) == (
+        "search",
+        "10",
+    )
+
+    if path != "/github/search/labels":
+        for headers in ({}, {"Authorization": "Digest x"}):
+            r = c.get(path + "?q=x", headers=headers)
+            assert (r.status_code, r.json()["message"]) == (401, "Requires authentication"), headers
+        tok_r = c.get(path + "?q=x", headers=gh_admin_h)
+        assert tok_r.status_code == 404
+
+
+def test_github_search_labels_refuses_missing_repository_id_ahead_of_credential(
+    gh_client, gh_admin_h
+):
+    """On `/search/labels` with a non-blank `q`, a missing or blank `repository_id` answers real's
+    `#search-labels` 422 ahead of a credential, while `repository_id` present keeps `401` without
+    a token and `404` with one (`backlot.routers.github._an_unserved_search_refusal`)."""
+    c, _ = gh_client
+    path = "/github/search/labels"
+    bad_version = {"X-GitHub-Api-Version": "1999-01-01"}
+
+    for query in ("?q=x", "?q=x&repository_id=", "?q=x&repository_id=%20"):
+        for headers, limit in (
+            ({}, "10"),
+            ({"Authorization": "Digest x"}, "10"),
+            (gh_admin_h, "30"),
+        ):
+            r = c.get(path + query, headers=headers)
+            assert (r.status_code, r.json()) == (422, _MISSING_REPO_ID_BODY), (query, headers)
+            assert r.headers["x-github-api-version-selected"] == "2022-11-28"
+            assert (r.headers["x-ratelimit-resource"], r.headers["x-ratelimit-limit"]) == (
+                "search",
+                limit,
+            )
+
+    for headers, limit in (
+        (bad_version, "10"),
+        ({"Authorization": "Digest x", **bad_version}, "10"),
+        ({**gh_admin_h, **bad_version}, "30"),
+    ):
+        r = c.get(path + "?q=x", headers=headers)
+        assert (r.status_code, r.json()["message"]) == (400, "Bad Request"), headers
+        assert "x-github-api-version-selected" not in r.headers, headers
+        assert (r.headers["x-ratelimit-resource"], r.headers["x-ratelimit-limit"]) == (
+            "search",
+            limit,
+        ), headers
+
+    bad = c.get(path + "?q=x", headers={"Authorization": "Bearer nope"})
+    assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
+    assert not any(name.startswith("x-ratelimit-") for name in bad.headers)
+
+    for headers in ({}, {"Authorization": "Digest x"}):
+        r = c.get(path + "?q=x&repository_id=1", headers=headers)
+        assert (r.status_code, r.json()["message"]) == (401, "Requires authentication"), headers
+    tok_r = c.get(path + "?q=x&repository_id=1", headers=gh_admin_h)
+    assert tok_r.status_code == 404
+
+
 #: (method, path, whether a request with no `Authorization` header is counted) on the paths
 #: `backlot.routers.github.under_an_agent_family` takes, each as real answered it on 2026-10-30.
 _AGENT_FAMILY_ROWS = [

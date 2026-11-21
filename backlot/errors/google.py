@@ -107,10 +107,7 @@ QUERY_TOKENS = ("access_token", "bearer_token", "oauth_token")
 
 def family(path: str) -> str | None:
     """Which of the three envelopes a request path takes, or ``None`` for a non-Google route."""
-    for prefix, fam in _PREFIX_FAMILY:
-        if path.startswith(prefix):
-            return fam
-    return None
+    return next((fam for prefix, fam in _PREFIX_FAMILY if path.startswith(prefix)), None)
 
 
 def owns(path: str) -> bool:
@@ -1107,8 +1104,7 @@ def http_body(path: str, exc: HTTPException, query: Mapping[str, str] | None = N
     """
     message = getattr(exc, "message", None)
     if message is None:
-        detail = exc.detail
-        message = detail if isinstance(detail, str) else str(detail)
+        message = str(exc.detail)
     err: dict = {"code": exc.status_code, "message": message}
     if has_errors_array(family(path), xgafv(query)):
         entry = {"message": getattr(exc, "short", None) or message}

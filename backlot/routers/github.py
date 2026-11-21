@@ -1087,6 +1087,49 @@ def is_an_unserved_operation_spelt_in_another_case(method: str, path: str) -> bo
     )
 
 
+#: Lower the ASCII letters of a path and nothing else, so a spelling that folds a letter real does
+#: not fold (a KELVIN SIGN, a LONG S) is not read as the operation it only resembles.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: Request) -> None:
+    """Refuse a credential on a spelling in another case as real refuses it on the spelling as
+    published, ahead of the router's 404: on an operation GitHub publishes and no route here
+    serves, the whole of :func:`refuse_an_unserved_operation`'s refusal — "Requires
+    authentication" with no credential, "Bad credentials" for one that does not resolve — and on
+    a spelling of a route, the bad credential's 401 alone (:func:`_validate_bad_credential`); a
+    caller with no credential on a spelling of a route keeps the router's 404, as does one whose
+    credential resolves on either kind.
+
+    Measured against api.github.com on 2026-11-21 (UTC), with a token that resolves, one
+    cache-busted request each: with `Bearer <redacted>`, `/ZEN`, `/RATE_LIMIT`, `/USER/keys` and
+    `/User/Repos` were each the 401 "Bad credentials" with no `x-ratelimit-resource` and no
+    version echo, where `/nosuchroute-n` was the 404; with no `Authorization`, `/USER/keys`,
+    `/User/Keys`, `/NOTIFICATIONS`, `/repos/psf/requests/HOOKS`, `/REPOS/psf/requests/hooks` and
+    `/REPOS/psf/requests/HOOKS` were each the 401 "Requires authentication" on `core` with no
+    echo, where `/USER/repos`, `/User/Repos` and `/RATE_LIMIT` were the 404 on `core` with the
+    echo; and `PATCH /REPOS/psf/zz-probe-9876` with a token that resolves was the 404 on `core`
+    with the echo. A path under `/agents/` is not refused here: the `/agents/automations`
+    spellings were the agents backend's own text `404 page not found` on the same measurement,
+    left for a follow-up.
+
+    The operation is read on the path lowered over the ASCII letters alone
+    (:data:`_ASCII_LOWER`), so a spelling that folds a letter real does not fold is not read as
+    the operation — see :func:`is_an_unserved_operation_spelt_in_another_case`.
+    """
+    path = request.scope["path"]
+    if _an_agent_path(path):
+        return
+    if is_an_unserved_operation_spelt_in_another_case(request.method, path):
+        request.scope["path"] = path.translate(_ASCII_LOWER)
+        try:
+            await refuse_an_unserved_operation(request)
+        finally:
+            request.scope["path"] = path
+        return
+    await _validate_bad_credential(request)
+
+
 #: The operations of :data:`_PUBLISHED_NOT_SERVED` that real reads the name of before it asks for a
 #: credential: a `%00` in a name is its empty 400 for a caller with no credential
 #: (:func:`asks_for_a_credential_before_a_name`), where the others it asked a credential of first.

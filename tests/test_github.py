@@ -7998,8 +7998,7 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
     nowhere either; two anonymous requests in a row carry the five and count, except on
     `/rate_limit/`, whose anonymous 404 is plain text and carries none. A route that ends in a path
     parameter answers its own trailing slash instead, so `/contents/` keeps the root listing's 200.
-    See that middleware's docstring for the measurement. A spelling of a route in another case
-    carries both, as a route spelled as published does — see `_github_routes` for the measurement.
+    See that middleware's docstring for the measurement.
     """
     c, _ = gh_client
     repo_id = synth.github_user_id("codebase")
@@ -8121,46 +8120,59 @@ def test_github_a_trailing_slash_is_404_not_a_redirect(gh_client, gh_admin_h, gh
         ).headers
     )
 
-    # a spelling of a route in another case is routed for the headers, though the 404 stays the
-    # case-sensitive route's: each spelling of the two routes measured, and a spelling of a route
-    # with parameters, carry the five and the version echo with a token, and the first carries
-    # them with no credential too
-    for path in ("/github/RATE_LIMIT", "/github/Rate_Limit", "/github/ZEN"):
-        r = c.get(path, headers=gh_admin_h)
-        assert r.status_code == 404, path
-        assert r.json() == {
-            "message": "Not Found",
-            "documentation_url": "https://docs.github.com/rest",
-            "status": "404",
-        }
-        assert _ratelimit(r)["resource"] == "core"
-        assert r.headers["x-github-api-version-selected"] == "2022-11-28"
-    anon = c.get("/github/RATE_LIMIT")
-    assert anon.status_code == 404
-    assert _ratelimit(anon)["resource"] == "core"
-    assert anon.headers["x-github-api-version-selected"] == "2022-11-28"
-    head = c.head("/github/RATE_LIMIT")
-    assert head.status_code == 404
-    assert head.content == b""
-    assert _ratelimit(head)["resource"] == "core"
-    assert head.headers["x-github-api-version-selected"] == "2022-11-28"
-    params = c.get(f"/github/REPOS/{gh_org}/codebase", headers=gh_admin_h)
-    assert params.status_code == 404
-    assert _ratelimit(params)["resource"] == "core"
-    assert params.headers["x-github-api-version-selected"] == "2022-11-28"
 
-    # a method the route does not serve is not routed, whatever the case: real answers POST on
-    # either spelling as it answers a path no route matches
-    post = c.post("/github/RATE_LIMIT", headers=gh_admin_h)
-    assert post.status_code == 404
-    assert not any(n.startswith("x-ratelimit-") for n in post.headers)
-    assert "x-github-api-version-selected" not in post.headers
+#: Rows for ``backlot.main._a_github_route_spelt_in_another_case``: a method, a `/github` path, who
+#: sends it, and the status, `x-ratelimit-resource` and `x-github-api-version-selected` it gets,
+#: the body being the one `/nope` gets from the same sender — or, on a row real refuses a
+#: credential on, the one the spelling as published gets from the same sender.
+_SPELT_IN_ANOTHER_CASE_ROWS = [
+    ("GET", "/RATE_LIMIT", "admin", 404, "core", "2022-11-28"),
+    ("GET", "/Rate_Limit", "admin", 404, "core", "2022-11-28"),
+    ("GET", "/ZEN", "admin", 404, "core", "2022-11-28"),
+    ("GET", "/REPOS/{org}/codebase", "admin", 404, "core", "2022-11-28"),
+    ("GET", "/RATE_LIMIT", "no credential", 404, "core", "2022-11-28"),
+    ("HEAD", "/RATE_LIMIT", "no credential", 404, "core", "2022-11-28"),
+    ("POST", "/RATE_LIMIT", "admin", 404, None, None),
+    ("GET", "/RATE_LIMIT/", "admin", 404, None, None),
+    ("PATCH", "/REPOS/{org}/zz-probe-9876", "admin", 404, "core", "2022-11-28"),
+    ("GET", "/ZEN", "bad bearer", 401, None, None),
+    ("GET", "/RATE_LIMIT", "bad bearer", 401, None, None),
+    ("GET", "/USER/keys", "bad bearer", 401, None, None),
+    ("GET", "/User/Repos", "bad bearer", 401, None, None),
+    ("GET", "/USER/keys", "no credential", 401, "core", None),
+    ("GET", "/User/Keys", "no credential", 401, "core", None),
+    ("GET", "/NOTIFICATIONS", "no credential", 401, "core", None),
+    ("GET", "/repos/{org}/codebase/HOOKS", "no credential", 401, "core", None),
+    ("GET", "/REPOS/{org}/codebase/hooks", "no credential", 401, "core", None),
+    ("GET", "/REPOS/{org}/codebase/HOOKS", "no credential", 401, "core", None),
+]
 
-    # and the trailing slash still unroutes a spelling in another case
-    slashed = c.get("/github/RATE_LIMIT/", headers=gh_admin_h, follow_redirects=False)
-    assert slashed.status_code == 404
-    assert not any(n.startswith("x-ratelimit-") for n in slashed.headers)
-    assert "x-github-api-version-selected" not in slashed.headers
+
+def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
+    gh_client, gh_admin_h, gh_org
+):
+    c, _ = gh_client
+    senders = {
+        "no credential": {},
+        "admin": gh_admin_h,
+        "bad bearer": {"Authorization": "Bearer usr-not-a-real-token"},
+    }
+    answered, expected = {}, {}
+    for method, path, sender, status, resource, echo in _SPELT_IN_ANOTHER_CASE_ROWS:
+        headers = senders[sender]
+        r = c.request(method, f"/github{path.replace('{org}', gh_org)}", headers=headers)
+        # a 401 carries the refusal's body, so its control is the spelling as published, sent by
+        # the same sender; a 404 carries the body `/nope` gets from that sender
+        control = path.lower() if status == 401 else "/nope"
+        same = c.request(method, f"/github{control.replace('{org}', gh_org)}", headers=headers)
+        answered[(method, path, sender)] = (
+            r.status_code,
+            r.headers.get("x-ratelimit-resource"),
+            r.headers.get("x-github-api-version-selected"),
+            r.content,
+        )
+        expected[(method, path, sender)] = (status, resource, echo, same.content)
+    assert answered == expected
 
 
 @pytest.mark.parametrize("headers", _COUNTED_TOKEN_SHAPED)

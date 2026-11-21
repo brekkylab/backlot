@@ -444,6 +444,32 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
 
 @_middleware(
     lambda scope: (
+        scope["path"].startswith("/github/")
+        and not _a_github_route_serves(scope)
+        and not github.is_an_unserved_operation(scope["method"], scope["path"])
+        and _a_github_route_spelt_in_another_case(scope)
+    )
+)
+async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: Request, call_next):
+    """A credential on a spelling of a GitHub route in another case is read as real reads it on
+    the spelling as published, ahead of the router's 404
+    (``backlot.routers.github.refuse_a_credential_on_a_github_route_spelt_in_another_case``).
+
+    Registered after :func:`refuse_an_unserved_github_operation` and before
+    :func:`refuse_a_credential_on_an_agent_path`, so it runs inside the agent paths' refusal and
+    outside the unserved operations': a spelling in another case of an operation is refused here
+    rather than there, and a path under `/agents/` keeps the agents backend's answer. Its refusal
+    leaves through the version echo and the rate-limit headers as a served route's 401 does.
+    """
+    try:
+        await github.refuse_a_credential_on_a_github_route_spelt_in_another_case(request)
+    except StarletteHTTPException as exc:
+        return await _http_exception_handler(request, exc)
+    return await call_next(request)
+
+
+@_middleware(
+    lambda scope: (
         github.under_an_agent_family(scope["path"])
         and not github.is_an_unserved_operation(scope["method"], scope["path"])
     )

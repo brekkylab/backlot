@@ -38,18 +38,23 @@ _COUNTER = itertools.count()
 
 
 def table_names(source_type: str) -> dict[str, str]:
-    """The five generated overlay tables for one source, by role.
+    """The generated overlay tables for one source, by role: five, and two more for a source with
+    a :data:`store.COMMENT_TABLE`.
 
-    ``doc`` and ``acl`` keep the corpus's own names so a merged query reads the same identifier on
-    both sides; the other three are new concepts and are named after the source.
+    ``doc``, ``acl`` and ``comment`` keep the corpus's own names so a merged query reads the same
+    identifier on both sides; the others are new concepts and are named after the source.
     """
-    return {
+    names = {
         "doc": store.table(source_type),
         "acl": store.acl_table(source_type),
         "patch": f"{source_type}_patch",
         "tombstone": f"{source_type}_tombstone",
         "fts": f"{source_type}_fts_ov",
     }
+    if comments := store.comment_table(source_type):
+        names["comment"] = comments
+        names["comment_tombstone"] = f"{source_type}_comment_tombstone"
+    return names
 
 
 def _uri(name: str) -> str:
@@ -144,6 +149,22 @@ def _source_ddl(conn: sqlite3.Connection, source_type: str) -> list[str]:
         # The tables holding parts of a document, mirrored like the document table and read by
         # `store.parts_for`.
         *(_mirror_ddl(conn, t) for t in store.SATELLITES.get(source_type, {})),
+        *_comment_ddl(conn, names),
+    ]
+
+
+def _comment_ddl(conn: sqlite3.Connection, names: dict[str, str]) -> list[str]:
+    """The comment mirror and the ids it subtracts, for a source that has comments.
+
+    A comment is small, so a written or edited one is a whole row here under the corpus row's own
+    `id`, which `store.doc_comments` reads in place of the corpus's; a deleted one is its `id` in the
+    tombstone.
+    """
+    if "comment" not in names:
+        return []
+    return [
+        _mirror_ddl(conn, names["comment"]),
+        f"CREATE TABLE IF NOT EXISTS ov.{names['comment_tombstone']} (id TEXT PRIMARY KEY)",
     ]
 
 

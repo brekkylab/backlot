@@ -2592,7 +2592,8 @@ def meta_overlay():
     An ACL oracle asks what an agent did, and answering it by diffing the served surface against
     itself means knowing what the surface looked like before. The overlay already IS that
     difference, so it is reported directly: the documents written, the grants they carry, the
-    columns overwritten, the parts replaced (a spreadsheet's sheets), and the documents subtracted.
+    columns overwritten, the parts replaced (a spreadsheet's sheets), the documents subtracted,
+    and the comments written and subtracted (a Jira issue's).
 
     The FTS index is left out. It holds no fact the document rows do not.
 

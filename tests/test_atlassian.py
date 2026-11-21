@@ -4076,6 +4076,132 @@ def test_jira_comment_paging_is_declared_so_a_client_can_discover_it(paged):
     assert "expand" not in declared
 
 
+# --- what the overlay holds, read back through every Jira read ------------------------------
+
+
+@pytest.fixture
+def jira_overlay(sample_settings, tokens):
+    """A server of its own, so what a test writes is no other test's starting state, with a
+    payments member's header."""
+    with client_for(sample_settings, reload=True) as c:
+        yield c, {"Authorization": f"Bearer {tokens['bob@acme.com']}"}
+
+
+def _write_issue(conn, title: str, content: str, **columns) -> str:
+    """An issue written to payments as a create will write one, returning its key."""
+    prefix = (
+        conn.execute("SELECT key FROM jira_issues WHERE project = 'payments' LIMIT 1")
+        .fetchone()[0]
+        .rsplit("-", 1)[0]
+    )
+    key, numeric = store.jira_next_key(conn, "payments", prefix)
+    values = {"key": key, "numeric_id": numeric, "project": "payments"}
+    values |= {
+        "author_email": "bob@acme.com",
+        "title": title,
+        "content": content,
+        "status": "To Do",
+    }
+    store.insert_document(conn, "jira", {**values, "created_ts": 4000000000, **columns})
+    return key
+
+
+@pytest.mark.parametrize(
+    "principal,reads", [("admin", True), ("bob@acme.com", True), ("hana@acme.com", False)]
+)
+def test_jira_a_written_issue_is_read_by_whoever_reads_its_project(
+    jira_overlay, tokens_yaml, principal, reads
+):
+    """It takes its project's grants (`store.insert_document`): bob reads payments, hana does
+    not, and the admin token reads everything."""
+    client, _bob = jira_overlay
+    token = tokens_yaml["admin_token"] if principal == "admin" else tok(tokens_yaml, principal)
+    h = {"Authorization": f"Bearer {token}"}
+    written = _write_issue(client.app.state.conn, "Zephyr gateway retries", "Retry zephyr.")
+    r = client.get(f"/atlassian/rest/api/3/issue/{written}", headers=h)
+    assert r.status_code == (200 if reads else 404)
+    found = client.get(
+        "/atlassian/rest/api/3/search/jql", headers=h, params={"jql": 'text ~ "zephyr"'}
+    ).json()["issues"]
+    assert [i["key"] for i in found] == ([written] if reads else [])
+
+
+def test_jira_reads_what_the_overlay_holds_as_it_reads_the_corpus(jira_overlay, sample_settings):
+    client, bob = jira_overlay
+    conn = client.app.state.conn
+    issue = "/atlassian/rest/api/3/issue/{}"
+
+    def search(jql):
+        r = client.get("/atlassian/rest/api/3/search/jql", headers=bob, params={"jql": jql})
+        return [i["key"] for i in r.json()["issues"]]
+
+    def comments(key):
+        r = client.get(issue.format(key) + "/comment", headers=bob)
+        return [c["body"]["content"][0]["content"][0]["text"] for c in r.json()["comments"]]
+
+    sev2 = search('project = payments AND text ~ "latency"')[0]
+    sub1 = next(
+        k
+        for k in search("project = payments")
+        if k != sev2
+        and "postmortem"
+        in (client.get(issue.format(k), headers=bob).json()["fields"]["summary"].lower())
+    )
+    written = _write_issue(
+        conn, "Zephyr gateway retries", "Retry zephyr after the latency spike.", parent_id=sev2
+    )
+    got = client.get(issue.format(written), headers=bob).json()
+    assert got["fields"]["summary"] == "Zephyr gateway retries"
+    assert got["fields"]["creator"]["emailAddress"] == "bob@acme.com"
+    assert client.get(issue.format(got["id"]), headers=bob).json()["key"] == written
+    assert written in search("project = payments") and search('text ~ "zephyr"') == [written]
+    assert {sev2, written} <= set(search('project = payments AND text ~ "latency"'))
+    subtasks = client.get(issue.format(sev2), headers=bob).json()["fields"]["subtasks"]
+    assert written in [s["key"] for s in subtasks]
+
+    store.patch_document(conn, "jira", (written,), "title", "Boreas gateway retries")
+    assert client.get(issue.format(written), headers=bob).json()["fields"]["summary"] == (
+        "Boreas gateway retries"
+    )
+    assert search('text ~ "boreas"') == [written]
+
+    corpus = conn.execute(
+        "SELECT * FROM main.jira_comments WHERE key = ? ORDER BY seq", (sev2,)
+    ).fetchall()
+    assert comments(sev2) == [c["body"] for c in corpus]
+    store.write_comment(conn, "jira", {**dict(corpus[0]), "body": "Rolled back at 21:30."})
+    store.tombstone_comment(conn, "jira", corpus[1]["id"])
+    store.write_comment(
+        conn,
+        "jira",
+        {
+            "id": "ov-1",
+            "key": sev2,
+            "seq": 2,
+            "author_email": "bob@acme.com",
+            "body": "Closing.",
+            "created_ts": 4000000000,
+        },
+    )
+    assert comments(sev2) == ["Rolled back at 21:30.", "Closing."]
+    embedded = client.get(issue.format(sev2), headers=bob).json()["fields"]["comment"]
+    assert embedded["total"] == 2
+
+    for gone in (written, sub1):
+        store.tombstone_document(conn, "jira", (gone,))
+        assert client.get(issue.format(gone), headers=bob).status_code == 404
+        assert gone not in search("project = payments")
+    assert client.get(issue.format(sev2), headers=bob).json()["fields"]["subtasks"] == []
+    assert search('text ~ "boreas"') == []
+
+    # The reset restores the corpus's own issues and comments, and only those.
+    admin = {"Authorization": f"Bearer {sample_settings.admin_token}"}
+    assert client.post("/_meta/overlay/reset", headers=admin).json() == {"ok": True}
+    assert client.get(issue.format(sub1), headers=bob).status_code == 200
+    assert client.get(issue.format(written), headers=bob).status_code == 404
+    assert comments(sev2) == [c["body"] for c in corpus]
+
+
 # --- a project role's id: a `long` path variable, read before the project ---------------------
 
 _MISSING_ID = "Required path variable 'id' is not present."
@@ -8464,6 +8590,183 @@ def test_jira_runs_a_write_on_a_served_path_where_a_route_takes_only_get(
         assert r.json()["detail"] == f"Method '{method}' is not supported."
     else:
         assert sorted(r.json()) == ["errorMessages", "errors"]  # `errors.atlassian.http_body`
+
+
+_BROWSER = "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+_XSRF = (403, errors_atlassian.JIRA_JSON_MEDIA_TYPE, b"XSRF check failed")
+_NO_ISSUE = "Issue does not exist or you do not have permission to see it."
+_MILLION = 1_000_000
+_NPE = (
+    500,
+    errors_atlassian.JIRA_JSON_MEDIA_TYPE,
+    {
+        "message": 'Cannot invoke "Object.equals(Object)" because "<parameter1>" is null',
+        "status-code": 500,
+        "stack-trace": "",
+    },
+)
+
+
+def _said(message):
+    return (400, errors_atlassian.JIRA_JSON_MEDIA_TYPE, {"errorMessages": [message]})
+
+
+def _unread(vendor_path):
+    detail = {"type": "about:blank", "title": "Bad Request", "status": 400}
+    detail |= {"detail": "Failed to read request", "instance": vendor_path}
+    return (400, errors_atlassian.PROBLEM_JSON, detail)
+
+
+_COMMENT = "/rest/api/3/issue/NOPE-999999/comment"
+_JSON_CT = {"Content-Type": "application/json"}
+
+
+# The measurements are `_refuse_a_cross_site_write`'s and `_jira_write_body`'s; a row sends no
+# credential where it names none.
+_WRITE_REFUSALS = [
+    # The XSRF check: a browser's `User-Agent` on a POST, served or not, unless `Origin` or
+    # `Referer` names the site; after the 415 and the 406, ahead of the body
+    ("POST", _COMMENT, {**_JSON_CT, "User-Agent": _BROWSER}, b"{nope", _XSRF),
+    ("POST", "/rest/api/2/issue", {**_JSON_CT, "User-Agent": "Chrome/120"}, b"{}", _XSRF),
+    ("POST", "/rest/api/3/search/jql", {**_JSON_CT, "User-Agent": "MSIE 10"}, b"{}", _XSRF),
+    (
+        "POST",
+        _COMMENT,
+        [*_JSON_CT.items(), ("User-Agent", "curl/8"), ("User-Agent", _BROWSER)],
+        b"{}",
+        _XSRF,
+    ),
+    (
+        "POST",
+        "/rest/api/3/issue/NOPE-999999/transitions",
+        {**_JSON_CT, "User-Agent": _BROWSER, "X-Atlassian-Token": "no-check"},
+        b"{}",
+        _XSRF,
+    ),
+    (
+        "POST",
+        _COMMENT,
+        {**_JSON_CT, "User-Agent": _BROWSER, "Origin": "http://elsewhere.example"},
+        b"{}",
+        _XSRF,
+    ),
+    (
+        "POST",
+        _COMMENT,
+        {**_JSON_CT, "User-Agent": _BROWSER, "Origin": "http://TESTSERVER:80"},
+        b"{}",
+        (404, None, {"errorMessages": [_NO_ISSUE], "errors": {}}),
+    ),
+    (
+        "POST",
+        _COMMENT,
+        {
+            **_JSON_CT,
+            "User-Agent": _BROWSER,
+            "Origin": "http://x.example",
+            "Referer": "http://testserver/x",
+        },
+        b"{}",
+        (404, None, {"errorMessages": [_NO_ISSUE], "errors": {}}),
+    ),
+    (
+        "POST",
+        _COMMENT,
+        {**_JSON_CT, "User-Agent": "Chrome curl/8 (Opera)"},
+        b"{}",
+        (404, None, {"errorMessages": [_NO_ISSUE], "errors": {}}),
+    ),
+    ("PUT", "/rest/api/3/issue/NOPE-999999", {**_JSON_CT, "User-Agent": _BROWSER}, b"{nope")
+    + (_said(errors_atlassian.BODY_UNPARSEABLE),),
+    # ahead of a project role's id and its project's 404 too
+    ("POST", "/rest/api/3/project/NOPESUCHZZ/role/abc", {**_JSON_CT, "User-Agent": _BROWSER})
+    + (b"{}", _XSRF),
+    # an `Origin` with no host is real's 500 on any method but a read, unless `Referer` passes
+    *(
+        (method, path, {**_JSON_CT, "User-Agent": _BROWSER, "Origin": origin}, b"{}", _NPE)
+        for method, path, origin in (
+            ("POST", _COMMENT, "null"),
+            ("PUT", "/rest/api/3/issue/NOPE-999999", "null"),
+            ("POST", _COMMENT, "testserver"),
+            ("DELETE", "/rest/api/2/issue/NOPE-999999", "null"),
+        )
+    ),
+    (
+        "POST",
+        _COMMENT,
+        {**_JSON_CT, "User-Agent": _BROWSER, "Origin": "null", "Referer": "http://testserver/"},
+        b"{}",
+        (404, None, {"errorMessages": [_NO_ISSUE], "errors": {}}),
+    ),
+    ("POST", _COMMENT, {**_JSON_CT, "User-Agent": _BROWSER, "Origin": "ftp://testserver"}, b"{}")
+    + (_XSRF,),
+    ("POST", _COMMENT, {"Content-Type": "text/plain", "User-Agent": _BROWSER}, b"{}")
+    + ((415, errors_atlassian.PROBLEM_JSON, None),),
+    ("POST", _COMMENT, {**_JSON_CT, "User-Agent": _BROWSER, "Accept": "application/xml"}, b"{}")
+    + ((406, errors_atlassian.PROBLEM_JSON, None),),
+    # The body, read before the issue is looked up and before create looks at a field
+    ("POST", _COMMENT, _JSON_CT, b" \r\n", _unread(_COMMENT)),
+    ("POST", "/rest/api/3/issue", _JSON_CT, b" ", _unread("/rest/api/3/issue")),
+    ("POST", _COMMENT, _JSON_CT, b"{'x': 1}", _said(errors_atlassian.BODY_UNPARSEABLE)),
+    ("POST", _COMMENT, _JSON_CT, b'{"x": NaN}', _said(errors_atlassian.BODY_UNPARSEABLE)),
+    ("POST", _COMMENT, _JSON_CT, b'{"x": "\xe9"}', _said(errors_atlassian.BODY_UNPARSEABLE)),
+    ("POST", _COMMENT, _JSON_CT, "\xa0{}".encode(), _said(errors_atlassian.BODY_UNPARSEABLE)),
+    ("POST", _COMMENT, _JSON_CT, b'{"x":"a\x01"}', _said(errors_atlassian.BODY_UNPARSEABLE)),
+    (
+        "POST",
+        _COMMENT,
+        _JSON_CT,
+        b'{"x":' + b"[" * _MILLION + b"]" * (_MILLION - 1) + b"}",
+        _said(errors_atlassian.BODY_UNPARSEABLE),
+    ),
+    ("POST", "/rest/api/3/issue", _JSON_CT, b"[]", _said(errors_atlassian.BODY_NOT_AN_OBJECT)),
+    ("PUT", "/rest/api/2/issue/NOPE-999999", _JSON_CT, b'"x"')
+    + (_said(errors_atlassian.BODY_NOT_AN_OBJECT),),
+    ("POST", _COMMENT, _JSON_CT, b"1" * 1001, _said(errors_atlassian.BODY_NOT_AN_OBJECT)),
+    ("POST", "/rest/api/3/issue/NOPE-999999/transitions", _JSON_CT, b"true")
+    + (_said(errors_atlassian.BODY_NOT_AN_OBJECT),),
+    ("POST", "/rest/api/3/issue", _JSON_CT, b"", _said("No Issue Create payload supplied")),
+    ("POST", "/rest/api/2/issue", {}, b"", _said("No Issue Create payload supplied")),
+    ("POST", _COMMENT, _JSON_CT, b"null", _said(errors_atlassian.BODY_EMPTY)),
+    ("PUT", "/rest/api/3/issue/NOPE-999999", _JSON_CT, b"", _said(errors_atlassian.BODY_EMPTY)),
+    # what is read past: trailing bytes, a byte-order mark, a long number in a member, depth
+    *(
+        (
+            "POST",
+            _COMMENT,
+            _JSON_CT,
+            body,
+            (404, None, {"errorMessages": [_NO_ISSUE], "errors": {}}),
+        )
+        for body in (
+            b'{"x": 1} junk',
+            b'\xef\xbb\xbf{"x": 1}',
+            b'{"x": 1, "x": 2}',
+            b'{"x": ' + b"1" * 1001 + b"}",
+            b'{"x": "\\ud800", "y": 1e400}',
+            b'{"x":' + b"[" * _MILLION + b"]" * _MILLION + b"}",
+        )
+    ),
+]
+
+
+def _write_refused(client, method, vendor_path, headers, body, want):
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    status, media_type, answer = want
+    assert r.status_code == status, r.text
+    if media_type is not None:
+        assert r.headers["content-type"] == media_type
+    if isinstance(answer, bytes):
+        assert r.content == answer
+    elif answer is not None:
+        assert r.json() == answer
+
+
+def test_jira_refuses_what_every_write_refuses_ahead_of_its_own(client):
+    """What `issue`, `issue/{key}`, `issue/{key}/comment` and `issue/{key}/transitions` answer
+    before anything of their own, and the XSRF check every write takes
+    (``_refuse_a_cross_site_write`` and ``_jira_write_body`` in ``backlot.routers.atlassian``)."""
+    assert _failures(_write_refused, _WRITE_REFUSALS, client) == {}
 
 
 _SPRING_415 = "org.springframework.web.HttpMediaTypeNotSupportedException: "

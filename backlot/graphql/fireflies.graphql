@@ -9,8 +9,8 @@
 #   * Field names are snake_case (`host_email`, `meeting_attendees`, `audio_url`), which is
 #     Fireflies' own convention, not a translation.
 #
-# NULLS ARE HONEST. Every field below is nullable except the ids, and a value the corpus does
-# not carry resolves to null rather than to an invented one. The specific stubs are:
+# NULLS ARE HONEST. Each stub below is served as null or as an empty list rather than as a value the
+# corpus does not carry:
 #
 #   * `Sentence.ai_filters` classifier flags (task/question/metric) — deriving them would mean
 #     running the classifiers Backlot deliberately does not. The object itself is served, as
@@ -20,7 +20,6 @@
 #     `topics_discussed`/`keywords`, so the rest stay null instead of being duplicated under a
 #     second name.
 #   * `MeetingAnalytics.categories` — its four buckets are classifier output, as `ai_filters` is.
-#   * `Transcript.meeting_info` fields other than the ones the corpus states.
 #   * `Transcript.apps_preview.outputs` — third-party app output, which no corpus has. The `Apps`
 #     wrapper is served because Fireflies serves it even with nothing in it.
 #   * `Transcript.shared_with`, `workspace_users` — link-sharing and workspace membership state.

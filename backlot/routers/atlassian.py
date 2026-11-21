@@ -296,7 +296,9 @@ def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Call
     Confluence rejects the request outright: a pair it read and rejected, and a request carrying
     none, are a 403 (which one is the route's, below); a Basic value it could not read is a 401
     naming the site's OAuth realm on every route. Measured on both sites on 2026-09-04, every route
-    and every credential shape (see ``auth.basic_credential_kind``).
+    and every credential shape (see ``auth.basic_credential_kind``). The 401's body is Tomcat's
+    HTML page (:func:`errors.atlassian.tomcat_page`), measured on Confluence Cloud on 2026-10-13
+    under no `Accept` and under `Accept: application/json`.
 
     ``not_permitted`` picks the other anonymous 403, the one `search` gives
     (``errors.atlassian.CONFLUENCE_NOT_PERMITTED_BODY``), where every other served route gives the
@@ -307,10 +309,14 @@ def _confluence_caller(request: Request, *, not_permitted: bool = False) -> Call
         return caller
     if auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
         realm = quote(f"{_site(request)}/wiki", safe="")
-        raise HTTPException(
-            status_code=401,
-            detail=errors_atlassian.CONFLUENCE_UNAUTHORIZED,
-            headers={"WWW-Authenticate": f'OAuth realm="{realm}"'},
+        raise errors_atlassian.AtlassianError(
+            401,
+            errors_atlassian.tomcat_page(401).encode(),
+            headers={
+                "Content-Type": errors_atlassian.TOMCAT_MEDIA_TYPE,
+                "Content-Language": "en",
+                "WWW-Authenticate": f'OAuth realm="{realm}"',
+            },
         )
     if not_permitted:
         raise errors_atlassian.AtlassianError(
@@ -5702,9 +5708,8 @@ def refuse_an_unreadable_confluence_basic(request: Request) -> Response | None:
     401 page, naming the site's OAuth realm in `WWW-Authenticate`: before routing and ahead of the
     charset refusal at a path no operation serves, at a method none publishes and at the v2 API,
     and at each operation as well. A request a served route takes, or a published operation
-    covers, is left to :func:`_confluence_caller`'s JSON 401, which the comment above
-    ``errors.atlassian.CONFLUENCE_UNAUTHORIZED`` keeps JSON on purpose. Paths outside the two
-    mounts stay as they are.
+    covers, is left to :func:`_confluence_caller`, which raises the same page. Paths outside the
+    two mounts stay as they are.
 
     Measured on Confluence Cloud on 2026-10-31, each request on its own cache-busted URL, with
     `Authorization: Basic !!!` and a `Content-Type` of `text/plain;charset=nope` and of
@@ -5909,7 +5914,9 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
     Jersey reads (JSON, and XML under `*/*;q=0.5;Q=2;q=0.5`), where under `application/json;Q=2`,
     which Jersey cannot read, it is the empty 500 that function gives (2026-10-16). `search` reads
     the `q` itself (``errors.atlassian._jaxrs_accept``), and the 401 for a Basic value Confluence
-    cannot read is Tomcat's page either way.
+    cannot read is Tomcat's page either way, on an `OPTIONS` as well: under `application/json;Q=2`,
+    `OPTIONS` at `space` and at `content/{id}` with `Authorization: Basic !!!` answered it
+    (2026-10-16).
     """
     media_type = headers.get("content-type") or ""
     is_json = media_type.startswith("application/json")
@@ -5930,9 +5937,11 @@ def spring_write_failure(request: Request, status: int, headers, body: bytes) ->
         return None
     if request.scope.get("atlassian_outside_spring"):
         return None
+    if status == 401:
+        return None
     if request.method == "OPTIONS":
         return errors_atlassian.confluence_refusal(403, b"", "text/html")
-    if not is_json or status == 401:
+    if not is_json:
         return None
     if 200 <= status < 300:
         return Response(b"", status_code=400)

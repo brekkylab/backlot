@@ -5812,6 +5812,12 @@ _UNROUTED_ROWS = [
     ("GET /drive/v3/files/{doc}/export;x", "admin"),
     ("GET /drive/v3/files/{doc}/permissions;x", None),
     ("GET /drive/v3/nosuch/?x=a%26b&x=%3Ctag%3E", "admin"),
+    ("GET /drive/v3/nosuch?x=%80", "admin"),
+    ("GET /drive/v3/nosuch?x=%00", "admin"),
+    ("GET /drive/v3/nosuch?x=%e9", "admin"),
+    ("GET /gmail/v1/users/me/nosuch?x=%80", "admin"),
+    ("POST /drive/v3/nosuch?x=1", "override"),
+    ("POST /gmail/v1/users/me/nosuch?x=1", "override"),
     ("POST /drive/v3/about?fields=kind", None),
     ("PUT /drive/v3/about?fields=kind", "admin"),
     ("PATCH /drive/v3/about", "bad"),
@@ -5840,7 +5846,12 @@ def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_nam
         for prefix in ("/sheets/v4", "/docs/v1", "/slides/v1", "/drive/v3", "/gmail/v1")
         for query in ("", "?callback=a+b", "?callback=cb")
     ] + _UNROUTED_ROWS
-    headers = {None: {}, "admin": admin_h, "bad": BAD_TOKEN}
+    override = {
+        "X-HTTP-Method-Override": "GET",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    headers = {None: {}, "admin": admin_h, "bad": BAD_TOKEN, "override": {**admin_h, **override}}
+    bodies = {"override": b"hidden=body"}
     got, expected = {}, {}
     for sent, caller in rows:
         method, path = sent.split(" ", 1)
@@ -5851,7 +5862,9 @@ def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_nam
             )
             response = httpx.Response(code, headers=received, content=content)
         else:
-            response = client.request(method, path, headers=headers[caller])
+            response = client.request(
+                method, path, headers=headers[caller], content=bodies.get(caller)
+            )
         key = sent, caller
         if path.startswith(("/drive/", "/gmail/")):
             target = (
@@ -5860,6 +5873,7 @@ def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_nam
                 .replace("%61", "a")
                 .replace("%3c", "%3C")
                 .replace("%3e", "%3E")
+                .replace("%e9", "%E9")
             )
             escaped = (
                 target.replace("&", "&amp;")

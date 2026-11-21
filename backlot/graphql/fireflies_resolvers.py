@@ -39,6 +39,7 @@ PAGE_MAX = 50
 _PAGE_IDS = "_ff_page_ids"
 _SPEAKERS = "_ff_speakers"
 _CHANNEL_MEMBERS = "_ff_channel_members"
+_USER_STATS = "_ff_user_stats"
 
 
 def _ctx(info):
@@ -110,16 +111,16 @@ def _display_name(email: str | None) -> str | None:
 
 
 def _user(email: str | None, display: str | None = None) -> dict | None:
-    """A workspace user. `user_id` is derived from the address so it is stable and reversible."""
+    """A workspace user. `user_id` is derived from the address so it is stable and reversible.
+
+    `num_transcripts`, `recent_meeting` and `recent_transcript` are NOT built here: they hit the
+    DB, so they are bound resolvers (see RESOLVERS) that read through `_user_stats`."""
     if not email:
         return None
     return {
         "user_id": synth.fireflies_user_id(email),
         "email": email,
         "name": display or _display_name(email),
-        "num_transcripts": None,
-        "recent_meeting": None,
-        "recent_transcript": None,
         # account/billing state Backlot does not model — see the SDL header
         "minutes_consumed": None,
         "is_admin": None,
@@ -256,6 +257,11 @@ def _transcript(row, info) -> dict:
     """One transcript as a dict. `_row` is carried along so the field resolvers that need another
     query (sentences) can reach the transcript id without a second lookup."""
     host = row["author_email"]
+    # Fireflies' `Transcript.user` is the ORGANIZER, not the host (api.fireflies.ai, 2026-11-20:
+    # over 4 transcripts whose host and organizer differed, `user.email` was the organizer's on
+    # all 4). It falls back to the host when there is no distinct organizer, as `organizer_email`
+    # does — `owner_display` is the host's name, so it is only the organizer's name in that case.
+    organizer = row["organizer_email"] or host
     return {
         "_row": row,
         "id": row["id"],
@@ -266,9 +272,9 @@ def _transcript(row, info) -> dict:
         "host_email": host,
         # Fireflies falls back to the host when a meeting has no distinct organizer, which is the
         # common case; a NULL column must not surface as a null field the client then can't use.
-        "organizer_email": row["organizer_email"] or host,
+        "organizer_email": organizer,
         "participants": store.jcol(row, "participants", []) or [],
-        "user": _user(host, row["owner_display"]),
+        "user": _user(organizer, row["owner_display"] if organizer == host else None),
         "fireflies_users": [
             e
             for e in (store.jcol(row, "participants", []) or [])
@@ -746,6 +752,45 @@ def resolve_channel_members(channel, info, **_ignored):
     return cache[name]
 
 
+def _user_stats(info, email: str) -> tuple[float, str | None]:
+    """(num_transcripts, most-recent organized transcript id) for one address, cached per request.
+
+    Counted over the transcripts the user ORGANIZED: the `organizers:` filter matches
+    COALESCE(organizer_email, author_email), so a meeting with no distinct organizer counts for
+    its host. Measured against api.fireflies.ai on 2026-11-20: the key's user organized 2 of the
+    4 transcripts the key lists and answered num_transcripts 2, with recent_meeting and
+    recent_transcript the same id, the newer of the two by date. The corpus cannot tell the two
+    fields apart, so both resolve to that one id; a user who organized nothing answers 0 with both
+    recents null. The other organizer of the four answered 15 and a recent_transcript outside
+    them, so real counts transcripts the key does not list. This counts what the caller may read,
+    as CONTRIBUTING's ACL rule asks, so a scoped token learns no count or id of a transcript it
+    cannot read."""
+    ctx = _ctx(info)
+    cache = ctx.setdefault(_USER_STATS, {})
+    if email not in cache:
+        visible = ctx.get("visible_ids")
+        count = store.count_fireflies_transcripts(
+            ctx["conn"], organizers=[email], visible_ids=visible
+        )
+        newest = store.list_fireflies_transcripts(
+            ctx["conn"], organizers=[email], visible_ids=visible, limit=1
+        )
+        cache[email] = (float(count), newest[0]["id"] if newest else None)
+    return cache[email]
+
+
+def resolve_user_num_transcripts(user, info, **_ignored):
+    return _user_stats(info, user["email"])[0]
+
+
+def resolve_user_recent_meeting(user, info, **_ignored):
+    return _user_stats(info, user["email"])[1]
+
+
+def resolve_user_recent_transcript(user, info, **_ignored):
+    return _user_stats(info, user["email"])[1]
+
+
 def resolve_user(_root, info, id=None):
     ctx = _ctx(info)
     if not id:
@@ -773,8 +818,9 @@ def resolve_users(_root, info, **_ignored):
     `users.list` documents. Scoping to the roster is what bounds it, rather than inventing `limit`
     arguments the vendor's schema does not have.
 
-    `user(id:)` deliberately still resolves ANY principal: a transcript's host is a real reference
-    even when that person never had an account, so `Transcript.user` must not come back null.
+    `user(id:)` deliberately still resolves ANY principal: a transcript's `user`, its organizer or
+    else its host, is a real reference even when that person never had an account, so `user(id:)`
+    on its `user_id` must not come back null.
     """
     ctx = _ctx(info)
     roster = ctx.get("roster")
@@ -794,6 +840,11 @@ RESOLVERS = {
     "Transcript": {
         "sentences": resolve_transcript_sentences,
         "speakers": resolve_transcript_speakers,
+    },
+    "User": {
+        "num_transcripts": resolve_user_num_transcripts,
+        "recent_meeting": resolve_user_recent_meeting,
+        "recent_transcript": resolve_user_recent_transcript,
     },
     "MeetingAnalytics": {"speakers": resolve_analytics_speakers},
     "Channel": {"members": resolve_channel_members},

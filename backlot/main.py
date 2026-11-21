@@ -1224,8 +1224,14 @@ async def resolve_github_id_paths(request: Request, call_next):
 
 
 def _a_github_path_holding_an_escaped_slash(scope: Scope) -> bool:
+    """Whether this scope's `/github` path holds a `%2F` as sent and is not already the path as
+    sent, which :func:`route_a_github_route_spelt_with_an_escape_as_sent` makes it."""
     raw = scope.get("raw_path") or b""
-    return raw.startswith(b"/github/") and re.search(rb"%2[Ff]", raw) is not None
+    return (
+        raw.startswith(b"/github/")
+        and re.search(rb"%2[Ff]", raw) is not None
+        and scope["path"] != raw.decode("latin-1")
+    )
 
 
 def _github_path_as_real_routes_it(scope: Scope) -> str:
@@ -1280,6 +1286,74 @@ async def route_a_github_path_the_way_github_does(request: Request, call_next):
     spelling.
     """
     request.scope["path"] = _github_path_as_real_routes_it(request.scope)
+    return await call_next(request)
+
+
+def _github_path_by_login(path: str) -> str:
+    """``path`` with a `/github/repositories/{id}` or `/github/organizations/{id}` in front read as
+    the `/github/repos/{owner}/{repo}` or `/github/orgs/{org}` it stands for
+    (:func:`resolve_github_id_paths`), with `-` for the owner and the id for the name, so the
+    GitHub routes can be matched against it."""
+    for by_id, by_login in (
+        ("/github/repositories/", "/github/repos/-/"),
+        ("/github/organizations/", "/github/orgs/"),
+    ):
+        if path.startswith(by_id):
+            return by_login + path.removeprefix(by_id)
+    return path
+
+
+def _a_github_route_spelt_with_an_escape(scope: Scope) -> bool:
+    """Whether real routes this scope's `/github` path as decoded (:func:`_github_routes`) but not
+    as sent: an escape, in either case of hex, in a segment the route spells out rather than reads
+    as a parameter. A path holding a `%2F` is read as
+    :func:`route_a_github_path_the_way_github_does` routes it, and an id-keyed one as
+    :func:`_github_path_by_login` reads it."""
+    raw = scope.get("raw_path") or b""
+    if not raw.startswith(b"/github/") or b"%" not in raw:
+        return False
+    decoded = (
+        _github_path_as_real_routes_it(scope)
+        if _a_github_path_holding_an_escaped_slash(scope)
+        else scope["path"]
+    )
+    sent = raw.decode("latin-1")
+    return _github_routes({**scope, "path": _github_path_by_login(decoded)}) and not _github_routes(
+        {**scope, "path": _github_path_by_login(sent)}
+    )
+
+
+@_middleware(_a_github_route_spelt_with_an_escape)
+async def route_a_github_route_spelt_with_an_escape_as_sent(request: Request, call_next):
+    """Route a `/github` path with an escape in a segment its route spells out as real routes it:
+    as the path as sent, which no route serves, so it answers as a path real does not route
+    (:func:`_github_routes`).
+
+    Measured against api.github.com on 2026-11-20 (UTC) over raw HTTP/1.1 on TLS, each request with
+    its own cache-buster. With a token, a `GET` of `/rate%5Flimit`, `/rate%5flimit`,
+    `/%72ate_limit`, `/z%65n`, `/rep%6Fs/psf/requests`, `/repos/psf/requests/issue%73`,
+    `/repositories/1362490/issue%73`, `/re%70ositories/1362490/issues`,
+    `/organizati%6Fns/50630501/repos`, `/organizations/50630501/rep%6Fs`,
+    `/rep%6Fs/psf/requests/contents/src%2Frequests%2Fapi.py` and
+    `/repos/psf/requests/c%6Fntents/src%2Frequests%2Fapi.py` was the 404 of `/nosuchroute`, byte for
+    byte, with none of the five `x-ratelimit-*` and no `x-github-api-version-selected`, where the
+    spelling with no escape was a 200. `/rep%6Fs/psf/requests%2Fnope` was that 404 as well, where
+    `/repos/psf/requests%2Fnope` was the repository route's 404 with the five and the echo;
+    `/repos/psf/requests/c%6Fntents/src/` and `/rep%6Fs/psf/re%00quests` were that 404 too, where
+    `/repos/psf/requests/contents/src/` was a 302 and `/repos/psf/re%00quests` a 400; and
+    `/repos/ps%66/requests` and `/organizations/5063050%31/repos` were the 200 of the spelling with
+    no escape. With `Bearer nope`, `/z%65n`, `/rate%5Flimit`, `/rep%6Fs/psf/requests`,
+    `/agent%73/repos/psf/requests/nosuch` and `/agents/rep%6Fs/psf/requests/nosuch` were that 404
+    too, where `/zen` and `/agents/repos/psf/requests/nosuch` were the 401 "Bad credentials". With
+    no `Authorization`, `/rate%5Flimit`, `/rep%6Fs/psf/requests`, `/rep%6Fs/psf/re%00quests`,
+    `/repos/psf/requests/issue%73`, `/z%65n` and `/agents/rep%6Fs/psf/requests/nosuch` were the 404
+    of `/nosuchroute` with the five.
+
+    Registered after :func:`route_a_github_path_the_way_github_does` and
+    :func:`resolve_github_id_paths`, which makes it the outer of the three, so an id-keyed path is
+    rewritten before its id is resolved.
+    """
+    request.scope["path"] = request.scope["raw_path"].decode("latin-1")
     return await call_next(request)
 
 

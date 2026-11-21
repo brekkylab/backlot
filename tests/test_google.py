@@ -5793,8 +5793,8 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
     assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 
 
-# Requests no Google operation serves, after the trailing slashes are dropped. The original
-# callback cases cover all five families; the Drive and Gmail rows pin the front end's page.
+# Requests no Google operation serves, after the trailing slashes are dropped. The callback rows
+# the test builds cover all five families; these rows pin the Drive and Gmail front end's page.
 # fmt: off
 _UNROUTED_ROWS = [
     ("GET /drive/v3/nosuchresource", None),

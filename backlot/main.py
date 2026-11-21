@@ -329,8 +329,8 @@ def _some_github_route_matches(scope: Scope) -> bool:
 
 def _a_github_route_spelt_in_another_case(scope: Scope) -> bool:
     """Whether a GitHub route serves this scope's method on the path as sent spelled in another
-    case, or the method and path are an operation GitHub publishes and no route here serves
-    spelled in another case.
+    case, or ``backlot.routers.github.is_an_unserved_operation_spelt_in_another_case`` holds for
+    its method and path.
 
     Real routes the path as sent — the 404 stays the one the case-sensitive route answers — but
     the five `x-ratelimit-*` headers and the version echo ride on it as they ride on the route
@@ -451,9 +451,9 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     )
 )
 async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: Request, call_next):
-    """A credential on a spelling of a GitHub route in another case is read as real reads it on
-    the spelling as published, ahead of the router's 404
-    (``backlot.routers.github.refuse_a_credential_on_a_github_route_spelt_in_another_case``).
+    """Answer with the refusal
+    ``backlot.routers.github.refuse_a_credential_on_a_github_route_spelt_in_another_case`` gives,
+    where it gives one.
 
     Registered after :func:`refuse_an_unserved_github_operation` and before
     :func:`refuse_a_credential_on_an_agent_path`, so it runs inside the agent paths' refusal and

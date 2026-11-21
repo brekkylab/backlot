@@ -8383,12 +8383,36 @@ _SPELT_IN_ANOTHER_CASE_ROWS = [
     ("GET", "/RATE_LIMIT", "bad bearer", 401, None, None),
     ("GET", "/USER/keys", "bad bearer", 401, None, None),
     ("GET", "/User/Repos", "bad bearer", 401, None, None),
+    ("GET", "/User/Repos", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/USER/repos", "no credential", 404, "core", "2022-11-28"),
+    ("HEAD", "/USER/repos", "no credential", 404, "core", "2022-11-28"),
     ("GET", "/USER/keys", "no credential", 401, "core", None),
+    ("HEAD", "/USER/keys", "no credential", 401, "core", None),
     ("GET", "/User/Keys", "no credential", 401, "core", None),
     ("GET", "/NOTIFICATIONS", "no credential", 401, "core", None),
     ("GET", "/repos/{org}/codebase/HOOKS", "no credential", 401, "core", None),
     ("GET", "/REPOS/{org}/codebase/hooks", "no credential", 401, "core", None),
     ("GET", "/REPOS/{org}/codebase/HOOKS", "no credential", 401, "core", None),
+    ("GET", "/REPOS/{org}/codebase%00/hooks", "no credential", 401, "core", None),
+    ("GET", "/repositories/{id}/HOOKS", "no credential", 401, "core", None),
+    ("GET", "/SEARCH/users", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/SEARCH/users?q=x", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/search/USERS", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/SEARCH/commits", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/Search/Repositories?q=x", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/search/TOPICS", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/Search/Labels?q=x", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/ZEN", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/GISTS/public", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/USERS/octocat", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/USER/583231", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/USER/k%65ys", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/EMOJIS", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/repos/{org}/codebase/LABELS", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/ADVISORIES", "no credential", 404, "core", "2022-11-28"),
+    ("GET", "/SEARCH/users", "bad bearer", 401, None, None),
+    ("GET", "/Search/Labels?q=x", "bad bearer", 401, None, None),
+    ("GET", "/USER/k%65ys", "bad bearer", 401, None, None),
 ]
 
 
@@ -8401,14 +8425,19 @@ def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
         "admin": gh_admin_h,
         "bad bearer": {"Authorization": "Bearer usr-not-a-real-token"},
     }
+    repo_id = c.get(f"/github/repos/{gh_org}/codebase", headers=gh_admin_h).json()["id"]
+
+    def url(path):
+        return f"/github{path.replace('{org}', gh_org).replace('{id}', str(repo_id))}"
+
     answered, expected = {}, {}
     for method, path, sender, status, resource, echo in _SPELT_IN_ANOTHER_CASE_ROWS:
         headers = senders[sender]
-        r = c.request(method, f"/github{path.replace('{org}', gh_org)}", headers=headers)
+        r = c.request(method, url(path), headers=headers)
         # a 401 carries the refusal's body, so its control is the spelling as published, sent by
         # the same sender; a 404 carries the body `/nope` gets from that sender
         control = path.lower() if status == 401 else "/nope"
-        same = c.request(method, f"/github{control.replace('{org}', gh_org)}", headers=headers)
+        same = c.request(method, url(control), headers=headers)
         answered[(method, path, sender)] = (
             r.status_code,
             r.headers.get("x-ratelimit-resource"),

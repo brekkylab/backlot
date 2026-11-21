@@ -327,12 +327,36 @@ def _some_github_route_matches(scope: Scope) -> bool:
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
 
+def _a_github_route_spelt_in_another_case(scope: Scope) -> bool:
+    """Whether a GitHub route serves this scope's method on the path as sent spelled in another
+    case, or the method and path are an operation GitHub publishes and no route here serves
+    spelled in another case.
+
+    Real routes the path as sent — the 404 stays the one the case-sensitive route answers — but
+    the five `x-ratelimit-*` headers and the version echo ride on it as they ride on the route
+    spelled as published. Measured against api.github.com on 2026-11-21 (UTC), with a token that
+    resolves, one cache-busted request each: `GET /RATE_LIMIT`, `/Rate_Limit` and `/ZEN` were the
+    404 with the five and `x-github-api-version-selected: 2022-11-28`, as were
+    `GET /REPOS/psf/requests`, `/REPOS/PSF/REQUESTS/ISSUES` and `/REPOS/psf/requests/issues`, where
+    `GET /nosuchroute` carried neither; `POST /RATE_LIMIT`, `POST /ZEN` and `POST /rate_limit`
+    were the 404 with neither, so only a method the route or the operation serves counts. The
+    first three rows were measured the same way on 2026-11-20, with no credential beside them:
+    `GET` and `HEAD /RATE_LIMIT` carried the five and the version, `POST /RATE_LIMIT` the five
+    alone.
+    """
+    lowered = {**scope, "path": scope["path"].lower()}
+    return any(
+        route.matches(lowered)[0] is Match.FULL for route in github.router.routes
+    ) or github.is_an_unserved_operation_spelt_in_another_case(scope["method"], scope["path"])
+
+
 def _github_routes(scope: Scope) -> bool:
     """Whether real routes this scope: some mounted route matches its path, whatever the method
     (:func:`_some_github_route_matches`), its method and path are an operation GitHub publishes
-    and no route here serves (``backlot.routers.github.is_an_unserved_operation``), or its path is
+    and no route here serves (``backlot.routers.github.is_an_unserved_operation``), its path is
     under an agent family (``backlot.routers.github.under_an_agent_family``), which real's agents
-    backend answers itself.
+    backend answers itself, or a route serves its method on the path spelled in another case
+    (:func:`_a_github_route_spelt_in_another_case`).
 
     A 404 for a path real does not route carries no version echo, and carries the five
     `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the same
@@ -351,6 +375,7 @@ def _github_routes(scope: Scope) -> bool:
         _some_github_route_matches(scope)
         or github.is_an_unserved_operation(scope["method"], scope["path"])
         or github.under_an_agent_family(scope["path"])
+        or _a_github_route_spelt_in_another_case(scope)
     )
 
 

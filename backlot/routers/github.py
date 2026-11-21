@@ -1064,6 +1064,29 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
     )
 
 
+#: The operations of :data:`_PUBLISHED_NOT_SERVED` and :data:`_ROUTED_UNPUBLISHED` as patterns
+#: that match a spelling in another case, for
+#: :func:`is_an_unserved_operation_spelt_in_another_case`. The patterns spell a literal such as
+#: `projectsV2` in its own case, so matching a lowered path against them would miss it.
+_UNPUBLISHED_OPERATIONS_ANY_CASE = tuple(
+    (verb, re.compile(pattern.pattern, re.IGNORECASE))
+    for operations in (_PUBLISHED_NOT_SERVED, _ROUTED_UNPUBLISHED)
+    for verb, pattern in operations
+)
+
+
+def is_an_unserved_operation_spelt_in_another_case(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is an operation GitHub publishes and no route
+    here serves, spelled in another case: the same operation :func:`is_an_unserved_operation`
+    names, with the letters of the segments it spells out read without regard to case. The path is
+    the scope's, as :func:`is_an_unserved_operation` reads it."""
+    path = path.removeprefix("/github")
+    return any(
+        verb == method and pattern.fullmatch(path)
+        for verb, pattern in _UNPUBLISHED_OPERATIONS_ANY_CASE
+    )
+
+
 #: The operations of :data:`_PUBLISHED_NOT_SERVED` that real reads the name of before it asks for a
 #: credential: a `%00` in a name is its empty 400 for a caller with no credential
 #: (:func:`asks_for_a_credential_before_a_name`), where the others it asked a credential of first.

@@ -1215,6 +1215,16 @@ def _gmail_group_items(text: str) -> list:
     while i < len(pieces):
         piece = pieces[i]
         if piece == "(":
+            # A bracket glued to an operator's lone quote is no group: the quote belongs to
+            # the operator, and what follows it is the operator's value, brackets and all.
+            # Measured against gmail.googleapis.com on 2026-10-25:
+            # `subject:"(from:me` and `subject:"(from:me)` answered nothing, where
+            # `subject:" (from:me)`, with a space after the quote, answered what `from:me`
+            # answers. A bracket after a space still opens a group, as before.
+            if re.fullmatch(r"-*(?:subject|label|in|from|to|cc|bcc):\"", run, re.IGNORECASE):
+                run += piece
+                i += 1
+                continue
             depth, j = 1, i + 1
             while j < len(pieces) and depth:
                 depth += {"(": 1, ")": -1}.get(pieces[j], 0)
@@ -1585,6 +1595,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     ops: dict[str, list[str]] = {}
 
     def _take(m):
+        # An operator inside a quoted run is no operator: the run is the phrase. Measured
+        # against gmail.googleapis.com on 2026-10-25: `"probe from:me"`,
+        # `"from:me probe"`, `"NOT from:me"`, `"(NOT from:me)"`, `"(from:me) probe"` and
+        # `"(probe from:me)"` answered nothing, where a quoted run holding the operator
+        # alone reads as that operator (the comment at `_GMAIL_QUOTED_OPERATOR`). A lone
+        # quote with no closing quote after the operator opens no run: `"label:inbox`
+        # still reads as `label:inbox`. The closing quote is looked for after the
+        # operator's colon, not after the match: the value itself can swallow it.
+        if m.string.count('"', 0, m.start()) % 2 and '"' in m.string[m.end(1) + 1 :]:
+            return m.group(0)
         key = m.group(1).lower()
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
@@ -1663,6 +1683,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and not _GMAIL_ADDRESS_WORD.search(value)
             ):
                 return " "
+            # A quoted `subject:` value starting with a bracket reads as the word: the bracket
+            # is punctuation around the value, not part of it. Measured against
+            # gmail.googleapis.com on 2026-10-25: `subject:"(probe"` answered
+            # what `subject:probe` answers.
+            if key == "subject" and value.startswith('"'):
+                value = '"' + value[1:].lstrip("(")
             # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
             quoted = (
                 key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'

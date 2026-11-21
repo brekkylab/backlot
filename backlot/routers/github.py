@@ -3314,7 +3314,7 @@ def _digits_to_int64(digits: str) -> int:
     return value
 
 
-def _read_path_number(value, *, mode: str = "ruby") -> int:
+def _read_path_number(value: str, *, mode: str = "ruby") -> int:
     """Read an issue, pull or comment path number as real GitHub reads it.
 
     Seven of the nine routes that read one — ``issues/{number}``, ``issues/{number}/comments``,
@@ -3340,8 +3340,6 @@ def _read_path_number(value, *, mode: str = "ruby") -> int:
     the OpenAPI schema, matching real's own spec, while turning any unparseable or out-of-range
     spelling into the route's 404 via ``errors.github.validation_body``.
     """
-    if not isinstance(value, str):
-        return value
     if mode == "ruby":
         match = _LEADING_INT_RE.match(value)
         if not match:
@@ -3361,17 +3359,7 @@ def _read_path_number(value, *, mode: str = "ruby") -> int:
         return 0
     sig = stripped_left.rstrip("0")
     trailing_zeros = len(stripped_left) - len(sig)
-    exp_str = match.group(2)
-    if exp_str is not None:
-        exp_digits = exp_str.lstrip("+-").lstrip("0")
-        if len(exp_digits) > 9:
-            raise ValueError("path number out of range")
-        exp = (
-            (-int(exp_digits) if exp_str.startswith("-") else int(exp_digits)) if exp_digits else 0
-        )
-    else:
-        exp = 0
-    scale = exp - len(frac) + trailing_zeros
+    scale = int(match.group(2) or 0) - len(frac) + trailing_zeros
     if scale < 0 or len(sig) + scale > 19:
         raise ValueError("path number is not a 64-bit integer")
     n = int(sig) * (10**scale)

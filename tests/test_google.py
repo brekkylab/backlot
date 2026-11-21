@@ -4774,10 +4774,9 @@ _NO_CREDENTIAL_ROWS = [
     # an escaped slash stays inside its segment (`routers.google._operation_path`)
     ("GET", "/drive/v3/files/abc%2Fpermissions", 403, 404),
     ("POST", "/drive/v3/files/{doc}%2Fcopy", 404, 404),
-    # no operation Google publishes: the router's 405 whatever the credential, where real answered
-    # its front end's HTML 404
-    ("PUT", "/gmail/v1/users/me/profile", 405, 405),
-    ("PUT", "/drive/v3/files/{doc}", 405, 405),
+    # no operation Google publishes: the front end's HTML 404 whatever the credential
+    ("PUT", "/gmail/v1/users/me/profile", 404, 404),
+    ("PUT", "/drive/v3/files/{doc}", 404, 404),
     # the path ``backlot.routers.google._refuse_an_undecodable_path`` refuses, read after the
     # credential
     ("GET", "/drive/v3/files/nope%80x", 403, 400),
@@ -5794,7 +5793,38 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
     assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 
 
-def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_name(client):
+# Requests no Google operation serves, after the trailing slashes are dropped. The original
+# callback cases cover all five families; the Drive and Gmail rows pin the front end's page.
+# fmt: off
+_UNROUTED_ROWS = [
+    ("GET /drive/v3/nosuchresource", None),
+    ("GET /drive/v3/no%73uch/%3ctag%3e?x=%61&y='", "admin"),
+    ("GET /drive/v3/nosuchresource?", "admin"),
+    ("GET /drive/v3/nosuch#frag", "admin"),
+    ("GET /drive/v3/nosuch?#frag", "admin"),
+    ("GET /drive/v3/nosuch?x=1#frag", "admin"),
+    ("GET /drive/v3/nosuchresource", "admin"),
+    ("GET /drive/v3/nosuchresource?callback=a%20b&$.xgafv=9", "bad"),
+    ("GET /drive/v3/files/{doc}/nosuch", "admin"),
+    ("GET /drive/v3/about;x", None),
+    ("GET /drive/v3/drives;x", "admin"),
+    ("GET /drive/v3/files;x", None),
+    ("GET /drive/v3/files/{doc}/export;x", "admin"),
+    ("GET /drive/v3/files/{doc}/permissions;x", None),
+    ("GET /drive/v3/nosuch/?x=a%26b&x=%3Ctag%3E", "admin"),
+    ("POST /drive/v3/about?fields=kind", None),
+    ("PUT /drive/v3/about?fields=kind", "admin"),
+    ("PATCH /drive/v3/about", "bad"),
+    ("DELETE /drive/v3/about", "admin"),
+    ("POST /drive/v3/files/{doc}", "admin"),
+    ("POST /gmail/v1/users/me/profile", "admin"),
+]
+# fmt: on
+
+
+def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_name(
+    client, admin_h, drive_check_ids, base
+):
     """The sweep above reads the document, so the paths NOT in it are its blind spot — and those
     are exactly the ones ``gerr.validate_system_parameters`` never sees, because a router dependency
     runs only once a route has matched. ``gerr.rendered`` checks the name a second time for them.
@@ -5803,15 +5833,66 @@ def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_nam
     five, with a `callback` and without: 400 on Sheets, Docs and Slides and 404 on Drive and Gmail.
     So JSONP is not its shape there under ANY name, and a name that can be called is dropped with
     one that cannot rather than answered at 200 as a script."""
-    for prefix in ("/sheets/v4", "/docs/v1", "/slides/v1", "/drive/v3", "/gmail/v1"):
-        plain = client.get(f"{prefix}/nope")
-        assert plain.status_code == 404, plain.text
-        for name in ("a b", "cb"):
-            r = client.get(f"{prefix}/nope", params={"callback": name})
-            assert r.status_code == 404, (prefix, name, r.text)
-            assert r.headers["content-type"] == "application/json; charset=UTF-8"
-            assert "// API callback" not in r.text, (prefix, name)
-            assert r.text == plain.text, (prefix, name)
+    from tests._helpers import raw_exchange, raw_request
+
+    rows = [
+        (f"GET {prefix}/nope{query}", None)
+        for prefix in ("/sheets/v4", "/docs/v1", "/slides/v1", "/drive/v3", "/gmail/v1")
+        for query in ("", "?callback=a+b", "?callback=cb")
+    ] + _UNROUTED_ROWS
+    headers = {None: {}, "admin": admin_h, "bad": BAD_TOKEN}
+    got, expected = {}, {}
+    for sent, caller in rows:
+        method, path = sent.split(" ", 1)
+        path = path.format(doc=drive_check_ids["doc"])
+        if path.endswith("?") or "#" in path:
+            code, received, content = raw_exchange(
+                base, raw_request(method, path, headers[caller].get("Authorization"))
+            )
+            response = httpx.Response(code, headers=received, content=content)
+        else:
+            response = client.request(method, path, headers=headers[caller])
+        key = sent, caller
+        if path.startswith(("/drive/", "/gmail/")):
+            target = (
+                path.split("#", 1)[0]
+                .replace("%73", "s")
+                .replace("%61", "a")
+                .replace("%3c", "%3C")
+                .replace("%3e", "%3E")
+            )
+            escaped = (
+                target.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&#34;")
+                .replace("'", "&#39;")
+            )
+            got[key] = (
+                response.status_code,
+                response.headers.get("content-type"),
+                response.headers.get("server"),
+                b"<title>Error 404 (Not Found)!!1</title>" in response.content,
+                f"The requested URL <code>{escaped}</code> was not found on this server."
+                in response.text,
+                len(response.content),
+            )
+            expected[key] = (
+                404,
+                "text/html; charset=UTF-8",
+                "ESF",
+                True,
+                True,
+                1560 + len(escaped.encode()),
+            )
+        else:
+            got[key] = response.status_code, response.headers["content-type"], response.text
+            expected[key] = (
+                404,
+                "application/json; charset=UTF-8",
+                client.get(path.split("?")[0]).text,
+            )
+    assert got == expected
 
 
 def test_a_post_ignores_a_callback_the_way_real_does(base, admin_h, sheet_id):

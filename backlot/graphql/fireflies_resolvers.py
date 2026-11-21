@@ -11,8 +11,8 @@ Three things are worth knowing before reading further:
 - **ACL comes from the context, not from here.** ``info.context["visible_ids"]`` is threaded
   into every store call, so a resolver never makes an access decision of its own. A transcript
   the caller may not read is indistinguishable from one that does not exist.
-- **Nulls are honest.** Anything the corpus cannot back resolves to ``null``; the SDL header
-  lists every such field and why.
+- **Nulls are honest.** The SDL header lists the stubs, served as ``null`` or an empty list,
+  and why.
 """
 
 from __future__ import annotations

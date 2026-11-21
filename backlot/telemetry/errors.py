@@ -98,7 +98,6 @@ _CONFLUENCE = [
         r"java\.lang\.ArrayIndexOutOfBoundsException: Index \d+ out of bounds for length 128",
         "jaxrs_out_of_bounds",
     ),
-    (r"^Unauthorized$", "unauthenticated"),
     (r"^null for uri: ", "no_endpoint"),
     (r"FORBIDDEN|^Current user not permitted to use Confluence", "forbidden"),
     (r"Failed to convert value|cannot be less than zero", "invalid_parameter"),
@@ -128,9 +127,13 @@ def error_code(source: str, status: int, body: bytes) -> str:
         doc = json.loads(body)
     except ValueError:
         # Jira answers a missing credential with the bare sentence as text; its HTML pages (the
-        # `(null)` 400, the dead-link 404) carry no message.
+        # `(null)` 400, the dead-link 404) carry no message. Confluence's Tomcat pages carry none
+        # either, and its 401 is the page a Basic value it cannot read gets, so the status names
+        # that one.
         text = body[:512].decode("utf-8", "replace").strip()
-        return _slug(text, _JIRA) if source == "jira" and text and not text.startswith("<") else ""
+        if source == "jira" and text and not text.startswith("<"):
+            return _slug(text, _JIRA)
+        return "unauthenticated" if source == "confluence" and status == 401 else ""
     if not isinstance(doc, dict):
         return ""
     if source == "slack":

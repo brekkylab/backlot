@@ -1146,7 +1146,9 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
     against the five hosts, on the spellings ``tests/test_google.py::_SLASHED_ROWS`` lists. And an
     operation Google publishes that no route here serves under the request's method is refused as a
     served route refuses before it runs, ahead of the router's 404 or 405
-    (``backlot.routers.google.refuse_an_unserved_operation``).
+    (``backlot.routers.google.refuse_an_unserved_operation``). A standard method no Drive or
+    Gmail operation serves is the front end's HTML 404 instead
+    (``backlot.routers.google.front_end_not_found``).
 
     An escaped slash is not one of them — `values/A1%2F` is real's 400 `Unable to parse range: A1/`
     — so the slashes counted are the raw path's. Nor is a run of slashes inside a path:
@@ -1166,6 +1168,12 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
     request.scope["path"] = path[: len(path) - slashes]
     match = _google_route_match(request.scope)
     if match is not Match.FULL:
+        if (
+            errors.google.family(path) in (errors.google.DRIVE, errors.google.GMAIL)
+            and request.method in ("GET", "POST", "PUT", "PATCH", "DELETE")
+            and not google.is_an_unserved_operation(request)
+        ):
+            return google.front_end_not_found(request)
         try:
             google.refuse_an_unserved_operation(request)
         except StarletteHTTPException as exc:
@@ -2387,6 +2395,7 @@ async def read_a_drive_or_editor_query_as_google_does(request: Request, call_nex
     router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
     the two, so it reads the form that one adds to the query too."""
     query = request.scope["query_string"]
+    request.scope.setdefault(google.QUERY_AS_SENT, query)
     request.scope["query_string"] = utf8_escapes.google_query(query, errors.google.QUERY_TOKENS)
     return await call_next(request)
 
@@ -2449,6 +2458,7 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
             request.state.form_read = body
         body = _BYTE_PAST_0X7F.sub(lambda m: b"%%%02X" % m[0][0], body or b"")
         query = request.scope.get("query_string", b"")
+        request.scope.setdefault(google.QUERY_AS_SENT, query)
         request.scope["method"] = "GET"
         request.state.sent_as_a_post = True
         request.scope["query_string"] = b"&".join(part for part in (query, body) if part)

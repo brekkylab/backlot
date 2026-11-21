@@ -16,15 +16,15 @@ import time
 import unicodedata
 from collections.abc import Callable
 from email.utils import format_datetime
-from typing import NamedTuple
+from typing import Annotated, NamedTuple
 from urllib.parse import quote, unquote_plus
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 from starlette.types import Scope
 
-from backlot import auth, published, store, synth
+from backlot import auth, odata, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.graphql import body as request_body
@@ -845,6 +845,60 @@ def _a_tab_credential_counted_apart(request: Request) -> bool:
     return _a_tab_credential_on(request, _UNSERVED_COUNTED_APART)
 
 
+#: The five search endpoints GitHub publishes that Backlot does not serve
+#: (:func:`_an_unserved_search_refusal`).
+_UNSERVED_SEARCHES = frozenset(
+    {
+        "/search/commits",
+        "/search/labels",
+        "/search/repositories",
+        "/search/topics",
+        "/search/users",
+    }
+)
+
+
+def _an_unserved_search_refusal(request: Request) -> HTTPException | None:
+    """Real's 422 for a missing or blank `q` on the five searches Backlot does not serve, or a
+    missing or blank `repository_id` on `/search/labels`, a value being blank when
+    :func:`backlot.odata.strip_blanks` leaves nothing of it.
+
+    Measured against api.github.com on 2026-10-31 and 2026-11-21 (UTC), each request on its own
+    cache-busted URL. On `/search/commits`, `/search/labels`, `/search/repositories`,
+    `/search/topics` and `/search/users`, a missing or blank `q` (`no q`, `q=`, `q=%20`) answered
+    :func:`_search_validation_failed`'s 422 with the version echo and the five `x-ratelimit-*`
+    counted in `search` (`limit: 10` for no `Authorization`, `Digest x`, `nope`, an empty value,
+    `Basic eDp5` and `Basic<TAB>!!!!`; `limit: 30` for a token), and `400 Bad Request` when pinned
+    to `1999-01-01`; `Bearer nope` and a token-shaped `Basic` value answered `401 Bad credentials`
+    with neither echo nor rate-limit headers, and `Bearer<TAB>nope` answered `401 Bad credentials`
+    with no echo and the five counted in `search`. On `/search/labels` with a non-blank `q`, a
+    missing or blank `repository_id` (absent, empty or whitespace) answered `422 Validation Failed`
+    with `documentation_url` `#search-labels` under the same credential, version and rate-limit
+    rules. On 2026-11-21, each target sent once with no `Authorization`, a `q` of a space, a tab,
+    LF, VT, FF, CR, U+0085, U+00A0, U+1680, U+2000, U+2028, U+202F, U+205F or U+3000 was the 422 on
+    `/search/repositories`, where U+001C, U+001D, U+001E, U+001F and U+200B were each the search's
+    200, as U+001F was on `/search/commits` where U+00A0 was the 422. On `/search/labels`, `q` of
+    U+001F was the 422 for the missing `repository_id`, and with `q=x` a `repository_id` of a tab
+    or U+00A0 was that 422, where U+001F was the 404 "Not Found".
+    """
+    path = request.scope["path"].removeprefix("/github")
+    if path not in _UNSERVED_SEARCHES:
+        return None
+    if not odata.strip_blanks(request.query_params.get("q", "")):
+        return _search_validation_failed("q")
+    if path == "/search/labels" and not odata.strip_blanks(
+        request.query_params.get("repository_id", "")
+    ):
+        exc = HTTPException(status_code=422, detail="Validation Failed")
+        exc.github_body = {
+            "message": "Validation Failed",
+            "documentation_url": "https://docs.github.com/rest/search/search#search-labels",
+            "status": "422",
+        }
+        return exc
+    return None
+
+
 async def refuse_an_unserved_operation(request: Request) -> None:
     """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` or
     :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or
@@ -917,6 +971,10 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     On an agent path no version is read (:func:`honours_api_version`), so
     :func:`_validate_api_version` does not run here on one, and the 404 the router answers for a
     token carries no echo, nor does :func:`_require`'s 401 for a `Basic` value that names no token.
+
+    On the five searches of :data:`_UNSERVED_SEARCHES`, :func:`_an_unserved_search_refusal`'s 422
+    comes after a credential that does not resolve and a version real does not have, and ahead of
+    :func:`_require`.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
@@ -927,6 +985,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         _require(request)
         del request.state.github_unserved_refusal
         return
+    search_refusal = _an_unserved_search_refusal(request)
+    if search_refusal is not None:
+        await _validate_bad_credential(request)
+        await _validate_api_version(request)
+        raise search_refusal
     if "authorization" not in request.headers:
         request.state.github_unserved_refusal = (
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
@@ -3355,6 +3418,98 @@ async def list_issues(
     )
 
 
+_INT64_MAX = 2**63 - 1
+_LEADING_INT_RE = re.compile(r"[ \t\n\v\f\r]*\+?(?:0[dD])?([0-9]+(?:_[0-9]+)*)")
+_LEADING_DIGITS_RE = re.compile(r"[ \t\n\v\f\r]*([0-9]+)")
+_LEADING_DECIMAL_RE = re.compile(
+    r"[ \t\n\v\f\r]*\+?([0-9]+(?:[.][0-9]*)?|[.][0-9]+)(?:[eE]([+-]?[0-9]+))?"
+)
+
+
+def _digits_to_int64(digits: str) -> int:
+    """Unsigned ASCII digits to a signed 64-bit integer, or ``ValueError`` past it.
+
+    Leading zeros are stripped first so a long run of them stays readable while an overflowing
+    number is rejected before Python's 4,300-digit ``int()`` limit is reached.
+    """
+    trimmed = digits.lstrip("0")
+    if not trimmed:
+        return 0
+    if len(trimmed) > 19:
+        raise ValueError("path number out of range")
+    value = int(trimmed)
+    if value > _INT64_MAX:
+        raise ValueError("path number out of range")
+    return value
+
+
+def _read_path_number(value: str, *, mode: str = "ruby") -> int:
+    """Read an issue, pull or comment path number as real GitHub reads it.
+
+    Seven of the nine routes that read one — ``issues/{number}``, ``issues/{number}/comments``,
+    ``issues/comments/{comment_id}``, ``pulls/comments/{comment_id}``, ``pulls/{number}/comments``,
+    ``pulls/{number}/commits`` and ``pulls/{number}/files`` — read the leading unsigned integer the
+    way Ruby's ``String#to_i`` does: past ASCII whitespace, an optional ``+`` and an optional
+    ``0d``/``0D``, taking ASCII digits with single ``_`` separators and dropping whatever follows
+    (so ``1.5``, ``1.x``, ``1.json``, ``1abc``, ``1e0``, ``0d1`` and ``1_0`` are served, while
+    ``-01``, ``abc`` and non-ASCII digits such as ``²`` are 404).
+
+    Two routes depart from that. ``pulls/{number}`` (``mode="digits"``) reads leading ASCII digits
+    after ASCII whitespace with no ``+``, no ``0d`` and no ``_`` grouping, so ``pulls/+1`` and
+    ``pulls/0d1`` 404 while ``pulls/1.5`` and ``pulls/1abc`` are served. ``pulls/{number}/reviews``
+    (``mode="decimal"``) reads a leading non-negative decimal or scientific number (optional ``+``,
+    no ``0d`` or ``_``) and accepts it only when its value is a whole integer — so ``1.0``, ``1.x``,
+    ``1e0``, ``1148e1``, ``1148.e1``, ``1.148e4`` and ``114800e-1`` are served while ``1.5``,
+    ``1.9`` and ``1.e99999`` 404.
+
+    Measured against api.github.com on 2026-10-10, 2026-11-20 and 2026-11-21 with a token on
+    octocat/Hello-World, each request with its own cache-buster.
+
+    A ``BeforeValidator`` rather than a ``str`` annotation keeps the parameter an ``integer`` in
+    the OpenAPI schema, matching real's own spec, while turning any unparseable or out-of-range
+    spelling into the route's 404 via ``errors.github.validation_body``.
+    """
+    if mode == "ruby":
+        match = _LEADING_INT_RE.match(value)
+        if not match:
+            raise ValueError("invalid path number")
+        return _digits_to_int64(match.group(1).replace("_", ""))
+    if mode == "digits":
+        match = _LEADING_DIGITS_RE.match(value)
+        if not match:
+            raise ValueError("invalid path number")
+        return _digits_to_int64(match.group(1))
+    match = _LEADING_DECIMAL_RE.match(value)
+    if not match:
+        raise ValueError("invalid path number")
+    whole, _, frac = match.group(1).partition(".")
+    stripped_left = (whole + frac).lstrip("0")
+    if not stripped_left:
+        return 0
+    sig = stripped_left.rstrip("0")
+    trailing_zeros = len(stripped_left) - len(sig)
+    scale = int(match.group(2) or 0) - len(frac) + trailing_zeros
+    if scale < 0 or len(sig) + scale > 19:
+        raise ValueError("path number is not a 64-bit integer")
+    n = int(sig) * (10**scale)
+    if n > _INT64_MAX:
+        raise ValueError("path number out of range")
+    return n
+
+
+def _read_pull_path_number(value) -> int:
+    return _read_path_number(value, mode="digits")
+
+
+def _read_pull_reviews_path_number(value) -> int:
+    return _read_path_number(value, mode="decimal")
+
+
+_PathNumber = Annotated[int, BeforeValidator(_read_path_number)]
+_PullPathNumber = Annotated[int, BeforeValidator(_read_pull_path_number)]
+_PullReviewsPathNumber = Annotated[int, BeforeValidator(_read_pull_reviews_path_number)]
+
+
 # --- a comment by its own id ----------------------------------------------------
 #
 # Both routes MUST be declared ahead of `…/issues/{number}/comments` and `…/pulls/{number}/comments`:
@@ -3379,7 +3534,7 @@ def _comment_by_id(request, conn, repo: str, cid: int, ids, *, anchored: bool):
 
 
 @router.get("/repos/{owner}/{repo}/issues/comments/{comment_id}")
-async def get_issue_comment(owner: str, repo: str, comment_id: int, request: Request):
+async def get_issue_comment(owner: str, repo: str, comment_id: _PathNumber, request: Request):
     """One conversation comment, the resource its own `url` points at."""
     conn = auth.conn(request)
     caller = _require(request)
@@ -3390,7 +3545,7 @@ async def get_issue_comment(owner: str, repo: str, comment_id: int, request: Req
 
 
 @router.get("/repos/{owner}/{repo}/pulls/comments/{comment_id}")
-async def get_pull_review_comment(owner: str, repo: str, comment_id: int, request: Request):
+async def get_pull_review_comment(owner: str, repo: str, comment_id: _PathNumber, request: Request):
     """One line-anchored review comment. The file it is anchored to has to be readable by this
     caller too — the collection drops such a comment, so serving it by id would be a way around
     that."""
@@ -3411,7 +3566,7 @@ async def get_pull_review_comment(owner: str, repo: str, comment_id: int, reques
 
 
 @router.get("/repos/{owner}/{repo}/issues/{number}", response_model=GitHubIssue)
-async def get_issue(owner: str, repo: str, number: int, request: Request):
+async def get_issue(owner: str, repo: str, number: _PathNumber, request: Request):
     conn = auth.conn(request)
     caller = _require(request)
     ids = auth.visible_ids(request, caller)
@@ -3425,7 +3580,7 @@ async def get_issue(owner: str, repo: str, number: int, request: Request):
 async def issue_comments(
     owner: str,
     repo: str,
-    number: int,
+    number: _PathNumber,
     request: Request,
     page: PageParam = None,
     per_page: PageParam = None,
@@ -3493,7 +3648,7 @@ async def list_pulls(
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}")
-async def get_pull(owner: str, repo: str, number: int, request: Request):
+async def get_pull(owner: str, repo: str, number: _PullPathNumber, request: Request):
     """The pull as JSON, or as its diff when `Accept` asks for one.
 
     ``application/vnd.github.diff`` and ``…patch`` are representations of this resource, not
@@ -3527,7 +3682,7 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
 async def pull_reviews(
     owner: str,
     repo: str,
-    number: int,
+    number: _PullReviewsPathNumber,
     request: Request,
     page: PageParam = None,
     per_page: PageParam = None,
@@ -3577,7 +3732,7 @@ async def pull_reviews(
 async def pull_review_comments(
     owner: str,
     repo: str,
-    number: int,
+    number: _PathNumber,
     request: Request,
     page: PageParam = None,
     per_page: PageParam = None,
@@ -3616,7 +3771,7 @@ async def pull_review_comments(
 async def pull_commits(
     owner: str,
     repo: str,
-    number: int,
+    number: _PathNumber,
     request: Request,
     page: PageParam = None,
     per_page: PageParam = None,
@@ -3704,7 +3859,7 @@ async def commit_statuses(
 async def pull_files(
     owner: str,
     repo: str,
-    number: int,
+    number: _PathNumber,
     request: Request,
     page: PageParam = None,
     per_page: PageParam = None,

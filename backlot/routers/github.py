@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict
 from starlette.types import Scope
 
-from backlot import auth, published, store, synth
+from backlot import auth, odata, published, store, synth
 from backlot.acl import Caller
 from backlot.config import get_settings
 from backlot.graphql import body as request_body
@@ -845,6 +845,60 @@ def _a_tab_credential_counted_apart(request: Request) -> bool:
     return _a_tab_credential_on(request, _UNSERVED_COUNTED_APART)
 
 
+#: The five search endpoints GitHub publishes that Backlot does not serve
+#: (:func:`_an_unserved_search_refusal`).
+_UNSERVED_SEARCHES = frozenset(
+    {
+        "/search/commits",
+        "/search/labels",
+        "/search/repositories",
+        "/search/topics",
+        "/search/users",
+    }
+)
+
+
+def _an_unserved_search_refusal(request: Request) -> HTTPException | None:
+    """Real's 422 for a missing or blank `q` on the five searches Backlot does not serve, or a
+    missing or blank `repository_id` on `/search/labels`, a value being blank when
+    :func:`backlot.odata.strip_blanks` leaves nothing of it.
+
+    Measured against api.github.com on 2026-10-31 and 2026-11-21 (UTC), each request on its own
+    cache-busted URL. On `/search/commits`, `/search/labels`, `/search/repositories`,
+    `/search/topics` and `/search/users`, a missing or blank `q` (`no q`, `q=`, `q=%20`) answered
+    :func:`_search_validation_failed`'s 422 with the version echo and the five `x-ratelimit-*`
+    counted in `search` (`limit: 10` for no `Authorization`, `Digest x`, `nope`, an empty value,
+    `Basic eDp5` and `Basic<TAB>!!!!`; `limit: 30` for a token), and `400 Bad Request` when pinned
+    to `1999-01-01`; `Bearer nope` and a token-shaped `Basic` value answered `401 Bad credentials`
+    with neither echo nor rate-limit headers, and `Bearer<TAB>nope` answered `401 Bad credentials`
+    with no echo and the five counted in `search`. On `/search/labels` with a non-blank `q`, a
+    missing or blank `repository_id` (absent, empty or whitespace) answered `422 Validation Failed`
+    with `documentation_url` `#search-labels` under the same credential, version and rate-limit
+    rules. On 2026-11-21, each target sent once with no `Authorization`, a `q` of a space, a tab,
+    LF, VT, FF, CR, U+0085, U+00A0, U+1680, U+2000, U+2028, U+202F, U+205F or U+3000 was the 422 on
+    `/search/repositories`, where U+001C, U+001D, U+001E, U+001F and U+200B were each the search's
+    200, as U+001F was on `/search/commits` where U+00A0 was the 422. On `/search/labels`, `q` of
+    U+001F was the 422 for the missing `repository_id`, and with `q=x` a `repository_id` of a tab
+    or U+00A0 was that 422, where U+001F was the 404 "Not Found".
+    """
+    path = request.scope["path"].removeprefix("/github")
+    if path not in _UNSERVED_SEARCHES:
+        return None
+    if not odata.strip_blanks(request.query_params.get("q", "")):
+        return _search_validation_failed("q")
+    if path == "/search/labels" and not odata.strip_blanks(
+        request.query_params.get("repository_id", "")
+    ):
+        exc = HTTPException(status_code=422, detail="Validation Failed")
+        exc.github_body = {
+            "message": "Validation Failed",
+            "documentation_url": "https://docs.github.com/rest/search/search#search-labels",
+            "status": "422",
+        }
+        return exc
+    return None
+
+
 async def refuse_an_unserved_operation(request: Request) -> None:
     """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` or
     :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or
@@ -917,6 +971,10 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     On an agent path no version is read (:func:`honours_api_version`), so
     :func:`_validate_api_version` does not run here on one, and the 404 the router answers for a
     token carries no echo, nor does :func:`_require`'s 401 for a `Basic` value that names no token.
+
+    On the five searches of :data:`_UNSERVED_SEARCHES`, :func:`_an_unserved_search_refusal`'s 422
+    comes after a credential that does not resolve and a version real does not have, and ahead of
+    :func:`_require`.
     """
     if not is_an_unserved_operation(request.method, request.scope["path"]):
         return
@@ -927,6 +985,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         _require(request)
         del request.state.github_unserved_refusal
         return
+    search_refusal = _an_unserved_search_refusal(request)
+    if search_refusal is not None:
+        await _validate_bad_credential(request)
+        await _validate_api_version(request)
+        raise search_refusal
     if "authorization" not in request.headers:
         request.state.github_unserved_refusal = (
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"

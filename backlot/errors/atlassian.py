@@ -48,14 +48,13 @@ PROBLEM_JSON = "application/problem+json;charset=UTF-8"
 # sites on 2026-09-04. A credential it read and rejected, and a request that carried none, get the
 # 403 below verbatim on every served route but `search` (:data:`CONFLUENCE_NOT_PERMITTED_BODY`) —
 # the vendor reports its own exception class in the message, and a client that logs the body logs
-# that. A Basic value it could not read gets a 401 instead, whose real body is Tomcat's HTML page
-# titled "HTTP Status 401 - Unauthorized"; that title is the message here, because the envelope this
-# module exists to emit is JSON and a client parsing `message` out of the page would find nothing.
+# that. A Basic value it could not read gets a 401 instead, Tomcat's HTML page
+# (:func:`tomcat_page`), which ``backlot.routers.atlassian._confluence_caller`` raises; its
+# docstring has the measurement.
 CONFLUENCE_FORBIDDEN = (
     "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
     '403 FORBIDDEN "Request rejected because caller cannot access Confluence"'
 )
-CONFLUENCE_UNAUTHORIZED = "Unauthorized"
 #: That 403 as real sends it, byte for byte: two members, 190 bytes on 2026-09-30, the same two a
 #: served route's refusal carries (:func:`http_body`).
 CONFLUENCE_FORBIDDEN_BODY = json.dumps(

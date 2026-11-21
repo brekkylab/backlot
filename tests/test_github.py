@@ -2618,7 +2618,9 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     base = f"/github/repos/{gh_org}/codebase/"
     unknown = c.get(base + route.format(number="999999999"), headers=gh_admin_h)
     assert unknown.status_code == 404
-    numbers = {n: n for n in ("notanint", "²", "9223372036854775808", "-9223372036854775809")}
+    numbers = {
+        n: n for n in ("notanint", "²", "-01", "9223372036854775808", "-9223372036854775809")
+    }
     numbers["4301 digits"] = "1" * 4301
     answers = {
         label: (r.status_code, r.content)
@@ -2627,6 +2629,88 @@ def test_github_a_path_number_it_cannot_read_is_the_unknown_number_404(
     }
     long = (404, unknown.content) if route == "pulls/{number}" else (414, b"")
     assert answers == dict.fromkeys(numbers, (404, unknown.content)) | {"4301 digits": long}
+
+
+def test_github_path_number_spellings(gh_client, gh_admin_h, gh_org):
+    """Spellings of an issue, pull or comment number across all nine numeric path routes, each
+    answered as real answers it (``backlot.routers.github._read_path_number``)."""
+    c, _ = gh_client
+    base = f"/github/repos/{gh_org}/diffable/"
+    num = synth.github_number("gh-diff-pr-declared")
+    rc_id = c.get(f"{base}pulls/{num}/comments", headers=gh_admin_h).json()[0]["id"]
+    ic_id = c.get(f"{base}issues/{num}/comments", headers=gh_admin_h).json()[0]["id"]
+
+    routes = [
+        ("issues/{n}", num, "ruby"),
+        ("issues/{n}/comments", num, "ruby"),
+        ("issues/comments/{n}", ic_id, "ruby"),
+        ("pulls/{n}", num, "digits"),
+        ("pulls/{n}/reviews", num, "decimal"),
+        ("pulls/{n}/comments", num, "ruby"),
+        ("pulls/{n}/commits", num, "ruby"),
+        ("pulls/{n}/files", num, "ruby"),
+        ("pulls/comments/{n}", rc_id, "ruby"),
+    ]
+
+    answered, expected = {}, {}
+    for tmpl, value, mode in routes:
+        s = str(value)
+        grouped = f"{s[:1]}_{s[1:]}"
+        plain = c.get(base + tmpl.format(n=s), headers=gh_admin_h)
+        unknown = c.get(base + tmpl.format(n="999999999"), headers=gh_admin_h)
+        assert plain.status_code == 200, tmpl
+        assert unknown.status_code == 404, tmpl
+        ok, miss = (200, plain.content), (404, unknown.content)
+
+        cases = {
+            f"0{s}": ok,
+            f"00{s}": ok,
+            f"%20{s}": ok,
+            f"{s}%20": ok,
+            f"%09{s}": ok,
+            f"%0A{s}": ok,
+            f"%0B{s}": ok,
+            f"%0C{s}": ok,
+            f"%0D{s}": ok,
+            f"{s}.0": ok,
+            f"{s}.00": ok,
+            f"{s}.x": ok,
+            f"{s}.json": ok,
+            f"{s}.": ok,
+            f"{s}abc": ok,
+            f"{s}e0": ok,
+            f"{s}ex": ok,
+            f"{s}_": ok,
+            f"%2B{s}": miss if mode == "digits" else ok,
+            f"%20%2B{s}": miss if mode == "digits" else ok,
+            f"0d{s}": ok if mode == "ruby" else miss,
+            f"0D{s}": ok if mode == "ruby" else miss,
+            grouped: ok if mode == "ruby" else miss,
+            f"{s}.5": miss if mode == "decimal" else ok,
+            f"{s}.9": miss if mode == "decimal" else ok,
+            f"{s}.5x": miss if mode == "decimal" else ok,
+            f"{s}0e-1": ok if mode == "decimal" else miss,
+            f"{s}e%2B0": ok,
+            f"{s}e99999": miss if mode == "decimal" else ok,
+            f"{s}e-99999": miss if mode == "decimal" else ok,
+            f"{s}0.e-1": ok if mode == "decimal" else miss,
+            f"{s}.e99999": miss if mode == "decimal" else ok,
+            f"-{s}": miss,
+            f"-0{s}": miss,
+            f"%C2%A0{s}": miss,
+            f"_{s}": miss,
+            f"%2B%20{s}": miss,
+            "abc": miss,
+            f"x{s}": miss,
+        }
+        if tmpl == "pulls/{n}":
+            cases["0" * 4301 + s] = ok
+        for spelling, want in cases.items():
+            key = (tmpl, f"0*4301+{s}" if len(spelling) > 100 else spelling)
+            r = c.get(base + tmpl.format(n=spelling), headers=gh_admin_h)
+            answered[key] = (r.status_code, r.content)
+            expected[key] = want
+    assert answered == expected
 
 
 #: A `/github` path holding an escaped slash, a path real answers alike
@@ -2641,11 +2725,11 @@ _ESCAPED_SLASH_ROWS = [
     ("/agents%2Frepos/{org}/gateway/nosuch", "/nope", 404),
     ("{diffable}/statuses%2F", "/nope", 404),
     ("{gateway}/issues%2F{issue}", "/nope", 404),
-    ("{gateway}/issues/{issue}%2F1", "{gateway}/issues/{issue}x", 404),
-    ("{gateway}/issues/{issue}%2F", "{gateway}/issues/{issue}x", 404),
-    ("{gateway}/issues/{issue}%2Fx", "{gateway}/issues/{issue}x", 404),
-    ("{gateway}/issues/{issue}%2F1/comments", "{gateway}/issues/{issue}x/comments", 404),
-    ("{gateway}/pulls/{pr}%2F1", "{gateway}/pulls/{pr}x", 404),
+    ("{gateway}/issues/{issue}%2F1", "{gateway}/issues/{issue}x", 200),
+    ("{gateway}/issues/{issue}%2F", "{gateway}/issues/{issue}x", 200),
+    ("{gateway}/issues/{issue}%2Fx", "{gateway}/issues/{issue}x", 200),
+    ("{gateway}/issues/{issue}%2F1/comments", "{gateway}/issues/{issue}x/comments", 200),
+    ("{gateway}/pulls/{pr}%2F1", "{gateway}/pulls/{pr}x", 200),
     ("{gateway}/issues/x%2F1", "{gateway}/issues/x", 404),
     ("{diffable}/branches/chore%2Frename", "{diffable}/branches/chore/rename", 200),
     ("{diffable}/branches/chore%2frename", "{diffable}/branches/chore/rename", 200),

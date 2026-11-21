@@ -980,15 +980,13 @@ UNSERVED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 #: :func:`drop_the_end` says.
 _METHOD_NAME = re.compile(r"[0-9A-Za-z.]+")
 #: The Slack baseline's ``missing`` operations (``backlot.published``): the methods Slack's
-#: reference index lists that no route here serves, by name. The entries with no note of their
-#: own were measured on 2026-10-20 with no token and with a bogus one, by `GET` and by `POST`,
-#: each answering the credential's refusal (`not_authed`, `invalid_auth`) but those
-#: :data:`_OTHER_ANSWERS` and :data:`_ANSWERED_BY_ARGUMENTS` hold. An entry the baseline gained
-#: later carries its own dated note there, which is the date its measurement was made on, so
-#: this stays true when the next scheduled run adds one. Ten that Slack's archived OpenAPI
-#: document lists and the index does not, `oauth.token`, three `workflows` ones and six
-#: `apps.permissions` ones, real answered `unknown_method` for, as for a name it never had,
-#: whatever the credential, one that resolves included.
+#: reference index lists that no route here serves, by name. Measured with no token and with a
+#: bogus one, by `GET` and by `POST`, each answered the credential's refusal (`not_authed`,
+#: `invalid_auth`) but those :data:`_OTHER_ANSWERS` and :data:`_ANSWERED_BY_ARGUMENTS` hold: on
+#: 2026-10-20 for an entry with no note, and on the date its note gives for an entry with one.
+#: Ten that Slack's archived OpenAPI document lists and the index does not, `oauth.token`, three
+#: `workflows` ones and six `apps.permissions` ones, real answered `unknown_method` for, as for a
+#: name it never had, whatever the credential, one that resolves included.
 _PUBLISHED_NOT_SERVED = frozenset(published.missing_operations("slack"))
 #: The answer, where it is not the credential's refusal, of a method no route here serves, and
 #: whether a credential sent that does not resolve is refused ahead of it, each also answered so to

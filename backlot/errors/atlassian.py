@@ -897,27 +897,6 @@ def zero_limit_not_allowed() -> AtlassianError:
     )
 
 
-def unsupported_media_type(path: str, content_type: str | None) -> AtlassianError:
-    """Jira's 415 for a POST body it will not read, measured 2026-09-15 on `POST search/jql`.
-
-    RFC 7807 again, the same five keys and the same media type as
-    :func:`integer_conversion_failure`. The ``detail`` names the type that arrived, and a request
-    carrying no ``Content-Type`` at all is named ``'null'`` — the literal string, which is the
-    header's absence rendered by a Java formatter rather than a JSON null.
-    """
-    return AtlassianError(
-        415,
-        {
-            "type": "about:blank",
-            "title": "Unsupported Media Type",
-            "status": 415,
-            "detail": f"Content-Type '{content_type or 'null'}' is not supported.",
-            "instance": _instance(path),
-        },
-        media_type=PROBLEM_JSON,
-    )
-
-
 #: A token, as Spring's `MimeType` checks one: ASCII, no control character, no separator.
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 

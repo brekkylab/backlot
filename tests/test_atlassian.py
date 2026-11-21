@@ -6066,12 +6066,18 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
     assert paths["post"]["requestBody"]["required"] is True
 
 
+#: a `Content-Type` Spring cannot read, which the 415 names no type for
+_UNREAD = object()
+
+
 @pytest.mark.parametrize(
     "content_type,named,slash",
     [
         (None, "null", ""),
         (None, "null", "/"),
         ("text/plain", "text/plain", ""),
+        ("TEXT/Plain;Charset=UTF-8", "text/plain;Charset=UTF-8", ""),
+        ("foo", _UNREAD, ""),
         ("application/xml", "application/xml", ""),
         ("*/*", "*/*", ""),
     ],
@@ -6079,8 +6085,9 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
 def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     client, admin_h, content_type, named, slash
 ):
-    """Measured: the header decides before the bytes are looked at, so the JSON body sent with each
-    of these is never reached."""
+    """The 415 ``routers.atlassian._refuse_a_search_media_type`` describes: the header decides
+    before the bytes are looked at, so the JSON body sent with each of these is never reached. Names
+    the type as Spring reads it, sends Accept, and carries none of the rate-limit headers."""
     headers = dict(admin_h)
     if content_type is not None:
         headers["Content-Type"] = content_type
@@ -6091,11 +6098,19 @@ def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     )
     assert r.status_code == 415, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert r.headers["accept"] == "application/json"
+    assert "x-aaccountid" in r.headers
+    assert "x-ratelimit-limit" not in r.headers
+    assert "ratelimit" not in r.headers
     assert r.json() == {
         "type": "about:blank",
         "title": "Unsupported Media Type",
         "status": 415,
-        "detail": f"Content-Type '{named}' is not supported.",
+        "detail": (
+            "Could not parse Content-Type."
+            if named is _UNREAD
+            else f"Content-Type '{named}' is not supported."
+        ),
         "instance": f"/rest/api/3/search/jql{slash}",
     }
 
@@ -7068,8 +7083,6 @@ _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 _JSON_OR_TEXT = "application/json, text/plain"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
 _POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
-#: a `Content-Type` Spring cannot read, which the 415 names no type for
-_UNREAD = object()
 _JSON = "application/json"
 
 

@@ -15373,6 +15373,7 @@ _GMAIL_BRACE_ROWS = [
     ("{probe from:me", ["lunch"]),
     ("-{probe from:me", ["plan", "deck"]),
     ("-(label:inbox {Rollout from:me})", ["deck", "lunch"]),
+    ("NOT -(from:me to:me)", []),
     ('{Rollout "()"}', ["plan"]),
     ('{Rollout subject:"()"}', ["plan"]),
     ('{Rollout to:"()"}', ["plan"]),
@@ -15395,10 +15396,11 @@ _GMAIL_BRACE_ROWS = [
 
 
 def test_gmail_brace_groups_and_quoted_punctuation_values(tmp_path):
-    """Each row is how the comments on `_gmail_braces` and `_gmail_brace_ids` and in
-    `_parse_gmail_q` read its query, over both listings. `plan` and `deck` are from bob to the
-    caller in the inbox, `lunch` from the caller to bob in sent; `Rollout` is in `plan`'s title
-    alone, `Q4` in `deck`'s, and `probe` in `plan`'s body and `lunch`'s title."""
+    """Each row is how the comments on `_gmail_braces` and `_gmail_brace_ids`, at
+    `_GMAIL_GROUP_PIECE` and in `_parse_gmail_q` read its query, over both listings. `plan` and
+    `deck` are from bob to the caller in the inbox, `lunch` from the caller to bob in sent;
+    `Rollout` is in `plan`'s title alone, `Q4` in `deck`'s, and `probe` in `plan`'s body and
+    `lunch`'s title."""
     records = [
         {
             "source_type": "gmail",

@@ -1388,7 +1388,7 @@ def _gmail_subject_terms(inner: str) -> str:
     # frame's first term is the group's first, and `group` is None for ``inner``, else (sign,
     # opener, closer) of the group term this frame's text is the inside of.
     stack = [[_gmail_subject_terms_split(inner), 0, [], True, None]]
-    while stack:
+    while True:
         terms, i, out, first_flag, group = stack[-1]
         if i == len(terms):
             joined = " ".join(t for t in out if t)
@@ -1416,7 +1416,6 @@ def _gmail_subject_terms(inner: str) -> str:
             )
             continue
         out.append(_gmail_subject_term(term, is_first))
-    raise AssertionError("unreachable")
 
 
 def _gmail_subject_terms_split(inner: str) -> list[str]:

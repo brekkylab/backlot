@@ -1328,7 +1328,7 @@ def _gmail_signed(head: str) -> str:
     return head[: m.start()] + "-" * (flips % 2)
 
 
-def _gmail_subject_terms(inner: str, first: bool = True) -> str:
+def _gmail_subject_terms(inner: str) -> str:
     """``inner``, the text in the braces of a `subject:` group, with `subject:` on each of its
     terms, so that the group is the `OR` of them. A word, a quoted run and each term of a `(…)` or
     `{…}` inside take `subject:` in front, after any `-` touching them; a capital `OR` is left out
@@ -1339,12 +1339,10 @@ def _gmail_subject_terms(inner: str, first: bool = True) -> str:
     of `subject:probe OR subject:access`, `subject:{probe from:me}` those of
     `subject:probe OR from:me`, and `subject:{probe label:inbox}` and `subject:{from:me probe}`
     those of `subject:probe`."""
-    # A frame is [terms, next index, resolved outputs, first, group]: `group` is None for the
-    # outermost call, else (sign, opener, closer) of the group term this frame's text is the
-    # inside of. An explicit stack stands in for the recursion between this function and
-    # `_gmail_subject_term`, so a group nested a thousand deep answers instead of raising
-    # `RecursionError`.
-    stack = [[_gmail_subject_terms_split(inner), 0, [], first, None]]
+    # A frame is [terms, next index, resolved outputs, first, group]: `first` is whether the
+    # frame's first term is the group's first, and `group` is None for ``inner``, else (sign,
+    # opener, closer) of the group term this frame's text is the inside of.
+    stack = [[_gmail_subject_terms_split(inner), 0, [], True, None]]
     while stack:
         terms, i, out, first_flag, group = stack[-1]
         if i == len(terms):
@@ -2039,9 +2037,10 @@ def _gmail_brace_ids(conn, mailbox, ids, inner: str, caller_email: str | None) -
     `_gmail_braces`), `{probe "()"}`, `{probe ""}`, `{probe subject:"()"}` and
     `{probe to:"()"}` answered what `probe` answers, and `-{probe "()"}` what `-probe` answers."""
     out: set | None = None
-    pending = [inner]
+    pending = [(inner, False)]
     while pending:
-        text = pending.pop()
+        text, nested = pending.pop()
+        read = False
         for item in _gmail_group_items(text):
             if isinstance(item, str):
                 term = item
@@ -2051,14 +2050,20 @@ def _gmail_brace_ids(conn, mailbox, ids, inner: str, caller_email: str | None) -
             free, ops = _parse_gmail_q(term)
             if not (free or ops):
                 continue
+            read = True
             if not free and list(ops) == [_GMAIL_ANY] and len(ops[_GMAIL_ANY]) == 1:
                 # A term that is one `{…}` group on its own answers as the group does, so
                 # read its inner text here instead of through `_gmail_query`, which would
                 # call back here once per level of nesting.
-                pending.append(ops[_GMAIL_ANY][0])
+                pending.append((ops[_GMAIL_ANY][0], True))
                 continue
             out = (out or set()) | {
                 r["id"] for r in _gmail_query(conn, mailbox, ids, term, caller_email)
+            }
+        if nested and not read:
+            # a `{…}` term holding no term answers what `{}` answers as a search of its own
+            out = (out or set()) | {
+                r["id"] for r in _gmail_query(conn, mailbox, ids, "{}", caller_email)
             }
     return out
 

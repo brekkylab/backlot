@@ -15282,10 +15282,20 @@ _GMAIL_BRACE_ROWS = [
     ('{Rollout subject:"()"}', ["plan"]),
     ('{Rollout to:"()"}', ["plan"]),
     ('-{Rollout "()"}', ["deck", "lunch"]),
-    # Deep groups answer as the group alone does: braces 500 deep and parentheses 950 deep,
-    # the depths the 2026-11-21 repro showed failing while 400 and 850 deep answered.
+    ("{Rollout {}}", ["plan", "deck", "lunch"]),
+    ('{Rollout {"()"}}', ["plan", "deck", "lunch"]),
+    ("-{Rollout {}}", []),
+    ("-{{}}", []),
+    # On 2026-11-21 (three times each) real answered `the` and `the probe` inside 500 braces as
+    # `{the}` and `{the probe}`, inside 950 parentheses as `the` and `the probe`, `the` inside 400
+    # `({` pairs as `the`, and `-` before 500 braces or 950 parentheses around `the` as `-the`.
     ("{" * 500 + "Rollout" + "}" * 500, ["plan"]),
+    ("{" * 500 + "Rollout probe" + "}" * 500, ["plan", "lunch"]),
     ("(" * 950 + "probe" + ")" * 950, ["plan", "lunch"]),
+    ("(" * 950 + "Rollout probe" + ")" * 950, ["plan"]),
+    ("({" * 400 + "probe" + "})" * 400, ["plan", "lunch"]),
+    ("-" + "{" * 500 + "probe" + "}" * 500, ["deck"]),
+    ("-" + "(" * 950 + "probe" + ")" * 950, ["deck"]),
 ]
 
 
@@ -15347,9 +15357,10 @@ _GMAIL_SUBJECT_BRACE_ROWS = [
     ('NOT "{Rollout from:me}"', ["deck"]),
     ('numbers"{Rollout from:me}"', ["decoy"]),
     ("subject:{}", ["plan", "deck", "lunch", "decoy"]),
-    # A `subject:` group nested 500 deep answers as the group alone does, the depth the
-    # 2026-11-21 repro showed failing while 400 deep answered.
+    # Measured with the deep rows of `_GMAIL_BRACE_ROWS`: real answered `subject:` before `the`
+    # nested as deep as each of these as it answered `subject:the`.
     ("subject:" + "{" * 500 + "Rollout" + "}" * 500, ["plan"]),
+    ("subject:" + "(" * 950 + "Rollout" + ")" * 950, ["plan"]),
 ]
 
 

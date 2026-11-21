@@ -1240,15 +1240,24 @@ def _gmail_group_items(text: str) -> list:
 def _gmail_flatten(items: list, out: list, negated: list) -> None:
     """Write ``items`` into ``out`` as terms, as the comment at `_GMAIL_GROUP_PIECE` measures: a
     group's brackets drop, a `-(…)` of one term puts a `-` on that term, and one of several terms
-    goes into ``negated`` whole, each `NOT` in front of it flipping it."""
-    for item in items:
+    goes into ``negated`` whole, each `NOT` in front of it flipping it.
+
+    Read with an explicit stack, not recursion: a group nested a thousand deep is one more frame
+    on the stack, not one more call, so it answers instead of raising `RecursionError`."""
+    stack = [iter(items)]
+    while stack:
+        try:
+            item = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
         if isinstance(item, str):
             out.append(item)
             continue
         is_negated, inner = item
         sub = _gmail_group_items(inner)
         if not is_negated:
-            _gmail_flatten(sub, out, negated)
+            stack.append(iter(sub))
             continue
         # Inside `-(…)` a run of `NOT`s with no term after it is left out: `-(NOT NOT)` answered
         # every message and `-(probe NOT)` the messages `probe` does not, on 2026-10-25.
@@ -1260,7 +1269,7 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
             out.append("-" + terms[0].lstrip("-"))
             continue
         if len(terms) == 1:  # `-((…))` and `-(-(…))` are `-(…)`
-            _gmail_flatten([(True, terms[0][1])], out, negated)
+            stack.append(iter([(True, terms[0][1])]))
             continue
         if not terms:
             continue
@@ -1269,7 +1278,7 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
             out.pop()
             nots += 1
         if nots % 2:
-            _gmail_flatten(sub, out, negated)
+            stack.append(iter(sub))
         else:
             negated.append(inner)
 
@@ -1330,6 +1339,45 @@ def _gmail_subject_terms(inner: str, first: bool = True) -> str:
     of `subject:probe OR subject:access`, `subject:{probe from:me}` those of
     `subject:probe OR from:me`, and `subject:{probe label:inbox}` and `subject:{from:me probe}`
     those of `subject:probe`."""
+    # A frame is [terms, next index, resolved outputs, first, group]: `group` is None for the
+    # outermost call, else (sign, opener, closer) of the group term this frame's text is the
+    # inside of. An explicit stack stands in for the recursion between this function and
+    # `_gmail_subject_term`, so a group nested a thousand deep answers instead of raising
+    # `RecursionError`.
+    stack = [[_gmail_subject_terms_split(inner), 0, [], first, None]]
+    while stack:
+        terms, i, out, first_flag, group = stack[-1]
+        if i == len(terms):
+            joined = " ".join(t for t in out if t)
+            stack.pop()
+            if not stack:
+                return joined
+            sign, opener, closer = group
+            # A `{…}` inside is more terms of the same `OR`.
+            stack[-1][2].append(
+                joined if opener == "{" and not sign else sign + opener + joined + closer
+            )
+            continue
+        term = terms[i]
+        is_first = first_flag and i == 0
+        stack[-1][1] += 1
+        body = term.lstrip("-")
+        sign = term[: len(term) - len(body)]
+        if (
+            body
+            and body[0] in "({"
+            and _gmail_matching(body, 0, ")" if body[0] == "(" else "}") == len(body)
+        ):
+            stack.append(
+                [_gmail_subject_terms_split(body[1:-1]), 0, [], False, (sign, body[0], body[-1])]
+            )
+            continue
+        out.append(_gmail_subject_term(term, is_first))
+    raise AssertionError("unreachable")
+
+
+def _gmail_subject_terms_split(inner: str) -> list[str]:
+    """``inner`` split into its terms: a word, a quoted run, a `(…)` or `{…}` group."""
     terms: list[str] = []
     i, n = 0, len(inner)
     while i < n:
@@ -1345,23 +1393,20 @@ def _gmail_subject_terms(inner: str, first: bool = True) -> str:
                 j = _gmail_matching(inner, j, ")" if inner[j] == "(" else "}") or n
             else:
                 j += 1
-        terms.append(_gmail_subject_term(inner[i:j], first and not terms))
+        terms.append(inner[i:j])
         i = j
-    return " ".join(t for t in terms if t)
+    return terms
 
 
 def _gmail_subject_term(term: str, first: bool) -> str:
-    """One term of a `subject:` group as :func:`_gmail_subject_terms` reads it."""
+    """One term of a `subject:` group as :func:`_gmail_subject_terms` reads it. A `(…)` or
+    `{…}` group term is read by `_gmail_subject_terms` itself, on its stack."""
     if term == "OR":
         return ""
     body = term.lstrip("-")
     sign = term[: len(term) - len(body)]
     if not body:
         return term
-    if body[0] in "({" and _gmail_matching(body, 0, ")" if body[0] == "(" else "}") == len(body):
-        inner = _gmail_subject_terms(body[1:-1], first=False)
-        # A `{…}` inside is more terms of the same `OR`.
-        return inner if body[0] == "{" and not sign else sign + body[0] + inner + body[-1]
     op = re.match(r"(\w+):", body)
     if op and not first and op.group(1).lower() in _GMAIL_SUBJECT_GROUP_OWN:
         return term
@@ -1994,14 +2039,24 @@ def _gmail_brace_ids(conn, mailbox, ids, inner: str, caller_email: str | None) -
     `_gmail_braces`), `{probe "()"}`, `{probe ""}`, `{probe subject:"()"}` and
     `{probe to:"()"}` answered what `probe` answers, and `-{probe "()"}` what `-probe` answers."""
     out: set | None = None
-    for item in _gmail_group_items(inner):
-        if isinstance(item, str):
-            term = item
-        else:
-            negated, sub = item
-            term = f"-({sub})" if negated else f"({sub})"
-        free, ops = _parse_gmail_q(term)
-        if free or ops:
+    pending = [inner]
+    while pending:
+        text = pending.pop()
+        for item in _gmail_group_items(text):
+            if isinstance(item, str):
+                term = item
+            else:
+                negated, sub = item
+                term = f"-({sub})" if negated else f"({sub})"
+            free, ops = _parse_gmail_q(term)
+            if not (free or ops):
+                continue
+            if not free and list(ops) == [_GMAIL_ANY] and len(ops[_GMAIL_ANY]) == 1:
+                # A term that is one `{…}` group on its own answers as the group does, so
+                # read its inner text here instead of through `_gmail_query`, which would
+                # call back here once per level of nesting.
+                pending.append(ops[_GMAIL_ANY][0])
+                continue
             out = (out or set()) | {
                 r["id"] for r in _gmail_query(conn, mailbox, ids, term, caller_email)
             }

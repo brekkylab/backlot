@@ -1127,6 +1127,120 @@ def is_an_unserved_operation(method: str, path: str) -> bool:
     )
 
 
+#: The operations of :data:`_PUBLISHED_NOT_SERVED` and :data:`_ROUTED_UNPUBLISHED` as patterns
+#: that match a spelling in another case, for
+#: :func:`is_an_unserved_operation_spelt_in_another_case`. The patterns spell a literal such as
+#: `projectsV2` in its own case, so matching a lowered path against them would miss it.
+_UNPUBLISHED_OPERATIONS_ANY_CASE = tuple(
+    (verb, re.compile(pattern.pattern, re.IGNORECASE))
+    for operations in (_PUBLISHED_NOT_SERVED, _ROUTED_UNPUBLISHED)
+    for verb, pattern in operations
+)
+
+
+def is_an_unserved_operation_spelt_in_another_case(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is an operation GitHub publishes and no route
+    here serves, spelled in another case: the same operation :func:`is_an_unserved_operation`
+    names, with the letters of the segments it spells out read without regard to case."""
+    path = path.removeprefix("/github")
+    return any(
+        verb == method and pattern.fullmatch(path)
+        for verb, pattern in _UNPUBLISHED_OPERATIONS_ANY_CASE
+    )
+
+
+#: Lower the ASCII letters of a path and nothing else, so a spelling that folds a letter real does
+#: not fold (a KELVIN SIGN, a LONG S) is not read as the operation it only resembles.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+#: The unserved operations real serves a caller with no credential, read by
+#: :func:`_served_without_a_credential_spelt_in_another_case`.
+_SERVED_WITHOUT_A_CREDENTIAL = (
+    *_READS_REAL_SERVES_WITHOUT_A_CREDENTIAL,
+    *_UNSERVED_COUNTED_APART,
+    *published.operations(
+        (
+            "GET /user/{}",
+            "GET /users/{}",
+            *(f"GET {path}" for path in sorted(_UNSERVED_SEARCHES)),
+        )
+    ),
+)
+
+
+def _placeholders_in(pattern: re.Pattern[str]) -> int:
+    """How many placeholders (``published``'s `{}` and `{+}`) an operation's path ``pattern``
+    holds."""
+    return pattern.pattern.count("[^/]+") + pattern.pattern.count(".+")
+
+
+def _served_without_a_credential_spelt_in_another_case(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` names an operation of
+    :data:`_SERVED_WITHOUT_A_CREDENTIAL` spelled in another case. Of the operations
+    :func:`is_an_unserved_operation_spelt_in_another_case` reads the path as, the one with the
+    fewest placeholders is the one it names."""
+    path = path.removeprefix("/github")
+    named = [
+        _placeholders_in(pattern)
+        for verb, pattern in _UNPUBLISHED_OPERATIONS_ANY_CASE
+        if verb == method and pattern.fullmatch(path)
+    ]
+    if not named:
+        return False
+    lowered = path.translate(_ASCII_LOWER)
+    return any(
+        verb == method and pattern.fullmatch(lowered) and _placeholders_in(pattern) <= min(named)
+        for verb, pattern in _SERVED_WITHOUT_A_CREDENTIAL
+    )
+
+
+async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: Request) -> None:
+    """Refuse a credential on a spelling in another case as real refuses it on the spelling as
+    published, ahead of the router's 404: on an operation GitHub publishes and no route here
+    serves, the whole of :func:`refuse_an_unserved_operation`'s refusal — "Requires
+    authentication" with no credential, "Bad credentials" for one that does not resolve — and on
+    a spelling of a route, the bad credential's 401 alone (:func:`_validate_bad_credential`). A
+    spelling :func:`_served_without_a_credential_spelt_in_another_case` holds for is answered as a
+    spelling of a route. With no credential, a spelling answered as a route's keeps the router's
+    404, and with a credential that resolves, any spelling does.
+
+    Measured against api.github.com on 2026-11-21 (UTC), each request sent once: with `Bearer nope`,
+    `/ZEN`, `/RATE_LIMIT`, `/USER/keys`, `/User/Repos`, `/SEARCH/users` and `/Search/Labels?q=x`
+    were each the 401 "Bad credentials" with no `x-ratelimit-resource` and no version echo, where
+    `/nosuchroute-n` was the 404; with no `Authorization`, `/USER/keys`, `/User/Keys`,
+    `/NOTIFICATIONS`, `/repos/psf/requests/HOOKS`, `/REPOS/psf/requests/hooks`,
+    `/REPOS/psf/requests/HOOKS`, `/REPOS/psf/requests%00/hooks`, `/repositories/1362490/HOOKS` and a
+    `HEAD` of `/USER/keys` were each the 401 "Requires authentication" on `core` with no echo, where
+    `/USER/repos`, `/User/Repos`, `/RATE_LIMIT`, a `HEAD` of `/USER/repos`, `/SEARCH/users`,
+    `/SEARCH/users?q=x`, `/search/USERS`, `/SEARCH/commits`, `/Search/Repositories?q=x`,
+    `/search/TOPICS` and `/Search/Labels?q=x` were the 404 on `core` with the echo, as were `/ZEN`,
+    `/GISTS/public`, `/USERS/octocat`, `/USER/583231`, `/USER/k%65ys`, `POST /MARKDOWN` and a
+    spelling in another case of each other operation of :data:`_SERVED_WITHOUT_A_CREDENTIAL` but
+    `GET /`, which has no letter, such as `/EMOJIS` and `/repos/psf/requests/LABELS`; and
+    `PATCH /REPOS/psf/zz-probe-9876` with a token that resolves was the 404 on `core` with the echo.
+    A path under `/agents/` is not refused here: with a token that resolves, the
+    `/agents/automations` spellings were the agents backend's own text `404 page not found`.
+
+    The operation is named on the path as sent, which real routes: an escape in a segment an
+    operation spells out is not that segment. It is refused on that path as :data:`_ASCII_LOWER`
+    lowers it.
+    """
+    path = request.scope["path"]
+    if _an_agent_path(path):
+        return
+    sent = (request.scope.get("raw_path") or path.encode()).decode("latin-1")
+    if not _served_without_a_credential_spelt_in_another_case(
+        request.method, sent
+    ) and is_an_unserved_operation_spelt_in_another_case(request.method, sent):
+        request.scope["path"] = sent.translate(_ASCII_LOWER)
+        try:
+            await refuse_an_unserved_operation(request)
+        finally:
+            request.scope["path"] = path
+        return
+    await _validate_bad_credential(request)
+
+
 #: The operations of :data:`_PUBLISHED_NOT_SERVED` that real reads the name of before it asks for a
 #: credential: a `%00` in a name is its empty 400 for a caller with no credential
 #: (:func:`asks_for_a_credential_before_a_name`), where the others it asked a credential of first.

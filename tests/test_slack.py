@@ -4185,7 +4185,8 @@ _PUBLISHED_ANSWERS = {
 def test_slack_answers_each_published_method_no_route_serves(client):
     """Each method the baseline lists as published and not served, answered as real answered it but
     those ``slack._ANSWERED_BY_ARGUMENTS`` leaves to the router (``slack._PUBLISHED_NOT_SERVED``
-    dates the measurement): with no credential and a bogus one, for a `GET` and a `POST`."""
+    dates the run that measured the entries with no note of their own, and a later entry's note
+    dates its own): with no credential and a bogus one, for a `GET` and a `POST`."""
     credentials = (("none", {}), ("bogus", {"Authorization": "Bearer xoxb-not-a-real-token"}))
     got, expected = {}, {}
     assert {

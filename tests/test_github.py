@@ -2694,6 +2694,67 @@ def test_github_an_escaped_slash_is_read_where_real_reads_it(gh_client, gh_admin
     assert answered == expected
 
 
+#: Rows for ``backlot.main.route_a_github_route_spelt_with_an_escape_as_sent``: a `/github` path,
+#: the path it answers as, and the statuses of both here with no credential, the admin token and
+#: `Bearer nope`. The last row's escape is in a segment its route reads as a parameter.
+_ESCAPED_SEGMENT_ROWS = [
+    ("/rate%5Flimit", "/nope", (404, 404, 404)),
+    ("/rate%5flimit", "/nope", (404, 404, 404)),
+    ("/%72ate_limit", "/nope", (404, 404, 404)),
+    ("/rate%5Flimit?a=" + "q" * 8164, "/nope?a=" + "q" * 8164, (404, 404, 404)),
+    ("/z%65n", "/nope", (404, 404, 404)),
+    ("/rep%6Fs/{org}/codebase", "/nope", (404, 404, 404)),
+    ("/rep%6Fs/{org}/codebase%2Fnope", "/nope", (404, 404, 404)),
+    ("/rep%6Fs/{org}/codeb%00ase", "/nope", (404, 404, 404)),
+    ("/repos/{org}/codebase/issue%73", "/nope", (404, 404, 404)),
+    ("/repositories/{rid}/issue%73", "/nope", (404, 404, 404)),
+    ("/re%70ositories/{rid}/issues", "/nope", (404, 404, 404)),
+    ("/organizati%6Fns/{oid}/repos", "/nope", (404, 404, 404)),
+    ("/organizations/{oid}/rep%6Fs", "/nope", (404, 404, 404)),
+    ("/agent%73/repos/{org}/codebase/nosuch", "/nope", (404, 404, 404)),
+    ("/agents/rep%6Fs/{org}/codebase/nosuch", "/nope", (404, 404, 404)),
+    ("/rep%6Fs/{org}/codebase/contents/src%2Fmain.py", "/nope", (404, 404, 404)),
+    ("/repos/{org}/codebase/c%6Fntents/src%2Fmain.py", "/nope", (404, 404, 404)),
+    ("/repos/{org}/codebase/c%6Fntents/src/", "/nope", (404, 404, 404)),
+    ("/repos/{org}/codebas%65", "/repos/{org}/codebase", (401, 200, 401)),
+]
+
+
+def test_github_an_escape_in_a_segment_a_route_spells_out_is_no_route(
+    gh_client, gh_admin_h, gh_org
+):
+    c, _ = gh_client
+    names = {
+        "{org}": gh_org,
+        "{rid}": str(synth.github_user_id("diffable")),
+        "{oid}": str(synth.github_user_id(gh_org)),
+    }
+    senders = (
+        ("no credential", {}),
+        ("admin", gh_admin_h),
+        ("bad", {"Authorization": "Bearer nope"}),
+    )
+
+    def filled(path):
+        for name, value in names.items():
+            path = path.replace(name, value)
+        return f"/github{path}"
+
+    def layered(response):
+        return [n for n in response.headers if n.startswith(("x-ratelimit-", "x-github-api-v"))]
+
+    answered, expected = {}, {}
+    for sent, control, statuses in _ESCAPED_SEGMENT_ROWS:
+        for (label, headers), status in zip(senders, statuses, strict=True):
+            r = c.get(filled(sent), headers=headers)
+            same = c.get(filled(control), headers=headers)
+            # the row is what went on the wire, not a spelling the client normalised first
+            wire = r.request.url.raw_path.decode()
+            answered[(sent, label)] = (wire, r.status_code, same.status_code, r.content, layered(r))
+            expected[(sent, label)] = (filled(sent), status, status, same.content, layered(same))
+    assert answered == expected
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which

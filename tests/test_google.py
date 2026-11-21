@@ -15410,6 +15410,67 @@ def test_gmail_brace_groups_and_quoted_punctuation_values(tmp_path):
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
+_GMAIL_SUBJECT_BRACE_ROWS = [
+    ("Rollout", ["plan", "decoy"]),
+    ("subject:Rollout", ["plan"]),
+    ("subject:{Rollout}", ["plan"]),
+    ("subject:{Rollout from:me}", ["plan", "lunch"]),
+    ("subject:{Rollout} label:inbox", ["plan"]),
+    ('"{Rollout from:me}"', ["plan", "lunch", "decoy"]),
+    ('"{Rollout}"', ["plan", "decoy"]),
+    ("{Rollout from:me}", ["plan", "lunch", "decoy"]),
+    ("subject:{Rollout numbers}", ["plan", "decoy"]),
+    ("subject:{Rollout OR numbers}", ["plan", "decoy"]),
+    ('subject:{Rollout "numbers"}', ["plan", "decoy"]),
+    ("subject:{Rollout NOT numbers}", ["plan", "decoy"]),
+    ("subject:{Rollout -numbers}", ["plan", "deck", "lunch"]),
+    ("subject:{Rollout {numbers Lunch}}", ["plan", "lunch", "decoy"]),
+    ("subject:{Rollout (Q4 numbers)}", ["plan", "decoy"]),
+    ("subject:{from:me Rollout}", ["plan"]),
+    ("subject:{Rollout label:inbox}", ["plan"]),
+    ("subject:{Rollout -from:me}", ["plan", "deck", "decoy"]),
+    ("subject: {Rollout from:me}", ["plan", "lunch"]),
+    ("-subject:{Rollout from:me}", ["deck", "decoy"]),
+    ("NOT subject:{Rollout}", ["deck", "lunch", "decoy"]),
+    ("(subject:{Rollout from:me})", ["plan", "lunch"]),
+    ('subject:"{Rollout from:me}"', ["plan", "lunch"]),
+    ('-"{Rollout from:me}"', ["deck"]),
+    ('NOT "{Rollout from:me}"', ["deck"]),
+    ('numbers"{Rollout from:me}"', ["decoy"]),
+    ("subject:{}", ["plan", "deck", "lunch", "decoy"]),
+]
+
+
+def test_gmail_subject_and_quoted_brace_groups(tmp_path):
+    """Each row is how the comments on `_gmail_brace_leads` and `_gmail_subject_terms` read its
+    query, over both listings. `decoy` holds `Rollout` in its body but not its subject, so it
+    tells a subject search from a free-text one."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": author,
+            "to": to,
+            "label_ids": [label],
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content, author, to, label in [
+            ("plan", "Rollout plan", "probe attached", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("deck", "Q4 deck", "final numbers", "bob@acme.com", "ava@acme.com", "INBOX"),
+            ("lunch", "Lunch probe", "Friday?", "ava@acme.com", "bob@acme.com", "SENT"),
+            ("decoy", "Q4 numbers", "Rollout delayed", "bob@acme.com", "ava@acme.com", "INBOX"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_SUBJECT_BRACE_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
 def test_gmail_empty_address_tokens_preserve_quoted_subjects(tmp_path):
     """Ignoring an empty address operator must not edit a quoted value or change empty subjects."""
     records = [

@@ -1676,7 +1676,7 @@ def _gmail_closed_quote(m: re.Match) -> str:
 
 _GMAIL_LONG_RUN = re.compile(r"[A-Za-z0-9]{522,}")
 # The operators whose value keeps a long run, read by `_gmail_long_runs`.
-_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:label|in|has|newer_than|older_than):"?\Z')
+_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:label|in|has|newer_than|older_than):"?[()\[\]]*\Z')
 
 
 def _gmail_long_runs(q: str) -> str:
@@ -1840,6 +1840,17 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and value.startswith('"')
                 and not _GMAIL_ADDRESS_WORD.search(value)
             ):
+                return " "
+            # A quoted `has:` value of a long run, or holding no word character, is the word `has`:
+            # real answers the ids of `has` for `has:""`, `has:"()"`, `has:"R"` and `has:"(R)"` with
+            # R a run of 522 letters, and for `has:"[R]"`. A quoted `has:` value is not stripped of
+            # brackets: `has:"(attachment)"` answered nothing where `has:attachment` answered many.
+            # An empty quoted `in:` is no operator, as `in:"()"` answers every message.
+            if key == "has" and value.startswith('"') and (
+                not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value)
+            ):
+                return "has"
+            if key == "in" and value.startswith('"') and not _GMAIL_ADDRESS_WORD.search(value):
                 return " "
             # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
             # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered

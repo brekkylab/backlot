@@ -1615,6 +1615,16 @@ def _gmail_closed_quote(m: re.Match) -> str:
     return f'{dashes}{key}"{_GMAIL_TRAILING_OPERATOR.sub("", content)}"'
 
 
+def _gmail_term_left_out(term: str) -> bool:
+    """Whether a Gmail search term is long enough that real Gmail leaves it out of the search
+    altogether, as if it had not been typed. Measured against gmail.googleapis.com on 2026-11-21
+    on a mailbox of 840 messages: a term of 522 or more of `x`, `y` or `1`, alone, beside another
+    term, after `subject:` and inside `{…}`, answered what the search without the term answers,
+    and at 521 characters the term was a word again. 600 of `é` answered no messages, so the rule
+    measured is the one for ASCII terms."""
+    return len(term) >= 522 and term.isascii()
+
+
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
@@ -1634,6 +1644,8 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
             value = m.group(2)
+            if _gmail_term_left_out(value.strip('"')):
+                return " "
             if not value and key not in _GMAIL_ADDRESS_KEYS:
                 if key in _GMAIL_DROPPED_WHEN_EMPTY:
                     return " "
@@ -1762,6 +1774,7 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     free = re.sub(" +", " ", free).strip(" ")
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
         words = [t for t in free.split(" ") if t.strip("\xa0") not in ("", "+", "-", '""')]
+        words = [t for t in words if not _gmail_term_left_out(t.lstrip("-").strip('"').rstrip("+"))]
         words = ["not" if _GMAIL_NOT_GLUE.fullmatch(t) else t for t in words]
         words, nothing = _gmail_not_words(words)
         if nothing:

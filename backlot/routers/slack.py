@@ -479,6 +479,55 @@ def post_charset_warning(content_type: str | None, has_body: bool) -> str | None
     return "missing_charset" if has_body and not named else None
 
 
+#: The methods real's edge leaves a body of any size to (slack.com/api, 2026-11-15):
+#: `chat.postMessage` answered bodies to 16777217 bytes the same way, and `chat.update`,
+#: `files.upload`, `files.completeUploadExternal` and `chat.unfurl` one of 2097153.
+_UNBOUNDED_BODY_METHODS = frozenset(
+    {
+        "chat.postMessage",
+        "chat.update",
+        "files.upload",
+        "files.completeUploadExternal",
+        "chat.unfurl",
+    }
+)
+#: The most bytes of a body real's edge reads before it answers 413 Payload Too Large
+#: (slack.com/api, 2026-11-15): a body of 2097152 bytes is served, one of 2097153 refused.
+_BODY_LIMIT = 2_097_152
+#: The 413's body and headers, as real's edge answers them (slack.com/api, 2026-11-15).
+_PAYLOAD_TOO_LARGE_BODY = b"Payload Too Large"
+_PAYLOAD_TOO_LARGE_HEADERS = {
+    "server": "envoy",
+    "x-edge-backend": "envoy-www",
+    "connection": "close",
+}
+
+
+def body_too_large(
+    method: str | None, content_length: int | None = None, body: bytes | None = None
+) -> bool:
+    """Whether real's edge refuses a Slack request body of this size with 413 Payload Too Large:
+    a `Content-Length` above :data:`_BODY_LIMIT`, or a body past it once read, on every method
+    but :data:`_UNBOUNDED_BODY_METHODS`. The method is the name :func:`method_name` reads, case
+    as sent, so `chat.postmessage` is bounded and `chat%2EpostMessage` is `chat.postMessage`."""
+    if method in _UNBOUNDED_BODY_METHODS:
+        return False
+    if content_length is not None and content_length > _BODY_LIMIT:
+        return True
+    return body is not None and len(body) > _BODY_LIMIT
+
+
+def payload_too_large_response() -> Response:
+    """Real's edge's answer to a body past :data:`_BODY_LIMIT`: 413 Payload Too Large, 17 bytes
+    under `content-type: text/plain`, with the edge's `server`, `x-edge-backend` and `connection`
+    headers (slack.com/api, 2026-11-15)."""
+    return Response(
+        _PAYLOAD_TOO_LARGE_BODY,
+        status_code=413,
+        headers={"content-type": "text/plain", **_PAYLOAD_TOO_LARGE_HEADERS},
+    )
+
+
 def read_post_body(
     content_type: str | None, body: bytes, method: str | None = None
 ) -> tuple[dict[str, str], str | None]:
@@ -552,10 +601,13 @@ def read_body(
     `POST`'s and refused only for a name, `invalid_arg_name` or `invalid_array_arg`. Measured
     against slack.com/api on 2026-10-20: a form `token=<bogus>` under each of them is
     `invalid_auth`, and a form `{}`, a body with no Content-Type and one under `text/html` are read
-    as no body.
+    as no body. A body past :data:`_BODY_LIMIT` is refused whatever the verb, with
+    `payload_too_large` (slack.com/api, 2026-11-15).
 
     ``method`` is the Slack method the path names, which decides whether a JSON body is read at
     all (:data:`JSON_BODY_METHODS`)."""
+    if body_too_large(method, body=body):
+        return {}, "payload_too_large"
     args, error = read_post_body(content_type, body, method)
     if verb != "POST" and error not in ("invalid_arg_name", "invalid_array_arg"):
         return args, None

@@ -8413,12 +8413,21 @@ _SPELT_IN_ANOTHER_CASE_ROWS = [
     ("GET", "/SEARCH/users", "bad bearer", 401, None, None),
     ("GET", "/Search/Labels?q=x", "bad bearer", 401, None, None),
     ("GET", "/USER/k%65ys", "bad bearer", 401, None, None),
+    ("GET", "/AGENTS/automations", "no credential", 401, "core", None),
+    ("GET", "/agents/AUTOMATIONS", "no credential", 401, "core", None),
+    ("GET", "/AGENTS/automations/6", "no credential", 401, "core", None),
+    ("GET", "/agents/automations/8/TASKS", "no credential", 401, "core", None),
+    ("GET", "/AGENTS/automations", "bad bearer", 401, None, None),
+    ("GET", "/AGENTS/automations/7", "bad bearer", 401, None, None),
+    ("GET", "/agents/automations/8/TASKS", "bad bearer", 401, None, None),
 ]
 
 
 def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
     gh_client, gh_admin_h, gh_org
 ):
+    from backlot.routers.github import RateLimitWindows
+
     c, _ = gh_client
     senders = {
         "no credential": {},
@@ -8432,6 +8441,8 @@ def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
 
     answered, expected = {}, {}
     for method, path, sender, status, resource, echo in _SPELT_IN_ANOTHER_CASE_ROWS:
+        # a window per row: the rows with no credential spend more than the 60 of one
+        c.app.state.github_rate_limits = RateLimitWindows()
         headers = senders[sender]
         r = c.request(method, url(path), headers=headers)
         # a 401 carries the refusal's body, so its control is the spelling as published, sent by
@@ -8500,60 +8511,60 @@ def test_github_an_automations_operation_spelt_in_another_case_is_refused_for_it
     assert not any(name.startswith("x-ratelimit-") for name in bad.headers)
 
 
-#: (path, the status, media type and body a token that resolves is answered) for `GET
-#: /agents/automations/{id}` and the two single-segment paths under it that name an operation of
-#: their own, as `backlot.main.answer_an_automations_id_with_an_empty_404` and the router answer
-#: them: the id is the empty 404 with no `content-type`, the named operations the JSON 404.
-_AUTOMATIONS_ID_ROWS = [
-    ("/github/agents/automations/1", (404, None, b"")),
-    ("/github/agents/automations/42", (404, None, b"")),
-    (
-        "/github/agents/automations/available-tools",
-        (404, "application/json", None),
-    ),
-    (
-        "/github/agents/automations/available-triggers",
-        (404, "application/json", None),
-    ),
-    ("/github/agents/automations/1/tasks", (404, "application/json", None)),
+#: (a path under `/github/agents/automations`, the status, media type and body a token that
+#: resolves gets): the agents backend's text `404 page not found` for a spelling in another case
+#: (``backlot.routers.github._AUTOMATIONS_OPERATIONS``), and the empty 404 with no `content-type`
+#: for one automation or its tasks, whatever the id
+#: (``backlot.main.answer_an_automation_or_its_tasks_with_an_empty_404``).
+_AUTOMATIONS_ROWS = [
+    ("/AGENTS/automations", 404, "text/plain", b"404 page not found\n"),
+    ("/agents/AUTOMATIONS", 404, "text/plain", b"404 page not found\n"),
+    ("/Agents/Automations", 404, "text/plain", b"404 page not found\n"),
+    ("/AGENTS/automations/1", 404, "text/plain", b"404 page not found\n"),
+    ("/agents/automations/1/TASKS", 404, "text/plain", b"404 page not found\n"),
+    ("/agents/Automations/1/tasks", 404, "text/plain", b"404 page not found\n"),
+    ("/agents/automations/ABC/TASKS", 404, "text/plain", b"404 page not found\n"),
+    ("/agents/AUTOMATIONS/abc", 404, "text/plain", b"404 page not found\n"),
+    ("/agents/automations/1", 404, None, b""),
+    ("/agents/automations/ABC", 404, None, b""),
+    ("/agents/automations/abc", 404, None, b""),
+    ("/agents/automations/ab%43", 404, None, b""),
+    ("/agents/automations/%31", 404, None, b""),
+    ("/agents/automations/available-tools", 404, None, b""),
+    ("/agents/automations/AVAILABLE-TOOLS", 404, None, b""),
+    ("/agents/automations/available-triggers", 404, None, b""),
+    ("/agents/automations/Available-Triggers", 404, None, b""),
+    ("/agents/automations/1/tasks", 404, None, b""),
+    ("/agents/automations/ABC/tasks", 404, None, b""),
+    ("/agents/automations/abc/tasks", 404, None, b""),
+    ("/agents/automations/available-tools/tasks", 404, None, b""),
 ]
 
 
-@pytest.mark.parametrize("path, answer", _AUTOMATIONS_ID_ROWS)
-def test_github_an_automations_id_is_the_empty_404_and_its_neighbours_are_not(
-    gh_client, gh_admin_h, path, answer
+def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it(
+    gh_client, gh_admin_h
 ):
-    """Each row carries the five `x-ratelimit-*` on `core` and counted, and no version echo,
-    pinned to an unknown version or not. The empty rows carry no body and no `content-type`."""
+    """Each answer carries the five `x-ratelimit-*` on `core`, counted, and no version echo, with
+    an unknown version pinned or not."""
     c, _ = gh_client
-    status, media, body = answer
-    for headers in (gh_admin_h, {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}):
-        r = c.get(path, headers=headers)
-        assert r.status_code == status, headers
-        content_type = r.headers.get("content-type")
-        assert (content_type.split(";")[0] if content_type else None) == media, headers
-        if body is not None:
-            assert r.content == body, headers
-        assert "x-github-api-version-selected" not in r.headers, headers
-        assert r.headers["x-ratelimit-resource"] == "core", headers
-    used = int(c.get(path, headers=gh_admin_h).headers["x-ratelimit-used"])
-    assert int(c.get(path, headers=gh_admin_h).headers["x-ratelimit-used"]) == used + 1
-
-
-def test_github_an_automations_id_is_refused_for_its_credential(gh_client):
-    """`GET /agents/automations/1` refuses a credential as the spelling as published does: no
-    credential is the 401 \"Requires authentication\" on `core` with no version echo, and a
-    credential that does not resolve is the 401 \"Bad credentials\" with neither the five nor the
-    echo."""
-    c, _ = gh_client
-    r = c.get("/github/agents/automations/1")
-    assert (r.status_code, r.json()["message"]) == (401, "Requires authentication")
-    assert "x-github-api-version-selected" not in r.headers
-    assert r.headers["x-ratelimit-resource"] == "core"
-    bad = c.get("/github/agents/automations/1", headers={"Authorization": "Bearer <redacted>"})
-    assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
-    assert "x-github-api-version-selected" not in bad.headers
-    assert not any(name.startswith("x-ratelimit-") for name in bad.headers)
+    pinned = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
+    answered, expected = {}, {}
+    for path, status, media, body in _AUTOMATIONS_ROWS:
+        for headers in (gh_admin_h, pinned):
+            r = c.get(f"/github{path}", headers=headers)
+            again = c.get(f"/github{path}", headers=headers)
+            content_type = r.headers.get("content-type")
+            answered[(path, headers is pinned)] = (
+                r.status_code,
+                content_type.split(";")[0] if content_type else None,
+                r.content,
+                r.headers.get("x-ratelimit-resource"),
+                r.headers.get("x-github-api-version-selected"),
+                int(again.headers.get("x-ratelimit-used", 0))
+                - int(r.headers.get("x-ratelimit-used", 0)),
+            )
+            expected[(path, headers is pinned)] = (status, media, body, "core", None, 1)
+    assert answered == expected
 
 
 @pytest.mark.parametrize("headers", _COUNTED_TOKEN_SHAPED)

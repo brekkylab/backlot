@@ -687,14 +687,13 @@ _PUBLISHED_NOT_SERVED = published.operations(
 _ROUTED_UNPUBLISHED = published.operations(
     ("GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
-#: The `/agents/automations` operations as published, the list among them included: the agents
-#: backend answers a spelling of one of them in another case with its own text `404 page not
-#: found` rather than the operation's answer, and one automation by id, spelt as published, with
-#: an empty 404 (measured against api.github.com on 2026-11-21, one `GET` each with a token that
-#: resolves: `/AGENTS/automations`, `/agents/AUTOMATIONS`, `/Agents/Automations`,
-#: `/AGENTS/automations/1` and `/agents/automations/1/TASKS` were each the text 404, and
-#: `/agents/automations/1` the empty one; a path under `/agents/automations` that no operation
-#: names, in any case, was the JSON 404 with none of the five `x-ratelimit-*`).
+#: The operations under `/agents/automations`, the one the baseline publishes and the two of
+#: :data:`_ROUTED_UNPUBLISHED`: the agents backend answers a spelling of one of them in another
+#: case with its own text `404 page not found` rather than the operation's answer (measured against
+#: api.github.com on 2026-11-21, one `GET` each with a token that resolves: `/AGENTS/automations`,
+#: `/agents/AUTOMATIONS`, `/Agents/Automations`, `/AGENTS/automations/1` and
+#: `/agents/automations/1/TASKS` were each the text 404, and `/agents/automations/1/nosuch` the
+#: JSON 404 with none of the five `x-ratelimit-*`).
 _AUTOMATIONS_OPERATIONS = published.operations(
     ("GET /agents/automations", "GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
@@ -1162,10 +1161,11 @@ def is_an_unserved_operation_spelt_in_another_case(method: str, path: str) -> bo
 
 def _an_automations_operation_spelt_in_another_case(method: str, path: str) -> bool:
     """Whether ``method`` on the `/github` ``path`` is one of :data:`_AUTOMATIONS_OPERATIONS`
-    spelled in another case: the path as sent, lowered as :data:`_ASCII_LOWER` lowers it, is the
-    operation as published, and the sent spelling differs from it. A spelling that folds a letter
-    real does not fold is not one: the lowered path still holds it, so it matches no operation.
-    Only a `GET` is one, the only method the baseline publishes on these paths."""
+    spelled in another case: the path as sent, lowered as :data:`_ASCII_LOWER` lowers it, is one
+    of them, and the sent spelling differs from it. A spelling that folds a letter real does not
+    fold is not one: the lowered path still holds it, so it matches no operation. Only a `GET` is
+    one: with a token, `POST /AGENTS/automations` was the JSON 404 with none of the five
+    `x-ratelimit-*` (api.github.com, 2026-11-22)."""
     lowered = path.removeprefix("/github").translate(_ASCII_LOWER)
     return path.removeprefix("/github") != lowered and published.includes(
         _AUTOMATIONS_OPERATIONS, method, lowered
@@ -1244,12 +1244,15 @@ async def refuse_a_credential_on_a_github_route_spelt_in_another_case(
     `GET /`, which has no letter, such as `/EMOJIS` and `/repos/psf/requests/LABELS`; and
     `PATCH /REPOS/psf/zz-probe-9876` with a token that resolves was the 404 on `core` with the echo.
     A path under `/agents/` is not refused here, except a spelling in another case of an
-    `/agents/automations` operation: its credential is refused as on the spelling as published,
-    and a credential that resolves is answered the agents backend's own text `404 page not
-    found`, which the caller returns rather than passing on to the router. With no
-    `Authorization`, `/AGENTS/automations` and `/agents/AUTOMATIONS` were each the 401 "Requires
-    authentication" on `core` with no version echo, as `/agents/automations` was (measured
-    against api.github.com on 2026-11-21 between 20:29 and 20:34 UTC).
+    `/agents/automations` operation: its credential is refused as on the spelling as published, and
+    a credential that resolves is answered the agents backend's own text `404 page not found`, which
+    the caller returns rather than passing on to the router. With no `Authorization`,
+    `/AGENTS/automations` and `/agents/AUTOMATIONS` were each the 401 "Requires authentication" on
+    `core` with no version echo, as `/agents/automations` was (measured against api.github.com on
+    2026-11-21 between 20:29 and 20:34 UTC). On 2026-11-22 `/AGENTS/automations/6` and
+    `/agents/automations/8/TASKS` were that 401 too, and with `Bearer nope`, `/AGENTS/automations`,
+    `/AGENTS/automations/7` and `/agents/automations/8/TASKS` were each the 401 "Bad credentials"
+    with neither the five `x-ratelimit-*` nor the echo.
 
     The operation is named on the path as sent, which real routes: an escape in a segment an
     operation spells out is not that segment. It is refused on that path as :data:`_ASCII_LOWER`
@@ -1324,27 +1327,11 @@ def _an_agent_path(path: str) -> bool:
 _AGENT_FAMILIES = frozenset({"repos", "tasks"})
 
 
-#: The two names under `/agents/automations/` that are operations of their own, not an automation
-#: by id: real answers each a 404 of its own, so neither is the empty one an id gets.
-_AUTOMATIONS_NAMED = frozenset({"available-tools", "available-triggers"})
-
-
-def is_an_automations_id(method: str, path: str) -> bool:
-    """Whether ``method`` on the `/github` ``path`` is `GET /agents/automations/{id}` as published,
-    the id naming no operation of its own: exactly the three segments, the two literals spelt as
-    published, and a non-empty id whose spelling in another case is not one of
-    :data:`_AUTOMATIONS_NAMED`. Only a `GET` is one, the only method the baseline publishes on
-    this path."""
-    if method != "GET":
-        return False
-    parts = path.removeprefix("/github").split("/")
-    return (
-        len(parts) == 4
-        and parts[1] == "agents"
-        and parts[2] == "automations"
-        and parts[3]
-        and parts[3].translate(_ASCII_LOWER) not in _AUTOMATIONS_NAMED
-    )
+def is_an_automation_or_its_tasks(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is one of :data:`_ROUTED_UNPUBLISHED` as the
+    path is spelt: one automation by id or its tasks, whatever the id, `available-tools` and
+    `available-triggers` among them."""
+    return published.includes(_ROUTED_UNPUBLISHED, method, path.removeprefix("/github"))
 
 
 def under_an_agent_family(path: str) -> bool:

@@ -1190,6 +1190,68 @@ def attach_warning(payload: dict, warning: str) -> dict:
     return payload
 
 
+#: The argument names `api.test` leaves out of its echo (slack.com/api, 2026-10-20): the
+#: request's own `t`, `pretty`, `slack_route` and `callback`, and any name starting `_x_`
+#: (`_x_id`, `_x_csid`, `_x_mode`, `_x_version_ts`, `_x_gantry`, `_x_foo`); `_x`, `_xfoo`,
+#: `_X_id` and `x_x_id` are echoed, as are `T`, `tt`, `fp` and `cachebuster`.
+_API_TEST_ECHO_SILENT = ("t", "pretty", "slack_route", "callback")
+
+
+def _api_test_args(args: dict[str, str | None]) -> dict[str, str | None]:
+    """The arguments `api.test` echoes: every argument it was sent but the names real leaves out
+    (:data:`_API_TEST_ECHO_SILENT` and the `_x_`-prefixed ones)."""
+    return {
+        name: value
+        for name, value in args.items()
+        if name not in _API_TEST_ECHO_SILENT and not name.startswith("_x_")
+    }
+
+
+#: A `callback` argument real wraps an answer in (slack.com/api, 2026-10-20): a dotted name of
+#: JavaScript identifiers (`f`, `f.g` kept as sent); an empty one, and `<script>`, are the plain
+#: JSON answer.
+_CALLBACK = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*")
+
+
+def answer_callback(request: Request) -> str | None:
+    """The `callback` argument's value where real wraps the answer in it, or None: the body's
+    (``_param``), else the query string's, where it is a dotted name of JavaScript identifiers."""
+    callback = _param(request, "callback")
+    if callback is None or not _CALLBACK.fullmatch(callback):
+        return None
+    return callback
+
+
+def answer_pretty(request: Request) -> bool:
+    """Whether real indents the answer for the request's `pretty` argument: any value but `0`
+    and an empty one (`1`, `2`, `true`, `false`, `x`, `yes` on `api.test`, `1` on `auth.test`;
+    slack.com/api, 2026-10-20)."""
+    pretty = _param(request, "pretty")
+    return pretty is not None and pretty not in ("", "0")
+
+
+def render_answer(body: bytes, *, callback: str | None, pretty: bool) -> tuple[bytes, str | None]:
+    """The bytes real answers a Slack request with, and the Content-Type where it differs from
+    the response's own: the JSON answer indented by four spaces with a newline at its end where
+    `pretty` holds, wrapped as `/* */ <callback>(<answer>);` where `callback` holds, under
+    `application/json; charset=utf-8`. A body that is not a JSON object is left as it is, so a
+    front door's page or a refused body's error passes through unwrapped."""
+    if callback is None and not pretty:
+        return body, None
+    try:
+        text = body.decode("utf-8")
+        payload = json.loads(text)
+    except (UnicodeDecodeError, ValueError):
+        return body, None
+    if not isinstance(payload, dict):
+        return body, None
+    if pretty:
+        text = json.dumps(payload, indent=4, ensure_ascii=False) + "\n"
+    if callback is not None:
+        return f"/* */ {callback}({text});".encode("utf-8"), "application/json; charset=utf-8"
+    return text.encode("utf-8"), None
+
+
 # `sort_dir` is an enum on search.messages, search.all and search.files, matched as sent: measured
 # on 2026-10-03 and 2026-10-05, `ASC` and `bogus` answer this on all three and `Desc`, ` asc` and
 # `asc ` on search.messages, while `asc` and `desc` are served. An empty `sort_dir` is served on
@@ -1416,7 +1478,9 @@ def _user_obj(conn, email: str, caller: Caller) -> dict:
 @router.api_route("/api.test", methods=["GET", "POST"], response_model=SlackApiTest)
 async def api_test(request: Request):
     """Real Slack's connectivity check: served with no credential at all, and an echo of the
-    arguments it was sent, as `args`. Several real clients call it at construction/connect time
+    arguments it was sent, as `args`. The echo leaves out the request's own `t`, `pretty`,
+    `slack_route` and `callback` and any name starting `_x_`, as real does. Several real clients
+    call it at construction/connect time
     (e.g. llama-index's `SlackReader.__init__`), so Backlot must answer it rather than 404.
 
     A credential sent is read as on every other method (``_caller_or_error``) and refused ahead of
@@ -1438,6 +1502,7 @@ async def api_test(request: Request):
     token = auth.slack_token(request)
     if token is not None:
         args["token"] = token
+    args = _api_test_args(args)
     error = _param(request, "error")
     if error:
         error = None if isinstance(error, Undecodable) else error

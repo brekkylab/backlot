@@ -5726,18 +5726,37 @@ _NO_RESTRICTION_ROWS = [
         for jql in (
             *("order by key", "ORDER BY created DESC", "Order By key", "order by nosuchfield"),
             *("order  by key", "order\tby key", "order\nby key", "order\rby key"),
-            *("  order by key", "\r\norder by key", "order by\tkey"),
+            *("  order by key", "\r\norder by key", "order by\tkey", "order\r\nby key"),
             "ORDER BY key ASC, created DESC",
+        )
+    ],
+    # The other whitespace the check reads, between the words and in front of them: a
+    # no-break space, U+2003, U+000B, U+000C and U+001C each drew the 400 on real as well.
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _UNBOUNDED_JQL)
+        for jql in (
+            "order\u00a0by key",
+            "order\u2003by key",
+            "order\x0bby key",
+            "order\x0cby key",
+            "order\x1cby key",
+            "\u00a0order by key",
+            "\u2003order by key",
+            "\x0border by key",
+            "\x0corder by key",
+            "\x1corder by key",
         )
     ],
     *[
         ("get", 3, {"jql": jql, "maxResults": 1}, None, _UNBOUNDED_JQL)
         for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
     ],
+    ("get", 2, {"jql": "order by key", "maxResults": 1}, None, _UNBOUNDED_JQL),
     ("post", 2, {}, {"jql": "order by key", "maxResults": 1}, _UNBOUNDED_JQL),
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
+    ("get", 2, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
     ("post", 2, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
 ]
 
@@ -5757,8 +5776,10 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
 
 
 def test_jira_search_refuses_a_jql_that_restricts_nothing(client, admin_h):
-    """Measured 2026-09-16 (the two rows with no `jql`) and 2026-11-22 (the rest) on Jira Cloud:
-    real refused the rows refused here with its unbounded-JQL 400 and served the others."""
+    """A `jql` that restricts nothing draws the unbounded-JQL 400, not the unfiltered corpus:
+    none at all, or one that opens with `ORDER BY`. The measurement is the one the handler's
+    comment on the unbounded check records, and each row is a request it sent, with the answer
+    it got."""
     assert _failures(_jql_search, _NO_RESTRICTION_ROWS, client, admin_h) == {}
 
 

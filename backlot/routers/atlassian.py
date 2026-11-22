@@ -1139,9 +1139,14 @@ async def jira_search(request: Request):
         # Checked after the page token and before the unbounded-JQL refusal, both measured too
         # (2026-09-18).
         raise errors_atlassian.max_results_out_of_range()
-    # No `jql` at all is refused rather than answered as the unfiltered corpus (measured
-    # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
-    if not jql.strip():
+    # No `jql` at all (measured 2026-09-16), or one with nothing before its `ORDER BY` (measured
+    # 2026-11-21 and 2026-11-22), is refused rather than answered as the unfiltered corpus: the
+    # requests real refused with this on Jira Cloud, and those it served beside them, are the rows
+    # of test_jira_search_refuses_a_jql_that_restricts_nothing. Real separates the two words with a
+    # space, tab, LF or CR; a no-break space, U+2003, U+000B, U+000C or U+001C between them, or a
+    # no-break space in front, drew a JQL syntax-error 400 on 2026-11-22, and `\s` reads each as
+    # whitespace, so Backlot answers them with this 400 rather than a page.
+    if not jql.strip() or re.match(r"\s*order\s+by\b", jql, flags=re.IGNORECASE):
         raise errors_atlassian.unbounded_jql()
     if reconcile_null:
         # Real answers this after the page token, the range and the JQL, and before it looks up

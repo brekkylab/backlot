@@ -1160,7 +1160,7 @@ def test_jira_search_filtered_by_project(client, admin_h):
     # is the only Jira project in the SAMPLE corpus -- the earlier assertions are what prove
     # filtering, not this equality). It still has to RESTRICT, or real refuses it: an empty jql,
     # and an `ORDER BY` alone, are both the unbounded refusal -- see
-    # test_jira_search_refuses_no_jql_at_all.
+    # test_jira_search_refuses_a_jql_that_restricts_nothing.
     unfiltered = client.get(
         "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
     ).json()
@@ -5707,22 +5707,74 @@ def test_jira_search_post_takes_its_parameters_from_the_body_and_get_from_the_qu
     assert got.json()["issues"][0]["key"] == in_body.json()["issues"][0]["key"]
 
 
-@pytest.mark.parametrize("method", ["get", "post"])
-def test_jira_search_refuses_no_jql_at_all(client, admin_h, method):
-    """Measured 2026-09-16, on both methods: no `jql` anywhere Backlot reads it for that method is
-    the same 400 real gives, not the unfiltered corpus. A POST's own query string carrying a `jql`
-    still draws it, because the body is the only place POST reads one."""
-    if method == "get":
-        r = client.get("/atlassian/rest/api/3/search/jql?maxResults=5", headers=admin_h)
+_UNBOUNDED_JQL = {
+    "errorMessages": [
+        "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+    ],
+    "errors": {},
+}
+#: Real's own JQL syntax-error 400, whose body Backlot does not write: only the status is compared.
+_JQL_SYNTAX_ERROR = 400
+
+# Method, API version, query string, body and what real answers: no `jql` where the method reads
+# one (POST reads it from the body alone, so one in its query string is none) and a `jql` with
+# nothing before its `ORDER BY` are refused; one with a clause before its `ORDER BY` is served,
+# which `None` stands for; and the two words parted by whitespace real does not read as such are
+# its syntax error, `_JQL_SYNTAX_ERROR`.
+_NO_RESTRICTION_ROWS = [
+    ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
+    ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _UNBOUNDED_JQL)
+        for jql in (
+            *("order by key", "ORDER BY created DESC", "Order By key", "order by nosuchfield"),
+            *("order  by key", "order\tby key", "order\nby key", "order\rby key"),
+            *("  order by key", "\r\norder by key", "order by\tkey"),
+            "ORDER BY key ASC, created DESC",
+        )
+    ],
+    # The whitespace `\s` reads beyond what real separates the words with.
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _JQL_SYNTAX_ERROR)
+        for jql in (
+            *("order\u00a0by key", "order\u2003by key", "order\x0bby key"),
+            *("order\x0cby key", "order\x1cby key", "\u00a0order by key"),
+        )
+    ],
+    *[
+        ("get", 3, {"jql": jql, "maxResults": 1}, None, _UNBOUNDED_JQL)
+        for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
+    ],
+    ("post", 2, {}, {"jql": "order by key", "maxResults": 1}, _UNBOUNDED_JQL),
+    ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
+    ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
+    ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
+    ("post", 2, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
+]
+
+
+def _jql_search(client, admin_h, method, version, query, body, refused):
+    r = client.request(
+        method,
+        f"/atlassian/rest/api/{version}/search/jql",
+        headers=admin_h,
+        params=query,
+        json=body,
+    )
+    if refused is None:
+        assert r.status_code == 200, r.text
+    elif refused == _JQL_SYNTAX_ERROR:
+        assert r.status_code == 400, r.text
     else:
-        r = _search_post(client, admin_h, query="?jql=project+%3D+payments&maxResults=1")
-    assert r.status_code == 400, r.text
-    assert r.json() == {
-        "errorMessages": [
-            "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
-        ],
-        "errors": {},
-    }
+        assert (r.status_code, r.json()) == (400, refused), r.text
+
+
+def test_jira_search_refuses_a_jql_that_restricts_nothing(client, admin_h):
+    """A `jql` that restricts nothing draws the unbounded-JQL 400, not the unfiltered corpus:
+    none at all, or one that opens with `ORDER BY`. The measurement is the one the handler's
+    comment on the unbounded check records, and each row is a request it sent, with the answer
+    it got."""
+    assert _failures(_jql_search, _NO_RESTRICTION_ROWS, client, admin_h) == {}
 
 
 def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):

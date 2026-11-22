@@ -630,6 +630,8 @@ def resolve_transcripts(
     if mine:
         hosts.append(caller or "\x00none")
     if user_id:
+        # Real refuses an id that names no user ahead of a `date` past `_DATE_SERVED` and a
+        # `channel_id` that names no channel (api.fireflies.ai, 2026-11-21).
         email = _email_for_user_id(ctx, user_id)
         if email is None:
             raise _user_not_found(ctx)

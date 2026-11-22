@@ -1274,11 +1274,12 @@ def test_fireflies_user_root_answers_for_a_person_only(client, admin_h, tokens_y
 def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h, tokens_yaml):
     """Each query names nothing its caller can read and draws the bytes real answered it with:
     `data` null beside the error ``_not_in_team``, ``_object_not_found``, ``_user_not_found`` or
-    ``_channel_not_found`` builds, its `correlationId` eight letters and digits — but for an
-    empty `channel_id`, which real reads as none. A transcript the caller cannot see, or a
-    channel holding only such transcripts, draws what one that does not exist draws, and
-    `hana@acme.com`, who can see it, reads it. An id the caller can read with a lone surrogate
-    after it, sent as a variable, names nothing too (`backlot.graphql.node_utf8`)."""
+    ``_channel_not_found`` builds, its `correlationId` eight letters and digits — but for an empty
+    `channel_id`, which real reads as none, and the caller's own `user_id`, which draws what
+    `mine: true` draws. A transcript the caller cannot see, or a channel holding only such
+    transcripts, draws what one that does not exist draws, and `hana@acme.com`, who can see it,
+    reads it. An id the caller can read with a lone surrogate after it, sent as a variable, names
+    nothing too (`backlot.graphql.node_utf8`)."""
     import re
 
     def not_in_team(column=3):
@@ -1357,6 +1358,20 @@ def test_fireflies_an_id_naming_nothing_answers_with_reals_error(client, admin_h
             '{"data":{"transcripts":[{"id":"%s"}]}}\n' % hidden
         ),
         ("ava@acme.com", '{ transcripts(user_id: "nope") { id } }', None): user_not_found,
+        ("ava@acme.com", '{ transcripts(user_id: " ") { id } }', None): user_not_found,
+        ("ava@acme.com", '{ transcripts(user_id: "%s") { id } }' % ava_id.lower(), None): (
+            user_not_found
+        ),
+        ("ava@acme.com", '{ transcripts(user_id: "%s ") { id } }' % ava_id, None): user_not_found,
+        ("ava@acme.com", '{ transcripts(user_id: "nope", channel_id: "x") { id } }', None): (
+            user_not_found
+        ),
+        ("ava@acme.com", '{ transcripts(user_id: "nope", date: 1e15) { id } }', None): (
+            user_not_found
+        ),
+        ("ava@acme.com", '{ transcripts(user_id: "%s") { id } }' % ava_id, None): (
+            ff_gql(client, "{ transcripts(mine: true) { id } }", ava_h).text
+        ),
         ("ava@acme.com", '{ transcripts(channel_id: "") { id } }', None): (
             ff_gql(client, "{ transcripts { id } }", ava_h).text
         ),

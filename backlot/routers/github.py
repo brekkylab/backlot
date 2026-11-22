@@ -1482,6 +1482,7 @@ RATE_LIMITS: dict[str, _ResourceLimit] = {
     "core": _ResourceLimit(60, 5000, RATE_LIMIT_WINDOW),
     "search": _ResourceLimit(10, 30, SEARCH_RATE_LIMIT_WINDOW),
     "code_search": _ResourceLimit(10, 10, SEARCH_RATE_LIMIT_WINDOW),
+    "webhook_deliveries": _ResourceLimit(60, 500, SEARCH_RATE_LIMIT_WINDOW),
 }
 
 
@@ -1508,12 +1509,14 @@ def rate_limit_window(
     return counted, (limits.authenticated if authenticated else limits.anonymous)
 
 
-def rate_limit_resource(path: str, status_code: int, unparseable: bool = False) -> str:
+def rate_limit_resource(
+    path: str, status_code: int, unparseable: bool = False, *, method: str = "GET"
+) -> str:
     """The resource a request to ``path`` answered with ``status_code`` counts against.
 
     `code_search` for code search, `search` for the other search endpoints and `core` for
-    everything else, including the 401 code search answers a caller with no credential: that
-    refusal is the gateway's, not the code search backend's, and counts against `core` (measured:
+    other operations except the webhook reads below, including the 401 code search answers a
+    caller with no credential: that refusal is the gateway's, not the code search backend's, and counts against `core` (measured:
     `limit: 60`, `resource: core` on it, where the same route authenticated answers `limit: 10`,
     `resource: code_search`), the same split ``errors.github.json_media_type`` draws for the
     charset.
@@ -1528,6 +1531,22 @@ def rate_limit_resource(path: str, status_code: int, unparseable: bool = False) 
     An ``unparseable`` caller's 401 on code search counts against `code_search` instead: `Basic`
     and the base64 of `x:<40 a>` or `x:GHP_<36 A>` was the 401 "Bad credentials" with
     `limit: 0` and `resource: code_search` (measured against api.github.com 2026-10-26)."""
+    # api.github.com, 2026-11-22: authenticated GET/HEAD /repos/{owner}/{repo}/hooks,
+    # its hook, config and delivery reads, and /orgs/{org}/hooks and deliveries answer
+    # webhook_deliveries at 500/minute, even on 404. Uppercase HOOKS does too; anonymous
+    # 401s stay on core. A first HEAD's reset was 60 seconds after Date, then 59 and 58.
+    if (
+        method in {"GET", "HEAD"}
+        and status_code != 401
+        and not unparseable
+        and re.fullmatch(
+            r"/github/(?:repos/[^/]+/[^/]+|orgs/[^/]+)/hooks"
+            r"(?:/[^/]+(?:/(?:config|deliveries(?:/[^/]+)?))?)?",
+            path,
+            re.IGNORECASE | re.ASCII,
+        )
+    ):
+        return "webhook_deliveries"
     if path == CODE_SEARCH_PATH:
         return "core" if status_code == 401 and not unparseable else "code_search"
     if path.startswith(SEARCH_PREFIX):
@@ -1738,7 +1757,9 @@ def rate_limit_headers(request: Request, status_code: int, *, count: bool = True
     ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     unparseable = key.startswith("unparseable:")
-    resource = rate_limit_resource(request.url.path, status_code, unparseable)
+    resource = rate_limit_resource(
+        request.url.path, status_code, unparseable, method=request.method
+    )
     counted, limit = rate_limit_window(resource, authenticated, unparseable)
     windows = _rate_limit_windows(request.app)
     read = windows.count if count and request.url.path != RATE_LIMIT_PATH else windows.status
@@ -1871,7 +1892,9 @@ def rate_limit_refusal(request: Request) -> Response | None:
         return None
     key, authenticated = rate_limit_caller(request)
     unparseable = key.startswith("unparseable:")
-    resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200, unparseable)
+    resource = rate_limit_resource(
+        request.url.path, 401 if not authenticated else 200, unparseable, method=request.method
+    )
     if resource == "code_search" and _a_header_without_a_credential(request):
         return None
     counted, limit = rate_limit_window(resource, authenticated, unparseable)
@@ -3165,7 +3188,7 @@ async def get_rate_limit(request: Request):
     `.search` and `.code_search`, each `{limit, used, remaining, reset}`, read from the windows the
     `x-ratelimit-*` headers report (:class:`RateLimitWindows`) without counting the read.
 
-    The three resources are the ones Backlot counts, of the fifteen real's authenticated answer
+    The three resources reported here are among the fifteen real's authenticated answer
     carries (`graphql`, `integration_manifest`, `scim`, …) and the five its anonymous one does.
     They are listed in the order that answer lists them in, which is not the same order for a
     request with no `Authorization` as for one with a token or a value real cannot parse

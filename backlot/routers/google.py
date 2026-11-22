@@ -1846,8 +1846,10 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             # R a run of 522 letters, and for `has:"[R]"`. A quoted `has:` value is not stripped of
             # brackets: `has:"(attachment)"` answered nothing where `has:attachment` answered many.
             # An empty quoted `in:` is no operator, as `in:"()"` answers every message.
-            if key == "has" and value.startswith('"') and (
-                not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value)
+            if (
+                key == "has"
+                and value.startswith('"')
+                and (not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value))
             ):
                 return "has"
             if key == "in" and value.startswith('"') and not _GMAIL_ADDRESS_WORD.search(value):

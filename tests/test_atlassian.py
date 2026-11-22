@@ -6118,12 +6118,22 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
     assert paths["post"]["requestBody"]["required"] is True
 
 
+#: a `Content-Type` Spring cannot read, which the 415 names no type for
+_UNREAD = object()
+
+
 @pytest.mark.parametrize(
     "content_type,named,slash",
     [
         (None, "null", ""),
         (None, "null", "/"),
         ("text/plain", "text/plain", ""),
+        ("TEXT/Plain;Charset=UTF-8", "text/plain;Charset=UTF-8", ""),
+        ("foo", _UNREAD, ""),
+        ("application/json;q=0x1p1024", _UNREAD, ""),
+        # measured 2026-10-16
+        ("application/json" + chr(0xA0), _UNREAD, ""),
+        (chr(0x85) + "application/json", _UNREAD, ""),
         ("application/xml", "application/xml", ""),
         ("*/*", "*/*", ""),
     ],
@@ -6131,29 +6141,40 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
 def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     client, admin_h, content_type, named, slash
 ):
-    """Measured: the header decides before the bytes are looked at, so the JSON body sent with each
-    of these is never reached."""
+    """The 415 ``routers.atlassian._refuse_a_search_media_type`` describes: the header decides
+    before the bytes are looked at, so the JSON body sent with each of these is never reached. Names
+    the type as Spring reads it, sends Accept, and carries none of the rate-limit headers."""
     headers = dict(admin_h)
     if content_type is not None:
-        headers["Content-Type"] = content_type
-    r = client.post(
+        headers["Content-Type"] = content_type.encode("latin-1")
+    request = client.build_request(
+        "POST",
         f"/atlassian/rest/api/3/search/jql{slash}",
         headers=headers,
         content=json.dumps({"jql": "project = payments"}),
     )
+    r = _send_as_latin1(client, request)
     assert r.status_code == 415, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert r.headers["accept"] == "application/json"
+    assert "x-aaccountid" in r.headers
+    for name in ("ratelimit", "ratelimit-policy", "x-ratelimit-limit", "x-ratelimit-remaining"):
+        assert name not in r.headers
     assert r.json() == {
         "type": "about:blank",
         "title": "Unsupported Media Type",
         "status": 415,
-        "detail": f"Content-Type '{named}' is not supported.",
+        "detail": (
+            "Could not parse Content-Type."
+            if named is _UNREAD
+            else f"Content-Type '{named}' is not supported."
+        ),
         "instance": f"/rest/api/3/search/jql{slash}",
     }
 
 
 def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(client, admin_h):
-    """Case-insensitive, and parameters are ignored — all three are read on real."""
+    """Case-insensitive, and a parameter Spring can read changes nothing: real reads all four."""
     statuses = {
         content_type: client.post(
             "/atlassian/rest/api/3/search/jql",
@@ -6164,6 +6185,7 @@ def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(client, a
             "application/json",
             "APPLICATION/JSON",
             "application/json; charset=utf-8",
+            "application/json;q=0.5",
         )
     }
     assert statuses == dict.fromkeys(statuses, 200)
@@ -7120,8 +7142,6 @@ _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 _JSON_OR_TEXT = "application/json, text/plain"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
 _POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
-#: a `Content-Type` Spring cannot read, which the 415 names no type for
-_UNREAD = object()
 _JSON = "application/json"
 
 
@@ -7163,6 +7183,16 @@ _JSON = "application/json"
         ("POST", _AGENTS, "none", None, None, 415, "null", _JSON),
         ("POST", _AGENTS, "none", _JSON, "{}", 401, None, None),
         ("POST", _AGENTS, "admin", _JSON, "{}", 404, None, None),
+        (
+            "POST",
+            "/atlassian/rest/api/3/jql/parse",
+            "admin",
+            "application/json;q=0x1p1024",
+            "{}",
+            415,
+            _UNREAD,
+            _JSON,
+        ),
         # an `OPTIONS` is not checked, and an unreadable bearer is refused before the check
         ("OPTIONS", _BANNER, "none", "text/plain", "x", 401, None, None),
         ("PUT", _BANNER, "unreadable-bearer", "text/plain", "x", 403, None, None),
@@ -8700,6 +8730,7 @@ _OPERATION_REFUSALS = [
             ('application/xml;q=" 2"', _OUT_OF_RANGE.format(" 2")),
             ("application/xml;q=NaN", _OUT_OF_RANGE.format("NaN")),
             ("application/xml;q=0x1.8p0", _OUT_OF_RANGE.format("0x1.8p0")),
+            ("text/plain;q=0x1p1024", _OUT_OF_RANGE.format("0x1p1024")),
             ("application/xml;Q=0.5;q=2", _OUT_OF_RANGE.format("2")),
             ("application/xml;Charset=bogus;q=2", _OUT_OF_RANGE.format("2")),
             ("application/xml;charset=ISO_8859-1:1987;q=2", _OUT_OF_RANGE.format("2")),
@@ -9812,6 +9843,14 @@ _ACCEPT_ROWS = [
     ("GET", _INFO, "none", "application/json,*.*", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "*/json", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;q=2", None, 406, _EMPTY_HTML, b"", {}),
+    *(
+        ("GET", _INFO, "admin", accept, None, 406, _EMPTY_HTML, b"", {})
+        for accept in (
+            "application/json;q=0x1p1024",
+            "text/csv;q=0x1p1024",
+            "application/json, text/plain;q=0x1p1024",
+        )
+    ),
     ("GET", _INFO, "none", "application/json;q=1e0", None, 200, _JIRA_JSON, None, {}),
     ("GET", _INFO, "none", "application/json;q=\"0.5'", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;q=10.51", None, 406, _EMPTY_HTML, b"", {}),
@@ -10488,6 +10527,7 @@ _JIRA_401 = [
     ("OPTIONS", "application/json, foo", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json,*.*", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;q=2", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;q=0x1p1024", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "text/html;q=abc, application/json", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;charset=bogus", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;charset=base64", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),

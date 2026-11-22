@@ -687,6 +687,16 @@ _PUBLISHED_NOT_SERVED = published.operations(
 _ROUTED_UNPUBLISHED = published.operations(
     ("GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
+#: The operations under `/agents/automations`, the one the baseline publishes and the two of
+#: :data:`_ROUTED_UNPUBLISHED`: the agents backend answers a spelling of one of them in another
+#: case with its own text `404 page not found` rather than the operation's answer (measured against
+#: api.github.com on 2026-11-21, one `GET` each with a token that resolves: `/AGENTS/automations`,
+#: `/agents/AUTOMATIONS`, `/Agents/Automations`, `/AGENTS/automations/1` and
+#: `/agents/automations/1/TASKS` were each the text 404, and `/agents/automations/1/nosuch` the
+#: JSON 404 with none of the five `x-ratelimit-*`).
+_AUTOMATIONS_OPERATIONS = published.operations(
+    ("GET /agents/automations", "GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
+)
 #: The operations real answers a `Basic` value naming no token with the 404 "Not Found" on a
 #: repository the caller cannot see, each with its own `documentation_url`
 #: (:func:`refuse_an_unserved_operation`).
@@ -1149,6 +1159,19 @@ def is_an_unserved_operation_spelt_in_another_case(method: str, path: str) -> bo
     )
 
 
+def _an_automations_operation_spelt_in_another_case(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is one of :data:`_AUTOMATIONS_OPERATIONS`
+    spelled in another case: the path as sent, lowered as :data:`_ASCII_LOWER` lowers it, is one
+    of them, and the sent spelling differs from it. A spelling that folds a letter real does not
+    fold is not one: the lowered path still holds it, so it matches no operation. Only a `GET` is
+    one: with a token, `POST /AGENTS/automations` was the JSON 404 with none of the five
+    `x-ratelimit-*` (api.github.com, 2026-11-22)."""
+    lowered = path.removeprefix("/github").translate(_ASCII_LOWER)
+    return path.removeprefix("/github") != lowered and published.includes(
+        _AUTOMATIONS_OPERATIONS, method, lowered
+    )
+
+
 #: Lower the ASCII letters of a path and nothing else, so a spelling that folds a letter real does
 #: not fold (a KELVIN SIGN, a LONG S) is not read as the operation it only resembles.
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -1194,7 +1217,9 @@ def _served_without_a_credential_spelt_in_another_case(method: str, path: str) -
     )
 
 
-async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: Request) -> None:
+async def refuse_a_credential_on_a_github_route_spelt_in_another_case(
+    request: Request,
+) -> Response | None:
     """Refuse a credential on a spelling in another case as real refuses it on the spelling as
     published, ahead of the router's 404: on an operation GitHub publishes and no route here
     serves, the whole of :func:`refuse_an_unserved_operation`'s refusal — "Requires
@@ -1218,17 +1243,32 @@ async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: R
     spelling in another case of each other operation of :data:`_SERVED_WITHOUT_A_CREDENTIAL` but
     `GET /`, which has no letter, such as `/EMOJIS` and `/repos/psf/requests/LABELS`; and
     `PATCH /REPOS/psf/zz-probe-9876` with a token that resolves was the 404 on `core` with the echo.
-    A path under `/agents/` is not refused here: with a token that resolves, the
-    `/agents/automations` spellings were the agents backend's own text `404 page not found`.
+    A path under `/agents/` is not refused here, except a spelling in another case of an
+    `/agents/automations` operation: its credential is refused as on the spelling as published, and
+    a credential that resolves is answered the agents backend's own text `404 page not found`, which
+    the caller returns rather than passing on to the router. With no `Authorization`,
+    `/AGENTS/automations` and `/agents/AUTOMATIONS` were each the 401 "Requires authentication" on
+    `core` with no version echo, as `/agents/automations` was (measured against api.github.com on
+    2026-11-21 between 20:29 and 20:34 UTC). On 2026-11-22 `/AGENTS/automations/6` and
+    `/agents/automations/8/TASKS` were that 401 too, and with `Bearer nope`, `/AGENTS/automations`,
+    `/AGENTS/automations/7` and `/agents/automations/8/TASKS` were each the 401 "Bad credentials"
+    with neither the five `x-ratelimit-*` nor the echo.
 
     The operation is named on the path as sent, which real routes: an escape in a segment an
     operation spells out is not that segment. It is refused on that path as :data:`_ASCII_LOWER`
     lowers it.
     """
     path = request.scope["path"]
-    if _an_agent_path(path):
-        return
     sent = (request.scope.get("raw_path") or path.encode()).decode("latin-1")
+    if _an_agent_path(path):
+        if _an_automations_operation_spelt_in_another_case(request.method, sent):
+            request.scope["path"] = sent.translate(_ASCII_LOWER)
+            try:
+                await refuse_an_unserved_operation(request)
+            finally:
+                request.scope["path"] = path
+            return PlainTextResponse("404 page not found\n", status_code=404)
+        return None
     if not _served_without_a_credential_spelt_in_another_case(
         request.method, sent
     ) and is_an_unserved_operation_spelt_in_another_case(request.method, sent):
@@ -1285,6 +1325,13 @@ def _an_agent_path(path: str) -> bool:
 
 #: The second segment of the two agent families, as :func:`under_an_agent_family` compares it.
 _AGENT_FAMILIES = frozenset({"repos", "tasks"})
+
+
+def is_an_automation_or_its_tasks(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is one of :data:`_ROUTED_UNPUBLISHED` as the
+    path is spelt: one automation by id or its tasks, whatever the id, `available-tools` and
+    `available-triggers` among them."""
+    return published.includes(_ROUTED_UNPUBLISHED, method, path.removeprefix("/github"))
 
 
 def under_an_agent_family(path: str) -> bool:

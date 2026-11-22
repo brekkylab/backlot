@@ -897,16 +897,20 @@ _GMAIL_BARE_LONE_QUOTE = re.compile(
     r'^[ \t]*"[ \t]+-*(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older'
     r"|newer_than|older_than):\S+[ \t]*$)"
 )
-# A lone quote after `subject:`, `label:`, `in:` or an address operator, then whitespace and a
-# `(` that no `)` closes. On 2026-10-25 (the record at `_GMAIL_NOT`): `subject:" (from:me`,
-# `subject:" ( from:me`, `subject:" (probe`, `subject:" ((from:me)`, `subject:" (from:me) (to:me`,
-# `label:" (from:me`, `from:" (from:me`, `to:" (from:me` and `probe subject:" (from:me` answered
-# nothing, and `-subject:" (from:me`, `-subject:" (probe`, `-label:" (from:me` and
-# `NOT subject:" (from:me` every message, where `subject:" (from:me)`, with the `)`, answered the
-# ids of `from:me`. `_parse_gmail_q` reads it before `_gmail_groups` can read the group.
+# A lone quote after `subject:`, `label:`, `in:` or an address operator, then a `(` that no `)`
+# closes, with or without whitespace in between. On 2026-10-25 (the record at `_GMAIL_NOT`):
+# `subject:" (from:me`, `subject:" ( from:me`, `subject:" (probe`, `subject:" ((from:me)`,
+# `subject:" (from:me) (to:me`, `label:" (from:me`, `from:" (from:me`, `to:" (from:me`,
+# `probe subject:" (from:me` and `subject:"(from:me` answered nothing, and `-subject:" (from:me`,
+# `-subject:" (probe`, `-label:" (from:me` and `NOT subject:" (from:me` every message, where
+# `subject:" (from:me)`, with the `)`, answered the ids of `from:me`. On 2026-11-21
+# `subject:"(probe`, `subject:"((probe)`, `label:"(inbox`, `in:"(inbox`, `from:"(me`, `to:"(me`,
+# `cc:"(me`, `bcc:"(me`, `label:"(from:me` and `from:me subject:"(probe` answered nothing, and
+# `-subject:"(probe`, `-label:"(inbox` and `NOT subject:"(probe` every message. `_parse_gmail_q`
+# reads it before `_gmail_groups` can read the group.
 _GMAIL_LONE_QUOTE_UNCLOSED = re.compile(
     r'(?<!\S)((?:NOT\s+)*)(-*)(?:subject|label|in|from|to|cc|bcc):\s*(?:"[ \t]*"\s*)*'
-    r'"(?![^"]*")\s+(.*)',
+    r'"(?![^"]*")\s*(.*)',
     re.IGNORECASE,
 )
 # A quoted run holding one operator and its value, with nothing around them but whitespace,
@@ -1260,6 +1264,19 @@ def _gmail_group_items(text: str) -> list:
     while i < len(pieces):
         piece = pieces[i]
         if piece == "(":
+            # A bracket glued to an operator's lone quote is no group: the quote takes the rest
+            # of the search as the operator's value, brackets and all (`_GMAIL_LONE_QUOTE`).
+            # Measured against gmail.googleapis.com: on 2026-10-25 `subject:"(from:me)`
+            # answered nothing, where `subject:" (from:me)`, with a space after the quote,
+            # answered what `from:me` answers; on 2026-11-21 `label:"(from:me)`,
+            # `in:"(from:me)`, `from:"(from:me)`, `to:"(from:me)`, `cc:"(from:me)`,
+            # `bcc:"(from:me)` and `subject:"(probe) from:me` answered nothing, and
+            # `subject:"(probe)` and `label:"(inbox)` what `subject:probe` and `label:inbox`
+            # answer.
+            if re.fullmatch(r"-*(?:subject|label|in|from|to|cc|bcc):\"", run, re.IGNORECASE):
+                run += piece
+                i += 1
+                continue
             depth, j = 1, i + 1
             while j < len(pieces) and depth:
                 depth += {"(": 1, ")": -1}.get(pieces[j], 0)
@@ -1657,6 +1674,70 @@ def _gmail_closed_quote(m: re.Match) -> str:
     return f'{dashes}{key}"{_GMAIL_TRAILING_OPERATOR.sub("", content)}"'
 
 
+_GMAIL_LONG_RUN = re.compile(r"[A-Za-z0-9]{522,}")
+# The operators whose value keeps a long run, read by `_gmail_long_runs`.
+_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:label|in|has|newer_than|older_than):"?\Z')
+
+
+def _gmail_long_runs(q: str) -> str:
+    """``q`` with each run of 522 or more ASCII letters and digits left out, and with it the
+    punctuation touching it other than `_`, `&`, a quote or a bracket, or a `+`, `-` or `:` in front
+    of it. A run another term follows stays, as a term that matches nothing, when nothing but `(`,
+    `{`, `+` or an opening `"` comes before it in its term and nothing but `)` or `}` after it, no
+    `{…}` group is open at the end of its term, and the next term holds a letter, digit, `_` or `&`
+    and is no `-` term, `NOT` or operator `_GMAIL_KEYS` names, a `(` or `{` in front of it aside. A
+    run in the value of an operator `_GMAIL_RUN_KEPT_IN` names stays too. An address or `subject:`
+    operator whose value was the run goes with it, and so does a run of `NOT`s in front of a term
+    left out; an `after:`, `before:`, `newer:` or `older:` one is the word it spells.
+
+    Measured against gmail.googleapis.com on 2026-11-22 between 08:52 and 09:34 UTC, comparing
+    `messages.list` id sets on a mailbox of 840 messages, with ``R`` 522 of `x` and ``S`` 522 of
+    `y`: `R`, 522 of `1`, `"R"`, `{R}`, `{R S}`, `(R)`, `-R`, `+R`, `R.`, `.R`, `R@`, `R-`, `R+`,
+    `R ""`, `NOT R`, `NOT NOT R`, `from:R`, `NOT from:R`, `from:"R"` and `subject:"R"` answered
+    every message; `R_` the ids of `_`; `R.the`, `R. the`, `"the R"`, `(the R)`, `{R the}`,
+    `R+ the`, `-R the`, `"R" the`, `NOT R the`, `from:R the`, `FROM:R the`, `-from:R the`, `the:R`
+    and `the` then 522 of `X` those of `the`; `R -the`, `R NOT the`, `R (-the)`, `R {-the}` and
+    `NOT R.the` those of `-the`; `R FROM:me` those of `from:me`; `R subject:the` and `subject:R.the`
+    those of `subject:the`; and `after:R`, `before:R`, `newer:R`, `older:R`, `AFTER:R` and
+    `-after:R` those of `after`, `before`, `newer`, `older`, `after` and `-after`. `R the`,
+    `R "the"`, `R (the)`, `R {the}`, `R +the`, `R &`, `R the:x`, `rollout R the`, `+R the`,
+    `(R) the`, `{R} the`, `"R the"`, `R.x300`, `R NOT`, `label:R`, `label:"R"`, `in:R`, `has:R` and
+    `newer_than:R` answered nothing, as `x300.x300`, `x521.`, `label:x521`, `in:x521` and `NOT` did;
+    `x600é` answered the ids of `é`, and 2000 of `é` nothing."""
+    terms = [[m.start(), m.end(), m.group()] for m in re.finditer(r"[^ \t\n\r\f\v]+", q)]
+    for i, (_, end, term) in enumerate(terms):
+        run = _GMAIL_LONG_RUN.search(term)
+        if run is None or _GMAIL_RUN_KEPT_IN.search(term[: run.start()]):
+            continue
+        head, tail = term[: run.start()], term[run.end() :]
+        after = terms[i + 1][2].lstrip("({") if i + 1 < len(terms) else ""
+        op = re.match(r"(\w+):", after)
+        if (
+            not head.strip('({+"')
+            and not tail.strip(")}")
+            and q.count("{", 0, end) == q.count("}", 0, end)
+            and re.search(r"[\w&]", after)
+            and after[0] != "-"
+            and after != "NOT"
+            and not (op and op.group(1).lower() in _GMAIL_KEYS)
+        ):
+            continue
+        term = re.sub(r'[^\w&\s"(){}+:-]+\Z', "", head) + re.sub(r'\A[^\w&\s"(){}]+', "", tail)
+        op = re.fullmatch(r"(-*)(\w+):", term)
+        if op and op.group(2).lower() in _GMAIL_KEYS:
+            dated = _GMAIL_KEY_ALIASES.get(op.group(2).lower(), op.group(2).lower())
+            term = op.group(1) + op.group(2) if dated in _GMAIL_DATE_KEYS else ""
+        terms[i][2] = term
+        j = i - 1
+        while not term and j >= 0 and _GMAIL_NOT_TERM.fullmatch(terms[j][2]):
+            terms[j][2], j = "", j - 1
+    out, at = [], 0
+    for start, end, term in terms:
+        out += [q[at:start], term]
+        at = end
+    return "".join(out) + q[at:]
+
+
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
@@ -1672,6 +1753,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     ops: dict[str, list[str]] = {}
 
     def _take(m):
+        # An operator inside a quoted run is no operator: the run is the phrase. Measured
+        # against gmail.googleapis.com on 2026-10-25: `"probe from:me"`,
+        # `"from:me probe"`, `"NOT from:me"`, `"(NOT from:me)"`, `"(from:me) probe"` and
+        # `"(probe from:me)"` answered nothing, where a quoted run holding the operator
+        # alone reads as that operator (the comment at `_GMAIL_QUOTED_OPERATOR`). A lone
+        # quote with no closing quote after the operator opens no run: `"label:inbox`
+        # reads as `label:inbox`. The closing quote is looked for after the operator's
+        # colon, not after the match: the value itself can swallow it.
+        if m.string.count('"', 0, m.start()) % 2 and '"' in m.string[m.end(1) + 1 :]:
+            return m.group(0)
         key = m.group(1).lower()
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
@@ -1750,6 +1841,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and not _GMAIL_ADDRESS_WORD.search(value)
             ):
                 return " "
+            # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
+            # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
+            # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;
+            # on 2026-11-21 `subject:"((probe"`, `subject:"probe)"`, `subject:"( probe"`,
+            # `subject:"(probe )"`, `subject:"[probe]"` and `subject:"probe]"` did too, and
+            # `label:"(inbox)"`, `label:"(inbox"`, `label:"[inbox]"`, `label:"( inbox )"`,
+            # `label:"((inbox))"`, `in:"(inbox)"` and `in:"(sent)"` answered what `label:inbox`
+            # and `in:sent` answer.
+            if key in _GMAIL_NEGATABLE and value.startswith('"'):
+                value = '"' + value.strip('"').strip(" ()[]") + '"'
             # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
             quoted = (
                 key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'
@@ -2260,7 +2361,9 @@ async def gmail_messages_list(user_id: str, request: Request):
     limit, offset = _gmail_page(request, "messages", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
-        matched = _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
+        matched = _gmail_query(
+            conn, mailbox, ids, _gmail_long_runs(q), caller.email or _service_email(request)
+        )
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
@@ -2371,7 +2474,9 @@ async def gmail_threads_list(user_id: str, request: Request):
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
         # reply, and lists it once even when several of its messages match.
         matched = _by_thread(
-            _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
+            _gmail_query(
+                conn, mailbox, ids, _gmail_long_runs(q), caller.email or _service_email(request)
+            )
         )
         total = len(matched)
         rows = matched[offset : offset + limit]

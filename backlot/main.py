@@ -1949,6 +1949,30 @@ async def warn_slack_post_charset(request: Request, call_next):
     )
 
 
+@_middleware(lambda scope: _url_path(scope).startswith("/slack/api/"))
+async def wrap_slack_answer_for_callback_or_pretty(request: Request, call_next):
+    """Wrap or indent a Slack answer as real does for a `callback` or `pretty` argument
+    (``slack.render_answer``).
+
+    Middleware because the answers it goes on are built all over the router, the refusals among
+    them. Registered outside ``warn_slack_post_charset`` so it sees the warned answer: that
+    middleware re-renders the body as JSON, which a wrapped answer is not. A body that is not a
+    JSON object, and any answer but a 200, passes through untouched.
+    """
+    response = await call_next(request)
+    callback = slack.answer_callback(request)
+    pretty = slack.answer_pretty(request)
+    if (callback is None and not pretty) or response.status_code != 200:
+        return response
+
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    rendered, content_type = slack.render_answer(body, callback=callback, pretty=pretty)
+    headers = {k: v for k, v in response.headers.items() if k != "content-length"}
+    if content_type is not None:
+        headers["content-type"] = content_type
+    return Response(rendered, status_code=response.status_code, headers=headers)
+
+
 #: The headers Cloudflare puts beside the `Content-Type` of its answers to a `CONNECT`, a `PURGE`
 #: and a cut escape in front of Linear and Fireflies.
 _CLOUDFLARE_PRIVATE = {

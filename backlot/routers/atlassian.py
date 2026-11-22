@@ -2888,6 +2888,103 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
+def _confluence_webresource(terms: list[str]) -> dict:
+    """The `webresource` member a body representation serves when an `expand` term names it.
+
+    The member alone is `superbatch` with its three names still under `_expandable`, then an
+    `_expandable` of `uris`, `keys`, `contexts` and `tags`. A name under it is expanded inside
+    it, measured on Confluence Cloud on 2026-11-17: `uris`, `tags`, `keys` and `contexts` stand
+    before `superbatch` in the order `keys`, `contexts`, `uris`, `tags`, and leave `_expandable`;
+    all four named leave no `_expandable`. `uris` and `tags` start as `_expandable` objects;
+    `keys` and `contexts` are `[]`. Under `superbatch`, `uris` and `tags` are those same objects
+    and `metatags` is the `ajs-context-path` tag; all three named stand as `uris`, `tags`,
+    `metatags` with no `_expandable`. Directly under `webresource`, only `uris.all` expands
+    (to `[]`); `uris.css` and `uris.js` expand nothing. Each name under `tags` is `""`, in the
+    order `all`, `data`, `css`, `js`. Under `superbatch`, `uris.all`, `uris.css` and `uris.js`
+    are `[]` and each `tags.*` is `""` — the storage values, on every representation, where
+    real's `view` keys and `superbatch` assets come from the site. An unknown name (`x`,
+    `metatags`, `Uris`, `superbatch` or `superbatch.x`) leaves the member as the member alone
+    is; a name under an expanded member (`uris.x`, `superbatch.metatags.x`) still expands that
+    member.
+    """
+    wr_names = ("uris", "keys", "contexts", "tags")
+    sb_names = ("uris", "metatags", "tags")
+    wr_requested: dict[str, set[str]] = {}
+    sb_requested: dict[str, set[str]] = {}
+    for term in terms:
+        parts = [p for p in term.split(".") if p != ""] if term else []
+        if not parts:
+            continue
+        head, *rest = parts
+        if head in wr_names:
+            wr_requested.setdefault(head, set()).update(rest[:1])
+        elif head == "superbatch" and rest and rest[0] in sb_names:
+            sb_requested.setdefault(rest[0], set()).update(rest[1:2])
+
+    def uris_value(children: set[str], *, under_superbatch: bool) -> dict:
+        expandable = ("all", "css", "js")
+        served_names = expandable if under_superbatch else ("all",)
+        served = [name for name in served_names if name in children]
+        if not served:
+            return {"_expandable": dict.fromkeys(expandable, "")}
+        out = {name: [] for name in served}
+        leftover = [name for name in expandable if name not in served]
+        if leftover:
+            out["_expandable"] = dict.fromkeys(leftover, "")
+        return out
+
+    def tags_value(children: set[str]) -> dict:
+        expandable = ("all", "data", "css", "js")
+        served = [name for name in expandable if name in children]
+        if not served:
+            return {"_expandable": dict.fromkeys(expandable, "")}
+        out = {name: "" for name in served}
+        leftover = [name for name in expandable if name not in served]
+        if leftover:
+            out["_expandable"] = dict.fromkeys(leftover, "")
+        return out
+
+    if not wr_requested and not sb_requested:
+        return {
+            "superbatch": {"_expandable": dict.fromkeys(sb_names, "")},
+            "_expandable": dict.fromkeys(wr_names, ""),
+        }
+
+    out: dict = {}
+    builders = {
+        "keys": lambda _c: [],
+        "contexts": lambda _c: [],
+        "uris": lambda c: uris_value(c, under_superbatch=False),
+        "tags": tags_value,
+    }
+    for name in ("keys", "contexts", "uris", "tags"):
+        if name in wr_requested:
+            out[name] = builders[name](wr_requested[name])
+
+    if sb_requested:
+        superbatch: dict = {}
+        for name in ("uris", "tags", "metatags"):
+            if name not in sb_requested:
+                continue
+            if name == "uris":
+                superbatch[name] = uris_value(sb_requested[name], under_superbatch=True)
+            elif name == "tags":
+                superbatch[name] = tags_value(sb_requested[name])
+            else:
+                superbatch[name] = "<meta name='ajs-context-path' content='/wiki'>"
+        leftover = [name for name in sb_names if name not in sb_requested]
+        if leftover:
+            superbatch["_expandable"] = dict.fromkeys(leftover, "")
+        out["superbatch"] = superbatch
+    else:
+        out["superbatch"] = {"_expandable": dict.fromkeys(sb_names, "")}
+
+    leftover = [name for name in wr_names if name not in wr_requested]
+    if leftover:
+        out["_expandable"] = dict.fromkeys(leftover, "")
+    return out
+
+
 def _confluence_media_token(request: Request, cid) -> dict:
     """The `mediaToken` member a body representation serves when an `expand` term names it.
 
@@ -2984,17 +3081,19 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
     # third segment of `body.<representation>.<name>`, where the name is one of the three a
     # representation carries beside `value` and `representation`. A name under `embeddedContent`
     # or `mediaToken` names the member, as real answers it with what the member alone draws
-    # (2026-11-17: `x` under each, `token` under `mediaToken`). Real expands a name under
-    # `webresource` inside it instead (`uris`, `tags`, `keys` and `contexts`, and `uris`, `tags`
-    # and `metatags` under its `superbatch`, 2026-11-17), which this server does not serve: such
-    # a term draws `webresource` as the member alone is. The tuple is the order real names the
+    # (2026-11-17: `x` under each, `token` under `mediaToken`). A name under `webresource` is
+    # expanded inside it (`uris`, `tags`, `keys` and `contexts`, and `uris`, `tags` and
+    # `metatags` under its `superbatch`, 2026-11-17). The tuple is the order real names the
     # unserved ones under `_expandable`.
     body_member_names = ("webresource", "embeddedContent", "mediaToken")
     body_members: dict[str, set[str]] = {}
+    webresource_terms: dict[str, list[str]] = {}
     for term in (expand or "").split(","):
         parts = term.split(".")
         if len(parts) >= 3 and parts[0] == "body" and parts[2] in body_member_names:
             body_members.setdefault(parts[1], set()).add(parts[2])
+            if parts[2] == "webresource":
+                webresource_terms.setdefault(parts[1], []).append(".".join(parts[3:]))
     space_obj = {
         "id": synth.github_user_id(row["space"]),
         "key": key,
@@ -3205,10 +3304,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
                 rep["mediaToken"] = _confluence_media_token(request, cid)
             rep["value"] = body_writers[name]()
             if "webresource" in members:
-                rep["webresource"] = {
-                    "superbatch": {"_expandable": {"uris": "", "metatags": "", "tags": ""}},
-                    "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
-                }
+                rep["webresource"] = _confluence_webresource(webresource_terms.get(name, []))
             rep["representation"] = name
             if "embeddedContent" in members:
                 rep["embeddedContent"] = []

@@ -4774,10 +4774,9 @@ _NO_CREDENTIAL_ROWS = [
     # an escaped slash stays inside its segment (`routers.google._operation_path`)
     ("GET", "/drive/v3/files/abc%2Fpermissions", 403, 404),
     ("POST", "/drive/v3/files/{doc}%2Fcopy", 404, 404),
-    # no operation Google publishes: the router's 405 whatever the credential, where real answered
-    # its front end's HTML 404
-    ("PUT", "/gmail/v1/users/me/profile", 405, 405),
-    ("PUT", "/drive/v3/files/{doc}", 405, 405),
+    # no operation Google publishes: the front end's HTML 404 whatever the credential
+    ("PUT", "/gmail/v1/users/me/profile", 404, 404),
+    ("PUT", "/drive/v3/files/{doc}", 404, 404),
     # the path ``backlot.routers.google._refuse_an_undecodable_path`` refuses, read after the
     # credential
     ("GET", "/drive/v3/files/nope%80x", 403, 400),
@@ -5794,7 +5793,44 @@ def test_every_google_get_refuses_a_callback_it_cannot_call_and_no_post_reads_on
     assert gets and posts, f"both halves have to have run, got {gets} GET(s) and {posts} POST(s)"
 
 
-def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_name(client):
+# Requests no Google operation serves, after the trailing slashes are dropped. The callback rows
+# the test builds cover all five families; these rows pin the Drive and Gmail front end's page.
+# fmt: off
+_UNROUTED_ROWS = [
+    ("GET /drive/v3/nosuchresource", None),
+    ("GET /drive/v3/no%73uch/%3ctag%3e?x=%61&y='", "admin"),
+    ("GET /drive/v3/nosuchresource?", "admin"),
+    ("GET /drive/v3/nosuch#frag", "admin"),
+    ("GET /drive/v3/nosuch?#frag", "admin"),
+    ("GET /drive/v3/nosuch?x=1#frag", "admin"),
+    ("GET /drive/v3/nosuchresource", "admin"),
+    ("GET /drive/v3/nosuchresource?callback=a%20b&$.xgafv=9", "bad"),
+    ("GET /drive/v3/files/{doc}/nosuch", "admin"),
+    ("GET /drive/v3/about;x", None),
+    ("GET /drive/v3/drives;x", "admin"),
+    ("GET /drive/v3/files;x", None),
+    ("GET /drive/v3/files/{doc}/export;x", "admin"),
+    ("GET /drive/v3/files/{doc}/permissions;x", None),
+    ("GET /drive/v3/nosuch/?x=a%26b&x=%3Ctag%3E", "admin"),
+    ("GET /drive/v3/nosuch?x=%80", "admin"),
+    ("GET /drive/v3/nosuch?x=%00", "admin"),
+    ("GET /drive/v3/nosuch?x=%e9", "admin"),
+    ("GET /gmail/v1/users/me/nosuch?x=%80", "admin"),
+    ("POST /drive/v3/nosuch?x=1", "override"),
+    ("POST /gmail/v1/users/me/nosuch?x=1", "override"),
+    ("POST /drive/v3/about?fields=kind", None),
+    ("PUT /drive/v3/about?fields=kind", "admin"),
+    ("PATCH /drive/v3/about", "bad"),
+    ("DELETE /drive/v3/about", "admin"),
+    ("POST /drive/v3/files/{doc}", "admin"),
+    ("POST /gmail/v1/users/me/profile", "admin"),
+]
+# fmt: on
+
+
+def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_name(
+    client, admin_h, drive_check_ids, base
+):
     """The sweep above reads the document, so the paths NOT in it are its blind spot — and those
     are exactly the ones ``gerr.validate_system_parameters`` never sees, because a router dependency
     runs only once a route has matched. ``gerr.rendered`` checks the name a second time for them.
@@ -5803,15 +5839,74 @@ def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_nam
     five, with a `callback` and without: 400 on Sheets, Docs and Slides and 404 on Drive and Gmail.
     So JSONP is not its shape there under ANY name, and a name that can be called is dropped with
     one that cannot rather than answered at 200 as a script."""
-    for prefix in ("/sheets/v4", "/docs/v1", "/slides/v1", "/drive/v3", "/gmail/v1"):
-        plain = client.get(f"{prefix}/nope")
-        assert plain.status_code == 404, plain.text
-        for name in ("a b", "cb"):
-            r = client.get(f"{prefix}/nope", params={"callback": name})
-            assert r.status_code == 404, (prefix, name, r.text)
-            assert r.headers["content-type"] == "application/json; charset=UTF-8"
-            assert "// API callback" not in r.text, (prefix, name)
-            assert r.text == plain.text, (prefix, name)
+    from tests._helpers import raw_exchange, raw_request
+
+    rows = [
+        (f"GET {prefix}/nope{query}", None)
+        for prefix in ("/sheets/v4", "/docs/v1", "/slides/v1", "/drive/v3", "/gmail/v1")
+        for query in ("", "?callback=a+b", "?callback=cb")
+    ] + _UNROUTED_ROWS
+    override = {
+        "X-HTTP-Method-Override": "GET",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    headers = {None: {}, "admin": admin_h, "bad": BAD_TOKEN, "override": {**admin_h, **override}}
+    bodies = {"override": b"hidden=body"}
+    got, expected = {}, {}
+    for sent, caller in rows:
+        method, path = sent.split(" ", 1)
+        path = path.format(doc=drive_check_ids["doc"])
+        if path.endswith("?") or "#" in path:
+            code, received, content = raw_exchange(
+                base, raw_request(method, path, headers[caller].get("Authorization"))
+            )
+            response = httpx.Response(code, headers=received, content=content)
+        else:
+            response = client.request(
+                method, path, headers=headers[caller], content=bodies.get(caller)
+            )
+        key = sent, caller
+        if path.startswith(("/drive/", "/gmail/")):
+            target = (
+                path.split("#", 1)[0]
+                .replace("%73", "s")
+                .replace("%61", "a")
+                .replace("%3c", "%3C")
+                .replace("%3e", "%3E")
+                .replace("%e9", "%E9")
+            )
+            escaped = (
+                target.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&#34;")
+                .replace("'", "&#39;")
+            )
+            got[key] = (
+                response.status_code,
+                response.headers.get("content-type"),
+                response.headers.get("server"),
+                b"<title>Error 404 (Not Found)!!1</title>" in response.content,
+                f"The requested URL <code>{escaped}</code> was not found on this server."
+                in response.text,
+                len(response.content),
+            )
+            expected[key] = (
+                404,
+                "text/html; charset=UTF-8",
+                "ESF",
+                True,
+                True,
+                1560 + len(escaped.encode()),
+            )
+        else:
+            got[key] = response.status_code, response.headers["content-type"], response.text
+            expected[key] = (
+                404,
+                "application/json; charset=UTF-8",
+                client.get(path.split("?")[0]).text,
+            )
+    assert got == expected
 
 
 def test_a_post_ignores_a_callback_the_way_real_does(base, admin_h, sheet_id):
@@ -15278,18 +15373,34 @@ _GMAIL_BRACE_ROWS = [
     ("{probe from:me", ["lunch"]),
     ("-{probe from:me", ["plan", "deck"]),
     ("-(label:inbox {Rollout from:me})", ["deck", "lunch"]),
+    ("NOT -(from:me to:me)", []),
     ('{Rollout "()"}', ["plan"]),
     ('{Rollout subject:"()"}', ["plan"]),
     ('{Rollout to:"()"}', ["plan"]),
     ('-{Rollout "()"}', ["deck", "lunch"]),
+    ("{Rollout {}}", ["plan", "deck", "lunch"]),
+    ('{Rollout {"()"}}', ["plan", "deck", "lunch"]),
+    ("-{Rollout {}}", []),
+    ("-{{}}", []),
+    # On 2026-11-21 (three times each) real answered `the` and `the probe` inside 500 braces as
+    # `{the}` and `{the probe}`, inside 950 parentheses as `the` and `the probe`, `the` inside 400
+    # `({` pairs as `the`, and `-` before 500 braces or 950 parentheses around `the` as `-the`.
+    ("{" * 500 + "Rollout" + "}" * 500, ["plan"]),
+    ("{" * 500 + "Rollout probe" + "}" * 500, ["plan", "lunch"]),
+    ("(" * 950 + "probe" + ")" * 950, ["plan", "lunch"]),
+    ("(" * 950 + "Rollout probe" + ")" * 950, ["plan"]),
+    ("({" * 400 + "probe" + "})" * 400, ["plan", "lunch"]),
+    ("-" + "{" * 500 + "probe" + "}" * 500, ["deck"]),
+    ("-" + "(" * 950 + "probe" + ")" * 950, ["deck"]),
 ]
 
 
 def test_gmail_brace_groups_and_quoted_punctuation_values(tmp_path):
-    """Each row is how the comments on `_gmail_braces` and `_gmail_brace_ids` and in
-    `_parse_gmail_q` read its query, over both listings. `plan` and `deck` are from bob to the
-    caller in the inbox, `lunch` from the caller to bob in sent; `Rollout` is in `plan`'s title
-    alone, `Q4` in `deck`'s, and `probe` in `plan`'s body and `lunch`'s title."""
+    """Each row is how the comments on `_gmail_braces` and `_gmail_brace_ids`, at
+    `_GMAIL_GROUP_PIECE` and in `_parse_gmail_q` read its query, over both listings. `plan` and
+    `deck` are from bob to the caller in the inbox, `lunch` from the caller to bob in sent;
+    `Rollout` is in `plan`'s title alone, `Q4` in `deck`'s, and `probe` in `plan`'s body and
+    `lunch`'s title."""
     records = [
         {
             "source_type": "gmail",
@@ -15343,6 +15454,10 @@ _GMAIL_SUBJECT_BRACE_ROWS = [
     ('NOT "{Rollout from:me}"', ["deck"]),
     ('numbers"{Rollout from:me}"', ["decoy"]),
     ("subject:{}", ["plan", "deck", "lunch", "decoy"]),
+    # Measured with the deep rows of `_GMAIL_BRACE_ROWS`: real answered `subject:` before `the`
+    # nested as deep as each of these as it answered `subject:the`.
+    ("subject:" + "{" * 500 + "Rollout" + "}" * 500, ["plan"]),
+    ("subject:" + "(" * 950 + "Rollout" + ")" * 950, ["plan"]),
 ]
 
 

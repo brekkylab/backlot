@@ -897,16 +897,20 @@ _GMAIL_BARE_LONE_QUOTE = re.compile(
     r'^[ \t]*"[ \t]+-*(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older'
     r"|newer_than|older_than):\S+[ \t]*$)"
 )
-# A lone quote after `subject:`, `label:`, `in:` or an address operator, then whitespace and a
-# `(` that no `)` closes. On 2026-10-25 (the record at `_GMAIL_NOT`): `subject:" (from:me`,
-# `subject:" ( from:me`, `subject:" (probe`, `subject:" ((from:me)`, `subject:" (from:me) (to:me`,
-# `label:" (from:me`, `from:" (from:me`, `to:" (from:me` and `probe subject:" (from:me` answered
-# nothing, and `-subject:" (from:me`, `-subject:" (probe`, `-label:" (from:me` and
-# `NOT subject:" (from:me` every message, where `subject:" (from:me)`, with the `)`, answered the
-# ids of `from:me`. `_parse_gmail_q` reads it before `_gmail_groups` can read the group.
+# A lone quote after `subject:`, `label:`, `in:` or an address operator, then a `(` that no `)`
+# closes, with or without whitespace in between. On 2026-10-25 (the record at `_GMAIL_NOT`):
+# `subject:" (from:me`, `subject:" ( from:me`, `subject:" (probe`, `subject:" ((from:me)`,
+# `subject:" (from:me) (to:me`, `label:" (from:me`, `from:" (from:me`, `to:" (from:me`,
+# `probe subject:" (from:me` and `subject:"(from:me` answered nothing, and `-subject:" (from:me`,
+# `-subject:" (probe`, `-label:" (from:me` and `NOT subject:" (from:me` every message, where
+# `subject:" (from:me)`, with the `)`, answered the ids of `from:me`. On 2026-11-21
+# `subject:"(probe`, `subject:"((probe)`, `label:"(inbox`, `in:"(inbox`, `from:"(me`, `to:"(me`,
+# `cc:"(me`, `bcc:"(me`, `label:"(from:me` and `from:me subject:"(probe` answered nothing, and
+# `-subject:"(probe`, `-label:"(inbox` and `NOT subject:"(probe` every message. `_parse_gmail_q`
+# reads it before `_gmail_groups` can read the group.
 _GMAIL_LONE_QUOTE_UNCLOSED = re.compile(
     r'(?<!\S)((?:NOT\s+)*)(-*)(?:subject|label|in|from|to|cc|bcc):\s*(?:"[ \t]*"\s*)*'
-    r'"(?![^"]*")\s+(.*)',
+    r'"(?![^"]*")\s*(.*)',
     re.IGNORECASE,
 )
 # A quoted run holding one operator and its value, with nothing around them but whitespace,
@@ -1260,6 +1264,19 @@ def _gmail_group_items(text: str) -> list:
     while i < len(pieces):
         piece = pieces[i]
         if piece == "(":
+            # A bracket glued to an operator's lone quote is no group: the quote takes the rest
+            # of the search as the operator's value, brackets and all (`_GMAIL_LONE_QUOTE`).
+            # Measured against gmail.googleapis.com: on 2026-10-25 `subject:"(from:me)`
+            # answered nothing, where `subject:" (from:me)`, with a space after the quote,
+            # answered what `from:me` answers; on 2026-11-21 `label:"(from:me)`,
+            # `in:"(from:me)`, `from:"(from:me)`, `to:"(from:me)`, `cc:"(from:me)`,
+            # `bcc:"(from:me)` and `subject:"(probe) from:me` answered nothing, and
+            # `subject:"(probe)` and `label:"(inbox)` what `subject:probe` and `label:inbox`
+            # answer.
+            if re.fullmatch(r"-*(?:subject|label|in|from|to|cc|bcc):\"", run, re.IGNORECASE):
+                run += piece
+                i += 1
+                continue
             depth, j = 1, i + 1
             while j < len(pieces) and depth:
                 depth += {"(": 1, ")": -1}.get(pieces[j], 0)
@@ -1285,15 +1302,24 @@ def _gmail_group_items(text: str) -> list:
 def _gmail_flatten(items: list, out: list, negated: list) -> None:
     """Write ``items`` into ``out`` as terms, as the comment at `_GMAIL_GROUP_PIECE` measures: a
     group's brackets drop, a `-(…)` of one term puts a `-` on that term, and one of several terms
-    goes into ``negated`` whole, each `NOT` in front of it flipping it."""
-    for item in items:
+    goes into ``negated`` whole, each `NOT` in front of it flipping it.
+
+    Read with an explicit stack, not recursion: a group nested a thousand deep is one more frame
+    on the stack, not one more call, so it answers instead of raising `RecursionError`."""
+    stack = [iter(items)]
+    while stack:
+        try:
+            item = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            continue
         if isinstance(item, str):
             out.append(item)
             continue
         is_negated, inner = item
         sub = _gmail_group_items(inner)
         if not is_negated:
-            _gmail_flatten(sub, out, negated)
+            stack.append(iter(sub))
             continue
         # Inside `-(…)` a run of `NOT`s with no term after it is left out: `-(NOT NOT)` answered
         # every message and `-(probe NOT)` the messages `probe` does not, on 2026-10-25.
@@ -1305,7 +1331,7 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
             out.append("-" + terms[0].lstrip("-"))
             continue
         if len(terms) == 1:  # `-((…))` and `-(-(…))` are `-(…)`
-            _gmail_flatten([(True, terms[0][1])], out, negated)
+            stack.append(iter([(True, terms[0][1])]))
             continue
         if not terms:
             continue
@@ -1314,7 +1340,7 @@ def _gmail_flatten(items: list, out: list, negated: list) -> None:
             out.pop()
             nots += 1
         if nots % 2:
-            _gmail_flatten(sub, out, negated)
+            stack.append(iter(sub))
         else:
             negated.append(inner)
 
@@ -1364,7 +1390,7 @@ def _gmail_signed(head: str) -> str:
     return head[: m.start()] + "-" * (flips % 2)
 
 
-def _gmail_subject_terms(inner: str, first: bool = True) -> str:
+def _gmail_subject_terms(inner: str) -> str:
     """``inner``, the text in the braces of a `subject:` group, with `subject:` on each of its
     terms, so that the group is the `OR` of them. A word, a quoted run and each term of a `(…)` or
     `{…}` inside take `subject:` in front, after any `-` touching them; a capital `OR` is left out
@@ -1375,6 +1401,42 @@ def _gmail_subject_terms(inner: str, first: bool = True) -> str:
     of `subject:probe OR subject:access`, `subject:{probe from:me}` those of
     `subject:probe OR from:me`, and `subject:{probe label:inbox}` and `subject:{from:me probe}`
     those of `subject:probe`."""
+    # A frame is [terms, next index, resolved outputs, first, group]: `first` is whether the
+    # frame's first term is the group's first, and `group` is None for ``inner``, else (sign,
+    # opener, closer) of the group term this frame's text is the inside of.
+    stack = [[_gmail_subject_terms_split(inner), 0, [], True, None]]
+    while True:
+        terms, i, out, first_flag, group = stack[-1]
+        if i == len(terms):
+            joined = " ".join(t for t in out if t)
+            stack.pop()
+            if not stack:
+                return joined
+            sign, opener, closer = group
+            # A `{…}` inside is more terms of the same `OR`.
+            stack[-1][2].append(
+                joined if opener == "{" and not sign else sign + opener + joined + closer
+            )
+            continue
+        term = terms[i]
+        is_first = first_flag and i == 0
+        stack[-1][1] += 1
+        body = term.lstrip("-")
+        sign = term[: len(term) - len(body)]
+        if (
+            body
+            and body[0] in "({"
+            and _gmail_matching(body, 0, ")" if body[0] == "(" else "}") == len(body)
+        ):
+            stack.append(
+                [_gmail_subject_terms_split(body[1:-1]), 0, [], False, (sign, body[0], body[-1])]
+            )
+            continue
+        out.append(_gmail_subject_term(term, is_first))
+
+
+def _gmail_subject_terms_split(inner: str) -> list[str]:
+    """``inner`` split into its terms: a word, a quoted run, a `(…)` or `{…}` group."""
     terms: list[str] = []
     i, n = 0, len(inner)
     while i < n:
@@ -1390,23 +1452,20 @@ def _gmail_subject_terms(inner: str, first: bool = True) -> str:
                 j = _gmail_matching(inner, j, ")" if inner[j] == "(" else "}") or n
             else:
                 j += 1
-        terms.append(_gmail_subject_term(inner[i:j], first and not terms))
+        terms.append(inner[i:j])
         i = j
-    return " ".join(t for t in terms if t)
+    return terms
 
 
 def _gmail_subject_term(term: str, first: bool) -> str:
-    """One term of a `subject:` group as :func:`_gmail_subject_terms` reads it."""
+    """One term of a `subject:` group as :func:`_gmail_subject_terms` reads it. A `(…)` or
+    `{…}` group term is read by `_gmail_subject_terms` itself, on its stack."""
     if term == "OR":
         return ""
     body = term.lstrip("-")
     sign = term[: len(term) - len(body)]
     if not body:
         return term
-    if body[0] in "({" and _gmail_matching(body, 0, ")" if body[0] == "(" else "}") == len(body):
-        inner = _gmail_subject_terms(body[1:-1], first=False)
-        # A `{…}` inside is more terms of the same `OR`.
-        return inner if body[0] == "{" and not sign else sign + body[0] + inner + body[-1]
     op = re.match(r"(\w+):", body)
     if op and not first and op.group(1).lower() in _GMAIL_SUBJECT_GROUP_OWN:
         return term
@@ -1694,6 +1753,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     ops: dict[str, list[str]] = {}
 
     def _take(m):
+        # An operator inside a quoted run is no operator: the run is the phrase. Measured
+        # against gmail.googleapis.com on 2026-10-25: `"probe from:me"`,
+        # `"from:me probe"`, `"NOT from:me"`, `"(NOT from:me)"`, `"(from:me) probe"` and
+        # `"(probe from:me)"` answered nothing, where a quoted run holding the operator
+        # alone reads as that operator (the comment at `_GMAIL_QUOTED_OPERATOR`). A lone
+        # quote with no closing quote after the operator opens no run: `"label:inbox`
+        # reads as `label:inbox`. The closing quote is looked for after the operator's
+        # colon, not after the match: the value itself can swallow it.
+        if m.string.count('"', 0, m.start()) % 2 and '"' in m.string[m.end(1) + 1 :]:
+            return m.group(0)
         key = m.group(1).lower()
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
@@ -1772,6 +1841,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and not _GMAIL_ADDRESS_WORD.search(value)
             ):
                 return " "
+            # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
+            # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
+            # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;
+            # on 2026-11-21 `subject:"((probe"`, `subject:"probe)"`, `subject:"( probe"`,
+            # `subject:"(probe )"`, `subject:"[probe]"` and `subject:"probe]"` did too, and
+            # `label:"(inbox)"`, `label:"(inbox"`, `label:"[inbox]"`, `label:"( inbox )"`,
+            # `label:"((inbox))"`, `in:"(inbox)"` and `in:"(sent)"` answered what `label:inbox`
+            # and `in:sent` answer.
+            if key in _GMAIL_NEGATABLE and value.startswith('"'):
+                value = '"' + value.strip('"').strip(" ()[]") + '"'
             # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
             quoted = (
                 key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'
@@ -2103,16 +2182,33 @@ def _gmail_brace_ids(conn, mailbox, ids, inner: str, caller_email: str | None) -
     `_gmail_braces`), `{probe "()"}`, `{probe ""}`, `{probe subject:"()"}` and
     `{probe to:"()"}` answered what `probe` answers, and `-{probe "()"}` what `-probe` answers."""
     out: set | None = None
-    for item in _gmail_group_items(inner):
-        if isinstance(item, str):
-            term = item
-        else:
-            negated, sub = item
-            term = f"-({sub})" if negated else f"({sub})"
-        free, ops = _parse_gmail_q(term)
-        if free or ops:
+    pending = [(inner, False)]
+    while pending:
+        text, nested = pending.pop()
+        read = False
+        for item in _gmail_group_items(text):
+            if isinstance(item, str):
+                term = item
+            else:
+                negated, sub = item
+                term = f"-({sub})" if negated else f"({sub})"
+            free, ops = _parse_gmail_q(term)
+            if not (free or ops):
+                continue
+            read = True
+            if not free and list(ops) == [_GMAIL_ANY] and len(ops[_GMAIL_ANY]) == 1:
+                # A term that is one `{…}` group on its own answers as the group does, so
+                # read its inner text here instead of through `_gmail_query`, which would
+                # call back here once per level of nesting.
+                pending.append((ops[_GMAIL_ANY][0], True))
+                continue
             out = (out or set()) | {
                 r["id"] for r in _gmail_query(conn, mailbox, ids, term, caller_email)
+            }
+        if nested and not read:
+            # a `{…}` term holding no term answers what `{}` answers as a search of its own
+            out = (out or set()) | {
+                r["id"] for r in _gmail_query(conn, mailbox, ids, "{}", caller_email)
             }
     return out
 

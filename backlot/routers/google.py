@@ -897,16 +897,20 @@ _GMAIL_BARE_LONE_QUOTE = re.compile(
     r'^[ \t]*"[ \t]+-*(?=(?i:from|to|cc|bcc|subject|label|in|has|after|before|newer|older'
     r"|newer_than|older_than):\S+[ \t]*$)"
 )
-# A lone quote after `subject:`, `label:`, `in:` or an address operator, then whitespace and a
-# `(` that no `)` closes. On 2026-10-25 (the record at `_GMAIL_NOT`): `subject:" (from:me`,
-# `subject:" ( from:me`, `subject:" (probe`, `subject:" ((from:me)`, `subject:" (from:me) (to:me`,
-# `label:" (from:me`, `from:" (from:me`, `to:" (from:me` and `probe subject:" (from:me` answered
-# nothing, and `-subject:" (from:me`, `-subject:" (probe`, `-label:" (from:me` and
-# `NOT subject:" (from:me` every message, where `subject:" (from:me)`, with the `)`, answered the
-# ids of `from:me`. `_parse_gmail_q` reads it before `_gmail_groups` can read the group.
+# A lone quote after `subject:`, `label:`, `in:` or an address operator, then a `(` that no `)`
+# closes, with or without whitespace in between. On 2026-10-25 (the record at `_GMAIL_NOT`):
+# `subject:" (from:me`, `subject:" ( from:me`, `subject:" (probe`, `subject:" ((from:me)`,
+# `subject:" (from:me) (to:me`, `label:" (from:me`, `from:" (from:me`, `to:" (from:me`,
+# `probe subject:" (from:me` and `subject:"(from:me` answered nothing, and `-subject:" (from:me`,
+# `-subject:" (probe`, `-label:" (from:me` and `NOT subject:" (from:me` every message, where
+# `subject:" (from:me)`, with the `)`, answered the ids of `from:me`. On 2026-11-21
+# `subject:"(probe`, `subject:"((probe)`, `label:"(inbox`, `in:"(inbox`, `from:"(me`, `to:"(me`,
+# `cc:"(me`, `bcc:"(me`, `label:"(from:me` and `from:me subject:"(probe` answered nothing, and
+# `-subject:"(probe`, `-label:"(inbox` and `NOT subject:"(probe` every message. `_parse_gmail_q`
+# reads it before `_gmail_groups` can read the group.
 _GMAIL_LONE_QUOTE_UNCLOSED = re.compile(
     r'(?<!\S)((?:NOT\s+)*)(-*)(?:subject|label|in|from|to|cc|bcc):\s*(?:"[ \t]*"\s*)*'
-    r'"(?![^"]*")\s+(.*)',
+    r'"(?![^"]*")\s*(.*)',
     re.IGNORECASE,
 )
 # A quoted run holding one operator and its value, with nothing around them but whitespace,
@@ -1260,6 +1264,19 @@ def _gmail_group_items(text: str) -> list:
     while i < len(pieces):
         piece = pieces[i]
         if piece == "(":
+            # A bracket glued to an operator's lone quote is no group: the quote takes the rest
+            # of the search as the operator's value, brackets and all (`_GMAIL_LONE_QUOTE`).
+            # Measured against gmail.googleapis.com: on 2026-10-25 `subject:"(from:me)`
+            # answered nothing, where `subject:" (from:me)`, with a space after the quote,
+            # answered what `from:me` answers; on 2026-11-21 `label:"(from:me)`,
+            # `in:"(from:me)`, `from:"(from:me)`, `to:"(from:me)`, `cc:"(from:me)`,
+            # `bcc:"(from:me)` and `subject:"(probe) from:me` answered nothing, and
+            # `subject:"(probe)` and `label:"(inbox)` what `subject:probe` and `label:inbox`
+            # answer.
+            if re.fullmatch(r"-*(?:subject|label|in|from|to|cc|bcc):\"", run, re.IGNORECASE):
+                run += piece
+                i += 1
+                continue
             depth, j = 1, i + 1
             while j < len(pieces) and depth:
                 depth += {"(": 1, ")": -1}.get(pieces[j], 0)
@@ -1672,6 +1689,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     ops: dict[str, list[str]] = {}
 
     def _take(m):
+        # An operator inside a quoted run is no operator: the run is the phrase. Measured
+        # against gmail.googleapis.com on 2026-10-25: `"probe from:me"`,
+        # `"from:me probe"`, `"NOT from:me"`, `"(NOT from:me)"`, `"(from:me) probe"` and
+        # `"(probe from:me)"` answered nothing, where a quoted run holding the operator
+        # alone reads as that operator (the comment at `_GMAIL_QUOTED_OPERATOR`). A lone
+        # quote with no closing quote after the operator opens no run: `"label:inbox`
+        # reads as `label:inbox`. The closing quote is looked for after the operator's
+        # colon, not after the match: the value itself can swallow it.
+        if m.string.count('"', 0, m.start()) % 2 and '"' in m.string[m.end(1) + 1 :]:
+            return m.group(0)
         key = m.group(1).lower()
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
@@ -1750,6 +1777,16 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and not _GMAIL_ADDRESS_WORD.search(value)
             ):
                 return " "
+            # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
+            # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
+            # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;
+            # on 2026-11-21 `subject:"((probe"`, `subject:"probe)"`, `subject:"( probe"`,
+            # `subject:"(probe )"`, `subject:"[probe]"` and `subject:"probe]"` did too, and
+            # `label:"(inbox)"`, `label:"(inbox"`, `label:"[inbox]"`, `label:"( inbox )"`,
+            # `label:"((inbox))"`, `in:"(inbox)"` and `in:"(sent)"` answered what `label:inbox`
+            # and `in:sent` answer.
+            if key in _GMAIL_NEGATABLE and value.startswith('"'):
+                value = '"' + value.strip('"').strip(" ()[]") + '"'
             # A quoted address value keeps its quotes, which `_gmail_address_match` reads.
             quoted = (
                 key in _GMAIL_ADDRESS_KEYS and len(value) > 1 and value[:1] == value[-1:] == '"'

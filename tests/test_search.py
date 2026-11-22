@@ -798,6 +798,24 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         ('subject:" (from:bob', ("", {"": ['subject:" (from:bob']})),
         ('probe subject:" (from:bob', ("", {"": ['subject:" (from:bob']})),
         ('-subject:" (from:bob', ("", {})),
+        # The measurements in `_parse_gmail_q`'s `_take`, at `_GMAIL_LONE_QUOTE_UNCLOSED` and in
+        # `_gmail_group_items`.
+        ('"probe from:me"', ('"probe from:me"', {})),
+        ('"from:me probe"', ('"from:me probe"', {})),
+        ('"NOT from:me"', ('"NOT from:me"', {})),
+        ('"(NOT from:me)"', ('"(NOT from:me)"', {})),
+        ('"(from:me) probe"', ('"(from:me) probe"', {})),
+        ('"(probe from:me)"', ('"(probe from:me)"', {})),
+        ('""', ("", {})),
+        ('"()"', ("", {})),
+        ('"( )"', ("", {})),
+        ('subject:"(from:me', ("", {"": ['subject:"(from:me']})),
+        ('-subject:"(probe', ("", {})),
+        ('subject:"(from:me)', ("", {"subject": ["from:me"]})),
+        ('subject:"(probe"', ("", {"subject": ["probe"]})),
+        ('subject:"(probe)"', ("", {"subject": ["probe"]})),
+        ('subject:"[probe]"', ("", {"subject": ["probe"]})),
+        ('label:"(inbox)', ("", {"label": ["inbox"]})),
         ("-(probe NOT)", ("", {"-w": ["probe"]})),
         ('NOT "" probe', ("", {"-w": ["probe"]})),
         ("-\u00a0probe", ("", {"-w": ["\u00a0probe"]})),
@@ -918,6 +936,29 @@ def test_gmail_bare_not_and_no_break_space_over_the_wire(tmp_path):
         assert ids('-"(from:bob)"') == not_from_bob
         assert ids('"(from:bob to:ava)"') == set()
         assert ids('-subject:" (from:bob') == every
+        for q in (
+            '"probe from:ava"',
+            '"NOT from:ava"',
+            '"(from:ava) probe"',
+            'subject:"(from:ava',
+            'subject:"(from:ava)',
+            'subject:"(rollout',
+            'from:"(bob',
+            'subject:"(rollout) from:bob',
+        ):
+            assert ids(q) == set(), q
+        assert ids('""') == ids('"()"') == ids('-subject:"(rollout') == every
+        rollout = ids("subject:rollout")
+        assert rollout and rollout != every
+        for q in (
+            'subject:"(rollout"',
+            'subject:"(rollout)"',
+            'subject:"[rollout]"',
+            'subject:"(rollout)',
+        ):
+            assert ids(q) == rollout, q
+        assert ids('label:"(inbox)"') == ids('label:"(inbox)') == ids("label:inbox")
+        assert ids('-label:"(inbox)') == every - ids("label:inbox")
 
 
 def test_github_search_q_parse():

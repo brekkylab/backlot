@@ -3383,7 +3383,7 @@ def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tm
         (
             f"{W}.tags.all",
             {
-                "tags": {"all": "", "_expandable": {"data": "", "css": "", "js": ""}},
+                "tags": {"all": "", "_expandable": {"css": "", "data": "", "js": ""}},
                 "superbatch": empty_superbatch,
                 "_expandable": {"uris": "", "keys": "", "contexts": ""},
             },
@@ -3407,7 +3407,7 @@ def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tm
         (
             f"{W}.tags.js",
             {
-                "tags": {"js": "", "_expandable": {"all": "", "data": "", "css": ""}},
+                "tags": {"js": "", "_expandable": {"all": "", "css": "", "data": ""}},
                 "superbatch": empty_superbatch,
                 "_expandable": {"uris": "", "keys": "", "contexts": ""},
             },
@@ -3501,13 +3501,19 @@ def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tm
         h = {"Authorization": f"Bearer {settings.admin_token}"}
         api = "/atlassian/wiki/rest/api"
         pid = served_id("confluence", "p")
+
+        def shape(value):
+            if isinstance(value, dict):
+                return [(key, shape(item)) for key, item in value.items()]
+            return value
+
         got = []
         for expand, _expected in rows:
             web = c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
                 "body"
             ]["storage"]["webresource"]
             got.append(web)
-        assert got == [expected for _expand, expected in rows]
+        assert [shape(web) for web in got] == [shape(expected) for _expand, expected in rows]
         # The same storage values on every representation this server renders, including
         # `keys` as `[]` on `view`.
         other = []
@@ -3557,7 +3563,9 @@ def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tm
                 ][rep_name]["webresource"]
                 other.append((rep_name, suffix, web))
                 expected_other.append((rep_name, suffix, expected))
-        assert other == expected_other
+        assert [(rep, suffix, shape(web)) for rep, suffix, web in other] == [
+            (rep, suffix, shape(expected)) for rep, suffix, expected in expected_other
+        ]
 
 
 # --- Jira ------------------------------------------------------------------------

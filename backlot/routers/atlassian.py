@@ -2934,12 +2934,15 @@ def _confluence_webresource(terms: list[str]) -> dict:
         return out
 
     def tags_value(children: set[str]) -> dict:
-        expandable = ("all", "data", "css", "js")
-        served = [name for name in expandable if name in children]
+        # Served names stand in the measured order all, data, css, js. The unexpanded
+        # `_expandable` object, measured 2026-11-17, lists all, css, data, js.
+        served_order = ("all", "data", "css", "js")
+        expandable_order = ("all", "css", "data", "js")
+        served = [name for name in served_order if name in children]
         if not served:
-            return {"_expandable": dict.fromkeys(expandable, "")}
+            return {"_expandable": dict.fromkeys(expandable_order, "")}
         out = {name: "" for name in served}
-        leftover = [name for name in expandable if name not in served]
+        leftover = [name for name in expandable_order if name not in served]
         if leftover:
             out["_expandable"] = dict.fromkeys(leftover, "")
         return out

@@ -606,6 +606,58 @@ def cql_escaped_end_quote(text: str) -> AtlassianError:
     )
 
 
+#: The values real lists for `type`, as its refusal of `type=Page` spelled them (Confluence Cloud,
+#: 2026-10-25).
+CQL_TYPE_VALUES = (
+    "space",
+    "user",
+    "page",
+    "blogpost",
+    "comment",
+    "attachment",
+    "database",
+    "whiteboard",
+    "slide",
+    "embed",
+    "folder",
+    "com.atlassian.confluence.extra.team-calendars:calendar-content-type",
+    "com.atlassian.confluence.extra.team-calendars:space-calendars-view-content-type",
+)
+
+
+def cql_unsupported_type_value(value: str) -> AtlassianError:
+    """The CQL search's refusal of a `type` value outside the list it takes, naming the value as
+    sent and that list. Measured on Confluence Cloud on 2026-10-25: `type=Page` drew it, the
+    values compared case-sensitively. Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_value_refusal``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unsupported value for type, got : {value}, expected one of : "
+        f"[{', '.join(CQL_TYPE_VALUES)}]",
+    )
+
+
+def cql_content_id_not_parsed() -> AtlassianError:
+    """The CQL search's refusal of an `id`, `ancestor` or `parent` value that is no `ContentId`.
+    Measured on Confluence Cloud on 2026-10-25 and 2026-10-26: `id=1.5`, `id=abc`, `ancestor=abc`,
+    `parent=None`, `parent=abc`, `id in (abc)` and `ancestor in (abc)` each drew it."""
+    return _service_refusal(400, "api.BadRequestException", "Can't parse as a ContentId")
+
+
+def cql_search_not_executed() -> AtlassianError:
+    """The CQL search's refusal of a query it parsed and its search back end refused: `title=""`
+    drew it on Confluence Cloud on 2026-10-25, the exception named twice."""
+    exception = "com.atlassian.confluence.api.service.exceptions.scale.SSStatusCodeException"
+    return _service_refusal(
+        400,
+        "scale.SSStatusCodeException",
+        "CQL was parsed but the search manager was unable to execute the search. "
+        f"Error message: {exception}: There was an illegal request passed to XP-Search "
+        "Aggregator API : HTTP/1.1 400 Bad Request",
+    )
+
+
 def no_space_with_key(space_key: str) -> AtlassianError:
     """`content`'s refusal of a space key naming no space, as sent: the key is not trimmed (`' '` is
     named as a space), and a repeated one is its comma-join, which no key holds. Where it comes

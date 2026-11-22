@@ -13644,6 +13644,59 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
     assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}
 
 
+def test_confluence_cql_search_refuses_a_value_its_field_does_not_take(client, admin_h):
+    """What real answered each `cql` with on Confluence Cloud on 2026-10-25 and 2026-10-26, as
+    `_cql_value_refusal` in `backlot.routers.atlassian` records it: the message of each 400. The
+    rows after them are queries that pass still answers."""
+    exceptions = "com.atlassian.confluence.api.service.exceptions."
+    content_id = _CQL_PREFIX + "Can't parse as a ContentId"
+    rows = {
+        "type=Page": _CQL_PREFIX
+        + "Unsupported value for type, got : Page, expected one of : [space, user, page, "
+        "blogpost, comment, attachment, database, whiteboard, slide, embed, folder, "
+        "com.atlassian.confluence.extra.team-calendars:calendar-content-type, "
+        "com.atlassian.confluence.extra.team-calendars:space-calendars-view-content-type]",
+        "id=1.5": content_id,
+        "id=abc": content_id,
+        "ancestor=abc": content_id,
+        "parent=None": content_id,
+        "parent=abc": content_id,
+        "id in (abc)": content_id,
+        "ancestor in (abc)": content_id,
+        'title=""': f"{exceptions}scale.SSStatusCodeException: CQL was parsed but the search "
+        "manager was unable to execute the search. Error message: "
+        f"{exceptions}scale.SSStatusCodeException: There was an illegal request passed to "
+        "XP-Search Aggregator API : HTTP/1.1 400 Bad Request",
+        # a structural refusal and a function that cannot run are read before a value
+        "type=Page and foo=bar": _CQL_PREFIX
+        + "No field exists with the name: 'foo' Did you mean one of : "
+        "favorite, filesize, favourite, fileExtension",
+        'id=abc and created > now("x")': _CQL_PREFIX + "Invalid relative date : x",
+    }
+    refused = {"authorized": True, "valid": True, "errors": [], "successful": True}
+    answered = {}
+    for cql in rows:
+        r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+        answered[cql] = (r.status_code, r.json())
+    assert answered == {
+        cql: (400, {"statusCode": 400, "data": refused, "message": message})
+        for cql, message in rows.items()
+    }
+    for cql in (
+        "type=page",
+        "type=folder",
+        "id=05",
+        "parent=1",
+        "id in (1, 2)",
+        "id in (1, recentlyViewedContent(5))",
+        "ancestor = currentContent()",
+        "label = abc",
+        'title = "x"',
+    ):
+        r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
+        assert r.status_code == 200, cql
+
+
 def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, admin_h):
     """What real answered each row, a 200 as the `limit` it echoes and a refusal as its body
     (:func:`backlot.routers.atlassian._refuse_a_start_past_java_int`). `label` and `space` are

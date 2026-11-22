@@ -2140,6 +2140,9 @@ async def confluence_cql_search(request: Request):
     cannot_run = _cql_cannot_run(tokens)
     if cannot_run is not None:
         raise cannot_run
+    value_refusal = _cql_value_refusal(tokens)
+    if value_refusal is not None:
+        raise value_refusal
 
     # the rows the clause readers filter, read only for a query `_cql_parse` does not cover: the
     # full ACL-visible match set, filtered by the clauses, then paginated — so totalSize reflects
@@ -4565,6 +4568,61 @@ def _cql_cannot_run(tokens: list[tuple[str, str]]):
     if not faults:
         return None
     return min(faults, key=lambda fault: fault[0])[1]
+
+
+def _cql_value_refusal(tokens: list[tuple[str, str]]):
+    """The 400 real answers a CQL whose clauses it reads but one of whose values its field does not
+    take, or None for one with no such value, after :func:`_cql_refusal` and
+    :func:`_cql_cannot_run`, so each field here is followed by its operator and a whole value or
+    list. Measured on Confluence Cloud on 2026-10-25 and 2026-10-26: a word after `type =` outside
+    ``errors.atlassian.CQL_TYPE_VALUES`` is ``cql_unsupported_type_value`` (`type=Page`); a word or
+    a number that is no `ContentId` (:func:`_parse_long`) after `id =`, `ancestor =` or `parent =`,
+    or in the list of `id in` or `ancestor in`, is ``cql_content_id_not_parsed`` (`id=1.5`,
+    `id=abc`, `ancestor=abc`, `parent=None`, `parent=abc`, `id in (abc)`, `ancestor in (abc)`); and
+    `title = ""` is ``cql_search_not_executed``, raised by the search itself and so read after the
+    other two. Only those cells were measured: a quoted value, a value under `!=` or `not in`, one
+    after `att` (which the `content/{id}` path reads as an attachment's id), and `parent in`, which
+    real fails with a 500, are left standing, and so is which of two such values answers; the
+    first from the left does here."""
+    not_executed = None
+    for at, (kind, text) in enumerate(tokens):
+        field = text.lower()
+        if kind != "WORD" or field not in ("type", "id", "ancestor", "parent", "title"):
+            continue
+        after = tokens[at + 1 : at + 3]
+        if len(after) < 2:
+            continue
+        (_, operator), (value_kind, value) = after
+        if operator == "=" and tokens[at + 3 : at + 4] != [("PUNCT", "(")]:  # no function call
+            values = [(value_kind, value)]
+        elif operator.lower() == "in" and value == "(" and field in ("id", "ancestor"):
+            # the list's own values: a call among them, and its arguments, are no value here
+            values, depth = [], 0
+            for place in range(at + 3, len(tokens)):
+                if tokens[place] == ("PUNCT", ")"):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif tokens[place] == ("PUNCT", "("):
+                    depth += 1
+                elif depth == 0 and tokens[place + 1] != ("PUNCT", "("):
+                    values.append(tokens[place])
+        else:
+            continue
+        for value_kind, value in values:
+            if field == "title":
+                if (value_kind, value) == ("QUOTED", '""') and not_executed is None:
+                    not_executed = errors_atlassian.cql_search_not_executed()
+            elif field == "type":
+                if value_kind == "WORD" and value not in errors_atlassian.CQL_TYPE_VALUES:
+                    return errors_atlassian.cql_unsupported_type_value(value)
+            elif (
+                value_kind in ("WORD", "NUMBER")
+                and not value.startswith("att")
+                and _parse_long(value) is None
+            ):
+                return errors_atlassian.cql_content_id_not_parsed()
+    return not_executed
 
 
 class _CQLParseError(Exception):

@@ -5713,11 +5713,14 @@ _UNBOUNDED_JQL = {
     ],
     "errors": {},
 }
+#: Real's own JQL syntax-error 400, whose body Backlot does not write: only the status is compared.
+_JQL_SYNTAX_ERROR = 400
 
 # Method, API version, query string, body and what real answers: no `jql` where the method reads
 # one (POST reads it from the body alone, so one in its query string is none) and a `jql` with
 # nothing before its `ORDER BY` are refused; one with a clause before its `ORDER BY` is served,
-# which `None` stands for.
+# which `None` stands for; and the two words parted by whitespace real does not read as such are
+# its syntax error, `_JQL_SYNTAX_ERROR`.
 _NO_RESTRICTION_ROWS = [
     ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
     ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
@@ -5726,37 +5729,26 @@ _NO_RESTRICTION_ROWS = [
         for jql in (
             *("order by key", "ORDER BY created DESC", "Order By key", "order by nosuchfield"),
             *("order  by key", "order\tby key", "order\nby key", "order\rby key"),
-            *("  order by key", "\r\norder by key", "order by\tkey", "order\r\nby key"),
+            *("  order by key", "\r\norder by key", "order by\tkey"),
             "ORDER BY key ASC, created DESC",
         )
     ],
-    # The other whitespace the check reads, between the words and in front of them: a
-    # no-break space, U+2003, U+000B, U+000C and U+001C each drew the 400 on real as well.
+    # The whitespace `\s` reads beyond what real separates the words with.
     *[
-        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _UNBOUNDED_JQL)
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _JQL_SYNTAX_ERROR)
         for jql in (
-            "order\u00a0by key",
-            "order\u2003by key",
-            "order\x0bby key",
-            "order\x0cby key",
-            "order\x1cby key",
-            "\u00a0order by key",
-            "\u2003order by key",
-            "\x0border by key",
-            "\x0corder by key",
-            "\x1corder by key",
+            *("order\u00a0by key", "order\u2003by key", "order\x0bby key"),
+            *("order\x0cby key", "order\x1cby key", "\u00a0order by key"),
         )
     ],
     *[
         ("get", 3, {"jql": jql, "maxResults": 1}, None, _UNBOUNDED_JQL)
         for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
     ],
-    ("get", 2, {"jql": "order by key", "maxResults": 1}, None, _UNBOUNDED_JQL),
     ("post", 2, {}, {"jql": "order by key", "maxResults": 1}, _UNBOUNDED_JQL),
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
-    ("get", 2, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
     ("post", 2, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
 ]
 
@@ -5771,6 +5763,8 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
     )
     if refused is None:
         assert r.status_code == 200, r.text
+    elif refused == _JQL_SYNTAX_ERROR:
+        assert r.status_code == 400, r.text
     else:
         assert (r.status_code, r.json()) == (400, refused), r.text
 

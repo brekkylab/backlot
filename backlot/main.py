@@ -421,6 +421,29 @@ async def refuse_a_missing_slash_on_github(request: Request, call_next):
 @_middleware(
     lambda scope: (
         scope["path"].startswith("/github/")
+        and github.is_an_automation_or_its_tasks(scope["method"], scope["path"])
+    )
+)
+async def answer_an_automation_or_its_tasks_with_an_empty_404(request: Request, call_next):
+    """One automation by id or its tasks is the 404 with an empty body and no `content-type`, not
+    the router's JSON one.
+
+    Measured against api.github.com on 2026-11-22, one `GET` each with a token that resolves:
+    `/agents/automations/1`, `/agents/automations/ABC`, `/agents/automations/available-tools`,
+    `/agents/automations/AVAILABLE-TOOLS`, `/agents/automations/1/tasks` and
+    `/agents/automations/ABC/tasks` were each a 404 with an empty body and no `content-type`, with
+    the five `x-ratelimit-*` on `core` and no version echo. Registered between
+    :func:`refuse_a_missing_slash_on_github` and :func:`refuse_an_unserved_github_operation`, so
+    it runs inside the unserved operations' refusal — a credential that does not resolve, or none
+    at all, is refused there first — and its answer leaves through the version echo and the
+    rate-limit headers as the router's 404 would.
+    """
+    return Response(status_code=404)
+
+
+@_middleware(
+    lambda scope: (
+        scope["path"].startswith("/github/")
         and not _a_github_route_serves(scope)
         and github.is_an_unserved_operation(scope["method"], scope["path"])
     )
@@ -430,10 +453,11 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     refused as a served route refuses before it runs, ahead of the router's 404 or 405
     (``backlot.routers.github.refuse_an_unserved_operation``).
 
-    Registered second, after `refuse_a_missing_slash_on_github` and before the other GitHub
-    middlewares: it reads the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is
-    rewritten to, and its refusal leaves through the version echo and the rate-limit headers as a
-    served route's 401 does.
+    Registered third, after `refuse_a_missing_slash_on_github` and
+    `answer_an_automation_or_its_tasks_with_an_empty_404`, and before the other GitHub middlewares:
+    it reads the path ``resolve_github_id_paths`` rewrote and a `HEAD` as the GET it is rewritten
+    to, and its refusal leaves through the version echo and the rate-limit headers as a served
+    route's 401 does.
     """
     try:
         await github.refuse_an_unserved_operation(request)
@@ -453,7 +477,8 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
 async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: Request, call_next):
     """Answer with the refusal
     ``backlot.routers.github.refuse_a_credential_on_a_github_route_spelt_in_another_case`` gives,
-    where it gives one.
+    where it gives one, or with the agents backend's text 404 it answers a spelling in another
+    case of an `/agents/automations` operation with.
 
     Registered after :func:`refuse_an_unserved_github_operation` and before
     :func:`refuse_a_credential_on_an_agent_path`, so it runs inside the agent paths' refusal and
@@ -462,9 +487,11 @@ async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: R
     leaves through the version echo and the rate-limit headers as a served route's 401 does.
     """
     try:
-        await github.refuse_a_credential_on_a_github_route_spelt_in_another_case(request)
+        answer = await github.refuse_a_credential_on_a_github_route_spelt_in_another_case(request)
     except StarletteHTTPException as exc:
         return await _http_exception_handler(request, exc)
+    if answer is not None:
+        return answer
     return await call_next(request)
 
 

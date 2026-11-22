@@ -8413,12 +8413,21 @@ _SPELT_IN_ANOTHER_CASE_ROWS = [
     ("GET", "/SEARCH/users", "bad bearer", 401, None, None),
     ("GET", "/Search/Labels?q=x", "bad bearer", 401, None, None),
     ("GET", "/USER/k%65ys", "bad bearer", 401, None, None),
+    ("GET", "/AGENTS/automations", "no credential", 401, "core", None),
+    ("GET", "/agents/AUTOMATIONS", "no credential", 401, "core", None),
+    ("GET", "/AGENTS/automations/6", "no credential", 401, "core", None),
+    ("GET", "/agents/automations/8/TASKS", "no credential", 401, "core", None),
+    ("GET", "/AGENTS/automations", "bad bearer", 401, None, None),
+    ("GET", "/AGENTS/automations/7", "bad bearer", 401, None, None),
+    ("GET", "/agents/automations/8/TASKS", "bad bearer", 401, None, None),
 ]
 
 
 def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
     gh_client, gh_admin_h, gh_org
 ):
+    from backlot.routers.github import RateLimitWindows
+
     c, _ = gh_client
     senders = {
         "no credential": {},
@@ -8432,6 +8441,8 @@ def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
 
     answered, expected = {}, {}
     for method, path, sender, status, resource, echo in _SPELT_IN_ANOTHER_CASE_ROWS:
+        # a window per row: the rows with no credential spend more than the 60 of one
+        c.app.state.github_rate_limits = RateLimitWindows()
         headers = senders[sender]
         r = c.request(method, url(path), headers=headers)
         # a 401 carries the refusal's body, so its control is the spelling as published, sent by
@@ -8445,6 +8456,80 @@ def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
             r.content,
         )
         expected[(method, path, sender)] = (status, resource, echo, same.content)
+    assert answered == expected
+
+
+#: (method, a path under `/github/agents/automations`, and what a token that resolves gets: the
+#: status, media type, body, `x-ratelimit-resource` and how far the next request moves
+#: `x-ratelimit-used`): the agents backend's text `404 page not found` for an operation spelt in
+#: another case (``backlot.routers.github._AUTOMATIONS_OPERATIONS``), the empty 404 with no
+#: `content-type` for one automation or its tasks, whatever the id
+#: (``backlot.main.answer_an_automation_or_its_tasks_with_an_empty_404``), and the router's JSON
+#: 404 with none of the five `x-ratelimit-*` for a path or a method that names no operation.
+_TEXT_404 = (404, "text/plain", b"404 page not found\n", "core", 1)
+_EMPTY_404 = (404, None, b"", "core", 1)
+_JSON_404 = (
+    404,
+    "application/json",
+    b'{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}',
+    None,
+    0,
+)
+_AUTOMATIONS_ROWS = [
+    ("GET", "/AGENTS/automations", _TEXT_404),
+    ("GET", "/agents/AUTOMATIONS", _TEXT_404),
+    ("GET", "/Agents/Automations", _TEXT_404),
+    ("GET", "/AGENTS/automations/1", _TEXT_404),
+    ("GET", "/agents/automations/1/TASKS", _TEXT_404),
+    ("GET", "/agents/Automations/1/tasks", _TEXT_404),
+    ("GET", "/agents/automations/ABC/TASKS", _TEXT_404),
+    ("GET", "/agents/AUTOMATIONS/abc", _TEXT_404),
+    ("GET", "/agents/automations/1", _EMPTY_404),
+    ("GET", "/agents/automations/ABC", _EMPTY_404),
+    ("GET", "/agents/automations/abc", _EMPTY_404),
+    ("GET", "/agents/automations/ab%43", _EMPTY_404),
+    ("GET", "/agents/automations/%31", _EMPTY_404),
+    ("GET", "/agents/automations/available-tools", _EMPTY_404),
+    ("GET", "/agents/automations/AVAILABLE-TOOLS", _EMPTY_404),
+    ("GET", "/agents/automations/available-triggers", _EMPTY_404),
+    ("GET", "/agents/automations/Available-Triggers", _EMPTY_404),
+    ("GET", "/agents/automations/1/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/ABC/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/abc/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/available-tools/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/", _JSON_404),
+    ("GET", "/agents/automations//tasks", _JSON_404),
+    ("GET", "/agents/automations/9/nosuch", _JSON_404),
+    ("GET", "/agents/automation%73/13", _JSON_404),
+    ("GET", "/agents/automations/14/task%73", _JSON_404),
+    ("GET", "/agents/%61utomations", _JSON_404),
+    ("POST", "/agents/automations/3", _JSON_404),
+    ("POST", "/AGENTS/automations?_=563024193", _JSON_404),
+]
+
+
+def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it(
+    gh_client, gh_admin_h
+):
+    """Each answer carries no version echo, with an unknown version pinned or not."""
+    c, _ = gh_client
+    pinned = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
+    answered, expected = {}, {}
+    for method, path, answer in _AUTOMATIONS_ROWS:
+        for headers in (gh_admin_h, pinned):
+            r = c.request(method, f"/github{path}", headers=headers)
+            again = c.request(method, f"/github{path}", headers=headers)
+            content_type = r.headers.get("content-type")
+            answered[(method, path, headers is pinned)] = (
+                r.status_code,
+                content_type.split(";")[0] if content_type else None,
+                r.content,
+                r.headers.get("x-ratelimit-resource"),
+                int(again.headers.get("x-ratelimit-used", 0))
+                - int(r.headers.get("x-ratelimit-used", 0)),
+                r.headers.get("x-github-api-version-selected"),
+            )
+            expected[(method, path, headers is pinned)] = (*answer, None)
     assert answered == expected
 
 

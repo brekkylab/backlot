@@ -5725,6 +5725,24 @@ def test_jira_search_refuses_no_jql_at_all(client, admin_h, method):
     }
 
 
+@pytest.mark.parametrize("jql", ["order by key", "ORDER BY created DESC"])
+def test_jira_search_refuses_a_jql_that_is_only_an_order_by(client, admin_h, jql):
+    """The refusal the handler's comment on the unbounded check records: a `jql` with
+    nothing before its `ORDER BY` draws the same unbounded-JQL 400 as no `jql` at all,
+    where one with a clause before it is a 200 page. The measurement was on POST; the
+    GET form was not measured."""
+    r = _search_post(client, admin_h, jql=jql, maxResults=1)
+    assert r.status_code == 400, r.text
+    assert r.json() == {
+        "errorMessages": [
+            "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+        ],
+        "errors": {},
+    }
+    served = _search_post(client, admin_h, jql="project is not EMPTY order by key", maxResults=1)
+    assert served.status_code == 200, served.text
+
+
 def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):
     """Measured 2026-09-16: `{"jql": null}` draws the same unbounded-JQL refusal as `{}`. Read
     through a bare `str()` it is the string "None", which restricts nothing and reaches the whole

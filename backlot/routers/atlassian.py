@@ -1140,8 +1140,12 @@ async def jira_search(request: Request):
         # (2026-09-18).
         raise errors_atlassian.max_results_out_of_range()
     # No `jql` at all is refused rather than answered as the unfiltered corpus (measured
-    # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
-    if not jql.strip():
+    # 2026-09-16; see test_jira_search_refuses_no_jql_at_all). A `jql` that is only an
+    # `ORDER BY` is refused the same way: measured 2026-11-21, `order by key` and
+    # `ORDER BY created DESC` each drew this 400 on Jira Cloud, where
+    # `project is not EMPTY order by key` was a 200 page (see
+    # test_jira_search_refuses_a_jql_that_is_only_an_order_by).
+    if not _jql_without_order_by(jql).strip():
         raise errors_atlassian.unbounded_jql()
     if reconcile_null:
         # Real answers this after the page token, the range and the JQL, and before it looks up
@@ -1437,6 +1441,12 @@ async def jira_fields(request: Request):
 # collapse "unresolvable" into "unfiltered" (the fidelity gap found & fixed for Confluence's
 # space= handling applies identically to Jira's project= handling).
 _JIRA_PROJECT_UNRESOLVED = object()
+
+
+def _jql_without_order_by(jql: str) -> str:
+    """The `jql` with its `ORDER BY` clause cut away: the clause is always the last one, so
+    everything from its `order by` on is ordering, not a search restriction."""
+    return re.split(r"\border\s+by\b", jql, maxsplit=1, flags=re.IGNORECASE)[0]
 
 
 def _project_from_jql(conn, jql: str, request: Request | None = None):

@@ -155,6 +155,17 @@ _TOKEN = "<the token>"
         ("get", "error=&foo=1", "Bearer {admin}", None, {"error": "", "foo": "1", "token": _TOKEN}),
         ("get", "error=x", "Bearer {bogus}", None, "invalid_auth"),
         ("get", "token=x&error=y", None, None, "invalid_auth"),
+        # the echo leaves out the names real leaves out, and keeps their near neighbours
+        ("get", "t=1&keep=1", None, None, {"keep": "1"}),
+        ("get", "slack_route=x&keep=1", None, None, {"keep": "1"}),
+        ("get", "_x_id=y&keep=1", None, None, {"keep": "1"}),
+        ("get", "_x=y&keep=1", None, None, {"_x": "y", "keep": "1"}),
+        ("get", "_xfoo=y&keep=1", None, None, {"_xfoo": "y", "keep": "1"}),
+        ("get", "_X_id=y&keep=1", None, None, {"_X_id": "y", "keep": "1"}),
+        ("get", "T=1&keep=1", None, None, {"T": "1", "keep": "1"}),
+        ("post", "", None, "t=1&keep=1", {"keep": "1"}),
+        ("post", "", None, "slack_route=x&keep=1", {"keep": "1"}),
+        ("post", "", None, "_x_id=y&keep=1", {"keep": "1"}),
     ],
 )
 def test_slack_api_test_reads_a_credential_and_echoes_it(
@@ -176,6 +187,150 @@ def test_slack_api_test_reads_a_credential_and_echoes_it(
     else:
         expected = {"ok": True, "args": echo(want)}
     assert r.content == JSONResponse(expected).body
+
+
+@pytest.mark.parametrize(
+    "method,path,query,authorization,form,want,content_type",
+    [
+        (
+            "get",
+            "auth.test",
+            "callback=f",
+            None,
+            None,
+            b'/* */ f({"ok":false,"error":"not_authed"});',
+            "application/json; charset=utf-8",
+        ),
+        (
+            "get",
+            "api.test",
+            "callback=f",
+            None,
+            None,
+            b'/* */ f({"ok":true,"args":{}});',
+            "application/json; charset=utf-8",
+        ),
+        (
+            "get",
+            "api.test",
+            "callback=f.g&keep=1",
+            None,
+            None,
+            b'/* */ f.g({"ok":true,"args":{"keep":"1"}});',
+            "application/json; charset=utf-8",
+        ),
+        (
+            "get",
+            "api.test",
+            "callback=",
+            None,
+            None,
+            b'{"ok":true,"args":{}}',
+            "application/json",
+        ),
+        (
+            "get",
+            "api.test",
+            "callback=%3Cscript%3E",
+            None,
+            None,
+            b'{"ok":true,"args":{}}',
+            "application/json",
+        ),
+        (
+            "get",
+            "api.test",
+            "t=1&pretty=1&slack_route=x&_x_id=y&keep=1",
+            None,
+            None,
+            b'{\n    "ok": true,\n    "args": {\n        "keep": "1"\n    }\n}\n',
+            "application/json",
+        ),
+        (
+            "get",
+            "api.test",
+            "pretty=2",
+            None,
+            None,
+            b'{\n    "ok": true,\n    "args": {}\n}\n',
+            "application/json",
+        ),
+        (
+            "get",
+            "api.test",
+            "pretty=0",
+            None,
+            None,
+            b'{"ok":true,"args":{}}',
+            "application/json",
+        ),
+        (
+            "get",
+            "api.test",
+            "pretty=",
+            None,
+            None,
+            b'{"ok":true,"args":{}}',
+            "application/json",
+        ),
+        (
+            "get",
+            "auth.test",
+            "pretty=1",
+            None,
+            None,
+            b'{\n    "ok": false,\n    "error": "not_authed"\n}\n',
+            "application/json",
+        ),
+        (
+            "get",
+            "nonexistent.method",
+            "callback=f",
+            None,
+            None,
+            b'/* */ f({"ok":false,"error":"unknown_method","req_method":"nonexistent.method"});',
+            "application/json; charset=utf-8",
+        ),
+        (
+            "post",
+            "api.test",
+            "",
+            None,
+            "callback=f",
+            b'/* */ f({"ok":true,"args":{}});',
+            "application/json; charset=utf-8",
+        ),
+        (
+            "post",
+            "api.test",
+            "",
+            None,
+            "pretty=1",
+            b'{\n    "ok": true,\n    "args": {}\n}\n',
+            "application/json",
+        ),
+        (
+            "post",
+            "auth.test",
+            "",
+            None,
+            "callback=f",
+            b'/* */ f({"ok":false,"error":"not_authed"});',
+            "application/json; charset=utf-8",
+        ),
+    ],
+)
+def test_slack_callback_and_pretty_shape_the_answer(
+    client, method, path, query, authorization, form, want, content_type
+):
+    """`callback` wraps and `pretty` indents a Slack answer as slack.com/api answers it
+    (``slack.render_answer``): every answer is wrapped, the `unknown_method` one included, an
+    empty callback and `<script>` are the plain JSON answer, and `pretty` indents by four spaces
+    with a newline at its end for any value but `0` and an empty one."""
+    r = _send(client, path, method, query, authorization, form, {})
+    assert r.status_code == 200
+    assert r.content == want
+    assert r.headers["content-type"] == content_type
 
 
 def test_slack_accepts_form_field_token(client, tokens_yaml):

@@ -507,6 +507,20 @@ TEAM = "/msgraph/v1.0/teams/778451ab-3734-4e45-beba-caf1bd343541"
                 "unsupported",
             ),
         ),
+        # The empty 404 of `answer_an_automation_or_its_tasks_with_an_empty_404` in `backlot.main`
+        # and the agents backend's text 404 carry no JSON `message`, so no error code.
+        (
+            "GET",
+            "/github/agents/automations/1",
+            {},
+            ("github", "unmatched", "unknown", 404, None, "client"),
+        ),
+        (
+            "GET",
+            "/github/AGENTS/automations",
+            {},
+            ("github", "unmatched", "unknown", 404, None, "client"),
+        ),
         (
             "POST",
             "/slack/api/conversations.history",

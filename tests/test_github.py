@@ -8459,111 +8459,77 @@ def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
     assert answered == expected
 
 
-#: The spellings in another case of an `/agents/automations` operation, as
-#: `backlot.routers.github.refuse_a_credential_on_a_github_route_spelt_in_another_case` answers
-#: them for a token that resolves: the agents backend's own text `404 page not found`.
-_AUTOMATIONS_SPELT_ROWS = [
-    "/github/AGENTS/automations",
-    "/github/agents/AUTOMATIONS",
-    "/github/Agents/Automations",
-    "/github/AGENTS/automations/1",
-    "/github/agents/automations/1/TASKS",
-]
-
-
-@pytest.mark.parametrize("path", _AUTOMATIONS_SPELT_ROWS)
-def test_github_an_automations_operation_spelt_in_another_case_is_the_backend_text_404(
-    gh_client, gh_admin_h, path
-):
-    """Each row is answered as the function above records of real: the text 404, the five
-    `x-ratelimit-*` on `core` and counted, and no version echo, pinned to an unknown version or
-    not. A spelling that names no operation of the baseline is not a row here: it stays the JSON
-    404 with none of the five."""
-    c, _ = gh_client
-    for headers in (gh_admin_h, {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}):
-        r = c.get(path, headers=headers)
-        assert (r.status_code, r.headers["content-type"].split(";")[0], r.content) == (
-            404,
-            "text/plain",
-            b"404 page not found\n",
-        ), headers
-        assert "x-github-api-version-selected" not in r.headers, headers
-        assert r.headers["x-ratelimit-resource"] == "core", headers
-    used = int(c.get(path, headers=gh_admin_h).headers["x-ratelimit-used"])
-    assert int(c.get(path, headers=gh_admin_h).headers["x-ratelimit-used"]) == used + 1
-
-
-@pytest.mark.parametrize("path", _AUTOMATIONS_SPELT_ROWS)
-def test_github_an_automations_operation_spelt_in_another_case_is_refused_for_its_credential(
-    gh_client, path
-):
-    """Each row refuses a credential as the spelling as published does: no credential is the 401
-    \"Requires authentication\" on `core` with no version echo, and a credential that does not
-    resolve is the 401 \"Bad credentials\" with neither the five nor the echo."""
-    c, _ = gh_client
-    r = c.get(path)
-    assert (r.status_code, r.json()["message"]) == (401, "Requires authentication")
-    assert "x-github-api-version-selected" not in r.headers
-    assert r.headers["x-ratelimit-resource"] == "core"
-    bad = c.get(path, headers={"Authorization": "Bearer <redacted>"})
-    assert (bad.status_code, bad.json()["message"]) == (401, "Bad credentials")
-    assert "x-github-api-version-selected" not in bad.headers
-    assert not any(name.startswith("x-ratelimit-") for name in bad.headers)
-
-
-#: (a path under `/github/agents/automations`, the status, media type and body a token that
-#: resolves gets): the agents backend's text `404 page not found` for a spelling in another case
-#: (``backlot.routers.github._AUTOMATIONS_OPERATIONS``), and the empty 404 with no `content-type`
-#: for one automation or its tasks, whatever the id
-#: (``backlot.main.answer_an_automation_or_its_tasks_with_an_empty_404``).
+#: (method, a path under `/github/agents/automations`, and what a token that resolves gets: the
+#: status, media type, body, `x-ratelimit-resource` and how far the next request moves
+#: `x-ratelimit-used`): the agents backend's text `404 page not found` for an operation spelt in
+#: another case (``backlot.routers.github._AUTOMATIONS_OPERATIONS``), the empty 404 with no
+#: `content-type` for one automation or its tasks, whatever the id
+#: (``backlot.main.answer_an_automation_or_its_tasks_with_an_empty_404``), and the router's JSON
+#: 404 with none of the five `x-ratelimit-*` for a path or a method that names no operation.
+_TEXT_404 = (404, "text/plain", b"404 page not found\n", "core", 1)
+_EMPTY_404 = (404, None, b"", "core", 1)
+_JSON_404 = (
+    404,
+    "application/json",
+    b'{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}',
+    None,
+    0,
+)
 _AUTOMATIONS_ROWS = [
-    ("/AGENTS/automations", 404, "text/plain", b"404 page not found\n"),
-    ("/agents/AUTOMATIONS", 404, "text/plain", b"404 page not found\n"),
-    ("/Agents/Automations", 404, "text/plain", b"404 page not found\n"),
-    ("/AGENTS/automations/1", 404, "text/plain", b"404 page not found\n"),
-    ("/agents/automations/1/TASKS", 404, "text/plain", b"404 page not found\n"),
-    ("/agents/Automations/1/tasks", 404, "text/plain", b"404 page not found\n"),
-    ("/agents/automations/ABC/TASKS", 404, "text/plain", b"404 page not found\n"),
-    ("/agents/AUTOMATIONS/abc", 404, "text/plain", b"404 page not found\n"),
-    ("/agents/automations/1", 404, None, b""),
-    ("/agents/automations/ABC", 404, None, b""),
-    ("/agents/automations/abc", 404, None, b""),
-    ("/agents/automations/ab%43", 404, None, b""),
-    ("/agents/automations/%31", 404, None, b""),
-    ("/agents/automations/available-tools", 404, None, b""),
-    ("/agents/automations/AVAILABLE-TOOLS", 404, None, b""),
-    ("/agents/automations/available-triggers", 404, None, b""),
-    ("/agents/automations/Available-Triggers", 404, None, b""),
-    ("/agents/automations/1/tasks", 404, None, b""),
-    ("/agents/automations/ABC/tasks", 404, None, b""),
-    ("/agents/automations/abc/tasks", 404, None, b""),
-    ("/agents/automations/available-tools/tasks", 404, None, b""),
+    ("GET", "/AGENTS/automations", _TEXT_404),
+    ("GET", "/agents/AUTOMATIONS", _TEXT_404),
+    ("GET", "/Agents/Automations", _TEXT_404),
+    ("GET", "/AGENTS/automations/1", _TEXT_404),
+    ("GET", "/agents/automations/1/TASKS", _TEXT_404),
+    ("GET", "/agents/Automations/1/tasks", _TEXT_404),
+    ("GET", "/agents/automations/ABC/TASKS", _TEXT_404),
+    ("GET", "/agents/AUTOMATIONS/abc", _TEXT_404),
+    ("GET", "/agents/automations/1", _EMPTY_404),
+    ("GET", "/agents/automations/ABC", _EMPTY_404),
+    ("GET", "/agents/automations/abc", _EMPTY_404),
+    ("GET", "/agents/automations/ab%43", _EMPTY_404),
+    ("GET", "/agents/automations/%31", _EMPTY_404),
+    ("GET", "/agents/automations/available-tools", _EMPTY_404),
+    ("GET", "/agents/automations/AVAILABLE-TOOLS", _EMPTY_404),
+    ("GET", "/agents/automations/available-triggers", _EMPTY_404),
+    ("GET", "/agents/automations/Available-Triggers", _EMPTY_404),
+    ("GET", "/agents/automations/1/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/ABC/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/abc/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/available-tools/tasks", _EMPTY_404),
+    ("GET", "/agents/automations/", _JSON_404),
+    ("GET", "/agents/automations//tasks", _JSON_404),
+    ("GET", "/agents/automations/9/nosuch", _JSON_404),
+    ("GET", "/agents/automation%73/13", _JSON_404),
+    ("GET", "/agents/automations/14/task%73", _JSON_404),
+    ("GET", "/agents/%61utomations", _JSON_404),
+    ("POST", "/agents/automations/3", _JSON_404),
+    ("POST", "/AGENTS/automations?_=563024193", _JSON_404),
 ]
 
 
 def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it(
     gh_client, gh_admin_h
 ):
-    """Each answer carries the five `x-ratelimit-*` on `core`, counted, and no version echo, with
-    an unknown version pinned or not."""
+    """Each answer carries no version echo, with an unknown version pinned or not."""
     c, _ = gh_client
     pinned = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
     answered, expected = {}, {}
-    for path, status, media, body in _AUTOMATIONS_ROWS:
+    for method, path, answer in _AUTOMATIONS_ROWS:
         for headers in (gh_admin_h, pinned):
-            r = c.get(f"/github{path}", headers=headers)
-            again = c.get(f"/github{path}", headers=headers)
+            r = c.request(method, f"/github{path}", headers=headers)
+            again = c.request(method, f"/github{path}", headers=headers)
             content_type = r.headers.get("content-type")
-            answered[(path, headers is pinned)] = (
+            answered[(method, path, headers is pinned)] = (
                 r.status_code,
                 content_type.split(";")[0] if content_type else None,
                 r.content,
                 r.headers.get("x-ratelimit-resource"),
-                r.headers.get("x-github-api-version-selected"),
                 int(again.headers.get("x-ratelimit-used", 0))
                 - int(r.headers.get("x-ratelimit-used", 0)),
+                r.headers.get("x-github-api-version-selected"),
             )
-            expected[(path, headers is pinned)] = (status, media, body, "core", None, 1)
+            expected[(method, path, headers is pinned)] = (*answer, None)
     assert answered == expected
 
 

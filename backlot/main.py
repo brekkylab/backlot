@@ -327,12 +327,36 @@ def _some_github_route_matches(scope: Scope) -> bool:
     return any(route.matches(scope)[0] is not Match.NONE for route in app.router.routes)
 
 
+def _a_github_route_spelt_in_another_case(scope: Scope) -> bool:
+    """Whether a GitHub route serves this scope's method on the path as sent spelled in another
+    case, or ``backlot.routers.github.is_an_unserved_operation_spelt_in_another_case`` holds for
+    its method and path.
+
+    Real routes the path as sent — the 404 stays the one the case-sensitive route answers — but
+    the five `x-ratelimit-*` headers and the version echo ride on it as they ride on the route
+    spelled as published. Measured against api.github.com on 2026-11-21 (UTC), with a token that
+    resolves, one cache-busted request each: `GET /RATE_LIMIT`, `/Rate_Limit` and `/ZEN` were the
+    404 with the five and `x-github-api-version-selected: 2022-11-28`, as were
+    `GET /REPOS/psf/requests`, `/REPOS/PSF/REQUESTS/ISSUES` and `/REPOS/psf/requests/issues`, where
+    `GET /nosuchroute` carried neither; `POST /RATE_LIMIT`, `POST /ZEN` and `POST /rate_limit`
+    were the 404 with neither, so only a method the route or the operation serves counts. The
+    first three rows were measured the same way on 2026-11-20, with no credential beside them:
+    `GET` and `HEAD /RATE_LIMIT` carried the five and the version, `POST /RATE_LIMIT` the five
+    alone.
+    """
+    lowered = {**scope, "path": scope["path"].lower()}
+    return any(
+        route.matches(lowered)[0] is Match.FULL for route in github.router.routes
+    ) or github.is_an_unserved_operation_spelt_in_another_case(scope["method"], scope["path"])
+
+
 def _github_routes(scope: Scope) -> bool:
     """Whether real routes this scope: some mounted route matches its path, whatever the method
     (:func:`_some_github_route_matches`), its method and path are an operation GitHub publishes
-    and no route here serves (``backlot.routers.github.is_an_unserved_operation``), or its path is
+    and no route here serves (``backlot.routers.github.is_an_unserved_operation``), its path is
     under an agent family (``backlot.routers.github.under_an_agent_family``), which real's agents
-    backend answers itself.
+    backend answers itself, or a route serves its method on the path spelled in another case
+    (:func:`_a_github_route_spelt_in_another_case`).
 
     A 404 for a path real does not route carries no version echo, and carries the five
     `x-ratelimit-*` headers only for a request that sent no `Authorization` header at all — the same
@@ -351,6 +375,7 @@ def _github_routes(scope: Scope) -> bool:
         _some_github_route_matches(scope)
         or github.is_an_unserved_operation(scope["method"], scope["path"])
         or github.under_an_agent_family(scope["path"])
+        or _a_github_route_spelt_in_another_case(scope)
     )
 
 
@@ -412,6 +437,32 @@ async def refuse_an_unserved_github_operation(request: Request, call_next):
     """
     try:
         await github.refuse_an_unserved_operation(request)
+    except StarletteHTTPException as exc:
+        return await _http_exception_handler(request, exc)
+    return await call_next(request)
+
+
+@_middleware(
+    lambda scope: (
+        scope["path"].startswith("/github/")
+        and not _a_github_route_serves(scope)
+        and not github.is_an_unserved_operation(scope["method"], scope["path"])
+        and _a_github_route_spelt_in_another_case(scope)
+    )
+)
+async def refuse_a_credential_on_a_github_route_spelt_in_another_case(request: Request, call_next):
+    """Answer with the refusal
+    ``backlot.routers.github.refuse_a_credential_on_a_github_route_spelt_in_another_case`` gives,
+    where it gives one.
+
+    Registered after :func:`refuse_an_unserved_github_operation` and before
+    :func:`refuse_a_credential_on_an_agent_path`, so it runs inside the agent paths' refusal and
+    outside the unserved operations': a spelling in another case of an operation is refused here
+    rather than there, and a path under `/agents/` keeps the agents backend's answer. Its refusal
+    leaves through the version echo and the rate-limit headers as a served route's 401 does.
+    """
+    try:
+        await github.refuse_a_credential_on_a_github_route_spelt_in_another_case(request)
     except StarletteHTTPException as exc:
         return await _http_exception_handler(request, exc)
     return await call_next(request)
@@ -1095,7 +1146,9 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
     against the five hosts, on the spellings ``tests/test_google.py::_SLASHED_ROWS`` lists. And an
     operation Google publishes that no route here serves under the request's method is refused as a
     served route refuses before it runs, ahead of the router's 404 or 405
-    (``backlot.routers.google.refuse_an_unserved_operation``).
+    (``backlot.routers.google.refuse_an_unserved_operation``). A standard method no Drive or
+    Gmail operation serves is the front end's HTML 404 instead
+    (``backlot.routers.google.front_end_not_found``).
 
     An escaped slash is not one of them — `values/A1%2F` is real's 400 `Unable to parse range: A1/`
     — so the slashes counted are the raw path's. Nor is a run of slashes inside a path:
@@ -1115,6 +1168,12 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
     request.scope["path"] = path[: len(path) - slashes]
     match = _google_route_match(request.scope)
     if match is not Match.FULL:
+        if (
+            errors.google.family(path) in (errors.google.DRIVE, errors.google.GMAIL)
+            and request.method in ("GET", "POST", "PUT", "PATCH", "DELETE")
+            and not google.is_an_unserved_operation(request)
+        ):
+            return google.front_end_not_found(request)
         try:
             google.refuse_an_unserved_operation(request)
         except StarletteHTTPException as exc:
@@ -2336,6 +2395,7 @@ async def read_a_drive_or_editor_query_as_google_does(request: Request, call_nex
     router. Registered before ``answer_a_google_read_sent_as_a_post``, which makes it the inner of
     the two, so it reads the form that one adds to the query too."""
     query = request.scope["query_string"]
+    request.scope.setdefault(google.QUERY_AS_SENT, query)
     request.scope["query_string"] = utf8_escapes.google_query(query, errors.google.QUERY_TOKENS)
     return await call_next(request)
 
@@ -2398,6 +2458,7 @@ async def answer_a_google_read_sent_as_a_post(request: Request, call_next):
             request.state.form_read = body
         body = _BYTE_PAST_0X7F.sub(lambda m: b"%%%02X" % m[0][0], body or b"")
         query = request.scope.get("query_string", b"")
+        request.scope.setdefault(google.QUERY_AS_SENT, query)
         request.scope["method"] = "GET"
         request.state.sent_as_a_post = True
         request.scope["query_string"] = b"&".join(part for part in (query, body) if part)

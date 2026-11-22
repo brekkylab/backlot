@@ -2254,9 +2254,9 @@ def failed_to_read_request(path: str) -> AtlassianError:
 
 
 def unbounded_jql() -> AtlassianError:
-    """Jira's 400 for `search/jql` given no `jql` at all — on GET or POST, measured 2026-09-16
-    on Jira Cloud. The sentence is Backlot's own: real answers in the account's language, as it does
-    the `nextPageToken` and `orderBy` refusals.
+    """Jira's 400 for `search/jql` given no `jql` at all or one with nothing before its
+    `ORDER BY`, on GET or POST. The sentence is Backlot's own: real answers in the account's
+    language, as it does the `nextPageToken` and `orderBy` refusals.
     """
     return AtlassianError(
         400,

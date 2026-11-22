@@ -400,6 +400,22 @@ def _channel_not_found(context) -> GraphQLError:
     )
 
 
+def _user_not_found(context) -> GraphQLError:
+    """Real's answer to a `transcripts(user_id:)` id that names no user: the null stands and an
+    ``object_not_found`` field error goes beside it, `User` in its metadata (api.fireflies.ai,
+    2026-09-30)."""
+    return GraphQLError(
+        "User not found",
+        extensions={
+            "code": "object_not_found",
+            "correlationId": _correlation_id(context),
+            "status": 404,
+            "metadata": {"objectType": "User"},
+            "helpUrls": ["https://docs.fireflies.ai/miscellaneous/error-codes#object_not_found"],
+        },
+    )
+
+
 def _object_not_found(context) -> GraphQLError:
     """Real's answer to a `transcript` id that names nothing: the null stands and an
     ``object_not_found`` field error goes beside it, the object type in its metadata
@@ -614,7 +630,12 @@ def resolve_transcripts(
     if mine:
         hosts.append(caller or "\x00none")
     if user_id:
-        hosts.append(_email_for_user_id(ctx, user_id) or "\x00none")
+        # Real refuses an id that names no user ahead of a `date` past `_DATE_SERVED` and a
+        # `channel_id` that names no channel (api.fireflies.ai, 2026-11-21).
+        email = _email_for_user_id(ctx, user_id)
+        if email is None:
+            raise _user_not_found(ctx)
+        hosts.append(email)
     # Validation above leaves at most one singular person constraint. The plural-only pair
     # remains valid: `organizers` is any-of, `participants` is all-of.
     organizers = [*(organizers or []), *([organizer_email] if organizer_email else [])]

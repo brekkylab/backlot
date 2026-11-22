@@ -1039,6 +1039,12 @@ OLD_VERSION = {"X-GitHub-Api-Version": "1999-01-01"}
             {"headers": {"Content-Type": "text/plain"}, "content": b"x"},
             "unsupported_media_type",
         ),
+        (
+            "POST",
+            f"{J}/search/jql",
+            {"headers": {"Content-Type": "foo"}, "content": b"x"},
+            "unsupported_media_type",
+        ),
         ("GET", f"{J}/serverInfo", {"headers": {"Accept": "text/csv"}}, "not_acceptable"),
         ("DELETE", f"{J}/serverInfo", {}, "method_not_allowed"),
         ("OPTIONS", f"{J}/serverInfo", {"headers": {}}, "unauthenticated"),

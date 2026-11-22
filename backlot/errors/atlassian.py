@@ -897,27 +897,6 @@ def zero_limit_not_allowed() -> AtlassianError:
     )
 
 
-def unsupported_media_type(path: str, content_type: str | None) -> AtlassianError:
-    """Jira's 415 for a POST body it will not read, measured 2026-09-15 on `POST search/jql`.
-
-    RFC 7807 again, the same five keys and the same media type as
-    :func:`integer_conversion_failure`. The ``detail`` names the type that arrived, and a request
-    carrying no ``Content-Type`` at all is named ``'null'`` — the literal string, which is the
-    header's absence rendered by a Java formatter rather than a JSON null.
-    """
-    return AtlassianError(
-        415,
-        {
-            "type": "about:blank",
-            "title": "Unsupported Media Type",
-            "status": 415,
-            "detail": f"Content-Type '{content_type or 'null'}' is not supported.",
-            "instance": _instance(path),
-        },
-        media_type=PROBLEM_JSON,
-    )
-
-
 #: A token, as Spring's `MimeType` checks one: ASCII, no control character, no separator.
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
@@ -1358,13 +1337,21 @@ _JAVA_TRIMMED = "".join(chr(code) for code in range(0x21))
 
 def _java_double(text: str) -> float | None:
     """``text`` as Java's `Double.parseDouble` reads it, or None where it throws; the hexadecimal
-    `0x1p-1` is 0.5."""
+    `0x1p-1` is 0.5. A hexadecimal value past a double's range, `0x1p1024`, is infinity here, where
+    `float.fromhex` raises: as a `q`, Confluence's 415 calls it a quality outside 0.0 to 1.0 and
+    HubSpot's 405 serves its page for it, where a number Java cannot read draws neither
+    (2026-11-21)."""
     text = text.strip(_JAVA_TRIMMED)
     if not _JAVA_DOUBLE.fullmatch(text):
         return None
     sign = -1.0 if text.startswith("-") else 1.0
     body = text.lstrip("+-").rstrip("fFdD")
-    return sign * (float.fromhex(body) if body[:2] in ("0x", "0X") else float(body))
+    if body[:2] not in ("0x", "0X"):
+        return sign * float(body)
+    try:
+        return sign * float.fromhex(body)
+    except OverflowError:
+        return sign * math.inf
 
 
 def _java_number_format(text: str) -> str:

@@ -247,6 +247,26 @@ _ALL_PERSON = (
             "date: 1e15, limit: 0",
             [_field("limit", ("isPositive", "limit must be a positive number"))],
         ),
+        (
+            'organizers: [""], limit: 100',
+            [_field("limit", ("max", "limit must not be greater than 50"))],
+        ),
+        (
+            'organizers: [""], mine: true',
+            [_exclusive("organizers")],
+        ),
+        (
+            'organizers: [""], participants: ["nope"]',
+            [_field("participants", _email("participants"))],
+        ),
+        (
+            'organizers: ["nope"], participants: [""]',
+            [_field("organizers", _email("organizers"))],
+        ),
+        (
+            'organizers: [""], host_email: "nope"',
+            [_field("organizers", _excl("organizers")), _field("hostEmail", _email("hostEmail"))],
+        ),
     ],
 )
 def test_fireflies_measured_compound_refusal(fireflies_http, arguments, fields):
@@ -278,6 +298,18 @@ def test_fireflies_measured_compound_refusal(fireflies_http, arguments, fields):
         ('toDate: "not-a-date"', "toDate", "isDate", "toDate must be a Date instance"),
         (
             'organizers: ["nope"]',
+            "organizers",
+            "IsEmailOnly",
+            "organizers must be a valid email address",
+        ),
+        (
+            'organizers: ["", "nope"]',
+            "organizers",
+            "IsEmailOnly",
+            "organizers must be a valid email address",
+        ),
+        (
+            'organizers: [" "]',
             "organizers",
             "IsEmailOnly",
             "organizers must be a valid email address",
@@ -449,6 +481,35 @@ def test_fireflies_measured_validation_boundaries(fireflies_http, arguments):
     ],
 )
 def test_fireflies_date_outside_the_years_0_to_9999_is_an_internal_error(fireflies_http, arguments):
+    response = _query(fireflies_http, arguments)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["transcripts"] is None
+    (error,) = body["errors"]
+    assert list(error) == ["friendly", "message", "locations", "path", "code", "extensions"]
+    assert list(error["extensions"]) == ["code", "correlationId", "status"]
+    assert re.fullmatch(r"[A-Za-z0-9]{8}", error["extensions"].pop("correlationId"))
+    assert error == {
+        "friendly": False,
+        "message": "Something unexpected happened. Please try again",
+        "locations": [{"line": 1, "column": 3}],
+        "path": ["transcripts"],
+        "code": "INTERNAL_SERVER_ERROR",
+        "extensions": {"code": "INTERNAL_SERVER_ERROR", "status": 500},
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        'organizers: [""]',
+        'participants: [""]',
+        'organizers: ["", "a@b.co"]',
+        'organizers: ["a@b.co", ""]',
+        'organizers: [""], participants: [""]',
+    ],
+)
+def test_fireflies_empty_member_of_a_person_filter_is_an_internal_error(fireflies_http, arguments):
     response = _query(fireflies_http, arguments)
     assert response.status_code == 200
     body = response.json()

@@ -1348,6 +1348,8 @@ _FORBIDDEN_ROWS = [
     ("GET", _SEARCH, True, "text/html;q=1d", 405, "POST,OPTIONS", True, True, True),
     ("GET", _SEARCH, True, "text/html;q=NaN", 405, "POST,OPTIONS", True, True, True),
     ("GET", _SEARCH, True, "text/html;q=-NaN", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=0x1p1024", 405, "POST,OPTIONS", True, True, True),
+    ("GET", _SEARCH, True, "text/html;q=-0x1p1024", 405, "POST,OPTIONS", False, True, True),
     ("GET", _SEARCH, True, "text/html;q=-0", 405, "POST,OPTIONS", False, True, True),
     (
         "GET",

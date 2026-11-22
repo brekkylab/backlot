@@ -1337,13 +1337,21 @@ _JAVA_TRIMMED = "".join(chr(code) for code in range(0x21))
 
 def _java_double(text: str) -> float | None:
     """``text`` as Java's `Double.parseDouble` reads it, or None where it throws; the hexadecimal
-    `0x1p-1` is 0.5."""
+    `0x1p-1` is 0.5. A hexadecimal value past a double's range, `0x1p1024`, is infinity here, where
+    `float.fromhex` raises: as a `q`, Confluence's 415 calls it a quality outside 0.0 to 1.0 and
+    HubSpot's 405 serves its page for it, where a number Java cannot read draws neither
+    (2026-11-21)."""
     text = text.strip(_JAVA_TRIMMED)
     if not _JAVA_DOUBLE.fullmatch(text):
         return None
     sign = -1.0 if text.startswith("-") else 1.0
     body = text.lstrip("+-").rstrip("fFdD")
-    return sign * (float.fromhex(body) if body[:2] in ("0x", "0X") else float(body))
+    if body[:2] not in ("0x", "0X"):
+        return sign * float(body)
+    try:
+        return sign * float.fromhex(body)
+    except OverflowError:
+        return sign * math.inf
 
 
 def _java_number_format(text: str) -> str:

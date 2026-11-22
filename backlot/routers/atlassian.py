@@ -3487,15 +3487,11 @@ def _jira_json_number(read, oversized: list[_JiraOversizedNumber]):
 
 
 def _refuse_a_search_media_type(request: Request) -> None:
-    """Raises Jira's 415 for a `POST search/jql` whose `Content-Type` is not JSON.
+    """Raises the 415 ``errors.atlassian.refuse_a_media_type`` builds for a `POST search/jql` whose
+    `Content-Type` is not JSON.
 
-    Spring's check, measured 2026-09-15 and 2026-10-13. The `Content-Type` is checked first and on
-    its own: a perfectly good JSON body sent without the header is the same 415 as one sent with
-    `text/plain`, so the header decides before the bytes are looked at. The match is on the media
-    type alone, case-insensitively and ignoring parameters — `APPLICATION/JSON` and
-    `application/json; charset=utf-8` are both read, `*/*` and `application/xml` are not; one
-    Spring cannot read is `Could not parse Content-Type.` and `Accept: application/json` is sent on
-    every 415. :func:`_checked_before_the_route` has its place.
+    The header decides on its own, before the bytes are looked at: a perfectly good JSON body sent
+    without it is the same 415 as one sent with `text/plain` (measured 2026-09-15).
     """
     refusal = errors_atlassian.refuse_a_media_type(
         _echoed_path(request), request.headers, ("application/json",)
@@ -6566,8 +6562,8 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     # of this module seeds an account id from for one (see :func:`_conf_user`).
     headers["x-aaccountid"] = synth.atlassian_account_id(caller.email or "unknown")
     # the quota rides on what a route answers, and on an `OPTIONS` at its path; a 405 carries none,
-    # and neither does the 415 or the 406 a route refuses an `Accept` with (`POST search/jql`,
-    # 2026-10-13)
+    # and neither does the 415 a route refuses a `Content-Type` with or the 406 it refuses an
+    # `Accept` with (`POST search/jql`, 2026-10-13)
     if (
         status_code != 415
         and not request.scope.get("atlassian_accept_refused")

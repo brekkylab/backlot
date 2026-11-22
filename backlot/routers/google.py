@@ -1615,14 +1615,68 @@ def _gmail_closed_quote(m: re.Match) -> str:
     return f'{dashes}{key}"{_GMAIL_TRAILING_OPERATOR.sub("", content)}"'
 
 
-def _gmail_term_left_out(term: str) -> bool:
-    """Whether a Gmail search term is long enough that real Gmail leaves it out of the search
-    altogether, as if it had not been typed. Measured against gmail.googleapis.com on 2026-11-21
-    on a mailbox of 840 messages: a term of 522 or more of `x`, `y` or `1`, alone, beside another
-    term, after `subject:` and inside `{…}`, answered what the search without the term answers,
-    and at 521 characters the term was a word again. 600 of `é` answered no messages, so the rule
-    measured is the one for ASCII terms."""
-    return len(term) >= 522 and term.isascii()
+_GMAIL_LONG_RUN = re.compile(r"[A-Za-z0-9]{522,}")
+# The operators whose value keeps a long run, read by `_gmail_long_runs`.
+_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:label|in|has|newer_than|older_than):"?\Z')
+
+
+def _gmail_long_runs(q: str) -> str:
+    """``q`` with each run of 522 or more ASCII letters and digits left out, and with it the
+    punctuation touching it other than `_`, `&`, a quote or a bracket, or a `+`, `-` or `:` in front
+    of it. A run another term follows stays, as a term that matches nothing, when nothing but `(`,
+    `{`, `+` or an opening `"` comes before it in its term and nothing but `)` or `}` after it, no
+    `{…}` group is open at the end of its term, and the next term holds a letter, digit, `_` or `&`
+    and is no `-` term, `NOT` or operator `_GMAIL_KEYS` names, a `(` or `{` in front of it aside. A
+    run in the value of an operator `_GMAIL_RUN_KEPT_IN` names stays too. An address or `subject:`
+    operator whose value was the run goes with it, and so does a run of `NOT`s in front of a term
+    left out; an `after:`, `before:`, `newer:` or `older:` one is the word it spells.
+
+    Measured against gmail.googleapis.com on 2026-11-22 between 08:52 and 09:34 UTC, comparing
+    `messages.list` id sets on a mailbox of 840 messages, with ``R`` 522 of `x` and ``S`` 522 of
+    `y`: `R`, 522 of `1`, `"R"`, `{R}`, `{R S}`, `(R)`, `-R`, `+R`, `R.`, `.R`, `R@`, `R-`, `R+`,
+    `R ""`, `NOT R`, `NOT NOT R`, `from:R`, `NOT from:R`, `from:"R"` and `subject:"R"` answered
+    every message; `R_` the ids of `_`; `R.the`, `R. the`, `"the R"`, `(the R)`, `{R the}`,
+    `R+ the`, `-R the`, `"R" the`, `NOT R the`, `from:R the`, `FROM:R the`, `-from:R the`, `the:R`
+    and `the` then 522 of `X` those of `the`; `R -the`, `R NOT the`, `R (-the)`, `R {-the}` and
+    `NOT R.the` those of `-the`; `R FROM:me` those of `from:me`; `R subject:the` and `subject:R.the`
+    those of `subject:the`; and `after:R`, `before:R`, `newer:R`, `older:R`, `AFTER:R` and
+    `-after:R` those of `after`, `before`, `newer`, `older`, `after` and `-after`. `R the`,
+    `R "the"`, `R (the)`, `R {the}`, `R +the`, `R &`, `R the:x`, `rollout R the`, `+R the`,
+    `(R) the`, `{R} the`, `"R the"`, `R.x300`, `R NOT`, `label:R`, `label:"R"`, `in:R`, `has:R` and
+    `newer_than:R` answered nothing, as `x300.x300`, `x521.`, `label:x521`, `in:x521` and `NOT` did;
+    `x600é` answered the ids of `é`, and 2000 of `é` nothing."""
+    terms = [[m.start(), m.end(), m.group()] for m in re.finditer(r"[^ \t\n\r\f\v]+", q)]
+    for i, (_, end, term) in enumerate(terms):
+        run = _GMAIL_LONG_RUN.search(term)
+        if run is None or _GMAIL_RUN_KEPT_IN.search(term[: run.start()]):
+            continue
+        head, tail = term[: run.start()], term[run.end() :]
+        after = terms[i + 1][2].lstrip("({") if i + 1 < len(terms) else ""
+        op = re.match(r"(\w+):", after)
+        if (
+            not head.strip('({+"')
+            and not tail.strip(")}")
+            and q.count("{", 0, end) == q.count("}", 0, end)
+            and re.search(r"[\w&]", after)
+            and after[0] != "-"
+            and after != "NOT"
+            and not (op and op.group(1).lower() in _GMAIL_KEYS)
+        ):
+            continue
+        term = re.sub(r'[^\w&\s"(){}+:-]+\Z', "", head) + re.sub(r'\A[^\w&\s"(){}]+', "", tail)
+        op = re.fullmatch(r"(-*)(\w+):", term)
+        if op and op.group(2).lower() in _GMAIL_KEYS:
+            dated = _GMAIL_KEY_ALIASES.get(op.group(2).lower(), op.group(2).lower())
+            term = op.group(1) + op.group(2) if dated in _GMAIL_DATE_KEYS else ""
+        terms[i][2] = term
+        j = i - 1
+        while not term and j >= 0 and _GMAIL_NOT_TERM.fullmatch(terms[j][2]):
+            terms[j][2], j = "", j - 1
+    out, at = [], 0
+    for start, end, term in terms:
+        out += [q[at:start], term]
+        at = end
+    return "".join(out) + q[at:]
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
@@ -1644,8 +1698,6 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
         if key in _GMAIL_KEYS:
             key = _GMAIL_KEY_ALIASES.get(key, key)
             value = m.group(2)
-            if _gmail_term_left_out(value.strip('"')):
-                return " "
             if not value and key not in _GMAIL_ADDRESS_KEYS:
                 if key in _GMAIL_DROPPED_WHEN_EMPTY:
                     return " "
@@ -1774,7 +1826,6 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     free = re.sub(" +", " ", free).strip(" ")
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
         words = [t for t in free.split(" ") if t.strip("\xa0") not in ("", "+", "-", '""')]
-        words = [t for t in words if not _gmail_term_left_out(t.lstrip("-").strip('"').rstrip("+"))]
         words = ["not" if _GMAIL_NOT_GLUE.fullmatch(t) else t for t in words]
         words, nothing = _gmail_not_words(words)
         if nothing:
@@ -2214,7 +2265,9 @@ async def gmail_messages_list(user_id: str, request: Request):
     limit, offset = _gmail_page(request, "messages", sizes)
     q = request.query_params.get("q", "") or ""
     if q.strip():  # search: filter the ACL-visible set by the query, then paginate
-        matched = _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
+        matched = _gmail_query(
+            conn, mailbox, ids, _gmail_long_runs(q), caller.email or _service_email(request)
+        )
         total = len(matched)
         rows = matched[offset : offset + limit]
     else:
@@ -2325,7 +2378,9 @@ async def gmail_threads_list(user_id: str, request: Request):
         # A search returns the THREADS its matches are in: Gmail lists a thread whose match is in a
         # reply, and lists it once even when several of its messages match.
         matched = _by_thread(
-            _gmail_query(conn, mailbox, ids, q, caller.email or _service_email(request))
+            _gmail_query(
+                conn, mailbox, ids, _gmail_long_runs(q), caller.email or _service_email(request)
+            )
         )
         total = len(matched)
         rows = matched[offset : offset + limit]

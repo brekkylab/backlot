@@ -15153,26 +15153,78 @@ def test_gmail_a_negated_word_leaves_out_the_messages_holding_it(tmp_path):
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
-_GMAIL_LONG_TERM_ROWS = [
+_GMAIL_LONG_RUN_ROWS = [
     ("x" * 522, ["plan", "lunch", "reply"]),
-    ("x" * 521, []),
-    ("y" * 522, ["plan", "lunch", "reply"]),
     ("1" * 522, ["plan", "lunch", "reply"]),
-    ("rollout " + "x" * 522, ["plan", "reply"]),
-    ("rollout " + "x" * 1000, ["plan", "reply"]),
-    ("subject:" + "x" * 522, ["plan", "lunch", "reply"]),
-    ("subject:" + "x" * 1000, ["plan", "lunch", "reply"]),
-    ("subject:" + "x" * 521, []),
+    ('"' + "x" * 522 + '"', ["plan", "lunch", "reply"]),
+    ("{" + "x" * 522 + "}", ["plan", "lunch", "reply"]),
+    ("{" + "x" * 522 + " " + "y" * 522 + "}", ["plan", "lunch", "reply"]),
+    ("(" + "x" * 522 + ")", ["plan", "lunch", "reply"]),
     ("-" + "x" * 522, ["plan", "lunch", "reply"]),
-    ("{rollout " + "x" * 522 + "}", ["plan", "reply"]),
+    ("+" + "x" * 522, ["plan", "lunch", "reply"]),
+    ("x" * 522 + ".", ["plan", "lunch", "reply"]),
+    ("." + "x" * 522, ["plan", "lunch", "reply"]),
+    ("x" * 522 + "+", ["plan", "lunch", "reply"]),
+    ("x" * 522 + ' ""', ["plan", "lunch", "reply"]),
+    ("NOT " + "x" * 522, ["plan", "lunch", "reply"]),
+    ("NOT NOT " + "x" * 522, ["plan", "lunch", "reply"]),
+    ("subject:" + "x" * 522, ["plan", "lunch", "reply"]),
+    ('subject:"' + "x" * 522 + '"', ["plan", "lunch", "reply"]),
+    ("from:" + "x" * 522, ["plan", "lunch", "reply"]),
+    ("NOT from:" + "x" * 522, ["plan", "lunch", "reply"]),
+    ("rollout " + "x" * 522, ["plan", "reply"]),
+    ("rollout " + "X" * 522, ["plan", "reply"]),
+    ('"rollout ' + "x" * 522 + '"', ["plan", "reply"]),
+    ("(rollout " + "x" * 522 + ")", ["plan", "reply"]),
+    ("{" + "x" * 522 + " rollout}", ["plan", "reply"]),
+    ("x" * 522 + ".rollout", ["plan", "reply"]),
+    ("x" * 522 + ". rollout", ["plan", "reply"]),
+    ("x" * 522 + "+ rollout", ["plan", "reply"]),
+    ("-" + "x" * 522 + " rollout", ["plan", "reply"]),
+    ('"' + "x" * 522 + '" rollout', ["plan", "reply"]),
+    ("NOT " + "x" * 522 + " rollout", ["plan", "reply"]),
+    ("from:" + "x" * 522 + " rollout", ["plan", "reply"]),
+    ("FROM:" + "x" * 522 + " rollout", ["plan", "reply"]),
+    ("-from:" + "x" * 522 + " rollout", ["plan", "reply"]),
+    ("rollout:" + "x" * 522, ["plan", "reply"]),
+    ("x" * 522 + " subject:rollout", ["plan", "reply"]),
+    ("subject:" + "x" * 522 + ".rollout", ["plan", "reply"]),
+    ("x" * 522 + " -rollout", ["lunch"]),
+    ("x" * 522 + " NOT rollout", ["lunch"]),
+    ("x" * 522 + " (-rollout)", ["lunch"]),
+    ("x" * 522 + " {-rollout}", ["lunch"]),
+    ("NOT " + "x" * 522 + ".rollout", ["lunch"]),
+    ("after:" + "x" * 522, ["lunch"]),
+    ("-after:" + "x" * 522, ["plan", "reply"]),
+    ("x" * 522 + " FROM:me", ["reply"]),
+    ("newer:" + "x" * 522, []),
+    ("x" * 521, []),
+    ("x" * 522 + " rollout", []),
+    ("x" * 522 + ' "rollout"', []),
+    ("x" * 522 + " (rollout)", []),
+    ("x" * 522 + " {rollout}", []),
+    ("x" * 522 + " +rollout", []),
+    ("x" * 522 + " rollout:plan", []),
+    ("rollout " + "x" * 522 + " plan", []),
+    ("+" + "x" * 522 + " rollout", []),
+    ("(" + "x" * 522 + ") rollout", []),
+    ("{" + "x" * 522 + "} rollout", []),
+    ('"' + "x" * 522 + ' rollout"', []),
+    ("x" * 522 + "." + "x" * 300, []),
+    ("x" * 522 + " NOT", []),
+    ("x" * 300 + "." + "x" * 300, []),
+    ("x" * 521 + ".", []),
+    ("label:" + "x" * 522, []),
+    ('label:"' + "x" * 522 + '"', []),
+    ("in:" + "x" * 522, []),
+    ("subject:" + "x" * 521, []),
     ("é" * 600, []),
 ]
 
 
-def test_gmail_a_term_of_522_characters_or_more_is_left_out(tmp_path):
-    """Each row is how the comment on `_gmail_term_left_out` reads its query, over both listings:
-    the term is left out alone, beside another term, after `subject:`, negated and inside braces,
-    at 521 characters it is a word again, and 600 of `é` stay a word."""
+def test_gmail_a_run_of_522_letters_and_digits(tmp_path):
+    """Each row is how `_gmail_long_runs` reads its query, over both listings; the corpus holds the
+    word `after` so that an `after:` left with no value can be told from one that reads nothing."""
     records = [
         {
             "source_type": "gmail",
@@ -15194,7 +15246,7 @@ def test_gmail_a_term_of_522_characters_or_more_is_left_out(tmp_path):
             {
                 "doc_id": "lunch",
                 "title": "Lunch",
-                "content": "Friday?",
+                "content": "Friday after standup?",
                 "label_ids": ["SENT"],
                 "author_email": "mia@acme.com",
                 "created": "2026-03-02T09:00:00Z",
@@ -15211,7 +15263,7 @@ def test_gmail_a_term_of_522_characters_or_more_is_left_out(tmp_path):
     ]
     settings = tiny_corpus(tmp_path, records)
     token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
-    rows = _GMAIL_LONG_TERM_ROWS
+    rows = _GMAIL_LONG_RUN_ROWS
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 

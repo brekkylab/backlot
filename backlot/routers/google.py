@@ -1169,6 +1169,13 @@ _GMAIL_DASHED_WORD = re.compile(r'-+(?:"([^"]*)"|([^ ]+))\Z')
 # A free-text term: a quoted stretch, spaces and all, with what touches it, or a run of other
 # characters between spaces.
 _GMAIL_FREE_TERM = re.compile(r'[^ "]*"[^"]*"[^ "]*|[^ ]+')
+# A free-text term with no letter, digit, `_` or `&` is no term: `.`, `@`, `,`, `!` and `...` each
+# answered every message on a Workspace mailbox on 2026-11-22, as no `q` does, and so did `?`, `#`,
+# `}`, `;`, `/`, `$`, `'`, an ellipsis, an ideographic full stop, `€` and an emoji on 2026-11-23,
+# where `&`, `_`, `½` and `²` were searched as terms. A quote or a parenthesis is not a separator —
+# a lone `"` and the `"(` a quoted phrase leaves behind still match nothing, as the stray-quote rows
+# measure.
+_GMAIL_SEPARATOR_ONLY = re.compile(r'[^\w&"()]+')
 
 
 def _gmail_q_date(v: str) -> str | None:
@@ -1675,8 +1682,9 @@ def _gmail_closed_quote(m: re.Match) -> str:
 
 
 _GMAIL_LONG_RUN = re.compile(r"[A-Za-z0-9]{522,}")
-# The operators whose value keeps a long run, read by `_gmail_long_runs`.
-_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:label|in|has|newer_than|older_than):"?\Z')
+# The operators whose value keeps a long run, read by `_gmail_long_runs`; after `has:` only an
+# unbracketed one, as the comment on a quoted `has:` value in `_parse_gmail_q` measures.
+_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:(?:label|in|newer_than|older_than):"?[()\[\]]*|has:"?)\Z')
 
 
 def _gmail_long_runs(q: str) -> str:
@@ -1745,6 +1753,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q = _gmail_brace_leads(q)
     q, any_groups, not_any_groups = _gmail_braces(q)
     q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
+    # A quoted `in:` value holding no letter, digit, `_` or `&` is `in:""`, which reads the next
+    # word as its value (`_GMAIL_SPACED`). Measured on 2026-11-23: `in:"()"`, `in:"( )"` and
+    # `in:"."` answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and
+    # `in:"()" has` nothing, as `in:"" the` and `in:"" has` did; `the in:"()"` the ids of `the`;
+    # and `in:"()" label:inbox` those of `label:inbox`.
+    q = re.sub(r'(?<![^ \t\n\r\f\v(-])(in:)"[^"\w&\xa0]*"', r'\1""', q, flags=re.IGNORECASE)
     lone = _GMAIL_LONE_QUOTE_UNCLOSED.search(q)
     if lone and lone.group(3).count("(") > lone.group(3).count(")"):
         if (lone.group(1).count("NOT") + bool(lone.group(2))) % 2 == 0:
@@ -1781,6 +1795,15 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
             # `newer_than:30d` answers, and `older_than:1d"`, `older_than:30d"` and
             # `older_than:30d"" "` what `older_than:1d` and `older_than:30d` answer.
             if key in _GMAIL_AGE_NEGATION and (value[:1] == '"' or '"' in value.rstrip('"')):
+                if not m.group(0).startswith("-"):
+                    ops.setdefault(_GMAIL_NOTHING, []).append(value)
+                return " "
+            if key in _GMAIL_AGE_NEGATION and _gmail_rel_secs(value.rstrip('"')) is None:
+                # An age Gmail cannot read matches nothing — `newer_than:x`, `newer_than:5`,
+                # `older_than:x` and `older_than:5` each answered no messages on a Workspace
+                # mailbox on 2026-11-22 — and negated it matches everything: `-newer_than:x` and
+                # `-older_than:5` each answered every message on 2026-11-23. Trailing quotes do not
+                # un-read it: `newer_than:30d"` answers as `30d`.
                 if not m.group(0).startswith("-"):
                     ops.setdefault(_GMAIL_NOTHING, []).append(value)
                 return " "
@@ -1841,6 +1864,19 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and not _GMAIL_ADDRESS_WORD.search(value)
             ):
                 return " "
+            # A quoted `has:` value of a long run, or holding no word character, is the word `has`,
+            # or `-has` with a `-` in front: real answers the ids of `has` for `has:""`, `has:"()"`,
+            # `has:"R"` and `has:"(R)"` with R a run of 522 letters, and for `has:"[R]"`; on
+            # 2026-11-23 the ids of `-has` for `-has:""`, `-has:"()"` and `-has:"R"`, and those of
+            # `has` for `has:(R)`, whose run `_gmail_long_runs` leaves out. A quoted `has:` value is
+            # not stripped of brackets: `has:"(attachment)"` answered nothing where `has:attachment`
+            # answered many.
+            if (
+                key == "has"
+                and value.startswith('"')
+                and (not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value))
+            ):
+                return stored
             # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
             # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
             # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;
@@ -1904,7 +1940,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     )
     free = re.sub(" +", " ", free).strip(" ")
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
-        words = [t for t in free.split(" ") if t.strip("\xa0") not in ("", "+", "-", '""')]
+        words = [
+            t
+            for t in free.split(" ")
+            if t.strip("\xa0") not in ("", "+", "-", '""')
+            and not _GMAIL_SEPARATOR_ONLY.fullmatch(t)
+        ]
         words = ["not" if _GMAIL_NOT_GLUE.fullmatch(t) else t for t in words]
         words, nothing = _gmail_not_words(words)
         if nothing:
@@ -1940,18 +1981,21 @@ def _gmail_date(v: str) -> int | None:
         return None
 
 
-# Gmail relative-age units for newer_than:/older_than:. Real Gmail counts calendar months/years,
-# which we can't reproduce without the query's wall-clock calendar; days-per-unit is a faithful-
-# enough approximation here (the operators are otherwise honored exactly).
-_GMAIL_REL_UNIT = {"d": 1, "m": 30, "y": 365}
-_GMAIL_REL = re.compile(r"(\d+)([dmy])")
+# Gmail relative-age units for newer_than:/older_than:, in hours. Real Gmail counts calendar
+# months/years, which we can't reproduce without the query's wall-clock calendar; 30 and 365 days
+# are a faithful-enough approximation here (the operators are otherwise honored exactly). An hour
+# is a unit too: `newer_than:720h` and `older_than:720H` answered what `newer_than:30d` and
+# `older_than:30d` answer on a Workspace mailbox on 2026-11-23, where `newer_than:٣٠d` and
+# `newer_than:３０d` answered no messages.
+_GMAIL_REL_UNIT = {"h": 1, "d": 24, "m": 30 * 24, "y": 365 * 24}
+_GMAIL_REL = re.compile(r"([0-9]+)([hdmy])")
 
 
 def _gmail_rel_secs(v: str) -> int | None:
     """Seconds for a Gmail relative-age token like ``5d`` / ``2m`` / ``1y`` (newer_than:/older_than:).
     None if it isn't a recognized relative token, so callers can ignore it rather than zero out."""
     m = _GMAIL_REL.fullmatch(v.strip().lower())
-    return int(m.group(1)) * _GMAIL_REL_UNIT[m.group(2)] * 86400 if m else None
+    return int(m.group(1)) * _GMAIL_REL_UNIT[m.group(2)] * 3600 if m else None
 
 
 def _resolve_relative_dates(ops: dict) -> dict:
@@ -2040,6 +2084,51 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     )
 
 
+#: The `has:` values real reads, as spelt: the document kinds, the label pair and the starred kinds
+#: Gmail's search operators name, and `pdf`, `image`, `photo` and `video`, which it does not name
+#: and which each answered messages on a Workspace mailbox on 2026-11-23. A value outside them is
+#: one real does not know, and matches nothing (:func:`_gmail_op_match`).
+_GMAIL_HAS_VALUES = frozenset(
+    {
+        "attachment",
+        "pdf",
+        "image",
+        "photo",
+        "video",
+        "drive",
+        "document",
+        "spreadsheet",
+        "presentation",
+        "youtube",
+        "userlabels",
+        "nouserlabels",
+        "yellow-star",
+        "red-star",
+        "orange-star",
+        "green-star",
+        "blue-star",
+        "purple-star",
+        "yellow-bang",
+        "red-bang",
+        "orange-guillemet",
+        "green-check",
+        "blue-info",
+        "purple-question",
+    }
+)
+
+
+def _gmail_subject_value(value: str) -> str:
+    """A `subject:` value read the way Gmail reads it, punctuation at either end left off:
+    `subject:.the`, `subject:the.`, `subject:the,`, `subject:,the` and `subject:...the` each
+    answered what `subject:the` answers on a Workspace mailbox on 2026-11-22, and so did
+    `subject:'the`, `subject:#the`, `subject:the?`, `subject:…the`, `subject:the。` and
+    `subject:«the»` on 2026-11-23, where `subject:_the` and `subject:&the` answered nothing. A
+    value of punctuation alone is empty here, and no term:
+    `subject:.`, `-subject:.` and `-subject:...` each answered every message (2026-11-23)."""
+    return re.sub(r"^[^\w&]+|[^\w&]+$", "", value.lower())
+
+
 def _gmail_op_match(row, ops: dict) -> bool:
     if _GMAIL_NOTHING in ops:
         return False
@@ -2064,10 +2153,11 @@ def _gmail_op_match(row, ops: dict) -> bool:
             if _gmail_address_match(row[key], v):
                 return False
     for v in ops.get("subject", []):
-        if v.lower() not in (row["title"] or "").lower():
+        if _gmail_subject_value(v) not in (row["title"] or "").lower():
             return False
     for v in ops.get("-subject", []):
-        if v.lower() in (row["title"] or "").lower():
+        value = _gmail_subject_value(v)
+        if value and value in (row["title"] or "").lower():
             return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
@@ -2082,13 +2172,15 @@ def _gmail_op_match(row, ops: dict) -> bool:
             return False
     if any(v.lower() == "anywhere" for v in ops.get("-in", [])):
         return False
-    if any(v.lower() == "attachment" for v in ops.get("has", [])) and not store.jcol(
-        row, "attachments"
-    ):
+    if any(v == "attachment" for v in ops.get("has", [])) and not store.jcol(row, "attachments"):
         return False
-    if any(v.lower() == "attachment" for v in ops.get("-has", [])) and store.jcol(
-        row, "attachments"
-    ):
+    if any(v == "attachment" for v in ops.get("-has", [])) and store.jcol(row, "attachments"):
+        return False
+    # A `has:` value Gmail does not know matches nothing: `has:x` and `has:zzzq` each
+    # answered no messages on a Workspace mailbox on 2026-11-22, where `-has:x` answered
+    # every message, and on 2026-11-23 so did a value in another case: `has:Attachment` and
+    # `has:Drive` answered no messages, and `-has:Attachment` every message.
+    if any(v not in _GMAIL_HAS_VALUES for v in ops.get("has", [])):
         return False
     ts = _gmail_ts(row)
     for v in ops.get("after", []):

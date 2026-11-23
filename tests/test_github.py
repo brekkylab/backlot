@@ -3776,9 +3776,9 @@ _AUTOMATIONS_HEAD_REFUSED_ROWS = [
     ("/agents/automations", {}, "core"),
     ("/agents/automations/2", {}, "core"),
     ("/agents/automations/1/tasks", {}, "core"),
-    ("/agents/automations", {"Authorization": "Bearer <redacted>"}, None),
-    ("/agents/automations/2", {"Authorization": "Bearer <redacted>"}, None),
-    ("/agents/automations/1/tasks", {"Authorization": "Bearer <redacted>"}, None),
+    ("/agents/automations", {"Authorization": "Bearer nope"}, None),
+    ("/agents/automations/2", {"Authorization": "Bearer nope"}, None),
+    ("/agents/automations/1/tasks", {"Authorization": "Bearer nope"}, None),
 ]
 
 

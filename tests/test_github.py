@@ -7977,6 +7977,99 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
             used += 1
         assert int(_ratelimit(c.get("/github/user/repos"))["used"]) == address + 1
 
+        # A token's webhook operations share a 500/minute window, reads and writes and their
+        # 404s alike; anonymous 401s stay on core (see `rate_limit_resource` for the measurement).
+        windows = c.app.state.github_rate_limits
+        webhook_start = int(windows.clock())
+        windows.clock = lambda: webhook_start
+        hook_paths = [
+            f"{repo}/hooks",
+            f"{repo}/hooks/1",
+            f"{repo}/hooks/x",
+            f"{repo}/hooks/1/config",
+            f"{repo}/hooks/1/deliveries",
+            f"{repo}/hooks/1/deliveries/1",
+            f"/github/orgs/{org}/hooks",
+            f"/github/orgs/{org}/hooks/1/deliveries",
+            f"{repo}/HOOKS",
+        ]
+        answers = []
+        expected = []
+        for used, path in enumerate(hook_paths, 1):
+            response = c.get(path, headers=h)
+            answers.append((response.status_code, _ratelimit(response)))
+            expected.append(
+                (
+                    404,
+                    {
+                        "resource": "webhook_deliveries",
+                        "limit": "500",
+                        "used": str(used),
+                        "remaining": str(500 - used),
+                        "reset": str(webhook_start + 60),
+                    },
+                )
+            )
+        assert answers == expected
+        assert _ratelimit(c.get("/github/rate_limit", headers=h))["used"] == admin_used
+        assert _ratelimit(c.head(hook_paths[0], headers=h))["used"] == str(len(hook_paths) + 1)
+        writes = [
+            ("POST", f"{repo}/hooks"),
+            ("PATCH", f"{repo}/hooks/1"),
+            ("DELETE", f"{repo}/hooks/1"),
+            ("PATCH", f"{repo}/hooks/1/config"),
+            ("POST", f"{repo}/hooks/1/pings"),
+            ("POST", f"{repo}/hooks/1/tests"),
+            ("POST", f"{repo}/hooks/1/deliveries/1/attempts"),
+            ("POST", f"/github/orgs/{org}/hooks"),
+            ("PATCH", f"/github/orgs/{org}/hooks/1/config"),
+            ("POST", f"/github/orgs/{org}/hooks/1/pings"),
+            ("POST", f"{repo}/HOOKS"),
+        ]
+        written = [c.request(method, path, headers=h, json={}) for method, path in writes]
+        assert [
+            (r.status_code, _ratelimit(r)["resource"], _ratelimit(r)["used"]) for r in written
+        ] == [(404, "webhook_deliveries", str(used)) for used in range(11, 22)]
+        assert _ratelimit(c.get("/github/rate_limit", headers=h))["used"] == admin_used
+        unsupported = [
+            ("GET", f"{repo}/hooks/1/pings"),
+            ("GET", f"{repo}/hooks/1/tests"),
+            ("GET", f"{repo}/hooks/1/deliveries/1/attempts"),
+            ("PUT", f"{repo}/hooks/1"),
+            ("POST", f"/github/orgs/{org}/hooks/1/tests"),
+        ]
+        unmatched = [c.request(method, path, headers=h) for method, path in unsupported]
+        assert [(r.status_code, "x-ratelimit-limit" in r.headers) for r in unmatched] == [
+            (404, False)
+        ] * len(unsupported)
+        for path in (hook_paths[0], hook_paths[0] + "/1/pings"):
+            anonymous_write = c.post(path, json={})
+            assert (
+                anonymous_write.status_code,
+                _ratelimit(anonymous_write)["resource"],
+                _ratelimit(anonymous_write)["limit"],
+            ) == (401, "core", "60")
+        assert _ratelimit(c.get(hook_paths[0], headers=bob))["used"] == "1"
+        anonymous_hook = c.get(hook_paths[0])
+        assert (
+            anonymous_hook.status_code,
+            _ratelimit(anonymous_hook)["resource"],
+            _ratelimit(anonymous_hook)["limit"],
+        ) == (401, "core", "60")
+        bad_hook = c.get(hook_paths[0], headers={"Authorization": "Bearer nope"})
+        assert bad_hook.status_code == 401
+        assert not any(name.startswith("x-ratelimit-") for name in bad_hook.headers)
+        invalid_version = c.get(hook_paths[0], headers={**h, "X-GitHub-Api-Version": "1999-01-01"})
+        assert (invalid_version.status_code, _ratelimit(invalid_version)["resource"]) == (
+            400,
+            "webhook_deliveries",
+        )
+        assert "x-github-api-version-selected" not in invalid_version.headers
+        for path in (hook_paths[1] + "/nope", hook_paths[1] + "/"):
+            unknown_hook = c.get(path, headers=h)
+            assert unknown_hook.status_code == 404
+            assert not any(name.startswith("x-ratelimit-") for name in unknown_hook.headers)
+
         # a minute on, the two search windows are new ones where `core`'s is the one it was
         windows = c.app.state.github_rate_limits
         opened = windows.clock()
@@ -8037,6 +8130,31 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         code_refused = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
         assert code_refused.status_code == 403
         assert _ratelimit(code_refused)["resource"] == "code_search"
+
+        # The webhook bucket exhausts and rolls over independently of the spent core window.
+        monkeypatch.setitem(
+            gh.RATE_LIMITS,
+            "webhook_deliveries",
+            gh._ResourceLimit(60, 1, gh.WEBHOOK_RATE_LIMIT_WINDOW),
+        )
+        first_hook = c.get(hook_paths[0], headers=h)
+        refused_hook = c.get(hook_paths[0], headers=h)
+        refused_write = c.post(hook_paths[0], headers=h, json={})
+        assert (first_hook.status_code, refused_hook.status_code, refused_write.status_code) == (
+            404,
+            403,
+            403,
+        )
+        assert _ratelimit(refused_write) == _ratelimit(first_hook)
+        assert _ratelimit(refused_hook) == _ratelimit(first_hook)
+        assert _ratelimit(refused_hook)["resource"] == "webhook_deliveries"
+        assert _ratelimit(refused_hook)["used"] == "1"
+        webhook_now = windows.clock()
+        windows.clock = lambda: webhook_now + 61
+        fresh_hook = c.get(hook_paths[0], headers=h)
+        assert (fresh_hook.status_code, _ratelimit(fresh_hook)["used"]) == (404, "1")
+        assert int(_ratelimit(fresh_hook)["reset"]) == int(webhook_now) + 121
+        assert c.get(repo, headers=h).status_code == 403
 
 
 @pytest.mark.parametrize(

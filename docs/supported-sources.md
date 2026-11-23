@@ -225,8 +225,7 @@ the errors included: `limit` at real's numbers (60 an hour for a caller with no 
 a token, 30 and 10 for `search` and `code_search`, 500 for `webhook_deliveries`, which a token's
 operations on a repository's or an organization's webhooks count against), `remaining` and `used`
 counted per credential and per resource, `reset` the second that window closes, `resource` the one
-it counted against. `core` measures an hour; the two search resources and `webhook_deliveries`
-measure a minute (the measurements are recorded beside `rate_limit_resource` in the GitHub router). A
+the request counted against. `core` measures an hour and the other three a minute, as real's do. A
 window that runs out is refused, 403, with `used` pinned at `limit` across the five headers, ahead
 of the API version check, the 401 a route that needs a credential answers a caller without one, and
 routing alike, for a caller with no credential (measured against api.github.com 2026-09-17 and

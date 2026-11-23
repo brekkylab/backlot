@@ -1548,11 +1548,14 @@ def rate_limit_resource(
     and writes count in one `webhook_deliveries` window at `limit: 500`: the list, individual hook,
     configuration and delivery reads, a HEAD of the configuration, webhook creation, patching,
     deletion, pings and redelivery attempts, and a repository's webhook test were all 404s in
-    that window. Uppercase literal segments behaved alike; an unknown API version was its 400
-    (api.github.com, 2026-11-22 and 2026-11-23, `/repos/{owner}/{repo}/hooks` and
-    `/orgs/{org}/hooks` and their operations). The reads and writes were refused with the same
-    403 once the window was spent, while a forks read stayed on `core`. Anonymous list/configuration
-    reads and webhook creation/pings were 401s on `core` (2026-11-23).
+    that window. Uppercase literal segments behaved alike; a `GET` pinned to an unknown API version
+    was the 400 in that window (api.github.com, 2026-11-22 and 2026-11-23,
+    `/repos/{owner}/{repo}/hooks` and `/orgs/{org}/hooks` and their operations). The reads and
+    writes were refused with the same 403 once the window was spent, while a forks read stayed on
+    `core`. Under the token, the `GET`s of `…/hooks/1/pings`, `…/hooks/1/tests` and
+    `…/hooks/1/deliveries/1/attempts`, `PUT …/hooks/1` and `POST /orgs/{org}/hooks/1/tests`, which
+    real does not route, were the 404 with none of the five `x-ratelimit-*`. Anonymous
+    list/configuration reads and webhook creation/pings were 401s on `core` (2026-11-23).
     """
     if authenticated and _WEBHOOK_PATH.fullmatch(path):
         return "webhook_deliveries"

@@ -3245,8 +3245,6 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
 
 
 def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tmp_path):
-    """A name under `body.<representation>.webresource` is expanded inside that member, on
-    each of the four representations this server renders, using the storage values (issue #1394)."""
     page = {
         "source_type": "confluence",
         "doc_id": "p",
@@ -3465,8 +3463,18 @@ def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tm
         (f"{W}.x", empty_wr),
         (f"{W}.Uris", empty_wr),
         (f"{W}.superbatch.x", empty_wr),
+        (f"{W}..uris", empty_wr),
+        (f"{W}.superbatch..uris", empty_wr),
         (
             f"{W}.uris.x",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris..all",
             {
                 "uris": empty_uris,
                 "superbatch": empty_superbatch,
@@ -3514,8 +3522,7 @@ def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tm
             ]["storage"]["webresource"]
             got.append(web)
         assert [shape(web) for web in got] == [shape(expected) for _expand, expected in rows]
-        # The same storage values on every representation this server renders, including
-        # `keys` as `[]` on `view`.
+        # The other three representations this server renders serve the same values.
         other = []
         expected_other = []
         for rep_name in ("view", "export_view", "atlas_doc_format"):

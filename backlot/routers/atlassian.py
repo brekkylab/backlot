@@ -2901,21 +2901,19 @@ def _confluence_webresource(terms: list[str]) -> dict:
     `metatags` with no `_expandable`. Directly under `webresource`, only `uris.all` expands
     (to `[]`); `uris.css` and `uris.js` expand nothing. Each name under `tags` is `""`, in the
     order `all`, `data`, `css`, `js`. Under `superbatch`, `uris.all`, `uris.css` and `uris.js`
-    are `[]` and each `tags.*` is `""` — the storage values, on every representation, where
-    real's `view` keys and `superbatch` assets come from the site. An unknown name (`x`,
-    `metatags`, `Uris`, `superbatch` or `superbatch.x`) leaves the member as the member alone
-    is; a name under an expanded member (`uris.x`, `superbatch.metatags.x`) still expands that
-    member.
+    are `[]` and each `tags.*` is `""`, as `uris.all` and `tags.*` are outside it, where real
+    served the site's asset URLs and script tags; `keys` is `[]` on every representation, as on
+    `storage`, where real listed web-resource keys on `view`. An unknown name (`x`, `metatags`,
+    `Uris`, `superbatch` or `superbatch.x`) leaves the member as the member alone is, and so
+    does an empty one (`webresource..uris`, `superbatch..uris`, 2026-11-23); a name under an
+    expanded member (`uris.x`, `uris..all`, `superbatch.metatags.x`) still expands that member.
     """
     wr_names = ("uris", "keys", "contexts", "tags")
     sb_names = ("uris", "metatags", "tags")
     wr_requested: dict[str, set[str]] = {}
     sb_requested: dict[str, set[str]] = {}
     for term in terms:
-        parts = [p for p in term.split(".") if p != ""] if term else []
-        if not parts:
-            continue
-        head, *rest = parts
+        head, *rest = term.split(".")
         if head in wr_names:
             wr_requested.setdefault(head, set()).update(rest[:1])
         elif head == "superbatch" and rest and rest[0] in sb_names:
@@ -2947,12 +2945,6 @@ def _confluence_webresource(terms: list[str]) -> dict:
             out["_expandable"] = dict.fromkeys(leftover, "")
         return out
 
-    if not wr_requested and not sb_requested:
-        return {
-            "superbatch": {"_expandable": dict.fromkeys(sb_names, "")},
-            "_expandable": dict.fromkeys(wr_names, ""),
-        }
-
     out: dict = {}
     builders = {
         "keys": lambda _c: [],
@@ -2964,23 +2956,20 @@ def _confluence_webresource(terms: list[str]) -> dict:
         if name in wr_requested:
             out[name] = builders[name](wr_requested[name])
 
-    if sb_requested:
-        superbatch: dict = {}
-        for name in ("uris", "tags", "metatags"):
-            if name not in sb_requested:
-                continue
-            if name == "uris":
-                superbatch[name] = uris_value(sb_requested[name], under_superbatch=True)
-            elif name == "tags":
-                superbatch[name] = tags_value(sb_requested[name])
-            else:
-                superbatch[name] = "<meta name='ajs-context-path' content='/wiki'>"
-        leftover = [name for name in sb_names if name not in sb_requested]
-        if leftover:
-            superbatch["_expandable"] = dict.fromkeys(leftover, "")
-        out["superbatch"] = superbatch
-    else:
-        out["superbatch"] = {"_expandable": dict.fromkeys(sb_names, "")}
+    superbatch: dict = {}
+    for name in ("uris", "tags", "metatags"):
+        if name not in sb_requested:
+            continue
+        if name == "uris":
+            superbatch[name] = uris_value(sb_requested[name], under_superbatch=True)
+        elif name == "tags":
+            superbatch[name] = tags_value(sb_requested[name])
+        else:
+            superbatch[name] = "<meta name='ajs-context-path' content='/wiki'>"
+    leftover = [name for name in sb_names if name not in sb_requested]
+    if leftover:
+        superbatch["_expandable"] = dict.fromkeys(leftover, "")
+    out["superbatch"] = superbatch
 
     leftover = [name for name in wr_names if name not in wr_requested]
     if leftover:
@@ -3085,8 +3074,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
     # representation carries beside `value` and `representation`. A name under `embeddedContent`
     # or `mediaToken` names the member, as real answers it with what the member alone draws
     # (2026-11-17: `x` under each, `token` under `mediaToken`). A name under `webresource` is
-    # expanded inside it (`uris`, `tags`, `keys` and `contexts`, and `uris`, `tags` and
-    # `metatags` under its `superbatch`, 2026-11-17). The tuple is the order real names the
+    # expanded inside it, by `_confluence_webresource`. The tuple is the order real names the
     # unserved ones under `_expandable`.
     body_member_names = ("webresource", "embeddedContent", "mediaToken")
     body_members: dict[str, set[str]] = {}

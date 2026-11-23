@@ -1675,8 +1675,9 @@ def _gmail_closed_quote(m: re.Match) -> str:
 
 
 _GMAIL_LONG_RUN = re.compile(r"[A-Za-z0-9]{522,}")
-# The operators whose value keeps a long run, read by `_gmail_long_runs`.
-_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:label|in|has|newer_than|older_than):"?[()\[\]]*\Z')
+# The operators whose value keeps a long run, read by `_gmail_long_runs`; after `has:` only an
+# unbracketed one, as the comment on a quoted `has:` value in `_parse_gmail_q` measures.
+_GMAIL_RUN_KEPT_IN = re.compile(r'(?i:(?:label|in|newer_than|older_than):"?[()\[\]]*|has:"?)\Z')
 
 
 def _gmail_long_runs(q: str) -> str:
@@ -1745,6 +1746,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q = _gmail_brace_leads(q)
     q, any_groups, not_any_groups = _gmail_braces(q)
     q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
+    # A quoted `in:` value holding no letter, digit, `_` or `&` is `in:""`, which reads the next
+    # word as its value (`_GMAIL_SPACED`). Measured on 2026-11-23: `in:"()"`, `in:"( )"` and
+    # `in:"."` answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and
+    # `in:"()" has` nothing, as `in:"" the` and `in:"" has` did; `the in:"()"` the ids of `the`;
+    # and `in:"()" label:inbox` those of `label:inbox`.
+    q = re.sub(r'(?<![^ \t\n\r\f\v(-])(in:)"[^"\w&\xa0]*"', r'\1""', q, flags=re.IGNORECASE)
     lone = _GMAIL_LONE_QUOTE_UNCLOSED.search(q)
     if lone and lone.group(3).count("(") > lone.group(3).count(")"):
         if (lone.group(1).count("NOT") + bool(lone.group(2))) % 2 == 0:
@@ -1841,19 +1848,19 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and not _GMAIL_ADDRESS_WORD.search(value)
             ):
                 return " "
-            # A quoted `has:` value of a long run, or holding no word character, is the word `has`:
-            # real answers the ids of `has` for `has:""`, `has:"()"`, `has:"R"` and `has:"(R)"` with
-            # R a run of 522 letters, and for `has:"[R]"`. A quoted `has:` value is not stripped of
-            # brackets: `has:"(attachment)"` answered nothing where `has:attachment` answered many.
-            # An empty quoted `in:` is no operator, as `in:"()"` answers every message.
+            # A quoted `has:` value of a long run, or holding no word character, is the word `has`,
+            # or `-has` with a `-` in front: real answers the ids of `has` for `has:""`, `has:"()"`,
+            # `has:"R"` and `has:"(R)"` with R a run of 522 letters, and for `has:"[R]"`; on
+            # 2026-11-23 the ids of `-has` for `-has:""`, `-has:"()"` and `-has:"R"`, and those of
+            # `has` for `has:(R)`, whose run `_gmail_long_runs` leaves out. A quoted `has:` value is
+            # not stripped of brackets: `has:"(attachment)"` answered nothing where `has:attachment`
+            # answered many.
             if (
                 key == "has"
                 and value.startswith('"')
                 and (not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value))
             ):
-                return "has"
-            if key == "in" and value.startswith('"') and not _GMAIL_ADDRESS_WORD.search(value):
-                return " "
+                return stored
             # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
             # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
             # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;

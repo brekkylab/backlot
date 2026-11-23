@@ -15223,12 +15223,20 @@ _GMAIL_LONG_RUN_ROWS = [
     ("label:[" + "x" * 522 + "]", []),
     ("in:(" + "x" * 522 + ")", []),
     ('label:"(' + "x" * 522 + ')" the', []),
-    ('has:"' + "x" * 522 + '"', []),
-    ('has:"(' + "x" * 522 + ')"', []),
-    ('has:"[' + "x" * 522 + ']"', []),
-    ('has:""', []),
-    ('has:"()"', []),
+    ('has:"' + "x" * 522 + '"', ["reply"]),
+    ('has:"(' + "x" * 522 + ')"', ["reply"]),
+    ('has:"[' + "x" * 522 + ']"', ["reply"]),
+    ('has:""', ["reply"]),
+    ('has:"()"', ["reply"]),
+    ('-has:"' + "x" * 522 + '"', ["plan", "lunch"]),
+    ('-has:""', ["plan", "lunch"]),
+    ('-has:"()"', ["plan", "lunch"]),
+    ("has:(" + "x" * 522 + ")", ["reply"]),
     ('in:"()"', ["plan", "lunch", "reply"]),
+    ('in:"()" has', []),
+    ('in:"." has', []),
+    ('has in:"()"', ["reply"]),
+    ('in:"()" label:inbox', ["plan"]),
     ('label:"()"', ["plan", "lunch", "reply"]),
     ("in:()", ["plan", "lunch", "reply"]),
     ('label:"(inbox)"', ["plan"]),
@@ -15241,7 +15249,8 @@ _GMAIL_LONG_RUN_ROWS = [
 
 def test_gmail_a_run_of_522_letters_and_digits(tmp_path):
     """Each row is how `_gmail_long_runs` reads its query, over both listings; the corpus holds the
-    word `after` so that an `after:` left with no value can be told from one that reads nothing."""
+    words `after` and `has` so that an `after:` left with no value, or a `has:` read as the word,
+    can be told from one that reads nothing."""
     records = [
         {
             "source_type": "gmail",
@@ -15271,7 +15280,7 @@ def test_gmail_a_run_of_522_letters_and_digits(tmp_path):
             {
                 "doc_id": "reply",
                 "title": "Re: Rollout plan",
-                "content": "ok",
+                "content": "ok, has it",
                 "label_ids": ["SENT"],
                 "author_email": "ava@acme.com",
                 "created": "2026-03-03T09:00:00Z",

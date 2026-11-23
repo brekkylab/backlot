@@ -1263,29 +1263,58 @@ async def jira_issue_comments(key: str, request: Request):
     }
 
 
-@router.get("/rest/api/3/issueLinkType")
-async def jira_link_types(request: Request):
-    # No credential check: real Jira answers this to an anonymous caller (measured 2026-09-04).
-    # The four default names, IDs and self links were measured on one Jira Cloud tenant
-    # on 2026-10-09; this mirrors that default set, not tenant-customized link types.
-    site = _site(request)
-    types = {
-        "issueLinkTypes": [
-            {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-            {"id": "10001", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
-            {
-                "id": "10002",
-                "name": "Duplicate",
-                "inward": "is duplicated by",
-                "outward": "duplicates",
-            },
-            {"id": "10003", "name": "Relates", "inward": "relates to", "outward": "relates to"},
-        ]
+#: The four default link types, by id: name, inward and outward. Measured on Jira Cloud on
+#: 2026-10-09; this is that default set, not a site's customized one.
+_JIRA_LINK_TYPES = {
+    "10000": ("Blocks", "is blocked by", "blocks"),
+    "10001": ("Cloners", "is cloned by", "clones"),
+    "10002": ("Duplicate", "is duplicated by", "duplicates"),
+    "10003": ("Relates", "relates to", "relates to"),
+}
+
+
+def _jira_link_type(request: Request, type_id: str) -> dict:
+    """One link type, members in real's order, its `self` under the mount the request came in on:
+    `/rest/api/2/` from the v2 list, measured 2026-10-15."""
+    name, inward, outward = _JIRA_LINK_TYPES[type_id]
+    mount = _JIRA_MOUNT.search(request.url.path).group()
+    return {
+        "id": type_id,
+        "name": name,
+        "inward": inward,
+        "outward": outward,
+        "self": f"{_site(request)}{mount}issueLinkType/{type_id}",
     }
 
-    for item in types["issueLinkTypes"]:
-        item["self"] = f"{site}/rest/api/3/issueLinkType/{item['id']}"
-    return types
+
+@router.get("/rest/api/2/issueLinkType")
+@router.get("/rest/api/3/issueLinkType")
+async def jira_link_types(request: Request):
+    """Every link type to a caller whose credential resolves, and none to a caller with no
+    credential or a failed pair, as a site whose anonymous caller sees no project answers on `/3`
+    (Jira Cloud, 2026-10-15). A site with public projects lists its types to that caller too;
+    Backlot's anonymous caller sees no project, so it answers as the first site does. Not
+    measured: `/2` for that caller, which answers as `/3` does."""
+    if _jira_caller(request).is_anonymous:
+        return {"issueLinkTypes": []}
+    return {"issueLinkTypes": [_jira_link_type(request, i) for i in _JIRA_LINK_TYPES]}
+
+
+@router.get("/rest/api/2/issueLinkType/{type_id}")
+@router.get("/rest/api/3/issueLinkType/{type_id}")
+async def jira_link_type(type_id: str, request: Request):
+    """One link type, the URL each listed type's `self` names: `10003` with a credential, `99999`
+    and `abc` refused with ``errors.atlassian.no_such_link_type`` and ``invalid_link_type_id``,
+    and `10003` with no credential refused as `99999` is (Jira Cloud, 2026-10-15, on `/3`).
+
+    Not measured, and answered here as the nearest measurement: `/2`, as `/3` with its `self` under
+    `/2`; an id of digits that names no type, as `99999`; any other id, from any caller, as `abc`;
+    and a failed pair, as no credential."""
+    if not (type_id.isascii() and type_id.isdigit()):
+        raise errors_atlassian.invalid_link_type_id(type_id)
+    if _jira_caller(request).is_anonymous or type_id not in _JIRA_LINK_TYPES:
+        raise errors_atlassian.no_such_link_type(type_id)
+    return _jira_link_type(request, type_id)
 
 
 # The standard system fields, used by clients (e.g. mcp-atlassian) for field/epic discovery.

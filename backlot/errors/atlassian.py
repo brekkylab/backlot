@@ -2347,7 +2347,8 @@ def bad_page_token() -> AtlassianError:
 # the three methods `/rest/api/3/project/{projectIdOrKey}` takes, so `search` binds as a project key
 # there and the measurement is what the row states. `project/{key}/role/{id}`: a `POST` with an
 # unknown key is that route's 404 rather than a 405, so no 405 could be measured and its row is the
-# document's four methods alone.
+# document's four methods alone. `issueLinkType/{id}` was not measured, and its row is the
+# document's three.
 _JIRA_ALLOW = (
     ("/rest/api/{version}/serverInfo", ("GET",)),
     ("/rest/api/{version}/field", ("GET", "POST")),
@@ -2355,6 +2356,7 @@ _JIRA_ALLOW = (
     ("/rest/api/{version}/issue/{key}/comment", ("GET", "POST")),
     ("/rest/api/{version}/search/jql", ("GET", "POST")),
     ("/rest/api/{version}/issueLinkType", ("GET", "POST")),
+    ("/rest/api/{version}/issueLinkType/{id}", ("GET", "PUT", "DELETE")),
     ("/rest/api/{version}/project/search", ("GET", "PUT", "DELETE")),
     ("/rest/api/{version}/project/{key}/role", ("GET",)),
     ("/rest/api/{version}/project/{key}/role/{id}", ("GET", "POST", "PUT", "DELETE")),
@@ -2498,6 +2500,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
 # search route itself and names three methods rather than five. Real spells the list without spaces
 # after the commas, where its 405 `Allow` has them, and the order of the set varied between two
 # requests, so the order below is one measured spelling and not a sequence a client can rely on.
+# `issueLinkType/{id}` was not measured: its row is its 405 set plus `HEAD` and `OPTIONS`, as eight
+# of the measured rows are, spelled as `issue/{key}`'s, which takes the same three.
 _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/serverInfo", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/field", "POST,GET,HEAD,OPTIONS"),
@@ -2505,6 +2509,7 @@ _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/issue/{key}/comment", "GET,HEAD,POST,OPTIONS"),
     ("/rest/api/{version}/search/jql", "GET,HEAD,POST,OPTIONS"),
     ("/rest/api/{version}/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/issueLinkType/{id}", "PUT,GET,HEAD,DELETE,OPTIONS"),
     ("/rest/api/{version}/project/search", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/project/{key}/role", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/project/{key}/role/{id}", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
@@ -2926,6 +2931,29 @@ def no_such_role() -> AtlassianError:
     read the project's roles, for `-1`, `-0x1`, `11` and a `1` on either side of an em space, each
     read as ``backlot.routers.atlassian._java_long`` reads it."""
     return AtlassianError(404, {"errorMessages": [], "errors": {}}, media_type=JIRA_JSON_MEDIA_TYPE)
+
+
+def no_such_link_type(raw: str) -> AtlassianError:
+    """Jira's 404 for `issueLinkType/{id}` with an id that names no link type, and for one that
+    does to a caller with no credential on a site whose anonymous caller sees no project. Measured
+    on Jira Cloud 2026-10-15 for `99999` with a credential and `10003` with none."""
+    return AtlassianError(
+        404,
+        _jira_envelope(
+            f"No issue link type with id '{raw}' found or you do not have permission to view it."
+        ),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
+def invalid_link_type_id(raw: str) -> AtlassianError:
+    """Jira's 400 for `issueLinkType/{id}` with an id that is not a number, measured on Jira Cloud
+    2026-10-15 for `abc` with a credential."""
+    return AtlassianError(
+        400,
+        _jira_envelope(f"Invalid issue link type id '{raw}' specified."),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
 
 
 def not_a_project_admin(realm: str) -> AtlassianError:

@@ -528,7 +528,9 @@ def _validate_transcripts(arguments):
     2026-10-21 and 2026-10-22). An address in a singular filter, or anywhere in a plural one, that
     :func:`_is_email` answers None for raises :func:`_thrown_error` instead, as real answered one
     beside ``limit: 0``, beside a second singular filter and after a refused address
-    (2026-11-10)."""
+    (2026-11-10). An exactly empty member of a plural filter is not an address real refuses:
+    beside another refusal it adds nothing, and with nothing else refused real answers its
+    ``INTERNAL_SERVER_ERROR`` (api.fireflies.ai, 2026-10-21 and 2026-10-22)."""
     fields = {}
 
     def add(name, kind, message):
@@ -563,6 +565,7 @@ def _validate_transcripts(arguments):
         elif skip > 5000:
             add("skip", "max", "skip must not be greater than 5000")
     held = [key for name, key in _PERSON_FIELDS if name not in _PLURAL and arguments[key]]
+    bare_empty = False
     for name, key in _PERSON_FIELDS:
         value = arguments[key]
         if value is None:
@@ -575,13 +578,17 @@ def _validate_transcripts(arguments):
         if name in _PLURAL:
             if held:
                 add(name, "exclusiveFields", f"{_EXCLUSIVE}, {name}.")
-            if not all(map(_is_email, value)):
+            if "" in value and all(_is_email(member) for member in value if member != ""):
+                bare_empty = True
+            if not all(map(_is_email, [member for member in value if member != ""])):
                 add(name, "IsEmailOnly", f"{name} must be a valid email address")
             continue
         if len(held) > 1:
             add(name, "exclusiveFields", f"{_EXCLUSIVE}.")
         if key.endswith("_email") and value and not _is_email(value):
             add(name, "IsEmailOnly", f"{name} must be a valid email address")
+    if bare_empty and not fields:
+        raise _internal_error(arguments["info"].context)
     if fields:
         raise GraphQLError(
             "Invalid argument(s) were provided",

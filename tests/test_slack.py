@@ -178,6 +178,44 @@ def test_slack_api_test_reads_a_credential_and_echoes_it(
     assert r.content == JSONResponse(expected).body
 
 
+@pytest.mark.parametrize(
+    "method,path,size,want",
+    [
+        ("post", "api.test", 1_048_576, 200),
+        ("post", "api.test", 2_097_152, 200),
+        ("post", "api.test", 2_097_153, 413),
+        ("post", "chat.postMessage", 2_097_153, 200),
+        ("post", "chat.postMessage", 4_194_305, 200),
+        ("post", "chat.update", 2_097_153, 200),
+        ("post", "files.upload", 2_097_153, 200),
+        ("post", "files.completeUploadExternal", 2_097_153, 200),
+        ("post", "chat.unfurl", 2_097_153, 200),
+        ("post", "chat.postmessage", 2_097_153, 413),
+        ("post", "no.such.method", 2_097_153, 413),
+        ("put", "api.test", 2_097_153, 413),
+    ],
+)
+def test_slack_body_past_2_mib_is_413_but_for_five_methods(client, method, path, size, want):
+    """Real's edge answers a body past 2 MiB with 413 Payload Too Large on every Slack method but
+    the five `_UNBOUNDED_BODY_METHODS` names (see `slack.body_too_large` for the measurement): the
+    method is the name as sent, so a lower-case `chat.postmessage` is refused, and a `PUT` is
+    refused too."""
+    body = b"a=" + b"x" * (size - 2)
+    r = getattr(client, method)(f"/slack/api/{path}", content=body, headers={"Content-Type": _FORM})
+    assert r.status_code == want
+    if want == 413:
+        assert r.content == b"Payload Too Large"
+        assert r.headers["content-type"] == "text/plain"
+        assert r.headers["server"] == "envoy"
+        assert r.headers["x-edge-backend"] == "envoy-www"
+        assert r.headers["connection"] == "close"
+    elif path == "api.test":
+        assert r.json() == {"ok": True, "args": {"a": "x" * (size - 2)}}
+    else:
+        # the method's own answer, whatever it is: the point here is the 200, not the 413
+        assert r.json()["ok"] is False
+
+
 def test_slack_accepts_form_field_token(client, tokens_yaml):
     # the official slack-go SDK posts the token as a form field (no bearer header); Backlot
     # must accept it exactly like a real Slack Web API.

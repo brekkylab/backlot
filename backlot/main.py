@@ -1911,10 +1911,21 @@ async def parse_slack_form(request: Request, call_next):
     path ``slack.method_name`` reads as a method's name, served here or not, before the method runs,
     as real does (``slack.read_body``): answer one real refuses with its error, or stash the
     arguments it carries for the router's param lookup and the token's (``slack._param``,
-    ``auth.slack_token``)."""
+    ``auth.slack_token``). A body past real's 2 MiB edge limit is answered with its 413, at its
+    `Content-Length` and once read (``slack.body_too_large``)."""
     method = slack.method_name(request.scope["path"])
     content_type = slack.post_content_type(request)
+    try:
+        content_length = int(request.headers.get("content-length", ""))
+    except ValueError:
+        content_length = None
+    if slack.body_too_large(method, content_length=content_length):
+        request.state.slack_body_refused = True
+        return slack.payload_too_large_response()
     args, error = slack.read_body(request.method, content_type, await request.body(), method)
+    if error == "payload_too_large":
+        request.state.slack_body_refused = True
+        return slack.payload_too_large_response()
     if error is not None:
         request.state.slack_body_refused = True
         return JSONResponse({"ok": False, "error": error})

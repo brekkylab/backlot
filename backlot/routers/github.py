@@ -730,6 +730,27 @@ _BASIC_NO_TOKEN_NOT_FOUND = (
         "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
     ),
 )
+#: The operations real answers a caller with no credential with their own 401 when the last
+#: segment of the path is spelled with an escape, each with its own `documentation_url`
+#: (:func:`_an_escaped_operation_documentation_url`).
+_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION = (
+    (
+        published.operations(("GET /user/keys",)),
+        "https://docs.github.com/rest/users/keys#list-public-ssh-keys-for-the-authenticated-user",
+    ),
+    (
+        published.operations(("GET /user/gpg_keys",)),
+        "https://docs.github.com/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user",
+    ),
+    (
+        published.operations(("GET /gists/starred",)),
+        "https://docs.github.com/rest/gists/gists#list-starred-gists",
+    ),
+    (
+        published.operations(("GET /user/packages",)),
+        "https://docs.github.com/rest/packages/packages#list-packages-for-the-authenticated-users-namespace",
+    ),
+)
 
 
 def _a_repository_update_refusal(raw: bytes) -> str | None:
@@ -909,13 +930,44 @@ def _an_unserved_search_refusal(request: Request) -> HTTPException | None:
     return None
 
 
+def _an_escaped_operation_documentation_url(request: Request) -> str | None:
+    """The `documentation_url` of the operation of
+    :data:`_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION` this request names with an escape in the
+    last segment of its path and nowhere else, or `None`.
+
+    Measured against api.github.com on 2026-11-21 and 2026-11-23 (UTC), with no `Authorization`,
+    each request on its own cache-busted URL: `GET /user/k%65ys`, `/user/%6Beys`, `/user/%6beys`,
+    `/user/gpg_k%65ys`, `/user/gpg%5Fkeys`, `/gists/st%61rred` and `/user/p%61ckages` were each the
+    401 "Requires authentication" with the operation's own `documentation_url`, on `core` with the
+    version echo, and moved `x-ratelimit-used` by one, where the same paths with no escape were the
+    401 with `https://docs.github.com/rest` and no echo. Pinned to `2026-03-10`, `/user/%6beys`
+    echoed `2026-03-10`; pinned to `1999-01-01`, `/user/k%65ys` was the version's 400. An escape in
+    an earlier segment (`/%75ser/keys`, `/%67ists/starred`, `/user/k%65ys/1`) or a trailing slash
+    after one (`/user/k%65ys/`) was the 404 with no echo.
+    """
+    path = request.scope["path"].removeprefix("/github")
+    sent = (request.scope.get("raw_path") or b"").decode("latin-1").removeprefix("/github")
+    if sent == path or sent.rpartition("/")[0] != path.rpartition("/")[0]:
+        return None
+    return next(
+        (
+            documentation_url
+            for operations, documentation_url in _ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION
+            if published.includes(operations, request.method, path)
+        ),
+        None,
+    )
+
+
 async def refuse_an_unserved_operation(request: Request) -> None:
     """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` or
     :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or
     one that carries no credential (:func:`_a_header_without_a_credential`), then a credential that
     does not resolve, then a version real does not have, then a `Basic` value that names no token.
     A request none of those refuse goes on to the router's own 404 or 405, an operation Backlot
-    cannot run.
+    cannot run. With no `Authorization` header, an escape in the last segment of an operation of
+    :data:`_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION` is that operation's own 401 after the
+    version, with the echo (:func:`_an_escaped_operation_documentation_url`).
 
     Measured against api.github.com on 2026-10-14, one cache-busted request each. With
     `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
@@ -1001,6 +1053,16 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         await _validate_api_version(request)
         raise search_refusal
     if "authorization" not in request.headers:
+        documentation_url = _an_escaped_operation_documentation_url(request)
+        if documentation_url is not None:
+            await _validate_api_version(request)
+            exc = HTTPException(status_code=401, detail="Requires authentication")
+            exc.github_body = {
+                "message": "Requires authentication",
+                "documentation_url": documentation_url,
+                "status": "401",
+            }
+            raise exc
         request.state.github_unserved_refusal = (
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
         )

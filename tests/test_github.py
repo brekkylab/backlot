@@ -2839,6 +2839,73 @@ def test_github_an_escape_in_a_segment_a_route_spells_out_is_no_route(
     assert answered == expected
 
 
+_KEYS_DOCS = (
+    "https://docs.github.com/rest/users/keys#list-public-ssh-keys-for-the-authenticated-user"
+)
+#: (path sent with no `Authorization`, the version it pins, and real's status, `documentation_url`,
+#: `x-ratelimit-resource` and version echo): an escape in the last segment of an operation of
+#: `backlot.routers.github._ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION` is the operation's own
+#: 401 with the echo, where the spelling with no escape, an escape in an earlier segment and a
+#: trailing slash after one are not.
+_ESCAPED_LAST_SEGMENT_ROWS = [
+    ("/user/k%65ys", None, 401, _KEYS_DOCS, "core", "2022-11-28"),
+    ("/user/%6Beys", None, 401, _KEYS_DOCS, "core", "2022-11-28"),
+    ("/user/%6beys", "2026-03-10", 401, _KEYS_DOCS, "core", "2026-03-10"),
+    (
+        "/user/gpg%5Fkeys",
+        None,
+        401,
+        "https://docs.github.com/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user",
+        "core",
+        "2022-11-28",
+    ),
+    (
+        "/gists/st%61rred",
+        None,
+        401,
+        "https://docs.github.com/rest/gists/gists#list-starred-gists",
+        "core",
+        "2022-11-28",
+    ),
+    (
+        "/user/p%61ckages",
+        None,
+        401,
+        "https://docs.github.com/rest/packages/packages#list-packages-for-the-authenticated-users-namespace",
+        "core",
+        "2022-11-28",
+    ),
+    ("/user/k%65ys", "1999-01-01", 400, "https://docs.github.com/rest", "core", None),
+    ("/user/keys", None, 401, "https://docs.github.com/rest", "core", None),
+    ("/%75ser/keys", None, 404, "https://docs.github.com/rest", "core", None),
+    ("/%67ists/starred", None, 404, "https://docs.github.com/rest", "core", None),
+    ("/user/k%65ys/1", None, 404, "https://docs.github.com/rest", "core", None),
+    ("/user/k%65ys/", None, 404, "https://docs.github.com/rest", "core", None),
+]
+
+
+def test_github_an_escape_in_the_last_segment_of_an_unserved_operation_is_its_own_401(gh_client):
+    from backlot.routers.github import RateLimitWindows
+
+    c, _ = gh_client
+    answered, expected = {}, {}
+    for sent, version, status, docs, resource, echo in _ESCAPED_LAST_SEGMENT_ROWS:
+        c.app.state.github_rate_limits = RateLimitWindows()
+        headers = {} if version is None else {"X-GitHub-Api-Version": version}
+        r = c.get(f"/github{sent}", headers=headers)
+        # the row is what went on the wire, not a spelling the client normalised first
+        answered[(sent, version)] = (
+            r.request.url.raw_path.decode(),
+            r.status_code,
+            r.json()["documentation_url"],
+            r.headers.get("x-ratelimit-resource"),
+            r.headers.get("x-ratelimit-used"),
+            r.headers.get("x-github-api-version-selected"),
+        )
+        expected[(sent, version)] = (f"/github{sent}", status, docs, resource, "1", echo)
+    assert answered == expected
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which

@@ -1160,7 +1160,7 @@ def test_jira_search_filtered_by_project(client, admin_h):
     # is the only Jira project in the SAMPLE corpus -- the earlier assertions are what prove
     # filtering, not this equality). It still has to RESTRICT, or real refuses it: an empty jql,
     # and an `ORDER BY` alone, are both the unbounded refusal -- see
-    # test_jira_search_refuses_a_jql_that_restricts_nothing.
+    # test_jira_search_reads_a_jql_as_real_does.
     unfiltered = client.get(
         "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
     ).json()
@@ -5713,15 +5713,19 @@ _UNBOUNDED_JQL = {
     ],
     "errors": {},
 }
-#: Real's own JQL syntax-error 400, whose body Backlot does not write: only the status is compared.
-_JQL_SYNTAX_ERROR = 400
 
-# Method, API version, query string, body and what real answers: no `jql` where the method reads
-# one (POST reads it from the body alone, so one in its query string is none) and a `jql` with
-# nothing before its `ORDER BY` are refused; one with a clause before its `ORDER BY` is served,
-# which `None` stands for; and the two words parted by whitespace real does not read as such are
-# its syntax error, `_JQL_SYNTAX_ERROR`.
-_NO_RESTRICTION_ROWS = [
+
+def _jql_error(sentence):
+    return {"errorMessages": [sentence], "errors": {}}
+
+
+# Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page
+# and the 400's body otherwise. No `jql` where the method reads one (POST reads it from the body
+# alone, so one in its query string is none) and a `jql` with nothing before its `ORDER BY` are
+# the unbounded refusal; a `jql` the parser cannot read is the parse error, whose sentence names
+# what the parser expected and, unless it reached the end of the query, the line and the
+# character in UTF-16 units. Both refusals are on `application/json;charset=UTF-8`.
+_JQL_ROWS = [
     ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
     ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
     *[
@@ -5733,14 +5737,6 @@ _NO_RESTRICTION_ROWS = [
             "ORDER BY key ASC, created DESC",
         )
     ],
-    # The whitespace `\s` reads beyond what real separates the words with.
-    *[
-        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _JQL_SYNTAX_ERROR)
-        for jql in (
-            *("order\u00a0by key", "order\u2003by key", "order\x0bby key"),
-            *("order\x0cby key", "order\x1cby key", "\u00a0order by key"),
-        )
-    ],
     *[
         ("get", 3, {"jql": jql, "maxResults": 1}, None, _UNBOUNDED_JQL)
         for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
@@ -5750,6 +5746,281 @@ _NO_RESTRICTION_ROWS = [
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
     ("post", 2, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
+    *[
+        row
+        for jql, sentence in (
+            (
+                "order by",
+                "Error in the JQL Query: Expecting a field name at the end of the query.",
+            ),
+            (
+                "order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 7)",
+            ),
+            (
+                "orderby key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 9)",
+            ),
+            (
+                "(order by key)",
+                "Error in the JQL Query: Expecting a field name but got 'order'. You must "
+                "surround 'order' in quotation marks to use it as a field name. "
+                "(line 1, character 2)",
+            ),
+            (
+                "order by key project is not EMPTY",
+                "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'project'. "
+                "(line 1, character 14)",
+            ),
+            (
+                "ORDER BY key DESC NULLS FIRST",
+                "Error in the JQL Query: Expecting ',' but got 'NULLS'. (line 1, character 19)",
+            ),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence)),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, _jql_error(sentence)),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence))
+        for jql, sentence in (
+            (
+                "order\xa0by key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 10)",
+            ),
+            (
+                "order\u2003by key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 10)",
+            ),
+            (
+                "order\x0bby key",
+                "Error in the JQL Query: The character 'U+000B' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u000b' instead. (line 1, character 6)",
+            ),
+            (
+                "order\x0cby key",
+                "Error in the JQL Query: The character 'U+000C' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u000c' instead. (line 1, character 6)",
+            ),
+            (
+                "order\x1cby key",
+                "Error in the JQL Query: The character 'U+001C' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u001c' instead. (line 1, character 6)",
+            ),
+            (
+                "\xa0order by key",
+                "Error in the JQL Query: Expecting operator but got 'by'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 8)",
+            ),
+            (
+                "labels = zzq\xa0and labels = zzq",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'labels'. "
+                "(line 1, character 18)",
+            ),
+            (
+                "labels",
+                "Error in the JQL Query: Expecting operator before the end of the query. The "
+                "valid operators are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', "
+                "'IS' and 'IS NOT'.",
+            ),
+            (
+                "labels =",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "labels is",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "labels in ()",
+                "Error in JQL Query: Expecting either a value, list or function but got ')'. You "
+                "must surround ')' in quotation marks to use it as a value. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels <> zzq",
+                "Error in JQL Query: Expecting either a value, list or function but got '>'. You "
+                "must surround '>' in quotation marks to use it as a value. (line 1, character 9)",
+            ),
+            (
+                "labels = and",
+                "Error in JQL Query: Expecting either a value, list or function but got 'and'. "
+                "You must surround 'and' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels in (zzq labels)",
+                "Error in the JQL Query: Expecting ',' or ')' but got 'labels'. "
+                "(line 1, character 16)",
+            ),
+            (
+                "labels = currentUser(",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "= zzq",
+                "Error in the JQL Query: Expecting a field name but got '='. You must surround "
+                "'=' in quotation marks to use it as a field name. (line 1, character 1)",
+            ),
+            (
+                "labels = zzq and )",
+                "Error in the JQL Query: Expecting a field name but got ')'. You must surround "
+                "')' in quotation marks to use it as a field name. (line 1, character 18)",
+            ),
+            (
+                "labels = zzq,",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ','. "
+                "(line 1, character 13)",
+            ),
+            (
+                "(labels = zzq",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "(labels = zzq labels = zzq)",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'labels'. "
+                "(line 1, character 15)",
+            ),
+            (
+                "labels = zzq order",
+                "Error in the JQL Query: Expecting 'by' before the end of the query.",
+            ),
+            (
+                "labels = ava@acme.com",
+                "Error in the JQL Query: The character '@' is a reserved JQL character. You must "
+                "enclose it in a string or use the escape '\\u0040' instead. "
+                "(line 1, character 13)",
+            ),
+            (
+                "summary ~ win*",
+                "Error in the JQL Query: The character '*' is a reserved JQL character. You must "
+                "enclose it in a string or use the escape '\\u002a' instead. "
+                "(line 1, character 14)",
+            ),
+            (
+                'summary ~ "abc',
+                "Error in the JQL Query: The quoted string 'abc' has not been completed. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = zzq\norder bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 2, character 7)",
+            ),
+            (
+                'summary ~ "\U0001f600" order bykey',
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 22)",
+            ),
+            (
+                "labels in (zzq",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "labels in (zzq,",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "status was",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "status changed foo",
+                "Error in JQL Query: The CHANGED operator does not support the use of values "
+                'without predicates. You must prefix the "foo" value with a suitable predicate.',
+            ),
+            ("cf", "Error in the JQL Query: Expecting '[' before the end of the query."),
+            (
+                "cf = zzq",
+                "Error in the JQL Query: Expecting '[' but got '='. (line 1, character 4)",
+            ),
+            (
+                "cf[",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) before "
+                "the end of the query.",
+            ),
+            (
+                "cf[abc] is EMPTY",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) but got "
+                "'abc'. (line 1, character 4)",
+            ),
+            (
+                "cf[] is EMPTY",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) but got "
+                "']'. (line 1, character 4)",
+            ),
+            ("cf[10016", "Error in the JQL Query: Expecting ']' before the end of the query."),
+            (
+                "cf[10016 is EMPTY",
+                "Error in the JQL Query: Expecting ']' but got 'is'. (line 1, character 10)",
+            ),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, None)
+        for jql in (
+            "labels = zzq && summary ~ zzq",
+            "labels = zzq & summary ~ zzq",
+            "labels = zzq || summary ~ zzq",
+            "labels = zzq | summary ~ zzq",
+            "!labels = zzq",
+            "not not labels = zzq",
+            "summary ~ caf\xe9",
+            "labels = \uac00\ub098",
+            "cf[10016] is EMPTY",
+            "CF[10016] is EMPTY",
+            "cf[ 10016 ] is EMPTY",
+            "project is not EMPTY order by cf[10016]",
+            "labels is foo",
+            "labels in (zzq, (x))",
+            "status was Open",
+            "status was not in (Open)",
+            "status was Open during (startOfDay(-7d), now())",
+            "status changed from Open to Done",
+            "status CHANGED",
+            "labels not in (zzq)",
+            "labels is not EMPTY",
+            "assignee = currentUser()",
+            "created > startOfDay(-1d)",
+            "(" * 250 + "labels = zzq" + ")" * 250,
+            "(" * 1000 + "labels = zzq" + ")" * 1000,
+            "labels in " + "(" * 300 + "zzq" + ")" * 300,
+            "not " * 1000 + "labels = zzq",
+        )
+    ],
+    # A number is read as its digits, a field with no operator after it.
+    (
+        "post",
+        3,
+        {},
+        {"jql": 1, "maxResults": 1},
+        _jql_error(
+            "Error in the JQL Query: Expecting operator before the end of the query. The valid "
+            "operators are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+            "'IS NOT'."
+        ),
+    ),
+    # A repeated `jql` is read as the values joined with a comma.
+    (
+        "get",
+        3,
+        [("jql", "labels = zzq"), ("jql", "labels = zzq"), ("maxResults", 1)],
+        None,
+        _jql_error(
+            "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ','. "
+            "(line 1, character 13)"
+        ),
+    ),
 ]
 
 
@@ -5763,18 +6034,16 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
     )
     if refused is None:
         assert r.status_code == 200, r.text
-    elif refused == _JQL_SYNTAX_ERROR:
-        assert r.status_code == 400, r.text
     else:
-        assert (r.status_code, r.json()) == (400, refused), r.text
+        assert (r.status_code, r.headers["content-type"], r.json()) == (
+            400,
+            "application/json;charset=UTF-8",
+            refused,
+        ), r.text
 
 
-def test_jira_search_refuses_a_jql_that_restricts_nothing(client, admin_h):
-    """A `jql` that restricts nothing draws the unbounded-JQL 400, not the unfiltered corpus:
-    none at all, or one that opens with `ORDER BY`. The measurement is the one the handler's
-    comment on the unbounded check records, and each row is a request it sent, with the answer
-    it got."""
-    assert _failures(_jql_search, _NO_RESTRICTION_ROWS, client, admin_h) == {}
+def test_jira_search_reads_a_jql_as_real_does(client, admin_h):
+    assert _failures(_jql_search, _JQL_ROWS, client, admin_h) == {}
 
 
 #: A `jql` Jira's parser cannot parse, with the sentence its 400 names — and the `ORDER BY` on a

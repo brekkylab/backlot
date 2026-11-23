@@ -2256,14 +2256,14 @@ def unbounded_jql() -> AtlassianError:
     )
 
 
-def jql_parse_error(message: str) -> AtlassianError:
-    """Jira's 400 for a `search/jql` whose `jql` its parser cannot parse, on GET or POST: the
-    sentence names what the parser expected, and where it stopped, as Jira Cloud answered the six
-    queries on 2026-11-22, on `application/json;charset=UTF-8` with an empty `errors`.
+def jql_parse_error(sentence: str) -> AtlassianError:
+    """Jira's 400 for a `search/jql` whose `jql` its parser cannot parse, on GET or POST:
+    `sentence` is the `errorMessages` entry the router's JQL parser writes, on
+    `application/json;charset=UTF-8` with an empty `errors` (Jira Cloud, 2026-11-22).
     """
     return AtlassianError(
         400,
-        {"errorMessages": [f"Error in the JQL Query: {message}"], "errors": {}},
+        {"errorMessages": [sentence], "errors": {}},
         media_type=JIRA_JSON_MEDIA_TYPE,
     )
 

@@ -2139,7 +2139,6 @@ def _gmail_op_match(row, ops: dict) -> bool:
         value = _gmail_subject_value(v)
         if value and value in (row["title"] or "").lower():
             return False
-            return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
     # is the exception: it widens the search to spam and trash, which Backlot holds none of, so

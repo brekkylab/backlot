@@ -1334,6 +1334,12 @@ def is_an_automation_or_its_tasks(method: str, path: str) -> bool:
     return published.includes(_ROUTED_UNPUBLISHED, method, path.removeprefix("/github"))
 
 
+def is_an_automations_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is one of :data:`_AUTOMATIONS_OPERATIONS` as the
+    path is spelt."""
+    return published.includes(_AUTOMATIONS_OPERATIONS, method, path.removeprefix("/github"))
+
+
 def under_an_agent_family(path: str) -> bool:
     """Whether the `/github` path is at or under `/agents/repos` or `/agents/tasks`, the two agent
     families real asks a credential on before anything else answers them, published or not: the

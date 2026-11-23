@@ -15425,8 +15425,7 @@ def test_gmail_an_unknown_operator_value_matches_nothing(tmp_path):
             ("after", "Later", "see after the meeting", None),
         ]
     ]
-    # One message within 30 days, dated from now so the row never goes stale: it is what
-    # `newer_than:30d` answers, and what an age in non-ASCII digits does not.
+    # The message within 30 days, dated from now so the row never goes stale.
     records.append(
         {
             "source_type": "gmail",

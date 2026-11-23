@@ -5777,6 +5777,64 @@ def test_jira_search_refuses_a_jql_that_restricts_nothing(client, admin_h):
     assert _failures(_jql_search, _NO_RESTRICTION_ROWS, client, admin_h) == {}
 
 
+#: A `jql` Jira's parser cannot parse, with the sentence its 400 names — and the `ORDER BY` on a
+#: clause that parses, which still serves. Each row on both methods: the parser runs on the `jql`
+#: either way.
+_UNPARSEABLE_JQL = [
+    (method, jql, message)
+    for method in ("get", "post")
+    for jql, message in [
+        ("order by", "Expecting a field name at the end of the query."),
+        ("order bykey", "Expecting 'by' but got 'bykey'. (line 1, character 7)"),
+        (
+            "orderby key",
+            "Expecting operator but got 'key'. The valid operators are '=', '!=', '<', '>',"
+            " '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and 'IS NOT'. (line 1, character 9)",
+        ),
+        (
+            "(order by key)",
+            "Expecting a field name but got 'order'. You must surround 'order' in quotation"
+            " marks to use it as a field name. (line 1, character 2)",
+        ),
+        (
+            "order by key project is not EMPTY",
+            "Expecting either 'ASC' or 'DESC' but got 'project'. (line 1, character 14)",
+        ),
+        (
+            "ORDER BY key DESC NULLS FIRST",
+            "Expecting ',' but got 'NULLS'. (line 1, character 19)",
+        ),
+        ("project is not EMPTY order by key", None),
+    ]
+]
+
+
+def _search_jql_parse(client, admin_h, method, jql, message):
+    if method == "get":
+        r = client.get(
+            "/atlassian/rest/api/3/search/jql",
+            headers=admin_h,
+            params={"jql": jql, "maxResults": 1},
+        )
+    else:
+        r = _search_post(client, admin_h, jql=jql, maxResults=1)
+    if message is None:
+        assert r.status_code == 200, r.text
+        return
+    assert r.status_code == 400, r.text
+    assert r.json() == {
+        "errorMessages": [f"Error in the JQL Query: {message}"],
+        "errors": {},
+    }
+    assert r.headers["content-type"] == "application/json;charset=UTF-8"
+
+
+def test_jira_search_refuses_a_jql_it_cannot_parse(client, admin_h):
+    """Each of the six `jql` below is a 400 naming what the parser expected, where Backlot served
+    a 200 page for three of them and the unbounded 400 for the other three; the `ORDER BY` on a clause that parses still serves."""
+    assert _failures(_search_jql_parse, _UNPARSEABLE_JQL, client, admin_h) == {}
+
+
 def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):
     """Measured 2026-09-16: `{"jql": null}` draws the same unbounded-JQL refusal as `{}`. Read
     through a bare `str()` it is the string "None", which restricts nothing and reaches the whole

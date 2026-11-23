@@ -1139,14 +1139,24 @@ async def jira_search(request: Request):
         # Checked after the page token and before the unbounded-JQL refusal, both measured too
         # (2026-09-18).
         raise errors_atlassian.max_results_out_of_range()
-    # No `jql` at all (measured 2026-09-16), or one with nothing before its `ORDER BY` (measured
-    # 2026-11-21 and 2026-11-22), is refused rather than answered as the unfiltered corpus: the
-    # requests real refused with this on Jira Cloud, and those it served beside them, are the rows
-    # of test_jira_search_refuses_a_jql_that_restricts_nothing. Real separates the two words with a
+    # No `jql` at all (measured 2026-09-16) is refused rather than answered as the unfiltered
+    # corpus.
+    if not jql.strip():
+        raise errors_atlassian.unbounded_jql()
+    parse_error = _jql_parse_error(jql)
+    if parse_error is not None:
+        # A `jql` Jira's parser cannot parse is its 400 naming what the parser expected, not
+        # the unbounded refusal below: the parser runs first, so an `ORDER BY` with no field
+        # or with junk after it is this 400, while one that parses still draws the refusal.
+        raise errors_atlassian.jql_parse_error(parse_error)
+    # One with nothing before its `ORDER BY` (measured 2026-11-21 and 2026-11-22) is refused
+    # rather than answered as the unfiltered corpus: the requests real refused with this on Jira
+    # Cloud, and those it served beside them, are the rows of
+    # test_jira_search_refuses_a_jql_that_restricts_nothing. Real separates the two words with a
     # space, tab, LF or CR; a no-break space, U+2003, U+000B, U+000C or U+001C between them, or a
-    # no-break space in front, drew a JQL syntax-error 400 on 2026-11-22, and `\s` reads each as
+    # no-break space in front, drew a JQL syntax-error 400 on 2026-11-22, and `\\s` reads each as
     # whitespace, so Backlot answers them with this 400 rather than a page.
-    if not jql.strip() or re.match(r"\s*order\s+by\b", jql, flags=re.IGNORECASE):
+    if re.match(r"\s*order\s+by\b", jql, flags=re.IGNORECASE):
         raise errors_atlassian.unbounded_jql()
     if reconcile_null:
         # Real answers this after the page token, the range and the JQL, and before it looks up
@@ -1442,6 +1452,303 @@ async def jira_fields(request: Request):
 # collapse "unresolvable" into "unfiltered" (the fidelity gap found & fixed for Confluence's
 # space= handling applies identically to Jira's project= handling).
 _JIRA_PROJECT_UNRESOLVED = object()
+
+
+#: Words Jira's JQL parser refuses as a field name unless quoted: the clause and ordering
+#: keywords. `order` among them is what makes `(order by key)` a parse error rather than a
+#: clause, and `by` what makes `order bykey` one.
+_JQL_RESERVED_WORDS = frozenset(
+    {"and", "or", "not", "in", "is", "empty", "null", "order", "by", "asc", "desc"}
+)
+
+#: The operators a JQL predicate takes, as the parse error for a field followed by anything else
+#: lists them (measured 2026-11-22, `orderby key`).
+_JQL_OPERATORS = ("=", "!=", "<", ">", "<=", ">=", "~", "!~", "IN", "NOT IN", "IS", "IS NOT")
+
+
+class _JqlParseError(Exception):
+    """A JQL the parser cannot parse, carrying the sentence after `Error in the JQL Query:`."""
+
+
+class _JqlTokenizer:
+    """The tokens of a JQL string, each with the 1-based line and character it starts at.
+
+    A bare token is a run of word characters, dots and dashes, so a date (`2026-01-01`) and a
+    relative date (`-7d`) stay one token; a quoted string keeps its quotes, so the error for a
+    reserved word echoes it as sent. Operators are the longest match first (`!=` before `!`).
+    """
+
+    _BARE = re.compile(r"[A-Za-z0-9_.\-]+")
+    _OPERATORS = ("!=", "!~", "<=", ">=", "<>", "=", "<", ">", "~")
+
+    def __init__(self, jql: str):
+        self.jql = jql
+        self.tokens: list[tuple[str, int, int]] = []
+        i = 0
+        while i < len(jql):
+            c = jql[i]
+            if c.isspace():
+                i += 1
+                continue
+            line = jql.count("\n", 0, i) + 1
+            character = i - jql.rfind("\n", 0, i)
+            if c in "\"'":
+                j = i + 1
+                while j < len(jql) and jql[j] != c:
+                    j += 2 if jql[j] == "\\" else 1
+                self.tokens.append((jql[i : j + 1], line, character))
+                i = j + 1
+            elif c in "()":
+                self.tokens.append((c, line, character))
+                i += 1
+            elif c == ",":
+                self.tokens.append((c, line, character))
+                i += 1
+            elif any(jql.startswith(op, i) for op in self._OPERATORS):
+                op = next(op for op in self._OPERATORS if jql.startswith(op, i))
+                self.tokens.append((op, line, character))
+                i += len(op)
+            elif c == "!":
+                self.tokens.append((c, line, character))
+                i += 1
+            else:
+                m = self._BARE.match(jql, i)
+                if m:
+                    self.tokens.append((m.group(), line, character))
+                    i = m.end()
+                else:
+                    self.tokens.append((c, line, character))
+                    i += 1
+
+
+class _JqlParser:
+    """A JQL query read the way Jira's parser reads it, far enough to tell a query it cannot
+    parse from one it can: clauses (`field operator value`, `IS [NOT] EMPTY|NULL`, `IN (...)`,
+    `WAS`, `CHANGED` and their date clauses), `AND`/`OR`/`NOT` and parentheses, and an `ORDER BY`
+    of fields with optional `ASC`/`DESC`.
+
+    The error sentences are Jira's own, measured 2026-11-22 on Jira Cloud: the parser names what
+    it expected and, but for the end of the query, the line and character where it stopped.
+    """
+
+    def __init__(self, jql: str):
+        self.tokens = _JqlTokenizer(jql).tokens
+        self.pos = 0
+
+    def _peek(self) -> tuple[str, int, int] | None:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def _next(self) -> tuple[str, int, int] | None:
+        tok = self._peek()
+        self.pos += 1
+        return tok
+
+    def _is_word(self, tok: tuple[str, int, int] | None, *words: str) -> bool:
+        return tok is not None and tok[0].lower() in words
+
+    def _at(self, tok: tuple[str, int, int] | None) -> str:
+        return f" (line {tok[1]}, character {tok[2]})" if tok is not None else ""
+
+    def parse(self) -> None:
+        if self._is_word(self._peek(), "order"):
+            self._parse_order_by()
+        else:
+            self._parse_clause()
+            if self._is_word(self._peek(), "order"):
+                self._parse_order_by()
+        rest = self._peek()
+        if rest is not None:
+            raise _JqlParseError(
+                f"Expecting either 'AND' or 'OR' but got '{rest[0]}'.{self._at(rest)}"
+            )
+
+    def _parse_clause(self) -> None:
+        self._parse_and()
+        while self._is_word(self._peek(), "or"):
+            self._next()
+            self._parse_and()
+
+    def _parse_and(self) -> None:
+        self._parse_not()
+        while self._is_word(self._peek(), "and"):
+            self._next()
+            self._parse_not()
+
+    def _parse_not(self) -> None:
+        if self._is_word(self._peek(), "not"):
+            self._next()
+        self._parse_primary()
+
+    def _parse_primary(self) -> None:
+        tok = self._peek()
+        if tok is not None and tok[0] == "(":
+            self._next()
+            self._parse_clause()
+            closer = self._next()
+            if closer is None:
+                raise _JqlParseError("Expecting ')' at the end of the query.")
+            if closer[0] != ")":
+                raise _JqlParseError(f"Expecting ')' but got '{closer[0]}'.{self._at(closer)}")
+            return
+        self._parse_predicate()
+
+    def _expect_field(self) -> str:
+        tok = self._peek()
+        if tok is None:
+            raise _JqlParseError("Expecting a field name at the end of the query.")
+        text = tok[0]
+        if text.startswith(('"', "'")):
+            self._next()
+            return text
+        if text.lower() in _JQL_RESERVED_WORDS:
+            raise _JqlParseError(
+                f"Expecting a field name but got '{text}'. You must surround '{text}' in"
+                f" quotation marks to use it as a field name.{self._at(tok)}"
+            )
+        if not re.fullmatch(r"[A-Za-z0-9_.\-]+", text):
+            raise _JqlParseError(f"Expecting a field name but got '{text}'.{self._at(tok)}")
+        self._next()
+        return text
+
+    def _parse_value(self) -> None:
+        tok = self._peek()
+        if tok is None:
+            raise _JqlParseError("Expecting a value at the end of the query.")
+        if tok[0] == "(":
+            self._next()
+            self._parse_value()
+            while self._peek() is not None and self._peek()[0] == ",":
+                self._next()
+                self._parse_value()
+            closer = self._next()
+            if closer is None:
+                raise _JqlParseError("Expecting ')' at the end of the query.")
+            if closer[0] != ")":
+                raise _JqlParseError(f"Expecting ')' but got '{closer[0]}'.{self._at(closer)}")
+            return
+        self._next()
+        if self._peek() is not None and self._peek()[0] == "(":
+            # A function call: currentUser(), startOfDay(-1d). Its arguments are read as
+            # tokens, not parsed, so a comma inside them is not a list separator.
+            depth = 0
+            while (tok := self._next()) is not None:
+                if tok[0] == "(":
+                    depth += 1
+                elif tok[0] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return
+            raise _JqlParseError("Expecting ')' at the end of the query.")
+
+    def _parse_history_tail(self) -> None:
+        # AFTER / BEFORE / ON / DURING / BY after a WAS or CHANGED: each takes a value, DURING a
+        # parenthesised pair.
+        while True:
+            tok = self._peek()
+            if self._is_word(tok, "after", "before", "on", "by"):
+                self._next()
+                self._parse_value()
+            elif self._is_word(tok, "during"):
+                self._next()
+                self._parse_value()
+            else:
+                return
+
+    def _parse_predicate(self) -> None:
+        self._expect_field()
+        tok = self._peek()
+        if tok is None:
+            raise _JqlParseError("Expecting operator at the end of the query.")
+        if self._is_word(tok, "is"):
+            self._next()
+            if self._is_word(self._peek(), "not"):
+                self._next()
+            value = self._next()
+            if value is None:
+                raise _JqlParseError("Expecting either 'EMPTY' or 'NULL' at the end of the query.")
+            if not self._is_word(value, "empty", "null"):
+                raise _JqlParseError(
+                    f"Expecting either 'EMPTY' or 'NULL' but got '{value[0]}'.{self._at(value)}"
+                )
+            return
+        after = self.tokens[self.pos + 1] if self.pos + 1 < len(self.tokens) else None
+        if self._is_word(tok, "in") or (self._is_word(tok, "not") and self._is_word(after, "in")):
+            if self._is_word(tok, "not"):
+                self._next()
+            self._next()
+            self._parse_value()
+            return
+        if self._is_word(tok, "was"):
+            self._next()
+            if self._is_word(self._peek(), "not"):
+                self._next()
+            if self._is_word(self._peek(), "in"):
+                self._next()
+            self._parse_value()
+            self._parse_history_tail()
+            return
+        if self._is_word(tok, "changed"):
+            self._next()
+            while True:
+                head = self._peek()
+                if self._is_word(head, "from", "to", "by", "after", "before", "on"):
+                    self._next()
+                    self._parse_value()
+                elif self._is_word(head, "during"):
+                    self._next()
+                    self._parse_value()
+                else:
+                    return
+        if tok[0] in ("=", "!=", "<>", "<", ">", "<=", ">=", "~", "!~"):
+            self._next()
+            self._parse_value()
+            return
+        raise _JqlParseError(
+            f"Expecting operator but got '{tok[0]}'. The valid operators are "
+            f"{', '.join(repr(op) for op in _JQL_OPERATORS[:8])}, 'IN', 'NOT IN', 'IS' and"
+            f" 'IS NOT'.{self._at(tok)}"
+        )
+
+    def _parse_order_by(self) -> None:
+        self._next()  # `order`
+        by = self._next()
+        if by is None:
+            raise _JqlParseError("Expecting 'by' at the end of the query.")
+        if not self._is_word(by, "by"):
+            raise _JqlParseError(f"Expecting 'by' but got '{by[0]}'.{self._at(by)}")
+        self._expect_field()
+        while True:
+            tok = self._peek()
+            if tok is None:
+                return
+            if self._is_word(tok, "asc", "desc"):
+                self._next()
+                after = self._peek()
+                if after is None:
+                    return
+                if after[0] == ",":
+                    self._next()
+                    self._expect_field()
+                    continue
+                raise _JqlParseError(f"Expecting ',' but got '{after[0]}'.{self._at(after)}")
+            if tok[0] == ",":
+                self._next()
+                self._expect_field()
+                continue
+            raise _JqlParseError(
+                f"Expecting either 'ASC' or 'DESC' but got '{tok[0]}'.{self._at(tok)}"
+            )
+
+
+def _jql_parse_error(jql: str) -> str | None:
+    """The `Error in the JQL Query:` sentence for a `jql` Jira's parser cannot parse, or ``None``
+    where it parses: the six unparsable queries are refused, and a `project is not EMPTY order by
+    key` still serves."""
+    try:
+        _JqlParser(jql).parse()
+    except _JqlParseError as exc:
+        return str(exc)
+    return None
 
 
 def _project_from_jql(conn, jql: str, request: Request | None = None):

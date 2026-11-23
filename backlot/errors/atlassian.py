@@ -2256,6 +2256,18 @@ def unbounded_jql() -> AtlassianError:
     )
 
 
+def jql_parse_error(message: str) -> AtlassianError:
+    """Jira's 400 for a `search/jql` whose `jql` its parser cannot parse, on GET or POST: the
+    sentence names what the parser expected, and where it stopped, as Jira Cloud answered the six
+    queries on 2026-11-22, on `application/json;charset=UTF-8` with an empty `errors`.
+    """
+    return AtlassianError(
+        400,
+        {"errorMessages": [f"Error in the JQL Query: {message}"], "errors": {}},
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def properties_null_element(index: int) -> AtlassianError:
     """Jira's 500 for a `search/jql` body whose `properties` list holds a ``null``, measured
     2026-10-10: the message names the first null's index (`["a", null]` names index 1), on the

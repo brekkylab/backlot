@@ -3244,6 +3244,337 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
         assert other["clientId"] == token["clientId"]
 
 
+def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tmp_path):
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [page])
+    empty_uris = {"_expandable": {"all": "", "css": "", "js": ""}}
+    empty_tags = {"_expandable": {"all": "", "css": "", "data": "", "js": ""}}
+    empty_superbatch = {"_expandable": {"uris": "", "metatags": "", "tags": ""}}
+    empty_wr = {
+        "superbatch": empty_superbatch,
+        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+    }
+    metatags = "<meta name='ajs-context-path' content='/wiki'>"
+    W = "body.storage.webresource"
+    rows = (
+        (
+            f"{W}.uris",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.tags",
+            {
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.keys",
+            {
+                "keys": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts",
+            {
+                "contexts": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts,{W}.keys,{W}.tags,{W}.uris",
+            {
+                "keys": [],
+                "contexts": [],
+                "uris": empty_uris,
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+            },
+        ),
+        (
+            f"{W}.uris,{W}.tags,{W}.keys,{W}.contexts",
+            {
+                "keys": [],
+                "contexts": [],
+                "uris": empty_uris,
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+            },
+        ),
+        (
+            f"{W}.superbatch.uris",
+            {
+                "superbatch": {"uris": empty_uris, "_expandable": {"metatags": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags",
+            {
+                "superbatch": {"tags": empty_tags, "_expandable": {"uris": "", "metatags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.metatags",
+            {
+                "superbatch": {"metatags": metatags, "_expandable": {"uris": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags,{W}.superbatch.metatags,{W}.superbatch.uris",
+            {
+                "superbatch": {"uris": empty_uris, "tags": empty_tags, "metatags": metatags},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.all",
+            {
+                "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.css",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.js",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.all,{W}.uris.css",
+            {
+                "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.tags.all",
+            {
+                "tags": {"all": "", "_expandable": {"css": "", "data": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.css",
+            {
+                "tags": {"css": "", "_expandable": {"all": "", "data": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.data",
+            {
+                "tags": {"data": "", "_expandable": {"all": "", "css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.js",
+            {
+                "tags": {"js": "", "_expandable": {"all": "", "css": "", "data": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.all,{W}.tags.css,{W}.tags.data,{W}.tags.js",
+            {
+                "tags": {"all": "", "data": "", "css": "", "js": ""},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.all",
+            {
+                "superbatch": {
+                    "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.css",
+            {
+                "superbatch": {
+                    "uris": {"css": [], "_expandable": {"all": "", "js": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.js",
+            {
+                "superbatch": {
+                    "uris": {"js": [], "_expandable": {"all": "", "css": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags.data",
+            {
+                "superbatch": {
+                    "tags": {"data": "", "_expandable": {"all": "", "css": "", "js": ""}},
+                    "_expandable": {"uris": "", "metatags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (f"{W}.metatags", empty_wr),
+        (f"{W}.superbatch", empty_wr),
+        (f"{W}.x", empty_wr),
+        (f"{W}.Uris", empty_wr),
+        (f"{W}.superbatch.x", empty_wr),
+        (f"{W}..uris", empty_wr),
+        (f"{W}.superbatch..uris", empty_wr),
+        (
+            f"{W}.uris.x",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris..all",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.keys.x",
+            {
+                "keys": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts.x",
+            {
+                "contexts": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.metatags.x",
+            {
+                "superbatch": {"metatags": metatags, "_expandable": {"uris": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+
+        def shape(value):
+            if isinstance(value, dict):
+                return [(key, shape(item)) for key, item in value.items()]
+            return value
+
+        got = []
+        for expand, _expected in rows:
+            web = c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                "body"
+            ]["storage"]["webresource"]
+            got.append(web)
+        assert [shape(web) for web in got] == [shape(expected) for _expand, expected in rows]
+        # The other three representations this server renders serve the same values.
+        other = []
+        expected_other = []
+        for rep_name in ("view", "export_view", "atlas_doc_format"):
+            for suffix, expected in (
+                (
+                    "uris",
+                    {
+                        "uris": empty_uris,
+                        "superbatch": empty_superbatch,
+                        "_expandable": {"keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "keys",
+                    {
+                        "keys": [],
+                        "superbatch": empty_superbatch,
+                        "_expandable": {"uris": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "superbatch.metatags",
+                    {
+                        "superbatch": {
+                            "metatags": metatags,
+                            "_expandable": {"uris": "", "tags": ""},
+                        },
+                        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "superbatch.uris.all",
+                    {
+                        "superbatch": {
+                            "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                            "_expandable": {"metatags": "", "tags": ""},
+                        },
+                        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+            ):
+                expand = f"body.{rep_name}.webresource.{suffix}"
+                web = c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                    "body"
+                ][rep_name]["webresource"]
+                other.append((rep_name, suffix, web))
+                expected_other.append((rep_name, suffix, expected))
+        assert [(rep, suffix, shape(web)) for rep, suffix, web in other] == [
+            (rep, suffix, shape(expected)) for rep, suffix, expected in expected_other
+        ]
+
+
 # --- Jira ------------------------------------------------------------------------
 
 

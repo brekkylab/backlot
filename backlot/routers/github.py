@@ -730,6 +730,96 @@ _BASIC_NO_TOKEN_NOT_FOUND = (
         "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
     ),
 )
+#: The operations real answers a caller who sends no credential with the operation's own refusal,
+#: its status and `documentation_url`, when the last segment of the path is spelled with an escape
+#: (:func:`_an_escaped_operation_refusal`).
+_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION = {
+    "GET /gists/starred": (401, "https://docs.github.com/rest/gists/gists#list-starred-gists"),
+    "GET /user/blocks": (
+        401,
+        "https://docs.github.com/rest/users/blocking#list-users-blocked-by-the-authenticated-user",
+    ),
+    "GET /user/codespaces": (
+        401,
+        "https://docs.github.com/rest/codespaces/codespaces#list-codespaces-for-the-authenticated-user",
+    ),
+    "GET /user/emails": (
+        401,
+        "https://docs.github.com/rest/users/emails#list-email-addresses-for-the-authenticated-user",
+    ),
+    "GET /user/followers": (
+        401,
+        "https://docs.github.com/rest/users/followers#list-followers-of-the-authenticated-user",
+    ),
+    "GET /user/following": (
+        401,
+        "https://docs.github.com/rest/users/followers#list-the-people-the-authenticated-user-follows",
+    ),
+    "GET /user/gpg_keys": (
+        401,
+        "https://docs.github.com/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user",
+    ),
+    "GET /user/installations": (
+        401,
+        "https://docs.github.com/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token",
+    ),
+    "GET /user/interaction-limits": (
+        401,
+        "https://docs.github.com/rest/interactions/user#get-interaction-restrictions-for-your-public-repositories",
+    ),
+    "GET /user/issues": (
+        404,
+        "https://docs.github.com/rest/issues/issues#list-user-account-issues-assigned-to-the-authenticated-user",
+    ),
+    "GET /user/keys": (
+        401,
+        "https://docs.github.com/rest/users/keys#list-public-ssh-keys-for-the-authenticated-user",
+    ),
+    "GET /user/marketplace_purchases": (
+        401,
+        "https://docs.github.com/rest/apps/marketplace#list-subscriptions-for-the-authenticated-user",
+    ),
+    "GET /user/migrations": (
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    "GET /user/orgs": (
+        401,
+        "https://docs.github.com/rest/orgs/orgs#list-organizations-for-the-authenticated-user",
+    ),
+    "GET /user/packages": (
+        401,
+        "https://docs.github.com/rest/packages/packages#list-packages-for-the-authenticated-users-namespace",
+    ),
+    "GET /user/public_emails": (
+        401,
+        "https://docs.github.com/rest/users/emails#list-public-email-addresses-for-the-authenticated-user",
+    ),
+    "GET /user/repository_invitations": (
+        401,
+        "https://docs.github.com/rest/collaborators/invitations#list-repository-invitations-for-the-authenticated-user",
+    ),
+    "GET /user/social_accounts": (
+        401,
+        "https://docs.github.com/rest/users/social-accounts#list-social-accounts-for-the-authenticated-user",
+    ),
+    "GET /user/ssh_signing_keys": (
+        401,
+        "https://docs.github.com/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user",
+    ),
+    "GET /user/starred": (
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    "GET /user/subscriptions": (
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    "GET /user/teams": (
+        404,
+        "https://docs.github.com/rest/teams/teams#list-teams-for-the-authenticated-user",
+    ),
+}
 
 
 def _a_repository_update_refusal(raw: bytes) -> str | None:
@@ -909,13 +999,52 @@ def _an_unserved_search_refusal(request: Request) -> HTTPException | None:
     return None
 
 
+def _an_escaped_operation_refusal(request: Request) -> HTTPException | None:
+    """The refusal of the operation of :data:`_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION` this
+    request names with an escape in the last segment of its path and nowhere else, or `None`.
+
+    Measured against api.github.com on 2026-11-21 and 2026-11-23 (UTC). With no `Authorization`,
+    each operation of the table with an escape in its last segment (`GET /user/k%65ys`,
+    `/user/%6Beys`, `/user/gpg%5Fkeys`, `/gists/st%61rred`, `/user/em%61ils`, `/user/team%73` and
+    the rest) was answered with the table's status and `documentation_url`, on `core` with the
+    version echo, where `/user/keys`, `/user/teams` and `/user/issues` were the 401 with
+    `https://docs.github.com/rest` and no echo. An empty `Authorization`, `Digest x` and
+    `Basic eDp5` drew the same answer on `/user/k%65ys`, and `Bearer nope` drew "Bad credentials".
+    Pinned to `2026-03-10`, `/user/%6beys` echoed `2026-03-10`; pinned to `1999-01-01`,
+    `/user/k%65ys` was the version's 400 with no `Authorization`, with `Digest x` and with
+    `Basic eDp5`. An escape in an earlier segment (`/%75ser/keys`, `/%67ists/starred`,
+    `/user/k%65ys/1`), a trailing slash after one (`/user/k%65ys/`), a path of one or three
+    segments (`/notification%73`, `/gist%73`, `/us%65r`, `/user/memberships/org%73`,
+    `/user/docker/conflict%73`) and `POST /user/k%65ys` were the 404 with no echo, and
+    `GET /user/keys/%31` the 401 with no echo.
+    """
+    path = request.scope["path"].removeprefix("/github")
+    sent = (request.scope.get("raw_path") or b"").decode("latin-1").removeprefix("/github")
+    if sent == path or sent.rpartition("/")[0] != path.rpartition("/")[0]:
+        return None
+    refusal = _ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION.get(f"{request.method} {path}")
+    if refusal is None:
+        return None
+    status, documentation_url = refusal
+    message = "Requires authentication" if status == 401 else "Not Found"
+    exc = HTTPException(status_code=status, detail=message)
+    exc.github_body = {
+        "message": message,
+        "documentation_url": documentation_url,
+        "status": str(status),
+    }
+    return exc
+
+
 async def refuse_an_unserved_operation(request: Request) -> None:
     """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` or
     :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or
     one that carries no credential (:func:`_a_header_without_a_credential`), then a credential that
     does not resolve, then a version real does not have, then a `Basic` value that names no token.
     A request none of those refuse goes on to the router's own 404 or 405, an operation Backlot
-    cannot run.
+    cannot run. With no credential, an escape in the last segment of an operation of
+    :data:`_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION` is that operation's own refusal after the
+    version, with the echo (:func:`_an_escaped_operation_refusal`).
 
     Measured against api.github.com on 2026-10-14, one cache-busted request each. With
     `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
@@ -1000,7 +1129,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         await _validate_bad_credential(request)
         await _validate_api_version(request)
         raise search_refusal
+    escaped = _an_escaped_operation_refusal(request)
     if "authorization" not in request.headers:
+        if escaped is not None:
+            await _validate_api_version(request)
+            raise escaped
         request.state.github_unserved_refusal = (
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
         )
@@ -1009,6 +1142,9 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         request
     ) or _a_tab_credential_counted_apart(request)
     if _a_header_without_a_credential(request) and not tab_credential:
+        if escaped is not None:
+            await _validate_api_version(request)
+            raise escaped
         request.state.github_unserved_refusal = "uncounted"
         raise HTTPException(status_code=401, detail="Requires authentication")
     if tab_credential and published.includes(
@@ -1018,6 +1154,8 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     await _validate_bad_credential(request)
     await _validate_api_version(request)
     if auth.github_scheme(request)[0] == "basic" and auth.github_credential(request) is None:
+        if escaped is not None:
+            raise escaped
         path = request.scope["path"].removeprefix("/github")
         documentation_url = next(
             (
@@ -1334,6 +1472,12 @@ def is_an_automation_or_its_tasks(method: str, path: str) -> bool:
     return published.includes(_ROUTED_UNPUBLISHED, method, path.removeprefix("/github"))
 
 
+def is_an_automations_operation(method: str, path: str) -> bool:
+    """Whether ``method`` on the `/github` ``path`` is one of :data:`_AUTOMATIONS_OPERATIONS` as the
+    path is spelt."""
+    return published.includes(_AUTOMATIONS_OPERATIONS, method, path.removeprefix("/github"))
+
+
 def under_an_agent_family(path: str) -> bool:
     """Whether the `/github` path is at or under `/agents/repos` or `/agents/tasks`, the two agent
     families real asks a credential on before anything else answers them, published or not: the
@@ -1468,6 +1612,10 @@ RATE_LIMIT_WINDOW = 3600
 #: request 65 seconds later answered `used: 1` against a fresh one, and `/search/code` under a
 #: token did the same at `limit: 10` (measured against api.github.com 2026-09-21).
 SEARCH_RATE_LIMIT_WINDOW = 60
+#: A token's webhook window resets 60 seconds after its first request's Date; subsequent
+#: requests use that reset, and the first request past it opens another 60-second window
+#: (measured against api.github.com on webhook operations, 2026-11-23).
+WEBHOOK_RATE_LIMIT_WINDOW = 60
 
 
 class _ResourceLimit(NamedTuple):
@@ -1482,6 +1630,7 @@ RATE_LIMITS: dict[str, _ResourceLimit] = {
     "core": _ResourceLimit(60, 5000, RATE_LIMIT_WINDOW),
     "search": _ResourceLimit(10, 30, SEARCH_RATE_LIMIT_WINDOW),
     "code_search": _ResourceLimit(10, 10, SEARCH_RATE_LIMIT_WINDOW),
+    "webhook_deliveries": _ResourceLimit(60, 500, WEBHOOK_RATE_LIMIT_WINDOW),
 }
 
 
@@ -1508,15 +1657,25 @@ def rate_limit_window(
     return counted, (limits.authenticated if authenticated else limits.anonymous)
 
 
-def rate_limit_resource(path: str, status_code: int, unparseable: bool = False) -> str:
+#: A repository's or organization's webhooks and the operations under one.
+_WEBHOOK_PATH = re.compile(
+    r"/github/(?:repos/[^/]+/[^/]+|orgs/[^/]+)/hooks"
+    r"(?:/[^/]+(?:/(?:config|pings|tests|deliveries(?:/[^/]+(?:/attempts)?)?))?)?",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def rate_limit_resource(
+    path: str, status_code: int, unparseable: bool = False, *, authenticated: bool
+) -> str:
     """The resource a request to ``path`` answered with ``status_code`` counts against.
 
-    `code_search` for code search, `search` for the other search endpoints and `core` for
-    everything else, including the 401 code search answers a caller with no credential: that
-    refusal is the gateway's, not the code search backend's, and counts against `core` (measured:
-    `limit: 60`, `resource: core` on it, where the same route authenticated answers `limit: 10`,
-    `resource: code_search`), the same split ``errors.github.json_media_type`` draws for the
-    charset.
+    `code_search` for code search, `search` for the other search endpoints, `webhook_deliveries` for
+    an authenticated caller's webhook operations and `core` for everything else, including the
+    401 code search answers a caller with no credential: that refusal is the gateway's, not the
+    code search backend's, and counts against `core` (measured: `limit: 60`, `resource: core` on
+    it, where the same route authenticated answers `limit: 10`, `resource: code_search`), the same
+    split ``errors.github.json_media_type`` draws for the charset.
 
     A search endpoint's name carries its resource past the route: `/search/{name}/{rest}` counts
     against `search` at `limit: 10` although no route serves it, where `/search/{name}/` with
@@ -1527,7 +1686,23 @@ def rate_limit_resource(path: str, status_code: int, unparseable: bool = False) 
 
     An ``unparseable`` caller's 401 on code search counts against `code_search` instead: `Basic`
     and the base64 of `x:<40 a>` or `x:GHP_<36 A>` was the 401 "Bad credentials" with
-    `limit: 0` and `resource: code_search` (measured against api.github.com 2026-10-26)."""
+    `limit: 0` and `resource: code_search` (measured against api.github.com 2026-10-26).
+
+    Under a token with no admin access to the tested repository or organization, webhook reads
+    and writes count in one `webhook_deliveries` window at `limit: 500`: the list, individual hook,
+    configuration and delivery reads, a HEAD of the configuration, webhook creation, patching,
+    deletion, pings and redelivery attempts, and a repository's webhook test were all 404s in
+    that window. Uppercase literal segments behaved alike; a `GET` pinned to an unknown API version
+    was the 400 in that window (api.github.com, 2026-11-22 and 2026-11-23,
+    `/repos/{owner}/{repo}/hooks` and `/orgs/{org}/hooks` and their operations). The reads and
+    writes were refused with the same 403 once the window was spent, while a forks read stayed on
+    `core`. Under the token, the `GET`s of `…/hooks/1/pings`, `…/hooks/1/tests` and
+    `…/hooks/1/deliveries/1/attempts`, `PUT …/hooks/1` and `POST /orgs/{org}/hooks/1/tests`, which
+    real does not route, were the 404 with none of the five `x-ratelimit-*`. Anonymous
+    list/configuration reads and webhook creation/pings were 401s on `core` (2026-11-23).
+    """
+    if authenticated and _WEBHOOK_PATH.fullmatch(path):
+        return "webhook_deliveries"
     if path == CODE_SEARCH_PATH:
         return "core" if status_code == 401 and not unparseable else "code_search"
     if path.startswith(SEARCH_PREFIX):
@@ -1542,7 +1717,8 @@ class RateLimitWindows:
 
     A window opens at the first request counted or refused in a `(credential, resource)` and closes
     its resource's length later — an hour for `core`, a minute for the two search resources
-    (:data:`SEARCH_RATE_LIMIT_WINDOW`); `reset` is its closing second, the same on every answer
+    (:data:`SEARCH_RATE_LIMIT_WINDOW`) and for `webhook_deliveries`
+    (:data:`WEBHOOK_RATE_LIMIT_WINDOW`); `reset` is its closing second, the same on every answer
     inside it. The windows measured stayed put across the requests inside them and differed between
     credentials and between resources (an anonymous caller's `core` and `search` resets 1552 seconds
     apart), which is a window per pair opened by use rather than one shared clock. `remaining`
@@ -1738,7 +1914,9 @@ def rate_limit_headers(request: Request, status_code: int, *, count: bool = True
     ``backlot.main.refuse_a_trailing_slash_on_github``."""
     key, authenticated = rate_limit_caller(request)
     unparseable = key.startswith("unparseable:")
-    resource = rate_limit_resource(request.url.path, status_code, unparseable)
+    resource = rate_limit_resource(
+        request.url.path, status_code, unparseable, authenticated=authenticated
+    )
     counted, limit = rate_limit_window(resource, authenticated, unparseable)
     windows = _rate_limit_windows(request.app)
     read = windows.count if count and request.url.path != RATE_LIMIT_PATH else windows.status
@@ -1871,7 +2049,12 @@ def rate_limit_refusal(request: Request) -> Response | None:
         return None
     key, authenticated = rate_limit_caller(request)
     unparseable = key.startswith("unparseable:")
-    resource = rate_limit_resource(request.url.path, 401 if not authenticated else 200, unparseable)
+    resource = rate_limit_resource(
+        request.url.path,
+        401 if not authenticated else 200,
+        unparseable,
+        authenticated=authenticated,
+    )
     if resource == "code_search" and _a_header_without_a_credential(request):
         return None
     counted, limit = rate_limit_window(resource, authenticated, unparseable)
@@ -3165,7 +3348,7 @@ async def get_rate_limit(request: Request):
     `.search` and `.code_search`, each `{limit, used, remaining, reset}`, read from the windows the
     `x-ratelimit-*` headers report (:class:`RateLimitWindows`) without counting the read.
 
-    The three resources are the ones Backlot counts, of the fifteen real's authenticated answer
+    The three resources reported here are among the fifteen real's authenticated answer
     carries (`graphql`, `integration_manifest`, `scim`, …) and the five its anonymous one does.
     They are listed in the order that answer lists them in, which is not the same order for a
     request with no `Authorization` as for one with a token or a value real cannot parse

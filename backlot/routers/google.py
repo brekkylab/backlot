@@ -1169,6 +1169,11 @@ _GMAIL_DASHED_WORD = re.compile(r'-+(?:"([^"]*)"|([^ ]+))\Z')
 # A free-text term: a quoted stretch, spaces and all, with what touches it, or a run of other
 # characters between spaces.
 _GMAIL_FREE_TERM = re.compile(r'[^ "]*"[^"]*"[^ "]*|[^ ]+')
+# A free-text term of separators alone: `.`, `@`, `,`, `!` and `...` each answered every message
+# on a Workspace mailbox on 2026-11-22, as no `q` does. A quote or a parenthesis is not a
+# separator — a lone `"` and the `"(` a quoted phrase leaves behind still match nothing, as the
+# stray-quote rows measure.
+_GMAIL_SEPARATOR_ONLY = re.compile(r"^[.@,!]+$")
 
 
 def _gmail_q_date(v: str) -> str | None:
@@ -1784,6 +1789,14 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 if not m.group(0).startswith("-"):
                     ops.setdefault(_GMAIL_NOTHING, []).append(value)
                 return " "
+            if key in _GMAIL_AGE_NEGATION and _gmail_rel_secs(value.rstrip('"')) is None:
+                # An age Gmail cannot read matches nothing — `newer_than:x`, `newer_than:5`,
+                # `older_than:x` and `older_than:5` each answered no messages on a Workspace
+                # mailbox on 2026-11-22 — and negated it matches everything, as `-has:x` does.
+                # Trailing quotes do not un-read it: `newer_than:30d"` answers as `30d`.
+                if not m.group(0).startswith("-"):
+                    ops.setdefault(_GMAIL_NOTHING, []).append(value)
+                return " "
             if key in _GMAIL_DATE_KEYS:
                 if value == "-":
                     return m.group(0)
@@ -1904,7 +1917,15 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     )
     free = re.sub(" +", " ", free).strip(" ")
     if not (len(free) >= 2 and free[0] == free[-1] == '"'):
-        words = [t for t in free.split(" ") if t.strip("\xa0") not in ("", "+", "-", '""')]
+        words = [
+            t
+            for t in free.split(" ")
+            if t.strip("\xa0") not in ("", "+", "-", '""')
+            # A term of separators alone is no term: `.`, `@`, `,`, `!` and `...` each answered
+            # every message on a Workspace mailbox on 2026-11-22, as no `q` does, and `the .`
+            # what `the` answers.
+            and not _GMAIL_SEPARATOR_ONLY.fullmatch(t)
+        ]
         words = ["not" if _GMAIL_NOT_GLUE.fullmatch(t) else t for t in words]
         words, nothing = _gmail_not_words(words)
         if nothing:
@@ -2040,6 +2061,40 @@ def _gmail_address_match(header: str | None, value: str) -> bool:
     )
 
 
+#: The `has:` values Gmail's search operators name: the document kinds, the label pair and the
+#: starred kinds. A value outside them is one real does not know, and matches nothing.
+_GMAIL_HAS_VALUES = frozenset(
+    {
+        "attachment",
+        "drive",
+        "document",
+        "spreadsheet",
+        "presentation",
+        "youtube",
+        "userlabels",
+        "nouserlabels",
+        "yellow-star",
+        "red-star",
+        "orange-star",
+        "green-star",
+        "blue-star",
+        "purple-star",
+        "yellow-bang",
+        "red-bang",
+        "orange-gbang",
+        "green-check",
+        "blue-info",
+        "purple-question",
+    }
+)
+
+
+def _gmail_subject_value(value: str) -> str:
+    """A `subject:` value read the way Gmail reads it: punctuation at either end is a separator,
+    so `subject:.plan` answers what `subject:plan` answers."""
+    return re.sub(r"^[^\w&]+|[^\w&]+$", "", value.lower())
+
+
 def _gmail_op_match(row, ops: dict) -> bool:
     if _GMAIL_NOTHING in ops:
         return False
@@ -2064,10 +2119,14 @@ def _gmail_op_match(row, ops: dict) -> bool:
             if _gmail_address_match(row[key], v):
                 return False
     for v in ops.get("subject", []):
-        if v.lower() not in (row["title"] or "").lower():
+        # Punctuation at either end of a `subject:` value is a separator, not part of the
+        # value: `subject:.plan`, `subject:plan.`, `subject:plan,`, `subject:,plan` and
+        # `subject:...plan` each answered what `subject:plan` answers on a Workspace mailbox
+        # on 2026-11-22.
+        if _gmail_subject_value(v) not in (row["title"] or "").lower():
             return False
     for v in ops.get("-subject", []):
-        if v.lower() in (row["title"] or "").lower():
+        if _gmail_subject_value(v) in (row["title"] or "").lower():
             return False
     # `in:` and `label:` ask the same question of a message — Gmail's folders ARE labels — and both
     # have to see the label a message is served under rather than only a stated one. `in:anywhere`
@@ -2089,6 +2148,13 @@ def _gmail_op_match(row, ops: dict) -> bool:
     if any(v.lower() == "attachment" for v in ops.get("-has", [])) and store.jcol(
         row, "attachments"
     ):
+        return False
+    # A `has:` value Gmail does not know matches nothing: `has:x` and `has:zzzq` each
+    # answered no messages on a Workspace mailbox on 2026-11-22, where `-has:x` answered
+    # every message. The values below are the ones Gmail's search operators name — the
+    # document kinds, the label pair and the starred kinds — so a value outside them is
+    # unknown rather than unevaluated.
+    if any(v.lower() not in _GMAIL_HAS_VALUES for v in ops.get("has", [])):
         return False
     ts = _gmail_ts(row)
     for v in ops.get("after", []):

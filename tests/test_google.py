@@ -15337,6 +15337,72 @@ def test_gmail_an_empty_or_lone_quoted_operator(tmp_path):
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
+#: A `has:`, `newer_than:` or `older_than:` with a value Gmail does not know, a `q` of
+#: punctuation alone, and a `subject:` value with punctuation at an end. The corpus holds `the` in
+#: two messages, an attachment on one, and all three older than 30 days, so the controls tell the
+#: new rows from the old ones.
+_GMAIL_UNKNOWN_VALUE_ROWS = [
+    ("has:x", []),
+    ("has:zzzq", []),
+    ("newer_than:x", []),
+    ("newer_than:5", []),
+    ("older_than:x", []),
+    ("older_than:5", []),
+    ("the has:x", []),
+    ("-has:x", ["plan", "lunch", "after"]),
+    ("has:attachment", ["plan"]),
+    ("-has:attachment", ["lunch", "after"]),
+    ("newer_than:30d", []),
+    ("older_than:30d", ["plan", "lunch", "after"]),
+    (".", ["plan", "lunch", "after"]),
+    ("@", ["plan", "lunch", "after"]),
+    (",", ["plan", "lunch", "after"]),
+    ("!", ["plan", "lunch", "after"]),
+    ("...", ["plan", "lunch", "after"]),
+    ("the .", ["plan", "after"]),
+    ("subject:plan", ["plan"]),
+    ("subject:.plan", ["plan"]),
+    ("subject:plan.", ["plan"]),
+    ("subject:plan,", ["plan"]),
+    ("subject:,plan", ["plan"]),
+    ("subject:...plan", ["plan"]),
+    ("-subject:.plan", ["lunch", "after"]),
+]
+
+
+def test_gmail_an_unknown_operator_value_matches_nothing(tmp_path):
+    """Each row is what the measurements at `_GMAIL_UNKNOWN_VALUE_ROWS` read: an operator with a
+    value Gmail does not know matches nothing, a `q` of punctuation alone matches every message,
+    and punctuation at an end of a `subject:` value is a separator — over both listings."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+            **({"attachments": attachments} if attachments else {}),
+        }
+        for doc_id, title, content, attachments in [
+            (
+                "plan",
+                "Rollout plan",
+                "the rollout is attached",
+                [{"filename": "deck.pdf", "mime": "application/pdf", "content": "deck"}],
+            ),
+            ("lunch", "Lunch", "Friday?", None),
+            ("after", "Later", "see after the meeting", None),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_UNKNOWN_VALUE_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
 _GMAIL_STRAY_QUOTE_ROWS = [
     ('""', ["plan", "lunch"]),
     ('"()"', ["plan", "lunch"]),

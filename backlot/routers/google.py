@@ -1288,6 +1288,19 @@ def _gmail_group_items(text: str) -> list:
             while j < len(pieces) and depth:
                 depth += {"(": 1, ")": -1}.get(pieces[j], 0)
                 j += 1
+            # Brackets glued to `has:` or `newer_than:` around one term are no group either: the
+            # term is the operator's value, and a `-` in front negates the operator. Measured
+            # against gmail.googleapis.com on 2026-11-23: `has:(x)` answered no messages, as
+            # `has:x` does, and `-has:(x)` and `-newer_than:(x)` every message, as `-has:x` and
+            # `-newer_than:x` do.
+            if (
+                depth == 0
+                and re.fullmatch(r"-*(?:has|newer_than):", run, re.IGNORECASE)
+                and re.fullmatch(r'[^\s()"]*[\w&][^\s()"]*', "".join(pieces[i + 1 : j - 1]))
+            ):
+                run += "".join(pieces[i + 1 : j - 1])
+                i = j
+                continue
             negated = bool(run) and not run.strip("-")
             if run and not negated:
                 items.append(run)
@@ -1827,6 +1840,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                     return " "
             if key in _GMAIL_NEGATABLE:
                 spaced = m.start(2) > m.end(1) + 1
+                # A term of punctuation alone is no term (`_GMAIL_SEPARATOR_ONLY`), so an `in:` that
+                # reads the next word as its value has none. Measured against
+                # gmail.googleapis.com on 2026-11-23: `in:"" .` and `in:"()" .` answered every
+                # message, as `label:"()" .` did, where `in:"()" subject:the` answered none.
+                if key == "in" and spaced and _GMAIL_SEPARATOR_ONLY.fullmatch(value):
+                    return " "
                 if value[:1] == "-" and (key == "subject" or spaced):
                     value, stored = value.lstrip("-"), f"-{key}"
                     if not value:
@@ -1877,6 +1896,13 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and (not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value))
             ):
                 return stored
+            # Any other quoted `has:` value is the phrase of the word `has` and that value, and
+            # matches no `has:` kind: measured against gmail.googleapis.com on 2026-11-23,
+            # `has:"attachment"`, `has:"pdf"` and `has:"drive"` answered no messages, where
+            # `has:attachment`, `has:pdf` and `has:drive` answered many, and `has:"the"` answered
+            # the ids the phrase `"has the"` answers.
+            if key == "has" and len(value) > 1 and value[0] == value[-1] == '"':
+                return f'{"-" if stored == "-has" else ""}"has {value[1:-1]}"'
             # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
             # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
             # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;

@@ -32,6 +32,10 @@ A module in ``_ENVELOPES`` provides:
   :func:`backlot.errors.atlassian.head_content_length`,
   :func:`backlot.errors.google.head_content_length` and
   :func:`backlot.errors.notion.head_content_length`.
+- ``head_method_not_allowed(request, response)``, optional — the answer to a `HEAD` the vendor's
+  backend refuses rather than answering as the `GET`, given the `GET`'s ``response``, or ``None``
+  where the `HEAD` is that answer with the body left off. GitHub implements it, for the agents
+  backend's 405 (:func:`backlot.errors.github.head_method_not_allowed`).
 - ``json_media_type(path, status_code)``, optional — the `content-type` the vendor puts on a JSON
   body answered at that path with that status, when it is measured to differ from FastAPI's bare
   `application/json`. GitHub, Atlassian and Notion implement it — Atlassian's names Jira's charset
@@ -102,9 +106,8 @@ def head_content_length(request: Request, status_code: int) -> bool | None:
 
 
 def head_method_not_allowed(request: Request, response) -> Response | None:
-    """The 405 for a `HEAD` the vendor's backend refuses rather than answering as the GET, or
-    ``None`` where the `HEAD` stays the GET's answer (``backlot.main`` asks this of the GET's
-    answer, so a refusal the credential decides is already decided by then)."""
+    """The answer of the hook the module docstring describes, for the vendor this request's path
+    belongs to, or ``None`` for a vendor without it."""
     for envelope in _ENVELOPES:
         if envelope.owns(request.url.path):
             answer = getattr(envelope, "head_method_not_allowed", None)

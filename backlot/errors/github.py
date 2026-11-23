@@ -309,15 +309,6 @@ def validation_body(path: str, errors) -> tuple[int, dict]:
     }
 
 
-#: The `/agents/automations` operations real's agents backend answers a `HEAD` on with a 405
-#: rather than the GET's answer: the list itself, one automation by id or by name, and its tasks.
-_AUTOMATIONS_HEAD_405 = (
-    re.compile(r"/agents/automations\Z"),
-    re.compile(r"/agents/automations/[^/]+\Z"),
-    re.compile(r"/agents/automations/[^/]+/tasks\Z"),
-)
-
-
 def head_method_not_allowed(request: Request, response: Response) -> Response | None:
     """The 405 for a `HEAD` on an `/agents/automations` operation, or ``None`` where the `HEAD`
     stays the GET's answer.
@@ -326,20 +317,18 @@ def head_method_not_allowed(request: Request, response: Response) -> Response | 
     resolves, `HEAD /agents/automations`, `/agents/automations/2`, `/agents/automations/1/tasks`
     and `/agents/automations/available-tools` were each the 405 with `Allow: GET` and no
     `content-type` and no `content-length`, on `core` (measured against api.github.com on
-    2026-11-22). The credential is read before the 405 — with no `Authorization` or a bad bearer
-    each was the 401 — so the GET's answer decides: only its 404 on `core`, the answer a resolving
-    token gets, is refused this way. A `HEAD` on a path no operation names
-    (`/agents/automations/1/nosuch`, `/agents/automations/`) keeps the JSON 404, which carries no
-    `x-ratelimit-resource`, as does a `HEAD` the credential refuses.
+    2026-11-22), counted as the GET is and with no version echo, an unknown version pinned or not
+    (2026-11-23). The credential is read before the 405 — with no `Authorization` or a bad bearer
+    each was the 401 — so the GET's answer decides: only its 404, the answer a token that resolves
+    gets, is refused this way. A `HEAD` on a path no operation names
+    (`/agents/automations/1/nosuch`, `/agents/automations/`) keeps the GET's JSON 404, and one on
+    an operation spelt in another case (`/AGENTS/automations`, 2026-11-23) the GET's text 404.
+    Imported lazily, as :func:`_routes` is, so the dependency between this package and the router
+    stays one-way.
     """
-    if response.status_code != 404:
-        return None
-    if "x-ratelimit-resource" not in response.headers:
-        return None
-    if not any(
-        pattern.fullmatch(request.scope["path"].removeprefix(PREFIX))
-        for pattern in _AUTOMATIONS_HEAD_405
-    ):
+    from backlot.routers.github import is_an_automations_operation
+
+    if response.status_code != 404 or not is_an_automations_operation("GET", request.scope["path"]):
         return None
     headers = {
         name: value

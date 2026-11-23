@@ -1777,9 +1777,6 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     request.scope["method"] = "HEAD"
     refusal = errors.head_method_not_allowed(request, response)
     if refusal is not None:
-        # A `HEAD` real's backend refuses rather than answering as the GET: the agents
-        # backend's 405 on its `/agents/automations` operations, with `Allow: GET` and no
-        # `content-type` and no `content-length` (:func:`errors.github.head_method_not_allowed`).
         return refusal
     length = 0
     async for chunk in response.body_iterator:

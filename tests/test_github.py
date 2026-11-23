@@ -3769,60 +3769,33 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     assert c.head("/slack/api/auth.test", headers=gh_admin_h).status_code == 405
 
 
-#: A `HEAD` on GitHub's `/agents/automations` operations, and the two paths no operation names,
-#: with the credential each row carries: real's agents backend serves no `HEAD` on the operations
-#: it publishes there, so a token that resolves is the 405 with `Allow: GET` and no `content-type`
-#: and no `content-length`, on `core` — as `backlot.errors.github.head_method_not_allowed`
-#: records. The credential is read before the 405, so no credential and a bad bearer are the 401s,
-#: and a path no operation names keeps the GET's JSON 404, which carries no
-#: `x-ratelimit-resource`.
-_GITHUB_AUTOMATIONS_HEAD_ROWS = [
-    ("/github/agents/automations", "admin", 405, "GET", "core"),
-    ("/github/agents/automations/2", "admin", 405, "GET", "core"),
-    ("/github/agents/automations/1/tasks", "admin", 405, "GET", "core"),
-    ("/github/agents/automations/available-tools", "admin", 405, "GET", "core"),
-    ("/github/agents/automations/1/nosuch", "admin", 404, None, None),
-    ("/github/agents/automations/", "admin", 404, None, None),
-    ("/github/agents/automations", "none", 401, None, "core"),
-    ("/github/agents/automations/2", "none", 401, None, "core"),
-    ("/github/agents/automations", "bad", 401, None, None),
-    ("/github/agents/automations/2", "bad", 401, None, None),
+#: A `HEAD` on an `/agents/automations` operation with no `Authorization` or a bad bearer, and the
+#: `x-ratelimit-resource` of real's 401: the credential is read before the 405 a token that resolves
+#: gets (``backlot.errors.github.head_method_not_allowed``).
+_AUTOMATIONS_HEAD_REFUSED_ROWS = [
+    ("/agents/automations", {}, "core"),
+    ("/agents/automations/2", {}, "core"),
+    ("/agents/automations/1/tasks", {}, "core"),
+    ("/agents/automations", {"Authorization": "Bearer <redacted>"}, None),
+    ("/agents/automations/2", {"Authorization": "Bearer <redacted>"}, None),
+    ("/agents/automations/1/tasks", {"Authorization": "Bearer <redacted>"}, None),
 ]
 
 
-def test_github_a_head_on_an_agents_automations_operation_is_method_not_allowed(
-    gh_client, gh_admin_h
-):
-    """Each row is what the measurements at `_GITHUB_AUTOMATIONS_HEAD_ROWS` read: a `HEAD` on an
-    `/agents/automations` operation is the agents backend's 405 for a token that resolves, where
-    the `GET` beside it stays the 404; the credential is read first, and a path no operation names
-    keeps the GET's answer."""
+def test_github_a_head_on_an_agents_automations_operation_reads_the_credential_first(gh_client):
+    """Each row is the 401, with no `allow`."""
     c, _ = gh_client
-    for path, credential, status, allow, resource in _GITHUB_AUTOMATIONS_HEAD_ROWS:
-        get = c.get(path, headers=gh_admin_h)
-        assert get.status_code == 404, path
-        headers = (
-            gh_admin_h
-            if credential == "admin"
-            else {"Authorization": "Bearer <redacted>"}
-            if credential == "bad"
-            else {}
+    answered, expected = {}, {}
+    for path, headers, resource in _AUTOMATIONS_HEAD_REFUSED_ROWS:
+        r = c.head(f"/github{path}", headers=headers)
+        key = (path, headers.get("Authorization"))
+        answered[key] = (
+            r.status_code,
+            r.headers.get("allow"),
+            r.headers.get("x-ratelimit-resource"),
         )
-        head = c.head(path, headers=headers)
-        assert head.status_code == status, (path, credential, head.text)
-        assert head.headers.get("allow") == allow, (path, credential)
-        assert head.headers.get("x-ratelimit-resource") == resource, (path, credential)
-        if status == 405:
-            assert "content-type" not in head.headers, path
-            assert "content-length" not in head.headers, path
-            assert head.content == b"", path
-        else:
-            assert head.headers.get("content-type") == "application/json; charset=utf-8", path
-            same = c.get(path, headers=headers)
-            assert head.headers.get("content-length") == str(len(same.content)), (
-                path,
-                credential,
-            )
+        expected[key] = (401, None, resource)
+    assert answered == expected
 
 
 def test_github_a_path_failure_decides_the_answer_whatever_order_it_is_reported_in():
@@ -8516,21 +8489,27 @@ def test_github_a_route_spelt_in_another_case_carries_the_headers_on_its_404(
 
 
 #: (method, a path under `/github/agents/automations`, and what a token that resolves gets: the
-#: status, media type, body, `x-ratelimit-resource` and how far the next request moves
-#: `x-ratelimit-used`): the agents backend's text `404 page not found` for an operation spelt in
-#: another case (``backlot.routers.github._AUTOMATIONS_OPERATIONS``), the empty 404 with no
-#: `content-type` for one automation or its tasks, whatever the id
-#: (``backlot.main.answer_an_automation_or_its_tasks_with_an_empty_404``), and the router's JSON
-#: 404 with none of the five `x-ratelimit-*` for a path or a method that names no operation.
-_TEXT_404 = (404, "text/plain", b"404 page not found\n", "core", 1)
-_EMPTY_404 = (404, None, b"", "core", 1)
+#: status, media type, body, `x-ratelimit-resource`, how far the next request moves
+#: `x-ratelimit-used` and `allow`): the agents backend's text `404 page not found` for an operation
+#: spelt in another case (``backlot.routers.github._AUTOMATIONS_OPERATIONS``), the empty 404 with
+#: no `content-type` for one automation or its tasks, whatever the id
+#: (``backlot.main.answer_an_automation_or_its_tasks_with_an_empty_404``), the router's JSON 404
+#: with none of the five `x-ratelimit-*` for a path or a method that names no operation, and for a
+#: `HEAD` the agents backend's 405 with `Allow: GET` on an operation
+#: (``backlot.errors.github.head_method_not_allowed``) and the GET's answer with no body elsewhere.
+_TEXT_404 = (404, "text/plain", b"404 page not found\n", "core", 1, None)
+_EMPTY_404 = (404, None, b"", "core", 1, None)
 _JSON_404 = (
     404,
     "application/json",
     b'{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}',
     None,
     0,
+    None,
 )
+_HEAD_405 = (405, None, b"", "core", 1, "GET")
+_HEAD_TEXT_404 = (404, "text/plain", b"", "core", 1, None)
+_HEAD_JSON_404 = (404, "application/json", b"", None, 0, None)
 _AUTOMATIONS_ROWS = [
     ("GET", "/AGENTS/automations", _TEXT_404),
     ("GET", "/agents/AUTOMATIONS", _TEXT_404),
@@ -8561,6 +8540,15 @@ _AUTOMATIONS_ROWS = [
     ("GET", "/agents/%61utomations", _JSON_404),
     ("POST", "/agents/automations/3", _JSON_404),
     ("POST", "/AGENTS/automations?_=563024193", _JSON_404),
+    ("HEAD", "/agents/automations", _HEAD_405),
+    ("HEAD", "/agents/automations/2", _HEAD_405),
+    ("HEAD", "/agents/automations/1/tasks", _HEAD_405),
+    ("HEAD", "/agents/automations/available-tools", _HEAD_405),
+    ("HEAD", "/AGENTS/automations", _HEAD_TEXT_404),
+    ("HEAD", "/agents/AUTOMATIONS", _HEAD_TEXT_404),
+    ("HEAD", "/agents/automations/1/TASKS", _HEAD_TEXT_404),
+    ("HEAD", "/agents/automations/1/nosuch", _HEAD_JSON_404),
+    ("HEAD", "/agents/automations/", _HEAD_JSON_404),
 ]
 
 
@@ -8583,6 +8571,7 @@ def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it
                 r.headers.get("x-ratelimit-resource"),
                 int(again.headers.get("x-ratelimit-used", 0))
                 - int(r.headers.get("x-ratelimit-used", 0)),
+                r.headers.get("allow"),
                 r.headers.get("x-github-api-version-selected"),
             )
             expected[(method, path, headers is pinned)] = (*answer, None)

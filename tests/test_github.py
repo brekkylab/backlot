@@ -3769,6 +3769,62 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     assert c.head("/slack/api/auth.test", headers=gh_admin_h).status_code == 405
 
 
+#: A `HEAD` on GitHub's `/agents/automations` operations, and the two paths no operation names,
+#: with the credential each row carries: real's agents backend serves no `HEAD` on the operations
+#: it publishes there, so a token that resolves is the 405 with `Allow: GET` and no `content-type`
+#: and no `content-length`, on `core` — as `backlot.errors.github.head_method_not_allowed`
+#: records. The credential is read before the 405, so no credential and a bad bearer are the 401s,
+#: and a path no operation names keeps the GET's JSON 404, which carries no
+#: `x-ratelimit-resource`.
+_GITHUB_AUTOMATIONS_HEAD_ROWS = [
+    ("/github/agents/automations", "admin", 405, "GET", "core"),
+    ("/github/agents/automations/2", "admin", 405, "GET", "core"),
+    ("/github/agents/automations/1/tasks", "admin", 405, "GET", "core"),
+    ("/github/agents/automations/available-tools", "admin", 405, "GET", "core"),
+    ("/github/agents/automations/1/nosuch", "admin", 404, None, None),
+    ("/github/agents/automations/", "admin", 404, None, None),
+    ("/github/agents/automations", "none", 401, None, "core"),
+    ("/github/agents/automations/2", "none", 401, None, "core"),
+    ("/github/agents/automations", "bad", 401, None, None),
+    ("/github/agents/automations/2", "bad", 401, None, None),
+]
+
+
+def test_github_a_head_on_an_agents_automations_operation_is_method_not_allowed(
+    gh_client, gh_admin_h
+):
+    """Each row is what the measurements at `_GITHUB_AUTOMATIONS_HEAD_ROWS` read: a `HEAD` on an
+    `/agents/automations` operation is the agents backend's 405 for a token that resolves, where
+    the `GET` beside it stays the 404; the credential is read first, and a path no operation names
+    keeps the GET's answer."""
+    c, _ = gh_client
+    for path, credential, status, allow, resource in _GITHUB_AUTOMATIONS_HEAD_ROWS:
+        get = c.get(path, headers=gh_admin_h)
+        assert get.status_code == 404, path
+        headers = (
+            gh_admin_h
+            if credential == "admin"
+            else {"Authorization": "Bearer <redacted>"}
+            if credential == "bad"
+            else {}
+        )
+        head = c.head(path, headers=headers)
+        assert head.status_code == status, (path, credential, head.text)
+        assert head.headers.get("allow") == allow, (path, credential)
+        assert head.headers.get("x-ratelimit-resource") == resource, (path, credential)
+        if status == 405:
+            assert "content-type" not in head.headers, path
+            assert "content-length" not in head.headers, path
+            assert head.content == b"", path
+        else:
+            assert head.headers.get("content-type") == "application/json; charset=utf-8", path
+            same = c.get(path, headers=headers)
+            assert head.headers.get("content-length") == str(len(same.content)), (
+                path,
+                credential,
+            )
+
+
 def test_github_a_path_failure_decides_the_answer_whatever_order_it_is_reported_in():
     """A request can fail on a path and a query parameter at once, and it has one answer: the 404
     the path failure earns. Reading the first error reported would make that answer depend on the

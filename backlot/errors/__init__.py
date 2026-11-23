@@ -101,6 +101,17 @@ def head_content_length(request: Request, status_code: int) -> bool | None:
     return None
 
 
+def head_method_not_allowed(request: Request, response) -> Response | None:
+    """The 405 for a `HEAD` the vendor's backend refuses rather than answering as the GET, or
+    ``None`` where the `HEAD` stays the GET's answer (``backlot.main`` asks this of the GET's
+    answer, so a refusal the credential decides is already decided by then)."""
+    for envelope in _ENVELOPES:
+        if envelope.owns(request.url.path):
+            answer = getattr(envelope, "head_method_not_allowed", None)
+            return answer(request, response) if answer is not None else None
+    return None
+
+
 def json_media_type(path: str, status_code: int) -> str | None:
     """The vendor's measured `content-type` for a JSON body answered on ``path`` with
     ``status_code``, or ``None`` for FastAPI's."""

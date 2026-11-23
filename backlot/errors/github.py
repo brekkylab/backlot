@@ -307,3 +307,48 @@ def validation_body(path: str, errors) -> tuple[int, dict]:
         "errors": entries,
         "status": "422",
     }
+
+
+#: The `/agents/automations` operations real's agents backend answers a `HEAD` on with a 405
+#: rather than the GET's answer: the list itself, one automation by id or by name, and its tasks.
+_AUTOMATIONS_HEAD_405 = (
+    re.compile(r"/agents/automations\Z"),
+    re.compile(r"/agents/automations/[^/]+\Z"),
+    re.compile(r"/agents/automations/[^/]+/tasks\Z"),
+)
+
+
+def head_method_not_allowed(request: Request, response: Response) -> Response | None:
+    """The 405 for a `HEAD` on an `/agents/automations` operation, or ``None`` where the `HEAD`
+    stays the GET's answer.
+
+    Real's agents backend serves no `HEAD` on the operations it publishes there: with a token that
+    resolves, `HEAD /agents/automations`, `/agents/automations/2`, `/agents/automations/1/tasks`
+    and `/agents/automations/available-tools` were each the 405 with `Allow: GET` and no
+    `content-type` and no `content-length`, on `core` (measured against api.github.com on
+    2026-11-22). The credential is read before the 405 — with no `Authorization` or a bad bearer
+    each was the 401 — so the GET's answer decides: only its 404 on `core`, the answer a resolving
+    token gets, is refused this way. A `HEAD` on a path no operation names
+    (`/agents/automations/1/nosuch`, `/agents/automations/`) keeps the JSON 404, which carries no
+    `x-ratelimit-resource`, as does a `HEAD` the credential refuses.
+    """
+    if response.status_code != 404:
+        return None
+    if "x-ratelimit-resource" not in response.headers:
+        return None
+    if not any(
+        pattern.fullmatch(request.scope["path"].removeprefix(PREFIX))
+        for pattern in _AUTOMATIONS_HEAD_405
+    ):
+        return None
+    headers = {
+        name: value
+        for name, value in response.headers.items()
+        if name.lower() not in ("content-type", "content-length")
+    }
+    headers["allow"] = "GET"
+    refusal = Response(status_code=405, headers=headers)
+    # Starlette adds a `content-length` of the empty body at construction; real sends none.
+    if "content-length" in refusal.headers:
+        del refusal.headers["content-length"]
+    return refusal

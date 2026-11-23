@@ -2839,6 +2839,193 @@ def test_github_an_escape_in_a_segment_a_route_spells_out_is_no_route(
     assert answered == expected
 
 
+_KEYS_DOCS = (
+    "https://docs.github.com/rest/users/keys#list-public-ssh-keys-for-the-authenticated-user"
+)
+_DOCS = "https://docs.github.com/rest"
+#: (path sent with no `Authorization`, and real's status and `documentation_url` for it).
+_ESCAPED_LAST_SEGMENT_OWN_ANSWERS = [
+    ("/user/k%65ys", 401, _KEYS_DOCS),
+    ("/user/%6Beys", 401, _KEYS_DOCS),
+    (
+        "/user/gpg%5Fkeys",
+        401,
+        "https://docs.github.com/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user",
+    ),
+    ("/gists/st%61rred", 401, "https://docs.github.com/rest/gists/gists#list-starred-gists"),
+    (
+        "/user/p%61ckages",
+        401,
+        "https://docs.github.com/rest/packages/packages#list-packages-for-the-authenticated-users-namespace",
+    ),
+    (
+        "/user/block%73",
+        401,
+        "https://docs.github.com/rest/users/blocking#list-users-blocked-by-the-authenticated-user",
+    ),
+    (
+        "/user/codespace%73",
+        401,
+        "https://docs.github.com/rest/codespaces/codespaces#list-codespaces-for-the-authenticated-user",
+    ),
+    (
+        "/user/em%61ils",
+        401,
+        "https://docs.github.com/rest/users/emails#list-email-addresses-for-the-authenticated-user",
+    ),
+    (
+        "/user/follower%73",
+        401,
+        "https://docs.github.com/rest/users/followers#list-followers-of-the-authenticated-user",
+    ),
+    (
+        "/user/followin%67",
+        401,
+        "https://docs.github.com/rest/users/followers#list-the-people-the-authenticated-user-follows",
+    ),
+    (
+        "/user/installation%73",
+        401,
+        "https://docs.github.com/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token",
+    ),
+    (
+        "/user/interaction-limit%73",
+        401,
+        "https://docs.github.com/rest/interactions/user#get-interaction-restrictions-for-your-public-repositories",
+    ),
+    (
+        "/user/issue%73",
+        404,
+        "https://docs.github.com/rest/issues/issues#list-user-account-issues-assigned-to-the-authenticated-user",
+    ),
+    (
+        "/user/marketplace_purchase%73",
+        401,
+        "https://docs.github.com/rest/apps/marketplace#list-subscriptions-for-the-authenticated-user",
+    ),
+    (
+        "/user/migration%73",
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    (
+        "/user/org%73",
+        401,
+        "https://docs.github.com/rest/orgs/orgs#list-organizations-for-the-authenticated-user",
+    ),
+    (
+        "/user/public_email%73",
+        401,
+        "https://docs.github.com/rest/users/emails#list-public-email-addresses-for-the-authenticated-user",
+    ),
+    (
+        "/user/repository_invitation%73",
+        401,
+        "https://docs.github.com/rest/collaborators/invitations#list-repository-invitations-for-the-authenticated-user",
+    ),
+    (
+        "/user/social_account%73",
+        401,
+        "https://docs.github.com/rest/users/social-accounts#list-social-accounts-for-the-authenticated-user",
+    ),
+    (
+        "/user/ssh_signing_k%65ys",
+        401,
+        "https://docs.github.com/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user",
+    ),
+    (
+        "/user/st%61rred",
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    (
+        "/user/subscription%73",
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    (
+        "/user/team%73",
+        404,
+        "https://docs.github.com/rest/teams/teams#list-teams-for-the-authenticated-user",
+    ),
+]
+_KEYS_401 = (401, _KEYS_DOCS, ("core", "1"), "2022-11-28")
+_REQUIRES_AUTHENTICATION = (401, _DOCS, ("core", "1"), None)
+_UNCOUNTED_401 = (401, _DOCS, (None, None), None)
+_VERSION_400 = (400, _DOCS, ("core", "1"), None)
+_NOT_FOUND = (404, _DOCS, ("core", "1"), None)
+#: (method, path sent, what the request carries, and real's status, `documentation_url`,
+#: `x-ratelimit-resource` and `x-ratelimit-used`, and version echo): the version and the
+#: `Authorization` header beside `_ESCAPED_LAST_SEGMENT_OWN_ANSWERS`, and the methods, the spellings
+#: with no escape and the escapes elsewhere in the path that real does not answer that way.
+_ESCAPED_LAST_SEGMENT_ROWS = [
+    (
+        "GET",
+        "/user/%6beys",
+        {"headers": {"X-GitHub-Api-Version": "2026-03-10"}},
+        (401, _KEYS_DOCS, ("core", "1"), "2026-03-10"),
+    ),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": ""}}, _KEYS_401),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": "Digest x"}}, _KEYS_401),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": "Basic eDp5"}}, _KEYS_401),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": "Bearer nope"}}, _UNCOUNTED_401),
+    ("GET", "/user/k%65ys", {"headers": {"X-GitHub-Api-Version": "1999-01-01"}}, _VERSION_400),
+    (
+        "GET",
+        "/user/k%65ys",
+        {"headers": {"Authorization": "Digest x", "X-GitHub-Api-Version": "1999-01-01"}},
+        _VERSION_400,
+    ),
+    (
+        "GET",
+        "/user/k%65ys",
+        {"headers": {"Authorization": "Basic eDp5", "X-GitHub-Api-Version": "1999-01-01"}},
+        _VERSION_400,
+    ),
+    ("POST", "/user/k%65ys", {"json": {}}, _NOT_FOUND),
+    ("GET", "/user/keys", {}, _REQUIRES_AUTHENTICATION),
+    ("GET", "/user/teams", {}, _REQUIRES_AUTHENTICATION),
+    ("GET", "/user/issues", {}, _REQUIRES_AUTHENTICATION),
+    ("GET", "/user/keys/%31", {}, _REQUIRES_AUTHENTICATION),
+    ("DELETE", "/user/keys/%31", {}, _UNCOUNTED_401),
+    ("GET", "/%75ser/keys", {}, _NOT_FOUND),
+    ("GET", "/%67ists/starred", {}, _NOT_FOUND),
+    ("GET", "/user/k%65ys/1", {}, _NOT_FOUND),
+    ("GET", "/user/k%65ys/", {}, _NOT_FOUND),
+    ("GET", "/notification%73", {}, _NOT_FOUND),
+    ("GET", "/gist%73", {}, _NOT_FOUND),
+    ("GET", "/us%65r", {}, _NOT_FOUND),
+    ("GET", "/user/memberships/org%73", {}, _NOT_FOUND),
+    ("GET", "/user/docker/conflict%73", {}, _NOT_FOUND),
+]
+
+
+def test_github_an_escape_in_the_last_segment_of_an_unserved_operation_is_its_own_refusal(
+    gh_client,
+):
+    from backlot.routers.github import RateLimitWindows
+
+    c, _ = gh_client
+    own = [
+        ("GET", sent, {}, (status, docs, ("core", "1"), "2022-11-28"))
+        for sent, status, docs in _ESCAPED_LAST_SEGMENT_OWN_ANSWERS
+    ]
+    answered, expected = {}, {}
+    for method, sent, carries, answer in own + _ESCAPED_LAST_SEGMENT_ROWS:
+        c.app.state.github_rate_limits = RateLimitWindows()
+        r = c.request(method, f"/github{sent}", **carries)
+        # the row is what went on the wire, not a spelling the client normalised first
+        answered[(method, sent, repr(carries))] = (
+            r.request.url.raw_path.decode(),
+            r.status_code,
+            r.json()["documentation_url"],
+            (r.headers.get("x-ratelimit-resource"), r.headers.get("x-ratelimit-used")),
+            r.headers.get("x-github-api-version-selected"),
+        )
+        expected[(method, sent, repr(carries))] = (f"/github{sent}", *answer)
+    assert answered == expected
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which

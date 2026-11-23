@@ -730,6 +730,96 @@ _BASIC_NO_TOKEN_NOT_FOUND = (
         "https://docs.github.com/rest/billing/usage#get-billing-usage-report-for-an-organization",
     ),
 )
+#: The operations real answers a caller who sends no credential with the operation's own refusal,
+#: its status and `documentation_url`, when the last segment of the path is spelled with an escape
+#: (:func:`_an_escaped_operation_refusal`).
+_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION = {
+    "GET /gists/starred": (401, "https://docs.github.com/rest/gists/gists#list-starred-gists"),
+    "GET /user/blocks": (
+        401,
+        "https://docs.github.com/rest/users/blocking#list-users-blocked-by-the-authenticated-user",
+    ),
+    "GET /user/codespaces": (
+        401,
+        "https://docs.github.com/rest/codespaces/codespaces#list-codespaces-for-the-authenticated-user",
+    ),
+    "GET /user/emails": (
+        401,
+        "https://docs.github.com/rest/users/emails#list-email-addresses-for-the-authenticated-user",
+    ),
+    "GET /user/followers": (
+        401,
+        "https://docs.github.com/rest/users/followers#list-followers-of-the-authenticated-user",
+    ),
+    "GET /user/following": (
+        401,
+        "https://docs.github.com/rest/users/followers#list-the-people-the-authenticated-user-follows",
+    ),
+    "GET /user/gpg_keys": (
+        401,
+        "https://docs.github.com/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user",
+    ),
+    "GET /user/installations": (
+        401,
+        "https://docs.github.com/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token",
+    ),
+    "GET /user/interaction-limits": (
+        401,
+        "https://docs.github.com/rest/interactions/user#get-interaction-restrictions-for-your-public-repositories",
+    ),
+    "GET /user/issues": (
+        404,
+        "https://docs.github.com/rest/issues/issues#list-user-account-issues-assigned-to-the-authenticated-user",
+    ),
+    "GET /user/keys": (
+        401,
+        "https://docs.github.com/rest/users/keys#list-public-ssh-keys-for-the-authenticated-user",
+    ),
+    "GET /user/marketplace_purchases": (
+        401,
+        "https://docs.github.com/rest/apps/marketplace#list-subscriptions-for-the-authenticated-user",
+    ),
+    "GET /user/migrations": (
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    "GET /user/orgs": (
+        401,
+        "https://docs.github.com/rest/orgs/orgs#list-organizations-for-the-authenticated-user",
+    ),
+    "GET /user/packages": (
+        401,
+        "https://docs.github.com/rest/packages/packages#list-packages-for-the-authenticated-users-namespace",
+    ),
+    "GET /user/public_emails": (
+        401,
+        "https://docs.github.com/rest/users/emails#list-public-email-addresses-for-the-authenticated-user",
+    ),
+    "GET /user/repository_invitations": (
+        401,
+        "https://docs.github.com/rest/collaborators/invitations#list-repository-invitations-for-the-authenticated-user",
+    ),
+    "GET /user/social_accounts": (
+        401,
+        "https://docs.github.com/rest/users/social-accounts#list-social-accounts-for-the-authenticated-user",
+    ),
+    "GET /user/ssh_signing_keys": (
+        401,
+        "https://docs.github.com/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user",
+    ),
+    "GET /user/starred": (
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    "GET /user/subscriptions": (
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    "GET /user/teams": (
+        404,
+        "https://docs.github.com/rest/teams/teams#list-teams-for-the-authenticated-user",
+    ),
+}
 
 
 def _a_repository_update_refusal(raw: bytes) -> str | None:
@@ -909,13 +999,52 @@ def _an_unserved_search_refusal(request: Request) -> HTTPException | None:
     return None
 
 
+def _an_escaped_operation_refusal(request: Request) -> HTTPException | None:
+    """The refusal of the operation of :data:`_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION` this
+    request names with an escape in the last segment of its path and nowhere else, or `None`.
+
+    Measured against api.github.com on 2026-11-21 and 2026-11-23 (UTC). With no `Authorization`,
+    each operation of the table with an escape in its last segment (`GET /user/k%65ys`,
+    `/user/%6Beys`, `/user/gpg%5Fkeys`, `/gists/st%61rred`, `/user/em%61ils`, `/user/team%73` and
+    the rest) was answered with the table's status and `documentation_url`, on `core` with the
+    version echo, where `/user/keys`, `/user/teams` and `/user/issues` were the 401 with
+    `https://docs.github.com/rest` and no echo. An empty `Authorization`, `Digest x` and
+    `Basic eDp5` drew the same answer on `/user/k%65ys`, and `Bearer nope` drew "Bad credentials".
+    Pinned to `2026-03-10`, `/user/%6beys` echoed `2026-03-10`; pinned to `1999-01-01`,
+    `/user/k%65ys` was the version's 400 with no `Authorization`, with `Digest x` and with
+    `Basic eDp5`. An escape in an earlier segment (`/%75ser/keys`, `/%67ists/starred`,
+    `/user/k%65ys/1`), a trailing slash after one (`/user/k%65ys/`), a path of one or three
+    segments (`/notification%73`, `/gist%73`, `/us%65r`, `/user/memberships/org%73`,
+    `/user/docker/conflict%73`) and `POST /user/k%65ys` were the 404 with no echo, and
+    `GET /user/keys/%31` the 401 with no echo.
+    """
+    path = request.scope["path"].removeprefix("/github")
+    sent = (request.scope.get("raw_path") or b"").decode("latin-1").removeprefix("/github")
+    if sent == path or sent.rpartition("/")[0] != path.rpartition("/")[0]:
+        return None
+    refusal = _ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION.get(f"{request.method} {path}")
+    if refusal is None:
+        return None
+    status, documentation_url = refusal
+    message = "Requires authentication" if status == 401 else "Not Found"
+    exc = HTTPException(status_code=status, detail=message)
+    exc.github_body = {
+        "message": message,
+        "documentation_url": documentation_url,
+        "status": str(status),
+    }
+    return exc
+
+
 async def refuse_an_unserved_operation(request: Request) -> None:
     """Refuse a request whose method and path are an operation of :data:`_PUBLISHED_NOT_SERVED` or
     :data:`_ROUTED_UNPUBLISHED` as real refuses it before running it: no `Authorization` header, or
     one that carries no credential (:func:`_a_header_without_a_credential`), then a credential that
     does not resolve, then a version real does not have, then a `Basic` value that names no token.
     A request none of those refuse goes on to the router's own 404 or 405, an operation Backlot
-    cannot run.
+    cannot run. With no credential, an escape in the last segment of an operation of
+    :data:`_ESCAPED_LAST_SEGMENT_REFUSED_AS_THE_OPERATION` is that operation's own refusal after the
+    version, with the echo (:func:`_an_escaped_operation_refusal`).
 
     Measured against api.github.com on 2026-10-14, one cache-busted request each. With
     `Bearer nope`, every operation the baseline lists answered "Bad credentials", but the
@@ -1000,7 +1129,11 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         await _validate_bad_credential(request)
         await _validate_api_version(request)
         raise search_refusal
+    escaped = _an_escaped_operation_refusal(request)
     if "authorization" not in request.headers:
+        if escaped is not None:
+            await _validate_api_version(request)
+            raise escaped
         request.state.github_unserved_refusal = (
             "uncounted" if request.method in _UNCOUNTED_METHODS else "counted"
         )
@@ -1009,6 +1142,9 @@ async def refuse_an_unserved_operation(request: Request) -> None:
         request
     ) or _a_tab_credential_counted_apart(request)
     if _a_header_without_a_credential(request) and not tab_credential:
+        if escaped is not None:
+            await _validate_api_version(request)
+            raise escaped
         request.state.github_unserved_refusal = "uncounted"
         raise HTTPException(status_code=401, detail="Requires authentication")
     if tab_credential and published.includes(
@@ -1018,6 +1154,8 @@ async def refuse_an_unserved_operation(request: Request) -> None:
     await _validate_bad_credential(request)
     await _validate_api_version(request)
     if auth.github_scheme(request)[0] == "basic" and auth.github_credential(request) is None:
+        if escaped is not None:
+            raise escaped
         path = request.scope["path"].removeprefix("/github")
         documentation_url = next(
             (

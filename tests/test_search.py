@@ -819,6 +819,30 @@ def test_gmail_empty_operator_over_the_wire(tmp_path):
         ("-(probe NOT)", ("", {"-w": ["probe"]})),
         ('NOT "" probe', ("", {"-w": ["probe"]})),
         ("-\u00a0probe", ("", {"-w": ["\u00a0probe"]})),
+        # A `-` before a bracketed `has:` or age value, a quoted `has:` value, and an empty
+        # quoted `in:`: the readings the comments at `_GMAIL_NEGATED_BRACKETED` and in `_take`
+        # measure.
+        ("-has:(x)", ("", {"-has": ["x"]})),
+        ("-has:(attachment)", ("", {"-has": ["attachment"]})),
+        ("-newer_than:(x)", ("", {})),
+        ("-older_than:(x)", ("", {})),
+        ("-newer_than:(30d)", ("", {"older_than": ["30d"]})),
+        ('has:"pdf"', ('"has pdf"', {})),
+        ('has:"drive"', ('"has drive"', {})),
+        ('has:"the"', ('"has the"', {})),
+        ('-has:"pdf"', ("", {"-w": ["has pdf"]})),
+        ('-has:"the"', ("", {"-w": ["has the"]})),
+        ('in:"" .', ("", {})),
+        ('in:"()" .', ("", {})),
+        ('in:"." .', ("", {})),
+        ('-in:"" .', ("", {})),
+        # The boundaries of those readings: a double `-` is no rewrite, a capital `NOT` in front
+        # of one reads on its own, and an unquoted `in:.` stays a filter.
+        ("--has:(x)", ("x", {"-w": ["has:"]})),
+        ("NOT -has:(x)", ("has: x", {})),
+        ("-(has:(x))", ("", {"-()": ["has:(x)"]})),
+        ("in:.", ("", {"in": ["."]})),
+        ('in:"" the', ("", {"in": ["the"]})),
     ],
 )
 def test_gmail_negation_and_groups(q, want):
@@ -875,6 +899,43 @@ def test_gmail_negation_and_groups_over_the_wire(tmp_path):
         assert ids("NOT (from:bob label:sent)") == ids("-from:bob label:sent")
         assert ids("-(from:bob)-(label:inbox)") == every
         assert ids("(from:bob)-(label:inbox)") == set()
+
+
+def test_gmail_quoted_has_negated_bracket_and_empty_in_over_the_wire():
+    """Over the bundled corpus: a quoted `has:` value is the phrase `has <value>`, a `-` before a
+    bracketed `has:` or age value negates the operator, and an empty quoted `in:` before a
+    punctuation term is no term. The bundled corpus holds 22 messages and no attachments, so
+    `has:pdf` answers all of them and `has:"the"` the one whose content holds the phrase."""
+    import httpx
+
+    import backlot
+
+    want = {
+        "": 22,
+        "has:pdf": 22,
+        'has:"pdf"': 0,
+        "has:drive": 22,
+        'has:"drive"': 0,
+        "has:(x)": 0,
+        "-has:(x)": 22,
+        "newer_than:(x)": 0,
+        "-newer_than:(x)": 22,
+        ".": 22,
+        'in:"" .': 22,
+        'in:"()" .': 22,
+        'label:"()" .': 22,
+        'has:"the"': 1,
+        '-has:"the"': 21,
+    }
+    with backlot.serve() as server:
+        token = {"Authorization": f"Bearer {server.token}"}
+        got = {}
+        for q in want:
+            r = httpx.get(
+                f"{server.base_url}/gmail/v1/users/me/messages", headers=token, params={"q": q}
+            )
+            got[q] = len(r.json().get("messages", []))
+    assert got == want
 
 
 def test_gmail_bare_not_and_no_break_space_over_the_wire(tmp_path):

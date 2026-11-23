@@ -1746,6 +1746,15 @@ def _gmail_long_runs(q: str) -> str:
     return "".join(out) + q[at:]
 
 
+# A `-` before a bracketed `has:`/`newer_than:`/`older_than:` value holding one token, at the
+# start of the search or after whitespace or `(`, and not after a capital `NOT` (which `_GMAIL_NOT`
+# reads on its own). Read in `_parse_gmail_q` before the groups are flattened, so the bracket's
+# token becomes the operator's value and the `-` its negation.
+_GMAIL_NEGATED_BRACKETED = re.compile(
+    r"(?<![^\s(])(?<!NOT )-(has|newer_than|older_than):\(([^()\s]+)\)", re.IGNORECASE
+)
+
+
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
@@ -1852,6 +1861,14 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                     if plus:
                         ops.setdefault(stored, []).append(value)
                         return f" +{term} "
+            # An `in:` value holding no letter, digit, `_` or `&` is no term when the quotes an
+            # empty `in:""` leaves behind were read as the whitespace after the operator, so the
+            # next token is the value: `in:"" .` and `in:"()" .` answer every message, as
+            # `label:"()" .` does, where `in:"" the` answers nothing (`_GMAIL_SPACED`). Measured
+            # against gmail.googleapis.com on 2026-11-23. An unquoted `in:.` stays a
+            # filter, which the quotes in the match tell apart.
+            if key == "in" and '"' in m.group(0) and not _GMAIL_ADDRESS_WORD.search(value):
+                return " "
             # A quoted `subject:`, `label:` or address value holding no letter, digit, `_` or `&`
             # is no term. Measured with the queries at `_gmail_braces`: on 2026-11-10,
             # `subject:"()"`, `subject:"( )"`, `subject:"."`, `label:"()"` and `from:"()"`
@@ -1877,6 +1894,15 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and (not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value))
             ):
                 return stored
+            # A quoted `has:` value holding a word is the phrase `has <value>`, not the
+            # operator's value. Measured against gmail.googleapis.com on 2026-11-23:
+            # `has:"pdf"` and `has:"drive"` answered no messages where `has:pdf` and `has:drive`
+            # answered many, `has:"attachment"` none against the 229 of `has:attachment`, and
+            # `has:"the"` the ids the phrase `"has the"` answered. A `-` in front negates the
+            # phrase, as `-"probe"` does (the comment at `_gmail_take_negated_words`).
+            if key == "has" and value.startswith('"'):
+                dash = "-" if m.group(0).startswith("-") else ""
+                return dash + '"has ' + value.strip('"') + '"'
             # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
             # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
             # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;
@@ -1908,6 +1934,13 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q = _GMAIL_HYPHENED.sub(_hyphened, _GMAIL_BARE_LONE_QUOTE.sub("", q))
     if hyphened:
         return "", {_GMAIL_NOTHING: hyphened}
+    # A `-` in front of a bracketed `has:` or age value reads the bracket's one token as the
+    # operator's value, so the negation is the operator's own: `-has:(x)` is `-has:x` and
+    # `-newer_than:(x)` is `-newer_than:x`. Measured against gmail.googleapis.com on 2026-11-23:
+    # `-has:(x)` and `-newer_than:(x)` each answered every message, where `has:(x)` and
+    # `newer_than:(x)` answered none. Only one `-` and one token is rewritten: `--has:(x)` is the
+    # double negation of nothing, and a bracket holding several terms stays a group.
+    q = _GMAIL_NEGATED_BRACKETED.sub(r"-\1:\2", q)
     q, groups = _gmail_groups(q)
     if groups:
         ops[_GMAIL_NOT_ALL] = groups

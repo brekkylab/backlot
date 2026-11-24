@@ -6695,7 +6695,12 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     A path with no route is Jira's RFC 7807 `No endpoint <METHOD> <path>.` (see
     `errors.atlassian.no_endpoint`) or Confluence's own pair of shapes (see
     :func:`_confluence_not_found`), and an `OPTIONS` on such a path is that same answer — measured
-    on both products 2026-09-22. A method a route does not declare is the 405 each product answers
+    on both products 2026-09-22 — unless Jira's documents publish operations at the path and no
+    route serves them: a method they do not publish there is the 405, `Allow` naming what they do
+    (Jira Cloud, 2026-10-19: `DELETE`, `PUT` and `POST` on `myself`, `instance/license` and
+    `invalid-jqls-access-log`, for a caller with no credential, a failing pair and a credential
+    alike, and ahead of the anonymous 401 and of `myself`'s `Accept` 406). A method a route does
+    not declare is the 405 each product answers
     (`errors.atlassian.method_not_allowed`, measured too), raised here because this route takes
     every method on every path it owns and so receives that request; `OPTIONS` is the exception,
     and :func:`_options_answer` is what real gives it.
@@ -6741,6 +6746,18 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             )
         return _confluence_not_found(request)
     if errors_atlassian.serves_the_jira_api(path):
+        # a method the documents publish at a path no route serves is the 405 naming what they
+        # publish there; an `OPTIONS` and the published method itself stay the URL's 404, the
+        # baseline's `missing` entry acknowledging the gap either way
+        published_methods = [
+            verb for verb, pattern in _JIRA_PUBLISHED if pattern.fullmatch(vendor_path)
+        ]
+        if (
+            published_methods
+            and request.method != "OPTIONS"
+            and request.method not in published_methods
+        ):
+            raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
         # on a path Jira publishes nothing at, the URL is what answers
         raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
     return _site_surface(request)

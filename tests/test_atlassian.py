@@ -7058,6 +7058,16 @@ _WRONG_METHODS = [
         # the row the vendor's own document disagrees with: it declares GET alone on
         # `project/search`
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
+        # the same refusal on a path Jira publishes GET alone at and no route serves —
+        # ``unmatched_path``'s docstring records the measurement; the 405 comes ahead of the
+        # anonymous 401 and of `myself`'s `Accept` 406
+        ("delete", "/rest/api/3/myself", "GET"),
+        ("put", "/rest/api/3/myself", "GET"),
+        ("post", "/rest/api/3/myself", "GET"),
+        ("delete", "/rest/api/3/instance/license", "GET"),
+        ("post", "/rest/api/3/instance/license", "GET"),
+        ("delete", "/rest/api/2/invalid-jqls-access-log", "GET"),
+        ("put", "/rest/api/2/invalid-jqls-access-log", "GET"),
         # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
         ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
         ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
@@ -7658,6 +7668,7 @@ def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
 
 _CREDENTIALS = {
     "none": {},
+    "none-text-html": {"Accept": "text/html"},
     "failed-pair": FAILED_PAIR,
     "unknown-scheme": {"Authorization": "Bogus xyz"},
     "unreadable-bearer": {"Authorization": "Bearer nope"},
@@ -7680,6 +7691,15 @@ _CREDENTIALS = {
         ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
         ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "admin", 404),
         ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
+        # ahead of that 401 and of `myself`'s `Accept` 406: a method the documents do not publish
+        # on a path they do is the 405 for a caller real would refuse the GET on (the measurement
+        # is ``unmatched_path``'s docstring's), the published method itself staying the baseline's
+        # 404 gap above
+        ("DELETE", "/atlassian/rest/api/3/myself", "none", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "failed-pair", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "none-text-html", 405),
+        ("POST", "/atlassian/rest/api/3/instance/license", "none", 405),
+        ("PUT", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", 405),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "failed-pair", 401),
@@ -7713,6 +7733,10 @@ def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
         echoed = path.removeprefix("/atlassian")
         assert r.json()["detail"] == f"No endpoint {method} {echoed}."
         assert r.json()["instance"] == echoed
+    if status == 405:
+        # the 405 names what the documents publish at the path, GET alone on each above
+        assert r.headers["allow"] == "GET"
+        assert r.json()["detail"] == f"Method '{method}' is not supported."
     if status != 401:
         assert "www-authenticate" not in r.headers
         return

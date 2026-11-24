@@ -2387,16 +2387,38 @@ def route_regex(template: str) -> re.Pattern[str]:
 _JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_ALLOW)
 
 
+#: The operations Jira's documents publish, as (method, path pattern) pairs — every row of the
+#: baseline's `operations` for `jira`, served or not, so a path no `_JIRA_ALLOW` row covers still
+#: names the set real puts in `Allow`: each method the documents publish on the template. The
+#: served paths are claimed by the rows above first, so the verbs this adds are the baseline's
+#: `missing` ones — `GET` alone on `myself`, `instance/license` and `invalid-jqls-access-log`,
+#: whose `Allow` was measured on Jira Cloud 2026-10-19.
+def _jira_published() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    rows = json.loads(
+        (_PACKAGE / "fidelity" / "baseline" / "jira.json").read_text(encoding="utf-8")
+    )["operations"]
+    return tuple(
+        (row["operation"].split(" ", 1)[0], route_regex(row["operation"].split(" ", 1)[1]))
+        for row in rows
+    )
+
+
+_JIRA_PUBLISHED_OPS = _jira_published()
+
+
 def jira_allow(path: str) -> str | None:
     """The `Allow` real sends on a 405 at ``path``, or ``None`` for a Jira route no row above
     covers. ``path`` is Backlot's, prefix and all, and a trailing slash on it is dropped before
     matching: it is the path a refusal echoes (``backlot.routers.atlassian._echoed_path``), and
-    no row above has one."""
+    no row above has one. Where no row covers the path, it is the methods the baseline says the
+    documents publish on the template — a path no route serves gets its 405 from
+    ``backlot.routers.atlassian.unmatched_path``."""
     vendor_path = _instance(path).rstrip("/")
     for pattern, methods in _JIRA_ALLOW_PATTERNS:
         if pattern.fullmatch(vendor_path):
             return ", ".join(methods)
-    return None
+    published = [verb for verb, pattern in _JIRA_PUBLISHED_OPS if pattern.fullmatch(vendor_path)]
+    return ", ".join(dict.fromkeys(published)) if published else None
 
 
 #: The methods each Confluence route here takes, as the `Allow` on its 405's page spells them

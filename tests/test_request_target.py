@@ -874,6 +874,15 @@ _PRINTABLE = [
     ),
     # and S3's empty 400 for a `%00` or a broken escape, which comes ahead of the `\`'s
     *(("/s3", b"\\" + rest, "s3 empty") for rest in (b"nope%00x", b"nope%zzx")),
+    # a raw byte after the `\`: the front door's page for the `\`, and on S3 the bucket named with
+    # the byte read as it reads one, or its 505 for a space
+    ("/github", b"\\rate_limit\x80", "github"),
+    ("/slack", b"\\api/auth.test\x80", "slack"),
+    ("/notion", b"\\v1/users\x80", "cloudflare page"),
+    ("/msgraph", b"\\v1.0/me\x80", "graph invalid url"),
+    ("/s3", b"\\nope\x80", "s3 InvalidBucketName \\nope?"),
+    ("/s3", b"\\nope\x01", "s3 InvalidBucketName \\nope&#1;"),
+    ("/s3", b"\\nope x", "s3 505"),
     # Drive and Gmail, which are served at their own paths, so that nothing but the `\` is ahead of
     # the path real is sent: the paths ``request_target._backslash_first_at_google`` takes, and a
     # raw byte beside one; a path of Backlot's own is left to uvicorn

@@ -101,32 +101,89 @@ def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, admi
         signed = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
         assert info.status_code == 200
         assert list(info.json().items()) == [(k, v) for k, v in signed.items() if k != "serverTime"]
+    # `issueLinkType` lists none and finds none by id, measured with each of the three on `/2` and
+    # `/3` (see `jira_link_types` and `jira_link_type`)
+    for ver in ("2", "3"):
+        listed = client.get(f"/atlassian/rest/api/{ver}/issueLinkType", headers=headers)
+        assert (listed.status_code, listed.json()) == (200, {"issueLinkTypes": []})
+        one = client.get(f"/atlassian/rest/api/{ver}/issueLinkType/10003", headers=headers)
+        assert (one.status_code, one.json()) == (
+            404,
+            {
+                "errorMessages": [
+                    "No issue link type with id '10003' found or you do not have permission to "
+                    "view it."
+                ],
+                "errors": {},
+            },
+        )
 
 
-@pytest.mark.parametrize("path", ["/rest/api/3/field", "/rest/api/3/issueLinkType"])
-def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
-    """Both answer 200 to a failed pair on the real sites, so neither is behind the credential."""
-    assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
+def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client):
+    """`field` answers 200 to a failed pair on the real sites: it is not behind the credential."""
+    assert client.get("/atlassian/rest/api/3/field", headers=FAILED_PAIR).status_code == 200
 
 
 @pytest.mark.parametrize("host", [None, "jira.example.test"])
 def test_jira_link_types_match_measured_metadata(client, admin_h, host):
     """The default four types and self links measured beside `jira_link_types`, members in real's
-    order, for a caller whose credential resolves."""
+    order, under the mount asked for, for a caller whose credential resolves, and one type by its
+    id with the 404 and the 400 `jira_link_type` names."""
     headers = {**admin_h, "Host": host} if host else admin_h
-    response = client.get("/atlassian/rest/api/3/issueLinkType", headers=headers)
-    assert response.status_code == 200
-    base = f"http://{host or 'testserver'}/rest/api/3/issueLinkType"
-    types = response.json()["issueLinkTypes"]
-    assert [list(item.items()) for item in types] == [
-        [("id", i), ("name", n), ("inward", a), ("outward", b), ("self", f"{base}/{i}")]
-        for i, n, a, b in [
-            ("10000", "Blocks", "is blocked by", "blocks"),
-            ("10001", "Cloners", "is cloned by", "clones"),
-            ("10002", "Duplicate", "is duplicated by", "duplicates"),
-            ("10003", "Relates", "relates to", "relates to"),
-        ]
+    site = f"http://{host or 'testserver'}"
+
+    def linked(version, i, n, a, b):
+        link = f"{site}/rest/api/{version}/issueLinkType/{i}"
+        return {"id": i, "name": n, "inward": a, "outward": b, "self": link}
+
+    types = [
+        ("10000", "Blocks", "is blocked by", "blocks"),
+        ("10001", "Cloners", "is cloned by", "clones"),
+        ("10002", "Duplicate", "is duplicated by", "duplicates"),
+        ("10003", "Relates", "relates to", "relates to"),
     ]
+
+    def refused(message):
+        return {"errorMessages": [message], "errors": {}}
+
+    def missing(i):
+        return refused(
+            f"No issue link type with id '{i}' found or you do not have permission to view it."
+        )
+
+    def invalid(i):
+        return refused(f"Invalid issue link type id '{i}' specified.")
+
+    rows = [
+        ("3", 200, {"issueLinkTypes": [linked("3", *t) for t in types]}),
+        ("2", 200, {"issueLinkTypes": [linked("2", *t) for t in types]}),
+        ("3/10003", 200, linked("3", *types[3])),
+        ("3/99999", 404, missing("99999")),
+        ("3/abc", 400, invalid("abc")),
+        # `/2`, and ids as `jira_link_type` reads them
+        ("2/10003", 200, linked("2", *types[3])),
+        ("2/010003", 200, linked("2", *types[3])),
+        ("3/+10003", 200, linked("3", *types[3])),
+        ("3/\uff11\uff10\uff10\uff10\uff13", 200, linked("3", *types[3])),
+        ("3/-1", 404, missing("-1")),
+        ("3/+99999", 404, missing("+99999")),
+        ("3/1_0003", 400, invalid("1_0003")),
+        ("3/9223372036854775808", 400, invalid("9223372036854775808")),
+    ]
+
+    def ordered(body):
+        return json.loads(json.dumps(body), object_pairs_hook=tuple)
+
+    answered = {}
+    for tail, *_ in rows:
+        version, _, type_id = tail.partition("/")
+        path = f"/atlassian/rest/api/{version}/issueLinkType" + (f"/{type_id}" if type_id else "")
+        r = client.get(path, headers=headers)
+        answered[tail] = (r.status_code, r.headers["content-type"], ordered(r.json()))
+    assert answered == {
+        tail: (status, errors_atlassian.JIRA_JSON_MEDIA_TYPE, ordered(body))
+        for tail, status, body in rows
+    }
 
 
 def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
@@ -7058,6 +7115,9 @@ _WRONG_METHODS = [
         # the row the vendor's own document disagrees with: it declares GET alone on
         # `project/search`
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
+        # measured on the day ``errors.atlassian._JIRA_ALLOW`` gives, the set Jira's own document
+        # declares
+        ("post", "/rest/api/3/issueLinkType/10003", "GET, PUT, DELETE"),
         # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
         ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
         ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
@@ -7362,7 +7422,10 @@ def _routes(keys: dict[str, str]) -> list[str]:
         "/atlassian/rest/api/3/serverInfo",
         "/atlassian/rest/api/2/field",
         "/atlassian/rest/api/3/field",
+        "/atlassian/rest/api/2/issueLinkType",
         "/atlassian/rest/api/3/issueLinkType",
+        "/atlassian/rest/api/2/issueLinkType/10003",
+        "/atlassian/rest/api/3/issueLinkType/10003",
         "/atlassian/rest/api/3/project/search",
         f"/atlassian/rest/api/3/project/{p}/role",
         f"/atlassian/rest/api/3/project/{p}/role/10002",
@@ -7457,6 +7520,7 @@ _OPTIONS_ALLOW = [
     ("/atlassian/rest/api/3/issue/NOPE-1/comment", "GET,HEAD,POST,OPTIONS"),
     ("/atlassian/rest/api/2/search/jql", "GET,HEAD,POST,OPTIONS"),
     ("/atlassian/rest/api/3/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/atlassian/rest/api/2/issueLinkType/10003", "PUT,GET,HEAD,DELETE,OPTIONS"),
     ("/atlassian/rest/api/3/project/NOPE/role", "GET,HEAD,OPTIONS"),
     ("/atlassian/rest/api/3/project/NOPE/role/10002", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
     # the row that parts from the 405 table (see ``errors.atlassian._JIRA_OPTIONS_ALLOW``)

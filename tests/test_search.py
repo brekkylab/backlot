@@ -266,6 +266,10 @@ def test_gmail_q_parse_and_match():
         ("after:\t2026/10/01", "after: 2026/10/01", {}),
         ("has: attachment", "has: attachment", {}),
         ("newer_than: 7d", "newer_than: 7d", {}),
+        ('subject:"log in: - now"', "", {"subject": ["log in: - now"]}),
+        ('"sign in: . now"', '"sign in: . now"', {}),
+        ("in: \xa0 inbox", "inbox", {"": ["\xa0"]}),
+        ('-has:("a b")', "", {"-has": ['("ab")']}),
     ],
 )
 def test_gmail_operators_read_across_whitespace(q, free, ops):

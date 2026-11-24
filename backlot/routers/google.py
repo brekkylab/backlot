@@ -1300,7 +1300,7 @@ def _gmail_group_items(text: str) -> list:
                 and re.fullmatch(r"-*(?:has|newer_than|older_than):", run, re.IGNORECASE)
                 and _GMAIL_ADDRESS_WORD.search("".join(pieces[i + 1 : j - 1]))
             ):
-                run += "".join(p for p in pieces[i:j] if not p.isspace())
+                run += re.sub(r"\s+", "", "".join(pieces[i:j]))
                 i = j
                 continue
             negated = bool(run) and not run.strip("-")
@@ -1777,9 +1777,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     # message; `in:"" . the`, `in:"" . . the` and `in:"" - the` nothing; and `in:"" . inbox` and
     # `in: ? inbox` the ids of `in:inbox`.
     q = re.sub(r'(?<![^ \t\n\r\f\v(-])(in:)"[^"\w&\xa0]*"', r'\1""', q, flags=re.IGNORECASE)
+    # Only outside a quoted run: `subject:"log in: - now"` and `"sign in: . now"` keep their text.
+    # A no-break space is no punctuation here: an `in:` value holding one matches nothing
+    # (`_GMAIL_SPACED_NBSP`).
     q = re.sub(
-        r'(?<![^ \t\n\r\f\v(-])(in:(?:"")?)(?:[ \t]+[^\w&"() \t\n\r\f\v]+)+(?=[ \t\n\r\f\v]|\Z)',
-        r"\1",
+        r'(?<![^ \t\n\r\f\v(-])(in:(?:"")?)(?:[ \t]+[^\w&"() \t\n\r\f\v\xa0]+)+(?=[ \t\n\r\f\v]|\Z)',
+        lambda m: m.group(0) if m.string.count('"', 0, m.start()) % 2 else m.group(1),
         q,
         flags=re.IGNORECASE,
     )

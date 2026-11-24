@@ -1291,10 +1291,10 @@ def _jira_link_type(request: Request, type_id: str) -> dict:
 @router.get("/rest/api/3/issueLinkType")
 async def jira_link_types(request: Request):
     """Every link type to a caller whose credential resolves, and none to a caller with no
-    credential or a failed pair, as a site whose anonymous caller sees no project answers on `/3`
-    (Jira Cloud, 2026-10-15). A site with public projects lists its types to that caller too;
-    Backlot's anonymous caller sees no project, so it answers as the first site does. Not
-    measured: `/2` for that caller, which answers as `/3` does."""
+    credential, a failed pair or an unknown scheme, as a site whose anonymous caller sees no project
+    answers (Jira Cloud: `/3` on 2026-10-15, `/2` and `/3` on 2026-11-23). A site with public
+    projects lists its types to a caller with no credential (Jira Cloud, 2026-10-15); Backlot's
+    anonymous caller sees no project, so it answers as the first site does."""
     if _jira_caller(request).is_anonymous:
         return {"issueLinkTypes": []}
     return {"issueLinkTypes": [_jira_link_type(request, i) for i in _JIRA_LINK_TYPES]}
@@ -1303,18 +1303,18 @@ async def jira_link_types(request: Request):
 @router.get("/rest/api/2/issueLinkType/{type_id}")
 @router.get("/rest/api/3/issueLinkType/{type_id}")
 async def jira_link_type(type_id: str, request: Request):
-    """One link type, the URL each listed type's `self` names: `10003` with a credential, `99999`
-    and `abc` refused with ``errors.atlassian.no_such_link_type`` and ``invalid_link_type_id``,
-    and `10003` with no credential refused as `99999` is (Jira Cloud, 2026-10-15, on `/3`).
-
-    Not measured, and answered here as the nearest measurement: `/2`, as `/3` with its `self` under
-    `/2`; an id of digits that names no type, as `99999`; any other id, from any caller, as `abc`;
-    and a failed pair, as no credential."""
-    if not (type_id.isascii() and type_id.isdigit()):
+    """One link type, the URL each listed type's `self` names, its id read as :func:`_parse_long`
+    reads it (Jira Cloud, `/3` on 2026-10-15, `/2` and `/3` on 2026-11-23). An id it cannot read is
+    ``errors.atlassian.invalid_link_type_id`` from every caller, and one that names no type, or is
+    asked for by a caller :func:`jira_link_types` lists none to, is
+    ``errors.atlassian.no_such_link_type``. Each names the id as sent."""
+    type_long = _parse_long(type_id)
+    if type_long is None:
         raise errors_atlassian.invalid_link_type_id(type_id)
-    if _jira_caller(request).is_anonymous or type_id not in _JIRA_LINK_TYPES:
+    canonical = str(type_long)
+    if _jira_caller(request).is_anonymous or canonical not in _JIRA_LINK_TYPES:
         raise errors_atlassian.no_such_link_type(type_id)
-    return _jira_link_type(request, type_id)
+    return _jira_link_type(request, canonical)
 
 
 # The standard system fields, used by clients (e.g. mcp-atlassian) for field/epic discovery.

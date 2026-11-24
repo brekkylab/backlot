@@ -2347,8 +2347,8 @@ def bad_page_token() -> AtlassianError:
 # the three methods `/rest/api/3/project/{projectIdOrKey}` takes, so `search` binds as a project key
 # there and the measurement is what the row states. `project/{key}/role/{id}`: a `POST` with an
 # unknown key is that route's 404 rather than a 405, so no 405 could be measured and its row is the
-# document's four methods alone. `issueLinkType/{id}` was not measured, and its row is the
-# document's three.
+# document's four methods alone. `issueLinkType/{id}`, measured on 2026-11-23 on both mounts,
+# answers the document's three.
 _JIRA_ALLOW = (
     ("/rest/api/{version}/serverInfo", ("GET",)),
     ("/rest/api/{version}/field", ("GET", "POST")),
@@ -2500,8 +2500,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
 # search route itself and names three methods rather than five. Real spells the list without spaces
 # after the commas, where its 405 `Allow` has them, and the order of the set varied between two
 # requests, so the order below is one measured spelling and not a sequence a client can rely on.
-# `issueLinkType/{id}` was not measured: its row is its 405 set plus `HEAD` and `OPTIONS`, as eight
-# of the measured rows are, spelled as `issue/{key}`'s, which takes the same three.
+# `issueLinkType/{id}` is its 405 set plus `HEAD` and `OPTIONS`, measured on 2026-11-23: five
+# requests on both mounts answered five orders of that set, the first of them the order below.
 _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/serverInfo", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/field", "POST,GET,HEAD,OPTIONS"),
@@ -2947,8 +2947,8 @@ def no_such_link_type(raw: str) -> AtlassianError:
 
 
 def invalid_link_type_id(raw: str) -> AtlassianError:
-    """Jira's 400 for `issueLinkType/{id}` with an id that is not a number, measured on Jira Cloud
-    2026-10-15 for `abc` with a credential."""
+    """Jira's 400 for `issueLinkType/{id}` with an id ``backlot.routers.atlassian._parse_long``
+    does not read, measured on Jira Cloud 2026-10-15 for `abc` with a credential."""
     return AtlassianError(
         400,
         _jira_envelope(f"Invalid issue link type id '{raw}' specified."),

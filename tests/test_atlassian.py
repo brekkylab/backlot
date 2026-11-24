@@ -101,9 +101,8 @@ def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, admi
         signed = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
         assert info.status_code == 200
         assert list(info.json().items()) == [(k, v) for k, v in signed.items() if k != "serverTime"]
-    # `issueLinkType` lists none and finds none by id: measured on `/3` on a site whose anonymous
-    # caller sees no project, the list with no credential and with a failed pair, `10003` with no
-    # credential (see `jira_link_types`)
+    # `issueLinkType` lists none and finds none by id, measured with each of the three on `/2` and
+    # `/3` (see `jira_link_types` and `jira_link_type`)
     for ver in ("2", "3"):
         listed = client.get(f"/atlassian/rest/api/{ver}/issueLinkType", headers=headers)
         assert (listed.status_code, listed.json()) == (200, {"issueLinkTypes": []})
@@ -121,7 +120,7 @@ def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, admi
 
 
 def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client):
-    """`field` answers 200 to a failed pair on the real sites, so it is not behind the credential."""
+    """`field` answers 200 to a failed pair on the real sites: it is not behind the credential."""
     assert client.get("/atlassian/rest/api/3/field", headers=FAILED_PAIR).status_code == 200
 
 
@@ -143,19 +142,33 @@ def test_jira_link_types_match_measured_metadata(client, admin_h, host):
         ("10002", "Duplicate", "is duplicated by", "duplicates"),
         ("10003", "Relates", "relates to", "relates to"),
     ]
-    missing = "No issue link type with id '99999' found or you do not have permission to view it."
+
+    def refused(message):
+        return {"errorMessages": [message], "errors": {}}
+
+    def missing(i):
+        return refused(
+            f"No issue link type with id '{i}' found or you do not have permission to view it."
+        )
+
+    def invalid(i):
+        return refused(f"Invalid issue link type id '{i}' specified.")
+
     rows = [
         ("3", 200, {"issueLinkTypes": [linked("3", *t) for t in types]}),
         ("2", 200, {"issueLinkTypes": [linked("2", *t) for t in types]}),
         ("3/10003", 200, linked("3", *types[3])),
-        ("3/99999", 404, {"errorMessages": [missing], "errors": {}}),
-        (
-            "3/abc",
-            400,
-            {"errorMessages": ["Invalid issue link type id 'abc' specified."], "errors": {}},
-        ),
-        # not measured: `/2` answers as `/3` does, its `self` under `/2`
+        ("3/99999", 404, missing("99999")),
+        ("3/abc", 400, invalid("abc")),
+        # `/2`, and ids as `jira_link_type` reads them
         ("2/10003", 200, linked("2", *types[3])),
+        ("2/010003", 200, linked("2", *types[3])),
+        ("3/+10003", 200, linked("3", *types[3])),
+        ("3/\uff11\uff10\uff10\uff10\uff13", 200, linked("3", *types[3])),
+        ("3/-1", 404, missing("-1")),
+        ("3/+99999", 404, missing("+99999")),
+        ("3/1_0003", 400, invalid("1_0003")),
+        ("3/9223372036854775808", 400, invalid("9223372036854775808")),
     ]
 
     def ordered(body):
@@ -6502,7 +6515,8 @@ _WRONG_METHODS = [
         # the row the vendor's own document disagrees with: it declares GET alone on
         # `project/search`
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
-        # not measured: the set Jira's own document declares
+        # measured on the day ``errors.atlassian._JIRA_ALLOW`` gives, the set Jira's own document
+        # declares
         ("post", "/rest/api/3/issueLinkType/10003", "GET, PUT, DELETE"),
         # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
         ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),

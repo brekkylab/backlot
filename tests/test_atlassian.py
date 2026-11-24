@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
@@ -1738,9 +1738,8 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + ' and title ~ "Gu\\"ide"', {"Guide"}),
         (three + ' and title ~ "Gu\\ide"', {"Guide"}),
         (three + ' and title ~ "Gu\\\\ide"', set()),
-        # not real's answers: real refused `type = "pa\ge"` with a 400 naming `pa\ge`, and `label`
-        # was not measured, as no content there carried one; these pin how `_cql_unquote` reads them
-        (three + ' and type = "pa\\ge"', set()),
+        # `label` was not measured, as no content there carried one: these pin how `_cql_unquote`
+        # reads its value
         (three + ' and label = "pag\\"er"', {"Child"}),
         (three + ' and label = "pag\\er"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
@@ -1816,12 +1815,6 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
             (f'id in ("{first}\\"{second}")', {"Guide"}),
             (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
             (f'parent = "{first}\\"{second}"', {"Child"}),
-            # not real's answers: real refused each of these with 400 `Can't parse as a ContentId`;
-            # they pin the value read with its backslash kept
-            (f'id = "{first}\\"\\"{second}"', set()),
-            (f'id = "{first}\\{second}"', set()),
-            (f'ancestor = "{first}\\{second}"', set()),
-            (f'parent = "{first}\\{second}"', set()),
         ]
         answered = {}
         for template, _ in rows:
@@ -1968,7 +1961,14 @@ def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
                 "/atlassian/wiki/rest/api/search", headers=headers[caller], params={"cql": cql}
             ).json()
             answered[(caller, template)] = ({x["title"] for x in r["results"]}, r["totalSize"])
+        refused = c.get(
+            "/atlassian/wiki/rest/api/search",
+            headers=headers["ava@acme.com"],
+            params={"cql": "filesize = currentUser()"},
+        ).json()["message"]
     assert answered == {(caller, cql): (want, len(want)) for caller, cql, want in rows}
+    # the refusal of a value names the caller's account as `currentUser()` reads it
+    assert refused == _CQL_PREFIX + _CQL_FILESIZE + accounts["ava"]
 
 
 def test_confluence_cql_search_reads_its_rows_once_in_a_needed_terms_order(tmp_path, monkeypatch):
@@ -10625,6 +10625,23 @@ def _cql_reserved(word):
     )
 
 
+def _cql_unsupported_type(value):
+    """The message real answers a `type` value outside the types it lists with."""
+    return (
+        f"Unsupported value for type, got : {value}, expected one of : [space, user, page, "
+        "blogpost, comment, attachment, database, whiteboard, slide, embed, folder, "
+        "com.atlassian.confluence.extra.team-calendars:calendar-content-type, "
+        "com.atlassian.confluence.extra.team-calendars:space-calendars-view-content-type]"
+    )
+
+
+_CQL_CONTENT_ID = "Can't parse as a ContentId"
+_CQL_FILESIZE = "field filesize requires a value between 0 and 9223372036854775807 instead got "
+_CQL_USER_OPERATOR = (
+    "Operator is not supported for field 'user'. Supported operators are : =, !=, IN, NOT IN"
+)
+
+
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -10704,7 +10721,20 @@ _CQL_PARSE_ROWS = [
             ('space = "han\\dbook"', 'space = "han\\dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
             ('type = "pa\\"ge"', 'type = "pa\\"ge"'),
-            ('type = "pa\\ge"', 'type = "pa\\ge"'),
+            ("id = 05", "id = 05"),
+            ("id = 0", "id = 0"),
+            ('id = "5"', 'id = "5"'),
+            ("id = att5", "id = att5"),
+            ('id = "att5"', 'id = "att5"'),
+            ("id in (1, att5)", "id in ( 1 , att5 )"),
+            ("id != currentContent()", "id != currentContent ( )"),
+            ("filesize = 05", "filesize = 05"),
+            ("filesize = currentContent()", "filesize = currentContent ( )"),
+            ("space ~ currentContent()", "space ~ currentContent ( )"),
+            ('label = ""', 'label = ""'),
+            ("user = x", "user = x"),
+            ("user != x", "user != x"),
+            ("user in (x)", "user in ( x )"),
             ('title~"a\\b"', 'title ~ "a\\b"'),
             ("title~'a\"b'", "title ~ 'a\"b'"),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
@@ -11100,6 +11130,128 @@ _CQL_PARSE_ROWS = [
                 'Escaped end quote in phrase query near : "a\\"',
             ),
             ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
+        ]
+    ],
+    # The refusals of `_cql_value_fault` in `backlot.routers.atlassian`, then a clause the search
+    # service refuses (`_CQL_SEARCH_REFUSES`), answered with `_REFUSED`. The rows of two clauses pin
+    # the order the refusals are answered in.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            *[
+                (f"type {op} {value}", _cql_unsupported_type(named))
+                for op in ("=", "!=")
+                for value, named in [
+                    ("x", "x"),
+                    ('"x"', "x"),
+                    ("1", "1"),
+                    ('"2026-01-01"', "2026-01-01"),
+                    ('""', ""),
+                ]
+            ],
+            *[
+                (f"type {op} ({value})", _cql_unsupported_type(named))
+                for op in ("in", "not in")
+                for value, named in [
+                    ("x", "x"),
+                    ('"x"', "x"),
+                    ("1", "1"),
+                    ('"2026-01-01"', "2026-01-01"),
+                ]
+            ],
+            ("Type = Page", _cql_unsupported_type("Page")),
+            ('type = "Page"', _cql_unsupported_type("Page")),
+            ("type = 1.5", _cql_unsupported_type("1.5")),
+            ("type in (page, Page, Blogpost)", _cql_unsupported_type("Page")),
+            ("type in (Page, blogpost)", _cql_unsupported_type("Page")),
+            ("type = currentContent()", _cql_unsupported_type("0")),
+            ("type in (currentContent())", _cql_unsupported_type("0")),
+            ('type = "pa\\ge"', _cql_unsupported_type("pa\\ge")),
+            ('type = "pa\\"\\"ge"', _cql_unsupported_type('pa""ge')),
+            *[
+                (f"{field} {op} {value}", _CQL_CONTENT_ID)
+                for field in ("ancestor", "container", "content", "id", "parent")
+                for op in ("=", "!=")
+                for value in ("x", '"x"', '"2026-01-01"', 'now("-1d")', "currentUser()")
+            ],
+            *[
+                (f"{field} {op} ({value})", _CQL_CONTENT_ID)
+                for field in ("ancestor", "container", "content", "id")
+                for op in ("in", "not in")
+                for value in ("x", '"x"', '"2026-01-01"', "currentUser()")
+            ],
+            ("id = 9223372036854775808", _CQL_CONTENT_ID),
+            *[
+                (f'{field} = "2294{escaped}69"', _CQL_CONTENT_ID)
+                for field in ("id", "ancestor", "parent")
+                for escaped in ('\\"\\"', "\\")
+            ],
+            ("filesize = 1.5", _CQL_FILESIZE + "1.5"),
+            ("filesize = .5", _CQL_FILESIZE + ".5"),
+            ("filesize = 9223372036854775808", _CQL_FILESIZE + "9223372036854775808"),
+            *[
+                (f"user {op} {value}", _CQL_USER_OPERATOR)
+                for op in ("~", "!~")
+                for value in ("x", '"x"', '"2026-01-01"', '""', 'now("-1d")', "currentUser()")
+            ],
+            ("USER ~ x", _CQL_USER_OPERATOR),
+            *[
+                (f'{field} != ""', _REFUSED)
+                for field in (
+                    "approvalStatus",
+                    "embeddedProduct",
+                    "fileExtension",
+                    "generatedby",
+                    "jsdCategoryId",
+                    "jsdFeaturedInCategoryId",
+                    "label",
+                    "mediaType.description",
+                    "pageStatus",
+                    "publicLinkStatus",
+                    "space.category",
+                    "subtype",
+                    "title",
+                )
+            ],
+            *[
+                (f'{field} = ""', _REFUSED)
+                for field in ("jsdCategoryId", "jsdFeaturedInCategoryId")
+            ],
+            ('title = ""', _REFUSED),
+            ("mediaType.description != 2026-01-01", _REFUSED),
+            *[
+                (f"{field} {op} {value}", _REFUSED)
+                for field in ("mediaType.description", "space", "space.title")
+                for op in ("~", "!~")
+                for value in ('now("-1d")', "currentUser()")
+            ],
+            *[
+                (f"siteSearch !~ {value}", _REFUSED)
+                for value in ("x", '"x"', '"2026-01-01"', '""', 'now("-1d")', "currentUser()")
+            ],
+            (
+                "type=Page and foo=bar",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, "
+                "favourite, fileExtension",
+            ),
+            ('id=abc and created > now("x")', _CQL_CONTENT_ID),
+            ('created > now("x") and id=abc', "Invalid relative date : x"),
+            ("type=Page and id=abc", _cql_unsupported_type("Page")),
+            ("id=abc and type=Page", _CQL_CONTENT_ID),
+            ('title = "" and type=Page', _cql_unsupported_type("Page")),
+            ('type=Page and title = ""', _cql_unsupported_type("Page")),
+            ("user ~ x and type = Page", _CQL_USER_OPERATOR),
+            ("type = Page and user ~ x", _cql_unsupported_type("Page")),
+            ("id = abc and filesize = currentUser()", _CQL_CONTENT_ID),
+            ("type = Page and id = 2026-01-01", _cql_unsupported_type("Page")),
+            ('title = "" and created > now("x")', "Invalid relative date : x"),
+            ('created > now("x") and title = ""', "Invalid relative date : x"),
+            ("siteSearch !~ x and id = abc", _CQL_CONTENT_ID),
+            ("id = 1.5 and type = page", _CQL_CONTENT_ID),
+            ('id = abc and title ~ "a\\"', _CQL_CONTENT_ID),
+            ('title ~ "a\\" and id = abc', 'Escaped end quote in phrase query near : "a\\"'),
+            ('type = Page and title ~ "a\\"', _cql_unsupported_type("Page")),
+            ('title = "" or title ~ x', _REFUSED),
         ]
     ],
     # A clause real refuses for its field, its operator or the shape of its value, as
@@ -13628,11 +13780,13 @@ _CQL_PARSE_ROWS = [
 
 def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
     """The rows `_CQL_PARSE_ROWS` records, each refusal with the `data` object of a service
-    refusal."""
+    refusal but `_REFUSED`, the search service's, which carries none."""
 
     def answer(status, written):
         if status == 200:
             return (200, written)
+        if written == _REFUSED:
+            return (400, {"statusCode": 400, "message": _REFUSED})
         refused = {"authorized": True, "valid": True, "errors": [], "successful": True}
         return (400, {"statusCode": 400, "data": refused, "message": _CQL_PREFIX + written})
 
@@ -13644,57 +13798,29 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
     assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}
 
 
-def test_confluence_cql_search_refuses_a_value_its_field_does_not_take(client, admin_h):
-    """What real answered each `cql` with on Confluence Cloud on 2026-10-25 and 2026-10-26, as
-    `_cql_value_refusal` in `backlot.routers.atlassian` records it: the message of each 400. The
-    rows after them are queries that pass still answers."""
-    exceptions = "com.atlassian.confluence.api.service.exceptions."
-    content_id = _CQL_PREFIX + "Can't parse as a ContentId"
-    rows = {
-        "type=Page": _CQL_PREFIX
-        + "Unsupported value for type, got : Page, expected one of : [space, user, page, "
-        "blogpost, comment, attachment, database, whiteboard, slide, embed, folder, "
-        "com.atlassian.confluence.extra.team-calendars:calendar-content-type, "
-        "com.atlassian.confluence.extra.team-calendars:space-calendars-view-content-type]",
-        "id=1.5": content_id,
-        "id=abc": content_id,
-        "ancestor=abc": content_id,
-        "parent=None": content_id,
-        "parent=abc": content_id,
-        "id in (abc)": content_id,
-        "ancestor in (abc)": content_id,
-        'title=""': f"{exceptions}scale.SSStatusCodeException: CQL was parsed but the search "
-        "manager was unable to execute the search. Error message: "
-        f"{exceptions}scale.SSStatusCodeException: There was an illegal request passed to "
-        "XP-Search Aggregator API : HTTP/1.1 400 Bad Request",
-        # a structural refusal and a function that cannot run are read before a value
-        "type=Page and foo=bar": _CQL_PREFIX
-        + "No field exists with the name: 'foo' Did you mean one of : "
-        "favorite, filesize, favourite, fileExtension",
-        'id=abc and created > now("x")': _CQL_PREFIX + "Invalid relative date : x",
+def test_confluence_cql_value_refusals_name_a_function_at_a_moment():
+    """The value a `type` or `filesize` refusal names for a function value
+    (:func:`backlot.routers.atlassian._cql_named_value`) for a caller and a moment. Called
+    directly: the route names the moment it answers at."""
+    from backlot.routers.atlassian import _cql_cannot_run, _cql_tokens
+
+    account = "5b0123456789abcdef012345"
+    rows = [
+        ("type = currentUser()", _CQL_PREFIX + _cql_unsupported_type(account)),
+        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-23 16:15")),
+        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-24 00:00")),
+        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-11-30 23:59")),
+        ("filesize = currentUser()", _CQL_PREFIX + _CQL_FILESIZE + account),
+        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-23 16:15"),
+        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 00:00"),
+        # a function that cannot run answers for itself, not for the value it would be
+        ("type = currentSpace()", _CQL_PREFIX + _CQL_CURRENT_SPACE),
+    ]
+    now = datetime(2026, 11, 24, 16, 15, tzinfo=timezone.utc)
+    answered = {
+        cql: _cql_cannot_run(_cql_tokens(cql), account, now).body["message"] for cql, _ in rows
     }
-    refused = {"authorized": True, "valid": True, "errors": [], "successful": True}
-    answered = {}
-    for cql in rows:
-        r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
-        answered[cql] = (r.status_code, r.json())
-    assert answered == {
-        cql: (400, {"statusCode": 400, "data": refused, "message": message})
-        for cql, message in rows.items()
-    }
-    for cql in (
-        "type=page",
-        "type=folder",
-        "id=05",
-        "parent=1",
-        "id in (1, 2)",
-        "id in (1, recentlyViewedContent(5))",
-        "ancestor = currentContent()",
-        "label = abc",
-        'title = "x"',
-    ):
-        r = client.get("/atlassian/wiki/rest/api/search", headers=admin_h, params={"cql": cql})
-        assert r.status_code == 200, cql
+    assert answered == dict(rows)
 
 
 def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, admin_h):

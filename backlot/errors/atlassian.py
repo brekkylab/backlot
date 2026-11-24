@@ -606,8 +606,8 @@ def cql_escaped_end_quote(text: str) -> AtlassianError:
     )
 
 
-#: The values real lists for `type`, as its refusal of `type=Page` spelled them (Confluence Cloud,
-#: 2026-10-25).
+#: The values real lists for `type` in its refusal of a value outside them (Confluence Cloud,
+#: 2026-10-31).
 CQL_TYPE_VALUES = (
     "space",
     "user",
@@ -626,10 +626,9 @@ CQL_TYPE_VALUES = (
 
 
 def cql_unsupported_type_value(value: str) -> AtlassianError:
-    """The CQL search's refusal of a `type` value outside the list it takes, naming the value as
-    sent and that list. Measured on Confluence Cloud on 2026-10-25: `type=Page` drew it, the
-    values compared case-sensitively. Where it falls among the search's other refusals is
-    ``routers.atlassian._cql_value_refusal``'s."""
+    """The CQL search's refusal of a `type` value outside :data:`CQL_TYPE_VALUES`, naming the value
+    and that list. Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_value_fault``'s."""
     return _service_refusal(
         400,
         "api.BadRequestException",
@@ -639,22 +638,28 @@ def cql_unsupported_type_value(value: str) -> AtlassianError:
 
 
 def cql_content_id_not_parsed() -> AtlassianError:
-    """The CQL search's refusal of an `id`, `ancestor` or `parent` value that is no `ContentId`.
-    Measured on Confluence Cloud on 2026-10-25 and 2026-10-26: `id=1.5`, `id=abc`, `ancestor=abc`,
-    `parent=None`, `parent=abc`, `id in (abc)` and `ancestor in (abc)` each drew it."""
+    """The CQL search's refusal of a content id it cannot read, which names no value. Which fields
+    and values it refuses is ``routers.atlassian._cql_value_fault``'s."""
     return _service_refusal(400, "api.BadRequestException", "Can't parse as a ContentId")
 
 
-def cql_search_not_executed() -> AtlassianError:
-    """The CQL search's refusal of a query it parsed and its search back end refused: `title=""`
-    drew it on Confluence Cloud on 2026-10-25, the exception named twice."""
-    exception = "com.atlassian.confluence.api.service.exceptions.scale.SSStatusCodeException"
+def cql_filesize_out_of_range(value: str) -> AtlassianError:
+    """The CQL search's refusal of a `filesize` value, naming the value. Which values it refuses is
+    ``routers.atlassian._cql_value_fault``'s."""
     return _service_refusal(
         400,
-        "scale.SSStatusCodeException",
-        "CQL was parsed but the search manager was unable to execute the search. "
-        f"Error message: {exception}: There was an illegal request passed to XP-Search "
-        "Aggregator API : HTTP/1.1 400 Bad Request",
+        "api.BadRequestException",
+        f"field filesize requires a value between 0 and 9223372036854775807 instead got {value}",
+    )
+
+
+def cql_user_operator_not_supported() -> AtlassianError:
+    """The CQL search's refusal of `user ~` and `user !~`, which names no operator, where
+    :func:`cql_operator_not_supported` names the one sent."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        "Operator is not supported for field 'user'. Supported operators are : =, !=, IN, NOT IN",
     )
 
 
@@ -858,7 +863,9 @@ def start_too_large() -> AtlassianError:
 def search_cursor_refused(*, failed: bool = False) -> AtlassianError:
     """The CQL search's refusal of a `cursor` it cannot page by
     (``backlot.routers.atlassian._cql_search_after`` says which): a 400, or with ``failed`` a 500.
-    Both bodies name the search service behind the route, which is where the token is read."""
+    Both bodies name the search service behind the route, which is where the token is read. The
+    400 is also the refusal of a clause that service refuses
+    (``backlot.routers.atlassian._CQL_SEARCH_REFUSES``)."""
     status = 500 if failed else 400
     failure = (
         "There was an error returned from XP-Search Aggregator API: HTTP/1.1 500 Internal Server "

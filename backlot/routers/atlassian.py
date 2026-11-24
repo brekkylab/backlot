@@ -2137,12 +2137,13 @@ async def confluence_cql_search(request: Request):
     refusal = _cql_refusal(tokens)
     if refusal is not None:
         raise refusal
-    cannot_run = _cql_cannot_run(tokens)
+    # the caller `currentUser()` names and the moment the date functions read, for the refusals that
+    # name a value and for the reading below
+    account = synth.atlassian_account_id(caller.email) if caller.email else None
+    now = datetime.now(timezone.utc)
+    cannot_run = _cql_cannot_run(tokens, account, now)
     if cannot_run is not None:
         raise cannot_run
-    value_refusal = _cql_value_refusal(tokens)
-    if value_refusal is not None:
-        raise value_refusal
 
     # the rows the clause readers filter, read only for a query `_cql_parse` does not cover: the
     # full ACL-visible match set, filtered by the clauses, then paginated — so totalSize reflects
@@ -2240,8 +2241,7 @@ async def confluence_cql_search(request: Request):
     # with none, as this route does (Confluence Cloud, 2026-10-28). Where the tokens do not parse
     # this way, the clause readers above stay the answer.
     try:
-        account = synth.atlassian_account_id(caller.email) if caller.email else None
-        expr = _cql_parse(tokens, account)
+        expr = _cql_parse(tokens, account, now)
         term_sets: dict[str, set[str]] = {}
 
         # `expr` nests a level per operator on its deepest path, as deep as Python's recursion
@@ -4249,9 +4249,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     the unknown field, and `foo = x and created > "x"`, `title and created > "x"` and
     `created > 20260910 and created > 2026-02-30` `Could not parse cql : `. A query read to its end
     with none of these is ``cql_not_parsed`` when a `space.key` value holds a single quote. A value
-    real refuses for another reason, and a cell real answers with a 500, are left standing here. An
-    escaped end quote, `title ~ "a\\"`, is not refused here: it is read after this walk, beside a
-    function that cannot run (``_cql_cannot_run``)."""
+    real refuses for another reason, an escaped end quote included, is :func:`_cql_cannot_run`'s."""
     at = 0
     recorded = None  # (place, refusal) of the first fault recorded, the furthest left
     groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
@@ -4536,17 +4534,168 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     return None
 
 
-def _cql_cannot_run(tokens: list[tuple[str, str]]):
-    """The 400 real answers a CQL with a function that cannot run or an escaped end quote
-    (``errors.atlassian.cql_escaped_end_quote``), or None for one with neither, after
-    :func:`_cql_refusal` and before :func:`_cql_search_after`: the first such fault from the left.
-    With an even number of backslashes before a quote, `_CQL_TOKEN` reads them in pairs and the
-    quote closes the value; with an odd number the quote is escaped, and where no later quote closes
-    the value the token ends at it all the same. Each of those tokens ends in a backslash and its
-    quote, an escaped end quote. Measured on Confluence Cloud on 2026-10-31 and 2026-11-04:
+def _cql_clauses(tokens: list[tuple[str, str]]):
+    """Each clause of a query :func:`_cql_refusal` reads to its end, as ``(field, operator,
+    values)``: the field in lower case, the operator as sent or as `in` or `not in`, and each value
+    as ``(at, kind, text, call)``, ``at`` its place, and ``call`` the ``(name, args)`` of a
+    function value or None. A function in place of an `in` list gives no value."""
+    at = 0
+    while at < len(tokens):
+        kind, field = tokens[at]
+        after = [text.lower() for _, text in tokens[at + 1 : at + 3]]
+        if kind != "WORD" or field.lower() in _CQL_KEYWORDS or not after:
+            at += 1
+            continue
+        if tokens[at + 1][0] == "OP":
+            operator, at = tokens[at + 1][1], at + 2
+        elif after[0] == "in":
+            operator, at = "in", at + 2
+        elif after == ["not", "in"]:
+            operator, at = "not in", at + 3
+        else:
+            at += 1
+            continue
+        listed = operator in ("in", "not in")
+        if listed and tokens[at] != ("PUNCT", "("):
+            yield field.lower(), operator, []
+            _, _, at = _cql_function_call(tokens, at)
+            continue
+        at += listed
+        values = []
+        while True:
+            kind, text = tokens[at]
+            if at + 1 < len(tokens) and tokens[at + 1] == ("PUNCT", "("):
+                name, args, after_call = _cql_function_call(tokens, at)
+                values.append((at, kind, text, (name, args)))
+                at = after_call
+            else:
+                values.append((at, kind, text, None))
+                at += 1
+            if not listed or tokens[at] != ("PUNCT", ","):
+                break
+            at += 1
+        yield field.lower(), operator, values
+        at += listed
+
+
+def _cql_named_value(kind: str, text: str, call, current_user: str | None, now: datetime):
+    """A value as real names it in a refusal: a quoted value without its quotes, a word or a number
+    as sent, `currentUser()` the caller as :func:`_cql_function_value` reads it, `currentContent()`
+    `0`, and a date function the minute of :func:`_cql_date_function_moment`, as `yyyy-MM-dd HH:mm`
+    in UTC. Real named `currentContent()` `0`, `currentUser()` the caller's account id and a date
+    function as `yyyy-MM-dd HH:mm` (Confluence Cloud, 2026-11-24). `recentlyViewedContent` gives
+    None: real refused `type = recentlyViewedContent(5)` as no function that returns a single value,
+    which is left standing here."""
+    if call is None:
+        return _cql_unquote(kind, text)
+    name, args = call
+    if name == "currentContent":
+        return "0"
+    if name in _CQL_DATE_FUNCTIONS:
+        return _cql_date_function_moment(name, args, now).strftime("%Y-%m-%d %H:%M")
+    if name == "recentlyViewedContent":
+        return None
+    return _cql_function_value(name, args, current_user)
+
+
+def _cql_value_fault(field: str, operator: str, named: str):
+    """The 400 real answers a value its field does not take, named as :func:`_cql_named_value` names
+    it, or None for one it takes: ``errors.atlassian.cql_unsupported_type_value`` for a `type` value
+    outside ``errors.atlassian.CQL_TYPE_VALUES``; ``cql_content_id_not_parsed`` for an `ancestor`,
+    `container`, `content`, `id` or `parent` value that does not start with `att` and
+    :func:`_parse_long` does not read; ``cql_filesize_out_of_range`` for a `filesize` value
+    :func:`_parse_long` does not read; and ``cql_user_operator_not_supported`` for any value under
+    `user ~` or `user !~`. Real answered a 500 for a bare date on `type` and on those five fields,
+    an empty value on those five fields, `id = attx`, and `parent in` and `parent not in` whatever
+    the value, which are left standing here. Measured over the grid behind `_CQL_FIELD_INFO`, and on
+    Confluence Cloud on 2026-11-24: `type = Page` and `Type = Page` named `Page`,
+    `type in (page, Page, Blogpost)` named `Page`, `id = 05`, `id = 0`, `id = "5"`, `id = att5` and
+    `id in (1, att5)` answered 200 where `id = 9223372036854775808` and `id = 1.5` were refused,
+    `filesize = 1.5`, `filesize = .5` and `filesize = 9223372036854775808` named the number where
+    `filesize = 05` answered 200, and `USER ~ x` and `FILESIZE = currentUser()` named the field in
+    lower case."""
+    if field == "type":
+        if named not in errors_atlassian.CQL_TYPE_VALUES:
+            return errors_atlassian.cql_unsupported_type_value(named)
+    elif field in ("ancestor", "container", "content", "id", "parent"):
+        if not named.startswith("att") and _parse_long(named) is None:
+            return errors_atlassian.cql_content_id_not_parsed()
+    elif field == "filesize":
+        if _parse_long(named) is None:
+            return errors_atlassian.cql_filesize_out_of_range(named)
+    elif field == "user" and operator in ("~", "!~"):
+        return errors_atlassian.cql_user_operator_not_supported()
+    return None
+
+
+# The clauses the search service behind the route refuses with the cursor's 400
+# (``errors.atlassian.search_cursor_refused``), by field and operator, each with the values it
+# refused: `""` an empty quoted value, `date` a bare date, `word` and `quoted` any other word or
+# quoted value, and a function by its name. Measured over the grid behind `_CQL_FIELD_INFO`, whose
+# values were `x`, `"x"`, `1`, `2026-01-01`, `"2026-01-01"`, `""`, `now("-1d")` and
+# `currentUser()`; on Confluence Cloud on 2026-11-24 `space ~ currentContent()` and `label = ""`
+# answered 200.
+_CQL_SEARCH_REFUSES = {
+    **{
+        (field, "!="): {'""'}
+        for field in (
+            "approvalstatus",
+            "embeddedproduct",
+            "fileextension",
+            "generatedby",
+            "jsdcategoryid",
+            "jsdfeaturedincategoryid",
+            "label",
+            "pagestatus",
+            "publiclinkstatus",
+            "space.category",
+            "subtype",
+            "title",
+        )
+    },
+    ("mediatype.description", "!="): {'""', "date"},
+    **{(field, "="): {'""'} for field in ("jsdcategoryid", "jsdfeaturedincategoryid", "title")},
+    **{
+        (field, operator): {"now", "currentUser"}
+        for field in ("mediatype.description", "space", "space.title")
+        for operator in ("~", "!~")
+    },
+    ("sitesearch", "!~"): {"word", "quoted", '""', "now", "currentUser"},
+}
+
+
+def _cql_search_refuses(field: str, operator: str, kind: str, text: str, call) -> bool:
+    """Whether `_CQL_SEARCH_REFUSES` holds the clause `field` under `operator` with the value
+    ``(kind, text, call)`` as :func:`_cql_clauses` gives it."""
+    if call is not None:
+        shape = call[0]
+    elif kind == "QUOTED":
+        shape = '""' if len(text) == 2 else "quoted"
+    else:
+        shape = kind.lower()
+    return shape in _CQL_SEARCH_REFUSES.get((field, operator), ())
+
+
+def _cql_cannot_run(tokens: list[tuple[str, str]], current_user: str | None, now: datetime):
+    """The 400 real answers a CQL it reads but cannot run, or None for one it runs, after
+    :func:`_cql_refusal` and before :func:`_cql_search_after`: a function that cannot run, an
+    escaped end quote (``errors.atlassian.cql_escaped_end_quote``) and a value its field does not
+    take (:func:`_cql_value_fault`), the first of them from the left, and with none of them a clause
+    the search service refuses (`_CQL_SEARCH_REFUSES`). A function value is named for
+    ``current_user`` at ``now`` (:func:`_cql_named_value`). With an even number of backslashes
+    before a quote, `_CQL_TOKEN` reads them in pairs and the quote closes the value; with an odd
+    number the quote is escaped, and where no later quote closes the value the token ends at it all
+    the same. Each of those tokens ends in a backslash and its quote, an escaped end quote. A value
+    that is such a token, or a function that cannot run, answers that and not its field's refusal.
+    Measured on Confluence Cloud on 2026-10-31 and 2026-11-04:
     `space = currentSpace() or created > now("x")` was answered with the first of the two, and
     either beside `title ~ "a\\"` with the first of the two in the CQL, and the cursor's 400 came
-    after each fault of this pass."""
+    after a function that cannot run and after an escaped end quote. On 2026-11-24
+    `id=abc and created > now("x")`, `id = abc and title ~ "a\\"`, `type=Page and id=abc` and
+    `user ~ x and type = Page` each answered the refusal of its first clause, and so did each with
+    its two clauses the other way round, where `title = "" and type=Page`,
+    `title = "" and created > now("x")` and `siteSearch !~ x and id = abc` answered the refusal of
+    the second."""
     faults = []
     for at, (kind, text) in enumerate(tokens):
         if (
@@ -4565,64 +4714,22 @@ def _cql_cannot_run(tokens: list[tuple[str, str]]):
                     faults.append((at, fault))
         elif kind == "QUOTED" and text[-2] == "\\":
             faults.append((at, errors_atlassian.cql_escaped_end_quote(text)))
-    if not faults:
-        return None
-    return min(faults, key=lambda fault: fault[0])[1]
-
-
-def _cql_value_refusal(tokens: list[tuple[str, str]]):
-    """The 400 real answers a CQL whose clauses it reads but one of whose values its field does not
-    take, or None for one with no such value, after :func:`_cql_refusal` and
-    :func:`_cql_cannot_run`, so each field here is followed by its operator and a whole value or
-    list. Measured on Confluence Cloud on 2026-10-25 and 2026-10-26: a word after `type =` outside
-    ``errors.atlassian.CQL_TYPE_VALUES`` is ``cql_unsupported_type_value`` (`type=Page`); a word or
-    a number that is no `ContentId` (:func:`_parse_long`) after `id =`, `ancestor =` or `parent =`,
-    or in the list of `id in` or `ancestor in`, is ``cql_content_id_not_parsed`` (`id=1.5`,
-    `id=abc`, `ancestor=abc`, `parent=None`, `parent=abc`, `id in (abc)`, `ancestor in (abc)`); and
-    `title = ""` is ``cql_search_not_executed``, raised by the search itself and so read after the
-    other two. Only those cells were measured: a quoted value, a value under `!=` or `not in`, one
-    after `att` (which the `content/{id}` path reads as an attachment's id), and `parent in`, which
-    real fails with a 500, are left standing, and so is which of two such values answers; the
-    first from the left does here."""
-    not_executed = None
-    for at, (kind, text) in enumerate(tokens):
-        field = text.lower()
-        if kind != "WORD" or field not in ("type", "id", "ancestor", "parent", "title"):
-            continue
-        after = tokens[at + 1 : at + 3]
-        if len(after) < 2:
-            continue
-        (_, operator), (value_kind, value) = after
-        if operator == "=" and tokens[at + 3 : at + 4] != [("PUNCT", "(")]:  # no function call
-            values = [(value_kind, value)]
-        elif operator.lower() == "in" and value == "(" and field in ("id", "ancestor"):
-            # the list's own values: a call among them, and its arguments, are no value here
-            values, depth = [], 0
-            for place in range(at + 3, len(tokens)):
-                if tokens[place] == ("PUNCT", ")"):
-                    if depth == 0:
-                        break
-                    depth -= 1
-                elif tokens[place] == ("PUNCT", "("):
-                    depth += 1
-                elif depth == 0 and tokens[place + 1] != ("PUNCT", "("):
-                    values.append(tokens[place])
-        else:
-            continue
-        for value_kind, value in values:
-            if field == "title":
-                if (value_kind, value) == ("QUOTED", '""') and not_executed is None:
-                    not_executed = errors_atlassian.cql_search_not_executed()
-            elif field == "type":
-                if value_kind == "WORD" and value not in errors_atlassian.CQL_TYPE_VALUES:
-                    return errors_atlassian.cql_unsupported_type_value(value)
-            elif (
-                value_kind in ("WORD", "NUMBER")
-                and not value.startswith("att")
-                and _parse_long(value) is None
-            ):
-                return errors_atlassian.cql_content_id_not_parsed()
-    return not_executed
+    faulted = {at for at, _ in faults}
+    clauses = list(_cql_clauses(tokens))
+    for field, operator, values in clauses:
+        for at, kind, text, call in values:
+            if at in faulted:
+                continue
+            named = _cql_named_value(kind, text, call, current_user, now)
+            fault = None if named is None else _cql_value_fault(field, operator, named)
+            if fault is not None:
+                faults.append((at, fault))
+    if faults:
+        return min(faults, key=lambda fault: fault[0])[1]
+    for field, operator, values in clauses:
+        if any(_cql_search_refuses(field, operator, *value[1:]) for value in values):
+            return errors_atlassian.search_cursor_refused()
+    return None
 
 
 class _CQLParseError(Exception):
@@ -4674,6 +4781,32 @@ def _cql_apply_offset(moment: datetime, amount: int, unit: str) -> datetime:
     if unit == "M":
         return _cql_add_months(moment, amount)
     return _cql_add_months(moment, amount * 12)
+
+
+def _cql_date_function_moment(name: str, args: list[tuple[str, str]], now: datetime) -> datetime:
+    """The moment a call of the date function ``name`` with ``args`` reads at ``now``, in UTC: `now`
+    itself, the start of its day, week, month or year, or the second before the next month starts,
+    moved by the relative date in its one quoted argument, if any. :func:`_cql_cannot_run` refuses
+    an argument that is no relative date before this reads it."""
+    base = now
+    if name == "startOfYear":
+        base = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    elif name == "startOfMonth":
+        base = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    elif name == "startOfDay":
+        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    elif name == "startOfWeek":
+        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(
+            days=now.weekday()
+        )
+    elif name == "endOfMonth":
+        base = _cql_add_months(
+            datetime(now.year, now.month, 1, tzinfo=timezone.utc), 1
+        ) - timedelta(seconds=1)
+    if args:
+        match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
+        base = _cql_apply_offset(base, int(match.group(1)), match.group(2))
+    return base
 
 
 def _cql_date_hit(spec: tuple, op: str, moment: int) -> bool:
@@ -4790,9 +4923,7 @@ _CQL_READABLE = {
 }
 
 
-def _cql_parse(
-    tokens: list[tuple[str, str]], current_user: str | None = None, now: datetime | None = None
-):
+def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None, now: datetime):
     """The tokens of a CQL query as a boolean expression, over the grammar `_cql_refusal`
     walks: an `or` of `and`s of `not`s of atoms and groups, `and` binding tighter than `or`,
     a `not` only straight after `and`, stopping at `order by`.
@@ -4821,8 +4952,6 @@ def _cql_parse(
     `type=page` followed by 800 `or id=1`, each sent percent-encoded, with the pages `type=page`
     alone answered (Confluence Cloud, 2026-11-06)."""
     at = 0
-    if now is None:
-        now = datetime.now(timezone.utc)
     operator_refusals = []
 
     def peek(offset=0):
@@ -4882,25 +5011,7 @@ def _cql_parse(
             return ("never",)
         if args and args[0][0] != "QUOTED":
             raise _CQLRefusal(errors_atlassian.cql_not_parsed())
-        base = now
-        if name == "startOfYear":
-            base = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-        elif name == "startOfMonth":
-            base = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        elif name == "startOfDay":
-            base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        elif name == "startOfWeek":
-            base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(
-                days=now.weekday()
-            )
-        elif name == "endOfMonth":
-            base = _cql_add_months(
-                datetime(now.year, now.month, 1, tzinfo=timezone.utc), 1
-            ) - timedelta(seconds=1)
-        if args:
-            match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
-            base = _cql_apply_offset(base, int(match.group(1)), match.group(2))
-        return ("instant", int(base.timestamp()))
+        return ("instant", int(_cql_date_function_moment(name, args, now).timestamp()))
 
     def _cql_parsed_date(text):
         """A date or datetime string as a spec: a date alone is its whole UTC day, a datetime

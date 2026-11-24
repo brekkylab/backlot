@@ -13456,7 +13456,9 @@ def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, boo
 
 
 def test_backlot_orders_data_filter_ranges_by_column_then_row(gc, gh, book):
-    """Backlot keeps its own ordering stable; Sheets may return these ranges in another order."""
+    """Backlot's own order, which real's is not (see `where` in
+    `sheets_values_batch_get_by_data_filter`): column before row, so `A2` precedes `B1`, and a row
+    number sorts numerically, so `B9` precedes `B10`."""
     r = _by_filter(
         gc,
         gh,

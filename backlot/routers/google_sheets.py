@@ -1594,9 +1594,10 @@ async def sheets_values_batch_get_by_data_filter(spreadsheet_id: str, request: R
         date_time = body.get("date_time_render_option", 0)
         date_time = _PJ_DATETIME.names[date_time] if 0 <= date_time < 2 else "SERIAL_NUMBER"
 
-    # Backlot uses a stable coordinate order. Sheets can return the same ranges in a
-    # different order across serving instances. Match each entry to the
-    # filters it echoes, rather than to a position in the request.
+    # Backlot's order is its own: by sheet, then by where each range starts and then ends, column
+    # before row. Real's is neither that sort nor the order sent, and changed between serving
+    # instances on 2026-10-04. On 2026-11-23 it answered `Sheet1!B1` before `Sheet1!A2` and
+    # `Data!A1` before `Sheet1!A1`, whichever was sent first.
     def where(i: int):
         sheet, r0, c0, r1, c1 = _sheets_bounds(selections[i], sheets)
         return (sheet.index, c0, r0, c1, r1)

@@ -13455,9 +13455,10 @@ def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, boo
     assert got["dataFilters"] == [{"gridRange": {k: v for k, v in grid.items() if k != "sheetId"}}]
 
 
-def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
-    """NOT the order the filters arrived in. Measured: column before row, so `A2` precedes `B1`,
-    and a row number sorts numerically, so `B9` precedes `B10`."""
+def test_backlot_orders_data_filter_ranges_by_column_then_row(gc, gh, book):
+    """Backlot's own order, which real's is not (see `where` in
+    `sheets_values_batch_get_by_data_filter`): column before row, so `A2` precedes `B1`, and a row
+    number sorts numerically, so `B9` precedes `B10`."""
     r = _by_filter(
         gc,
         gh,

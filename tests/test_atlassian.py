@@ -1160,7 +1160,7 @@ def test_jira_search_filtered_by_project(client, admin_h):
     # is the only Jira project in the SAMPLE corpus -- the earlier assertions are what prove
     # filtering, not this equality). It still has to RESTRICT, or real refuses it: an empty jql,
     # and an `ORDER BY` alone, are both the unbounded refusal -- see
-    # test_jira_search_refuses_a_jql_that_restricts_nothing.
+    # test_jira_search_reads_a_jql_as_real_does.
     unfiltered = client.get(
         "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
     ).json()
@@ -3242,6 +3242,337 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
             params={"expand": "body.storage.mediaToken"},
         ).json()["body"]["storage"]["mediaToken"]
         assert other["clientId"] == token["clientId"]
+
+
+def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tmp_path):
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [page])
+    empty_uris = {"_expandable": {"all": "", "css": "", "js": ""}}
+    empty_tags = {"_expandable": {"all": "", "css": "", "data": "", "js": ""}}
+    empty_superbatch = {"_expandable": {"uris": "", "metatags": "", "tags": ""}}
+    empty_wr = {
+        "superbatch": empty_superbatch,
+        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+    }
+    metatags = "<meta name='ajs-context-path' content='/wiki'>"
+    W = "body.storage.webresource"
+    rows = (
+        (
+            f"{W}.uris",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.tags",
+            {
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.keys",
+            {
+                "keys": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts",
+            {
+                "contexts": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts,{W}.keys,{W}.tags,{W}.uris",
+            {
+                "keys": [],
+                "contexts": [],
+                "uris": empty_uris,
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+            },
+        ),
+        (
+            f"{W}.uris,{W}.tags,{W}.keys,{W}.contexts",
+            {
+                "keys": [],
+                "contexts": [],
+                "uris": empty_uris,
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+            },
+        ),
+        (
+            f"{W}.superbatch.uris",
+            {
+                "superbatch": {"uris": empty_uris, "_expandable": {"metatags": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags",
+            {
+                "superbatch": {"tags": empty_tags, "_expandable": {"uris": "", "metatags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.metatags",
+            {
+                "superbatch": {"metatags": metatags, "_expandable": {"uris": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags,{W}.superbatch.metatags,{W}.superbatch.uris",
+            {
+                "superbatch": {"uris": empty_uris, "tags": empty_tags, "metatags": metatags},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.all",
+            {
+                "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.css",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.js",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.all,{W}.uris.css",
+            {
+                "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.tags.all",
+            {
+                "tags": {"all": "", "_expandable": {"css": "", "data": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.css",
+            {
+                "tags": {"css": "", "_expandable": {"all": "", "data": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.data",
+            {
+                "tags": {"data": "", "_expandable": {"all": "", "css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.js",
+            {
+                "tags": {"js": "", "_expandable": {"all": "", "css": "", "data": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.all,{W}.tags.css,{W}.tags.data,{W}.tags.js",
+            {
+                "tags": {"all": "", "data": "", "css": "", "js": ""},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.all",
+            {
+                "superbatch": {
+                    "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.css",
+            {
+                "superbatch": {
+                    "uris": {"css": [], "_expandable": {"all": "", "js": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.js",
+            {
+                "superbatch": {
+                    "uris": {"js": [], "_expandable": {"all": "", "css": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags.data",
+            {
+                "superbatch": {
+                    "tags": {"data": "", "_expandable": {"all": "", "css": "", "js": ""}},
+                    "_expandable": {"uris": "", "metatags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (f"{W}.metatags", empty_wr),
+        (f"{W}.superbatch", empty_wr),
+        (f"{W}.x", empty_wr),
+        (f"{W}.Uris", empty_wr),
+        (f"{W}.superbatch.x", empty_wr),
+        (f"{W}..uris", empty_wr),
+        (f"{W}.superbatch..uris", empty_wr),
+        (
+            f"{W}.uris.x",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris..all",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.keys.x",
+            {
+                "keys": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts.x",
+            {
+                "contexts": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.metatags.x",
+            {
+                "superbatch": {"metatags": metatags, "_expandable": {"uris": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+
+        def shape(value):
+            if isinstance(value, dict):
+                return [(key, shape(item)) for key, item in value.items()]
+            return value
+
+        got = []
+        for expand, _expected in rows:
+            web = c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                "body"
+            ]["storage"]["webresource"]
+            got.append(web)
+        assert [shape(web) for web in got] == [shape(expected) for _expand, expected in rows]
+        # The other three representations this server renders serve the same values.
+        other = []
+        expected_other = []
+        for rep_name in ("view", "export_view", "atlas_doc_format"):
+            for suffix, expected in (
+                (
+                    "uris",
+                    {
+                        "uris": empty_uris,
+                        "superbatch": empty_superbatch,
+                        "_expandable": {"keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "keys",
+                    {
+                        "keys": [],
+                        "superbatch": empty_superbatch,
+                        "_expandable": {"uris": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "superbatch.metatags",
+                    {
+                        "superbatch": {
+                            "metatags": metatags,
+                            "_expandable": {"uris": "", "tags": ""},
+                        },
+                        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "superbatch.uris.all",
+                    {
+                        "superbatch": {
+                            "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                            "_expandable": {"metatags": "", "tags": ""},
+                        },
+                        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+            ):
+                expand = f"body.{rep_name}.webresource.{suffix}"
+                web = c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                    "body"
+                ][rep_name]["webresource"]
+                other.append((rep_name, suffix, web))
+                expected_other.append((rep_name, suffix, expected))
+        assert [(rep, suffix, shape(web)) for rep, suffix, web in other] == [
+            (rep, suffix, shape(expected)) for rep, suffix, expected in expected_other
+        ]
 
 
 # --- Jira ------------------------------------------------------------------------
@@ -5713,15 +6044,19 @@ _UNBOUNDED_JQL = {
     ],
     "errors": {},
 }
-#: Real's own JQL syntax-error 400, whose body Backlot does not write: only the status is compared.
-_JQL_SYNTAX_ERROR = 400
 
-# Method, API version, query string, body and what real answers: no `jql` where the method reads
-# one (POST reads it from the body alone, so one in its query string is none) and a `jql` with
-# nothing before its `ORDER BY` are refused; one with a clause before its `ORDER BY` is served,
-# which `None` stands for; and the two words parted by whitespace real does not read as such are
-# its syntax error, `_JQL_SYNTAX_ERROR`.
-_NO_RESTRICTION_ROWS = [
+
+def _jql_error(sentence):
+    return {"errorMessages": [sentence], "errors": {}}
+
+
+# Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page
+# and the 400's body otherwise. No `jql` where the method reads one (POST reads it from the body
+# alone, so one in its query string is none) and a `jql` with nothing before its `ORDER BY` are
+# the unbounded refusal; a `jql` the parser cannot read is the parse error, whose sentence names
+# what the parser expected and, unless it reached the end of the query, the line and the
+# character in UTF-16 units. Both refusals are on `application/json;charset=UTF-8`.
+_JQL_ROWS = [
     ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
     ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
     *[
@@ -5733,14 +6068,6 @@ _NO_RESTRICTION_ROWS = [
             "ORDER BY key ASC, created DESC",
         )
     ],
-    # The whitespace `\s` reads beyond what real separates the words with.
-    *[
-        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _JQL_SYNTAX_ERROR)
-        for jql in (
-            *("order\u00a0by key", "order\u2003by key", "order\x0bby key"),
-            *("order\x0cby key", "order\x1cby key", "\u00a0order by key"),
-        )
-    ],
     *[
         ("get", 3, {"jql": jql, "maxResults": 1}, None, _UNBOUNDED_JQL)
         for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
@@ -5750,6 +6077,281 @@ _NO_RESTRICTION_ROWS = [
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
     ("post", 2, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
+    *[
+        row
+        for jql, sentence in (
+            (
+                "order by",
+                "Error in the JQL Query: Expecting a field name at the end of the query.",
+            ),
+            (
+                "order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 7)",
+            ),
+            (
+                "orderby key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 9)",
+            ),
+            (
+                "(order by key)",
+                "Error in the JQL Query: Expecting a field name but got 'order'. You must "
+                "surround 'order' in quotation marks to use it as a field name. "
+                "(line 1, character 2)",
+            ),
+            (
+                "order by key project is not EMPTY",
+                "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'project'. "
+                "(line 1, character 14)",
+            ),
+            (
+                "ORDER BY key DESC NULLS FIRST",
+                "Error in the JQL Query: Expecting ',' but got 'NULLS'. (line 1, character 19)",
+            ),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence)),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, _jql_error(sentence)),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence))
+        for jql, sentence in (
+            (
+                "order\xa0by key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 10)",
+            ),
+            (
+                "order\u2003by key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 10)",
+            ),
+            (
+                "order\x0bby key",
+                "Error in the JQL Query: The character 'U+000B' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u000b' instead. (line 1, character 6)",
+            ),
+            (
+                "order\x0cby key",
+                "Error in the JQL Query: The character 'U+000C' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u000c' instead. (line 1, character 6)",
+            ),
+            (
+                "order\x1cby key",
+                "Error in the JQL Query: The character 'U+001C' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u001c' instead. (line 1, character 6)",
+            ),
+            (
+                "\xa0order by key",
+                "Error in the JQL Query: Expecting operator but got 'by'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 8)",
+            ),
+            (
+                "labels = zzq\xa0and labels = zzq",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'labels'. "
+                "(line 1, character 18)",
+            ),
+            (
+                "labels",
+                "Error in the JQL Query: Expecting operator before the end of the query. The "
+                "valid operators are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', "
+                "'IS' and 'IS NOT'.",
+            ),
+            (
+                "labels =",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "labels is",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "labels in ()",
+                "Error in JQL Query: Expecting either a value, list or function but got ')'. You "
+                "must surround ')' in quotation marks to use it as a value. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels <> zzq",
+                "Error in JQL Query: Expecting either a value, list or function but got '>'. You "
+                "must surround '>' in quotation marks to use it as a value. (line 1, character 9)",
+            ),
+            (
+                "labels = and",
+                "Error in JQL Query: Expecting either a value, list or function but got 'and'. "
+                "You must surround 'and' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels in (zzq labels)",
+                "Error in the JQL Query: Expecting ',' or ')' but got 'labels'. "
+                "(line 1, character 16)",
+            ),
+            (
+                "labels = currentUser(",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "= zzq",
+                "Error in the JQL Query: Expecting a field name but got '='. You must surround "
+                "'=' in quotation marks to use it as a field name. (line 1, character 1)",
+            ),
+            (
+                "labels = zzq and )",
+                "Error in the JQL Query: Expecting a field name but got ')'. You must surround "
+                "')' in quotation marks to use it as a field name. (line 1, character 18)",
+            ),
+            (
+                "labels = zzq,",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ','. "
+                "(line 1, character 13)",
+            ),
+            (
+                "(labels = zzq",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "(labels = zzq labels = zzq)",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'labels'. "
+                "(line 1, character 15)",
+            ),
+            (
+                "labels = zzq order",
+                "Error in the JQL Query: Expecting 'by' before the end of the query.",
+            ),
+            (
+                "labels = ava@acme.com",
+                "Error in the JQL Query: The character '@' is a reserved JQL character. You must "
+                "enclose it in a string or use the escape '\\u0040' instead. "
+                "(line 1, character 13)",
+            ),
+            (
+                "summary ~ win*",
+                "Error in the JQL Query: The character '*' is a reserved JQL character. You must "
+                "enclose it in a string or use the escape '\\u002a' instead. "
+                "(line 1, character 14)",
+            ),
+            (
+                'summary ~ "abc',
+                "Error in the JQL Query: The quoted string 'abc' has not been completed. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = zzq\norder bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 2, character 7)",
+            ),
+            (
+                'summary ~ "\U0001f600" order bykey',
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 22)",
+            ),
+            (
+                "labels in (zzq",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "labels in (zzq,",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "status was",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "status changed foo",
+                "Error in JQL Query: The CHANGED operator does not support the use of values "
+                'without predicates. You must prefix the "foo" value with a suitable predicate.',
+            ),
+            ("cf", "Error in the JQL Query: Expecting '[' before the end of the query."),
+            (
+                "cf = zzq",
+                "Error in the JQL Query: Expecting '[' but got '='. (line 1, character 4)",
+            ),
+            (
+                "cf[",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) before "
+                "the end of the query.",
+            ),
+            (
+                "cf[abc] is EMPTY",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) but got "
+                "'abc'. (line 1, character 4)",
+            ),
+            (
+                "cf[] is EMPTY",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) but got "
+                "']'. (line 1, character 4)",
+            ),
+            ("cf[10016", "Error in the JQL Query: Expecting ']' before the end of the query."),
+            (
+                "cf[10016 is EMPTY",
+                "Error in the JQL Query: Expecting ']' but got 'is'. (line 1, character 10)",
+            ),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, None)
+        for jql in (
+            "labels = zzq && summary ~ zzq",
+            "labels = zzq & summary ~ zzq",
+            "labels = zzq || summary ~ zzq",
+            "labels = zzq | summary ~ zzq",
+            "!labels = zzq",
+            "not not labels = zzq",
+            "summary ~ caf\xe9",
+            "labels = \uac00\ub098",
+            "cf[10016] is EMPTY",
+            "CF[10016] is EMPTY",
+            "cf[ 10016 ] is EMPTY",
+            "project is not EMPTY order by cf[10016]",
+            "labels is foo",
+            "labels in (zzq, (x))",
+            "status was Open",
+            "status was not in (Open)",
+            "status was Open during (startOfDay(-7d), now())",
+            "status changed from Open to Done",
+            "status CHANGED",
+            "labels not in (zzq)",
+            "labels is not EMPTY",
+            "assignee = currentUser()",
+            "created > startOfDay(-1d)",
+            "(" * 250 + "labels = zzq" + ")" * 250,
+            "(" * 1000 + "labels = zzq" + ")" * 1000,
+            "labels in " + "(" * 300 + "zzq" + ")" * 300,
+            "not " * 1000 + "labels = zzq",
+        )
+    ],
+    # A number is read as its digits, a field with no operator after it.
+    (
+        "post",
+        3,
+        {},
+        {"jql": 1, "maxResults": 1},
+        _jql_error(
+            "Error in the JQL Query: Expecting operator before the end of the query. The valid "
+            "operators are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+            "'IS NOT'."
+        ),
+    ),
+    # A repeated `jql` is read as the values joined with a comma.
+    (
+        "get",
+        3,
+        [("jql", "labels = zzq"), ("jql", "labels = zzq"), ("maxResults", 1)],
+        None,
+        _jql_error(
+            "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ','. "
+            "(line 1, character 13)"
+        ),
+    ),
 ]
 
 
@@ -5763,18 +6365,16 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
     )
     if refused is None:
         assert r.status_code == 200, r.text
-    elif refused == _JQL_SYNTAX_ERROR:
-        assert r.status_code == 400, r.text
     else:
-        assert (r.status_code, r.json()) == (400, refused), r.text
+        assert (r.status_code, r.headers["content-type"], r.json()) == (
+            400,
+            "application/json;charset=UTF-8",
+            refused,
+        ), r.text
 
 
-def test_jira_search_refuses_a_jql_that_restricts_nothing(client, admin_h):
-    """A `jql` that restricts nothing draws the unbounded-JQL 400, not the unfiltered corpus:
-    none at all, or one that opens with `ORDER BY`. The measurement is the one the handler's
-    comment on the unbounded check records, and each row is a request it sent, with the answer
-    it got."""
-    assert _failures(_jql_search, _NO_RESTRICTION_ROWS, client, admin_h) == {}
+def test_jira_search_reads_a_jql_as_real_does(client, admin_h):
+    assert _failures(_jql_search, _JQL_ROWS, client, admin_h) == {}
 
 
 def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):

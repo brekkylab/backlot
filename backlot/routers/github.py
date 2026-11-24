@@ -2923,17 +2923,23 @@ async def search_issues(
     """Issues-and-PRs search (GitHub `GET /search/issues`): free text over title+body (FTS)
     plus repo:/is:/state:/type:/label:/author: qualifiers, ACL-scoped to the caller.
 
-    A blank `q` is real's 422, the same envelope `/search/code` answers with. This used to be a
-    listing of everything the caller can see, which is the expensive kind of divergence: a client
-    that forgot its query got a plausible, ACL-scoped result set here and a hard 422 in production
-    (measured against api.github.com — `GET /search/issues` with no `q` is `Validation Failed`, field `q`,
-    code `missing`)."""
+    A missing or blank `q` is real's 422, field `q`, code `missing`. A blank value is one
+    :func:`backlot.odata.strip_blanks` leaves nothing of: a space, a tab, LF, VT, CR, U+0085,
+    U+00A0 or U+3000, measured against api.github.com on 2026-11-21 (UTC) and earlier for a
+    missing `q`. A `q` of U+001C, U+001D, U+001E or U+001F is the search's 200
+    with `total_count` 0, as U+200B already is — those four are Python whitespace that
+    :func:`~backlot.odata.strip_blanks` keeps."""
     caller = _require(request)
-    if not q.strip():
+    if not odata.strip_blanks(q):
         raise _search_validation_failed("q")
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
+    # `_parse_q` collapses Unicode whitespace with regex \s, which includes U+001C-U+001F, so a
+    # q of only those would look qualifier-only and list every issue. Real searches them and
+    # answers total_count 0, as it does for U+200B.
+    if not free and not quals and (leftover := odata.strip_blanks(q)):
+        free = leftover
     # _org, not the setting directly: the owner a `repo:` is compared against, and the one in the
     # URLs these items carry, has to be the one the repo routes accept, or every link a client
     # follows out of a search hit 404s
@@ -3151,6 +3157,30 @@ def _code_hit(conn, owner: str, row, api_base: str) -> dict:
     }
 
 
+#: A `q` real's `/search/code` answers with the parse-fatal 422, measured 2026-11-21 (UTC).
+_CODE_SEARCH_PARSE_FATAL_Q = frozenset({" ", "  ", "\t"})
+
+#: A `q` of whitespace alone that real's `/search/code` still runs, measured 2026-11-21 (UTC).
+_CODE_SEARCH_BLANK_Q_RUNS = frozenset({"\n", "\v", "\r", "\x1c", "\x1f", "\x85", "\xa0", "\u3000"})
+
+
+def _search_query_parsing_fatal() -> HTTPException:
+    """Real's 422 when `/search/code` is given a `q` of a space, two spaces or a tab.
+
+    Measured against api.github.com on 2026-11-21 (UTC): those three
+    values answer this 159-byte body, where other measured blanks run the search and a
+    missing `q` is the deserializer's text/plain 400.
+    """
+    message = "ERROR_TYPE_QUERY_PARSING_FATAL unable to parse query!"
+    exc = HTTPException(status_code=422, detail=message)
+    exc.github_body = {
+        "message": message,
+        "documentation_url": "https://docs.github.com/rest/search/search#search-code",
+        "status": "422",
+    }
+    return exc
+
+
 def _search_validation_failed(field: str) -> HTTPException:
     """Real's 422 for a search missing a required parameter, in its own envelope — here `errors` is
     the usual array, unlike the version 400's string (see :func:`_unsupported_version_error`)."""
@@ -3239,9 +3269,11 @@ async def search_code(
     `Accept: application/vnd.github.text-match+json` adds `text_matches` — the part that makes a hit
     useful rather than merely located.
 
-    A blank `q` is real's 422 rather than a listing: a code search with no term is a client bug
-    better reported than answered with a corpus dump. `/search/issues` above answers a blank `q`
-    the same way, and for the same measured reason.
+    A missing `q` is the deserializer's text/plain 400 (see
+    :func:`backlot.pagination.github_code_search_query_refusal`). A `q` of a space, two spaces
+    or a tab is the parse-fatal 422 :func:`_search_query_parsing_fatal` answers; `q=` is the
+    missing-q 422; a `q` of LF, VT, CR, U+001C, U+001F, U+0085, U+00A0 or U+3000 is the
+    search's 200. Measured against api.github.com on 2026-11-21 (UTC).
 
     A `page` / `per_page` that is not an unsigned 32-bit integer, or a `q`, `page` or `per_page`
     given twice, is refused once the credential is, and in text/plain: of the ten GitHub surfaces
@@ -3268,7 +3300,9 @@ async def search_code(
     refusal = github_code_search_query_refusal(request.query_params)
     if refusal is not None:
         return PlainTextResponse(refusal, status_code=400)
-    if not q.strip():
+    if q in _CODE_SEARCH_PARSE_FATAL_Q:
+        raise _search_query_parsing_fatal()
+    if not q or (q not in _CODE_SEARCH_BLANK_Q_RUNS and not q.strip()):
         raise _search_validation_failed("q")
     page, per_page = _clamp(page, per_page)
     if github_search_depth_refused(page, per_page, code=True):

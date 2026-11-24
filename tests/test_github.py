@@ -2215,45 +2215,109 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
     assert tm["matches"] == []
 
 
-def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h):
-    """Real answers a `q`-less code search 422 in its own envelope, not FastAPI's `{"detail": …}`.
+_SEARCH_MISSING_Q = {
+    "message": "Validation Failed",
+    "documentation_url": "https://docs.github.com/v3/search",
+    "errors": [{"resource": "Search", "field": "q", "code": "missing"}],
+    "status": "422",
+}
+_CODE_SEARCH_PARSE_FATAL = {
+    "message": "ERROR_TYPE_QUERY_PARSING_FATAL unable to parse query!",
+    "documentation_url": "https://docs.github.com/rest/search/search#search-code",
+    "status": "422",
+}
+_CODE_SEARCH_MISSING_FIELD_Q = "Failed to deserialize query string: missing field `q`"
 
-    `/search/issues` answers a blank `q` the same way; the test for that one sits beside it.
-    """
+# A space, two spaces and a tab are real's parse-fatal 422; the eight other qs are the search's 200;
+# no `q` is the deserializer's text/plain 400; `q=` stays the missing-q 422.
+# See :func:`backlot.routers.github.search_code` and
+# :func:`backlot.pagination.github_code_search_query_refusal` for the measurement.
+_CODE_SEARCH_Q_ANSWERS = {
+    "": (400, "text/plain; charset=utf-8", _CODE_SEARCH_MISSING_FIELD_Q),
+    "?q=": (422, _SEARCH_MISSING_Q),
+    "?q=+": (422, _CODE_SEARCH_PARSE_FATAL),
+    "?q=++": (422, _CODE_SEARCH_PARSE_FATAL),
+    "?q=%09": (422, _CODE_SEARCH_PARSE_FATAL),
+    "?q=%0A": 200,
+    "?q=%0B": 200,
+    "?q=%0D": 200,
+    "?q=%1C": 200,
+    "?q=%1F": 200,
+    "?q=%C2%85": 200,
+    "?q=%C2%A0": 200,
+    "?q=%E3%80%80": 200,
+}
+
+# On /search/issues, U+001C–U+001F and U+200B are the search's 200 with total_count 0; a missing or
+# blank q, including the Unicode blanks that strip_blanks removes, stays the missing-q 422.
+# See :func:`backlot.routers.github.search_issues` for the measurement.
+_ISSUE_SEARCH_Q_ANSWERS = {
+    "": (422, _SEARCH_MISSING_Q),
+    "?q=": (422, _SEARCH_MISSING_Q),
+    "?q=+++": (422, _SEARCH_MISSING_Q),
+    "?q=+": (422, _SEARCH_MISSING_Q),
+    "?q=%09": (422, _SEARCH_MISSING_Q),
+    "?q=%0A": (422, _SEARCH_MISSING_Q),
+    "?q=%0B": (422, _SEARCH_MISSING_Q),
+    "?q=%0D": (422, _SEARCH_MISSING_Q),
+    "?q=%C2%85": (422, _SEARCH_MISSING_Q),
+    "?q=%C2%A0": (422, _SEARCH_MISSING_Q),
+    "?q=%E3%80%80": (422, _SEARCH_MISSING_Q),
+    "?q=%1C": (200, 0),
+    "?q=%1D": (200, 0),
+    "?q=%1E": (200, 0),
+    "?q=%1F": (200, 0),
+    "?q=%E2%80%8B": (200, 0),
+}
+
+
+def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h, monkeypatch):
+    """A code search with no `q` is real's text/plain 400 for a missing field, a `q` of a space,
+    two spaces or a tab is the parse-fatal 422, and a `q` of the other measured blanks is the
+    search's 200; `q=` stays the missing-q 422. See :func:`backlot.routers.github.search_code`
+    for the measurement."""
+    from backlot.routers import github as gh
+
+    # thirteen code_search calls, past real's 10-a-minute cap: this checks the query, not pacing
+    monkeypatch.setattr(gh.get_settings(), "github_enforce_rate_limits", False)
     c, _ = gh_client
-    r = c.get("/github/search/code", headers=gh_admin_h)
-    assert r.status_code == 422
-    assert r.json() == {
-        "message": "Validation Failed",
-        "documentation_url": "https://docs.github.com/v3/search",
-        "errors": [{"resource": "Search", "field": "q", "code": "missing"}],
-        "status": "422",
-    }
-    assert c.get("/github/search/code", headers=gh_admin_h, params={"q": " "}).status_code == 422
+    answered = {}
+    for qs in _CODE_SEARCH_Q_ANSWERS:
+        r = c.get(f"/github/search/code{qs}", headers=gh_admin_h)
+        if r.status_code == 400:
+            answered[qs] = (400, r.headers["content-type"], r.text)
+        elif r.status_code == 422:
+            answered[qs] = (422, r.json())
+        else:
+            body = r.json()
+            answered[qs] = (
+                r.status_code,
+                "total_count" in body,
+                isinstance(body.get("items"), list),
+                isinstance(body.get("incomplete_results"), bool),
+            )
+    expected = {}
+    for qs, want in _CODE_SEARCH_Q_ANSWERS.items():
+        expected[qs] = (200, True, True, True) if want == 200 else want
+    assert answered == expected
 
 
 def test_github_issue_search_refuses_a_query_less_search(gh_client, gh_admin_h):
-    """The expensive half of the same rule. A `q`-less issue search used to answer 200 with every
-    issue and pull the caller could see, so a client that forgot its query got a plausible,
-    ACL-scoped result set here and a hard 422 in production — nothing in between said so.
-
-    Measured against api.github.com: `GET /search/issues` with no `q` at all is real's `Validation Failed`,
-    resource `Search`, field `q`, code `missing`. (`/search/code` differs on the missing-parameter
-    case only — real rejects that one at the query-string parser, `400 text/plain "Failed to
-    deserialize query string: missing field q"` — and answers the same 422 for `?q=`. Backlot
-    declares `q` with a default, so both routes see one case, and the 422 is the one to serve.)
-    """
+    """A missing or blank `q` on `/search/issues` is real's missing-q 422, including the Unicode
+    blanks `strip_blanks` removes. A `q` of U+001C, U+001D, U+001E or U+001F is the search's 200
+    with `total_count` 0, as U+200B already is. See :func:`backlot.routers.github.search_issues`
+    for the measurement; a missing `q` was also measured earlier as this 422."""
     c, _ = gh_client
-    for params in ({}, {"q": ""}, {"q": "   "}):
-        r = c.get("/github/search/issues", headers=gh_admin_h, params=params)
-        assert r.status_code == 422, params
-        assert r.json() == {
-            "message": "Validation Failed",
-            "documentation_url": "https://docs.github.com/v3/search",
-            "errors": [{"resource": "Search", "field": "q", "code": "missing"}],
-            "status": "422",
-        }
-    # ...and a real query still answers
+    answered = {}
+    for qs in _ISSUE_SEARCH_Q_ANSWERS:
+        r = c.get(f"/github/search/issues{qs}", headers=gh_admin_h)
+        if r.status_code == 422:
+            answered[qs] = (422, r.json())
+        else:
+            body = r.json()
+            answered[qs] = (r.status_code, body.get("total_count"))
+    assert answered == _ISSUE_SEARCH_Q_ANSWERS
+    # a real query still answers
     assert (
         c.get("/github/search/issues", headers=gh_admin_h, params={"q": "is:issue"}).status_code
         == 200

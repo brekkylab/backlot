@@ -161,7 +161,12 @@ _ASCII_DIGITS = frozenset("0123456789")
 def github_code_search_query_refusal(query_params) -> str | None:
     """The body of the 400 real's `/search/code` answers for a query string it cannot deserialize,
     or ``None`` when it would deserialize it: a `page` / `per_page` that is not an unsigned 32-bit
-    integer, or `q`, `page` or `per_page` given twice.
+    integer, `q`, `page` or `per_page` given twice, or no `q` at all.
+
+    A missing `q` is the 53-byte line ``Failed to deserialize query string: missing field `q` ``,
+    measured against api.github.com on 2026-11-21 from 19:53 to 20:02 UTC. It is reported after the
+    parse of `page` / `per_page` and a duplicate field, which still come first in query-string
+    order, so `per_page=abc` with no `q` is the invalid-digit line and not this one.
 
     Of the ten GitHub surfaces measured (see :func:`_absorb_page`) code search is the one that
     refuses a page value, and it refuses in a shape no other GitHub error has: status 400,
@@ -220,6 +225,8 @@ def github_code_search_query_refusal(query_params) -> str | None:
             return (
                 f"Failed to deserialize query string: {key}: number too large to fit in target type"
             )
+    if "q" not in seen:
+        return "Failed to deserialize query string: missing field `q`"
     return None
 
 

@@ -1288,17 +1288,19 @@ def _gmail_group_items(text: str) -> list:
             while j < len(pieces) and depth:
                 depth += {"(": 1, ")": -1}.get(pieces[j], 0)
                 j += 1
-            # Brackets glued to `has:` or `newer_than:` around one term are no group either: the
-            # term is the operator's value, and a `-` in front negates the operator. Measured
-            # against gmail.googleapis.com on 2026-11-23: `has:(x)` answered no messages, as
-            # `has:x` does, and `-has:(x)` and `-newer_than:(x)` every message, as `-has:x` and
-            # `-newer_than:x` do.
+            # Brackets glued to `has:`, `newer_than:` or `older_than:` around a letter, digit, `_`
+            # or `&` are no group either: they and what they hold are the operator's value, which
+            # no message matches, and a `-` in front negates the operator. Measured against
+            # gmail.googleapis.com on 2026-11-23: `has:(x)`, `has:(attachment)`, `has:(x y)`,
+            # `has:((attachment))`, `newer_than:(30d)` and `older_than:(30d)` answered no
+            # messages, where `has:attachment`, `newer_than:30d` and `older_than:30d` answered
+            # many, and each of the six with a `-` in front every message.
             if (
                 depth == 0
-                and re.fullmatch(r"-*(?:has|newer_than):", run, re.IGNORECASE)
-                and re.fullmatch(r'[^\s()"]*[\w&][^\s()"]*', "".join(pieces[i + 1 : j - 1]))
+                and re.fullmatch(r"-*(?:has|newer_than|older_than):", run, re.IGNORECASE)
+                and _GMAIL_ADDRESS_WORD.search("".join(pieces[i + 1 : j - 1]))
             ):
-                run += "".join(pieces[i + 1 : j - 1])
+                run += "".join(p for p in pieces[i:j] if not p.isspace())
                 i = j
                 continue
             negated = bool(run) and not run.strip("-")
@@ -1766,12 +1768,21 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q = _gmail_brace_leads(q)
     q, any_groups, not_any_groups = _gmail_braces(q)
     q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
-    # A quoted `in:` value holding no letter, digit, `_` or `&` is `in:""`, which reads the next
-    # word as its value (`_GMAIL_SPACED`). Measured on 2026-11-23: `in:"()"`, `in:"( )"` and
-    # `in:"."` answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and
+    # A quoted `in:` value holding no letter, digit, `_` or `&` is `in:""`. `in:""`, and an `in:`
+    # a space follows, read the next word as their value (`_GMAIL_SPACED`), past a word of
+    # punctuation alone (`_GMAIL_SEPARATOR_ONLY`). Measured on 2026-11-23: `in:"()"`, `in:"( )"`
+    # and `in:"."` answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and
     # `in:"()" has` nothing, as `in:"" the` and `in:"" has` did; `the in:"()"` the ids of `the`;
-    # and `in:"()" label:inbox` those of `label:inbox`.
+    # `in:"()" label:inbox` those of `label:inbox`; `in:"" .`, `in:"()" .` and `in: .` every
+    # message; `in:"" . the`, `in:"" . . the` and `in:"" - the` nothing; and `in:"" . inbox` and
+    # `in: ? inbox` the ids of `in:inbox`.
     q = re.sub(r'(?<![^ \t\n\r\f\v(-])(in:)"[^"\w&\xa0]*"', r'\1""', q, flags=re.IGNORECASE)
+    q = re.sub(
+        r'(?<![^ \t\n\r\f\v(-])(in:(?:"")?)(?:[ \t]+[^\w&"() \t\n\r\f\v]+)+(?=[ \t\n\r\f\v]|\Z)',
+        r"\1",
+        q,
+        flags=re.IGNORECASE,
+    )
     lone = _GMAIL_LONE_QUOTE_UNCLOSED.search(q)
     if lone and lone.group(3).count("(") > lone.group(3).count(")"):
         if (lone.group(1).count("NOT") + bool(lone.group(2))) % 2 == 0:
@@ -1840,12 +1851,6 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                     return " "
             if key in _GMAIL_NEGATABLE:
                 spaced = m.start(2) > m.end(1) + 1
-                # A term of punctuation alone is no term (`_GMAIL_SEPARATOR_ONLY`), so an `in:` that
-                # reads the next word as its value has none. Measured against
-                # gmail.googleapis.com on 2026-11-23: `in:"" .` and `in:"()" .` answered every
-                # message, as `label:"()" .` did, where `in:"()" subject:the` answered none.
-                if key == "in" and spaced and _GMAIL_SEPARATOR_ONLY.fullmatch(value):
-                    return " "
                 if value[:1] == "-" and (key == "subject" or spaced):
                     value, stored = value.lstrip("-"), f"-{key}"
                     if not value:

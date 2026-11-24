@@ -2839,6 +2839,193 @@ def test_github_an_escape_in_a_segment_a_route_spells_out_is_no_route(
     assert answered == expected
 
 
+_KEYS_DOCS = (
+    "https://docs.github.com/rest/users/keys#list-public-ssh-keys-for-the-authenticated-user"
+)
+_DOCS = "https://docs.github.com/rest"
+#: (path sent with no `Authorization`, and real's status and `documentation_url` for it).
+_ESCAPED_LAST_SEGMENT_OWN_ANSWERS = [
+    ("/user/k%65ys", 401, _KEYS_DOCS),
+    ("/user/%6Beys", 401, _KEYS_DOCS),
+    (
+        "/user/gpg%5Fkeys",
+        401,
+        "https://docs.github.com/rest/users/gpg-keys#list-gpg-keys-for-the-authenticated-user",
+    ),
+    ("/gists/st%61rred", 401, "https://docs.github.com/rest/gists/gists#list-starred-gists"),
+    (
+        "/user/p%61ckages",
+        401,
+        "https://docs.github.com/rest/packages/packages#list-packages-for-the-authenticated-users-namespace",
+    ),
+    (
+        "/user/block%73",
+        401,
+        "https://docs.github.com/rest/users/blocking#list-users-blocked-by-the-authenticated-user",
+    ),
+    (
+        "/user/codespace%73",
+        401,
+        "https://docs.github.com/rest/codespaces/codespaces#list-codespaces-for-the-authenticated-user",
+    ),
+    (
+        "/user/em%61ils",
+        401,
+        "https://docs.github.com/rest/users/emails#list-email-addresses-for-the-authenticated-user",
+    ),
+    (
+        "/user/follower%73",
+        401,
+        "https://docs.github.com/rest/users/followers#list-followers-of-the-authenticated-user",
+    ),
+    (
+        "/user/followin%67",
+        401,
+        "https://docs.github.com/rest/users/followers#list-the-people-the-authenticated-user-follows",
+    ),
+    (
+        "/user/installation%73",
+        401,
+        "https://docs.github.com/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token",
+    ),
+    (
+        "/user/interaction-limit%73",
+        401,
+        "https://docs.github.com/rest/interactions/user#get-interaction-restrictions-for-your-public-repositories",
+    ),
+    (
+        "/user/issue%73",
+        404,
+        "https://docs.github.com/rest/issues/issues#list-user-account-issues-assigned-to-the-authenticated-user",
+    ),
+    (
+        "/user/marketplace_purchase%73",
+        401,
+        "https://docs.github.com/rest/apps/marketplace#list-subscriptions-for-the-authenticated-user",
+    ),
+    (
+        "/user/migration%73",
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    (
+        "/user/org%73",
+        401,
+        "https://docs.github.com/rest/orgs/orgs#list-organizations-for-the-authenticated-user",
+    ),
+    (
+        "/user/public_email%73",
+        401,
+        "https://docs.github.com/rest/users/emails#list-public-email-addresses-for-the-authenticated-user",
+    ),
+    (
+        "/user/repository_invitation%73",
+        401,
+        "https://docs.github.com/rest/collaborators/invitations#list-repository-invitations-for-the-authenticated-user",
+    ),
+    (
+        "/user/social_account%73",
+        401,
+        "https://docs.github.com/rest/users/social-accounts#list-social-accounts-for-the-authenticated-user",
+    ),
+    (
+        "/user/ssh_signing_k%65ys",
+        401,
+        "https://docs.github.com/rest/users/ssh-signing-keys#list-ssh-signing-keys-for-the-authenticated-user",
+    ),
+    (
+        "/user/st%61rred",
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    (
+        "/user/subscription%73",
+        401,
+        "https://docs.github.com/rest/guides/getting-started-with-the-rest-api#authentication",
+    ),
+    (
+        "/user/team%73",
+        404,
+        "https://docs.github.com/rest/teams/teams#list-teams-for-the-authenticated-user",
+    ),
+]
+_KEYS_401 = (401, _KEYS_DOCS, ("core", "1"), "2022-11-28")
+_REQUIRES_AUTHENTICATION = (401, _DOCS, ("core", "1"), None)
+_UNCOUNTED_401 = (401, _DOCS, (None, None), None)
+_VERSION_400 = (400, _DOCS, ("core", "1"), None)
+_NOT_FOUND = (404, _DOCS, ("core", "1"), None)
+#: (method, path sent, what the request carries, and real's status, `documentation_url`,
+#: `x-ratelimit-resource` and `x-ratelimit-used`, and version echo): the version and the
+#: `Authorization` header beside `_ESCAPED_LAST_SEGMENT_OWN_ANSWERS`, and the methods, the spellings
+#: with no escape and the escapes elsewhere in the path that real does not answer that way.
+_ESCAPED_LAST_SEGMENT_ROWS = [
+    (
+        "GET",
+        "/user/%6beys",
+        {"headers": {"X-GitHub-Api-Version": "2026-03-10"}},
+        (401, _KEYS_DOCS, ("core", "1"), "2026-03-10"),
+    ),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": ""}}, _KEYS_401),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": "Digest x"}}, _KEYS_401),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": "Basic eDp5"}}, _KEYS_401),
+    ("GET", "/user/k%65ys", {"headers": {"Authorization": "Bearer nope"}}, _UNCOUNTED_401),
+    ("GET", "/user/k%65ys", {"headers": {"X-GitHub-Api-Version": "1999-01-01"}}, _VERSION_400),
+    (
+        "GET",
+        "/user/k%65ys",
+        {"headers": {"Authorization": "Digest x", "X-GitHub-Api-Version": "1999-01-01"}},
+        _VERSION_400,
+    ),
+    (
+        "GET",
+        "/user/k%65ys",
+        {"headers": {"Authorization": "Basic eDp5", "X-GitHub-Api-Version": "1999-01-01"}},
+        _VERSION_400,
+    ),
+    ("POST", "/user/k%65ys", {"json": {}}, _NOT_FOUND),
+    ("GET", "/user/keys", {}, _REQUIRES_AUTHENTICATION),
+    ("GET", "/user/teams", {}, _REQUIRES_AUTHENTICATION),
+    ("GET", "/user/issues", {}, _REQUIRES_AUTHENTICATION),
+    ("GET", "/user/keys/%31", {}, _REQUIRES_AUTHENTICATION),
+    ("DELETE", "/user/keys/%31", {}, _UNCOUNTED_401),
+    ("GET", "/%75ser/keys", {}, _NOT_FOUND),
+    ("GET", "/%67ists/starred", {}, _NOT_FOUND),
+    ("GET", "/user/k%65ys/1", {}, _NOT_FOUND),
+    ("GET", "/user/k%65ys/", {}, _NOT_FOUND),
+    ("GET", "/notification%73", {}, _NOT_FOUND),
+    ("GET", "/gist%73", {}, _NOT_FOUND),
+    ("GET", "/us%65r", {}, _NOT_FOUND),
+    ("GET", "/user/memberships/org%73", {}, _NOT_FOUND),
+    ("GET", "/user/docker/conflict%73", {}, _NOT_FOUND),
+]
+
+
+def test_github_an_escape_in_the_last_segment_of_an_unserved_operation_is_its_own_refusal(
+    gh_client,
+):
+    from backlot.routers.github import RateLimitWindows
+
+    c, _ = gh_client
+    own = [
+        ("GET", sent, {}, (status, docs, ("core", "1"), "2022-11-28"))
+        for sent, status, docs in _ESCAPED_LAST_SEGMENT_OWN_ANSWERS
+    ]
+    answered, expected = {}, {}
+    for method, sent, carries, answer in own + _ESCAPED_LAST_SEGMENT_ROWS:
+        c.app.state.github_rate_limits = RateLimitWindows()
+        r = c.request(method, f"/github{sent}", **carries)
+        # the row is what went on the wire, not a spelling the client normalised first
+        answered[(method, sent, repr(carries))] = (
+            r.request.url.raw_path.decode(),
+            r.status_code,
+            r.json()["documentation_url"],
+            (r.headers.get("x-ratelimit-resource"), r.headers.get("x-ratelimit-used")),
+            r.headers.get("x-github-api-version-selected"),
+        )
+        expected[(method, sent, repr(carries))] = (f"/github{sent}", *answer)
+    assert answered == expected
+
+
 def test_github_a_wrong_method_is_not_dressed_as_a_measured_answer(gh_client, gh_admin_h, gh_org):
     """Every route here declares GET, so a wrong method that reaches the router is refused by
     Starlette with `http.HTTPStatus(405).phrase` — a string no measurement attributes to real, which
@@ -7977,6 +8164,99 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
             used += 1
         assert int(_ratelimit(c.get("/github/user/repos"))["used"]) == address + 1
 
+        # A token's webhook operations share a 500/minute window, reads and writes and their
+        # 404s alike; anonymous 401s stay on core (see `rate_limit_resource` for the measurement).
+        windows = c.app.state.github_rate_limits
+        webhook_start = int(windows.clock())
+        windows.clock = lambda: webhook_start
+        hook_paths = [
+            f"{repo}/hooks",
+            f"{repo}/hooks/1",
+            f"{repo}/hooks/x",
+            f"{repo}/hooks/1/config",
+            f"{repo}/hooks/1/deliveries",
+            f"{repo}/hooks/1/deliveries/1",
+            f"/github/orgs/{org}/hooks",
+            f"/github/orgs/{org}/hooks/1/deliveries",
+            f"{repo}/HOOKS",
+        ]
+        answers = []
+        expected = []
+        for used, path in enumerate(hook_paths, 1):
+            response = c.get(path, headers=h)
+            answers.append((response.status_code, _ratelimit(response)))
+            expected.append(
+                (
+                    404,
+                    {
+                        "resource": "webhook_deliveries",
+                        "limit": "500",
+                        "used": str(used),
+                        "remaining": str(500 - used),
+                        "reset": str(webhook_start + 60),
+                    },
+                )
+            )
+        assert answers == expected
+        assert _ratelimit(c.get("/github/rate_limit", headers=h))["used"] == admin_used
+        assert _ratelimit(c.head(hook_paths[0], headers=h))["used"] == str(len(hook_paths) + 1)
+        writes = [
+            ("POST", f"{repo}/hooks"),
+            ("PATCH", f"{repo}/hooks/1"),
+            ("DELETE", f"{repo}/hooks/1"),
+            ("PATCH", f"{repo}/hooks/1/config"),
+            ("POST", f"{repo}/hooks/1/pings"),
+            ("POST", f"{repo}/hooks/1/tests"),
+            ("POST", f"{repo}/hooks/1/deliveries/1/attempts"),
+            ("POST", f"/github/orgs/{org}/hooks"),
+            ("PATCH", f"/github/orgs/{org}/hooks/1/config"),
+            ("POST", f"/github/orgs/{org}/hooks/1/pings"),
+            ("POST", f"{repo}/HOOKS"),
+        ]
+        written = [c.request(method, path, headers=h, json={}) for method, path in writes]
+        assert [
+            (r.status_code, _ratelimit(r)["resource"], _ratelimit(r)["used"]) for r in written
+        ] == [(404, "webhook_deliveries", str(used)) for used in range(11, 22)]
+        assert _ratelimit(c.get("/github/rate_limit", headers=h))["used"] == admin_used
+        unsupported = [
+            ("GET", f"{repo}/hooks/1/pings"),
+            ("GET", f"{repo}/hooks/1/tests"),
+            ("GET", f"{repo}/hooks/1/deliveries/1/attempts"),
+            ("PUT", f"{repo}/hooks/1"),
+            ("POST", f"/github/orgs/{org}/hooks/1/tests"),
+        ]
+        unmatched = [c.request(method, path, headers=h) for method, path in unsupported]
+        assert [(r.status_code, "x-ratelimit-limit" in r.headers) for r in unmatched] == [
+            (404, False)
+        ] * len(unsupported)
+        for path in (hook_paths[0], hook_paths[0] + "/1/pings"):
+            anonymous_write = c.post(path, json={})
+            assert (
+                anonymous_write.status_code,
+                _ratelimit(anonymous_write)["resource"],
+                _ratelimit(anonymous_write)["limit"],
+            ) == (401, "core", "60")
+        assert _ratelimit(c.get(hook_paths[0], headers=bob))["used"] == "1"
+        anonymous_hook = c.get(hook_paths[0])
+        assert (
+            anonymous_hook.status_code,
+            _ratelimit(anonymous_hook)["resource"],
+            _ratelimit(anonymous_hook)["limit"],
+        ) == (401, "core", "60")
+        bad_hook = c.get(hook_paths[0], headers={"Authorization": "Bearer nope"})
+        assert bad_hook.status_code == 401
+        assert not any(name.startswith("x-ratelimit-") for name in bad_hook.headers)
+        invalid_version = c.get(hook_paths[0], headers={**h, "X-GitHub-Api-Version": "1999-01-01"})
+        assert (invalid_version.status_code, _ratelimit(invalid_version)["resource"]) == (
+            400,
+            "webhook_deliveries",
+        )
+        assert "x-github-api-version-selected" not in invalid_version.headers
+        for path in (hook_paths[1] + "/nope", hook_paths[1] + "/"):
+            unknown_hook = c.get(path, headers=h)
+            assert unknown_hook.status_code == 404
+            assert not any(name.startswith("x-ratelimit-") for name in unknown_hook.headers)
+
         # a minute on, the two search windows are new ones where `core`'s is the one it was
         windows = c.app.state.github_rate_limits
         opened = windows.clock()
@@ -8037,6 +8317,31 @@ def test_github_every_response_carries_the_five_ratelimit_headers_and_rate_limit
         code_refused = c.get("/github/search/code", headers=h, params={"q": "extension:md"})
         assert code_refused.status_code == 403
         assert _ratelimit(code_refused)["resource"] == "code_search"
+
+        # The webhook bucket exhausts and rolls over independently of the spent core window.
+        monkeypatch.setitem(
+            gh.RATE_LIMITS,
+            "webhook_deliveries",
+            gh._ResourceLimit(60, 1, gh.WEBHOOK_RATE_LIMIT_WINDOW),
+        )
+        first_hook = c.get(hook_paths[0], headers=h)
+        refused_hook = c.get(hook_paths[0], headers=h)
+        refused_write = c.post(hook_paths[0], headers=h, json={})
+        assert (first_hook.status_code, refused_hook.status_code, refused_write.status_code) == (
+            404,
+            403,
+            403,
+        )
+        assert _ratelimit(refused_write) == _ratelimit(first_hook)
+        assert _ratelimit(refused_hook) == _ratelimit(first_hook)
+        assert _ratelimit(refused_hook)["resource"] == "webhook_deliveries"
+        assert _ratelimit(refused_hook)["used"] == "1"
+        webhook_now = windows.clock()
+        windows.clock = lambda: webhook_now + 61
+        fresh_hook = c.get(hook_paths[0], headers=h)
+        assert (fresh_hook.status_code, _ratelimit(fresh_hook)["used"]) == (404, "1")
+        assert int(_ratelimit(fresh_hook)["reset"]) == int(webhook_now) + 121
+        assert c.get(repo, headers=h).status_code == 403
 
 
 @pytest.mark.parametrize(

@@ -13455,9 +13455,10 @@ def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, boo
     assert got["dataFilters"] == [{"gridRange": {k: v for k, v in grid.items() if k != "sheetId"}}]
 
 
-def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
-    """NOT the order the filters arrived in. Measured: column before row, so `A2` precedes `B1`,
-    and a row number sorts numerically, so `B9` precedes `B10`."""
+def test_backlot_orders_data_filter_ranges_by_column_then_row(gc, gh, book):
+    """Backlot's own order, which real's is not (see `where` in
+    `sheets_values_batch_get_by_data_filter`): column before row, so `A2` precedes `B1`, and a row
+    number sorts numerically, so `B9` precedes `B10`."""
     r = _by_filter(
         gc,
         gh,
@@ -15231,6 +15232,7 @@ _GMAIL_LONG_RUN_ROWS = [
     ('-has:"' + "x" * 522 + '"', ["plan", "lunch"]),
     ('-has:""', ["plan", "lunch"]),
     ('-has:"()"', ["plan", "lunch"]),
+    ('has:"it"', ["reply"]),
     ("has:(" + "x" * 522 + ")", ["reply"]),
     ('in:"()"', ["plan", "lunch", "reply"]),
     ('in:"()" has', []),
@@ -15360,6 +15362,138 @@ def test_gmail_an_empty_or_lone_quoted_operator(tmp_path):
     settings = tiny_corpus(tmp_path, records)
     token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
     rows = _GMAIL_EMPTY_OPERATOR_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
+#: A `has:`, `newer_than:` or `older_than:` with a value Gmail does not know, an age in hours, a
+#: `has:` value in another case or in quotes, a value of the three in brackets, a `q` of separators
+#: alone, a `subject:` value with punctuation at an end or of punctuation alone, and an empty `in:`
+#: with punctuation alone after it. The corpus holds `the` in two messages, an attachment on one,
+#: three older than 30 days and one within them, so the controls tell the new rows from the old
+#: ones: the one within 30 days is what `newer_than:30d` answers, and what an age in non-ASCII
+#: digits does not.
+_GMAIL_UNKNOWN_VALUE_ROWS = [
+    ("has:x", []),
+    ("has:zzzq", []),
+    ("newer_than:x", []),
+    ("newer_than:5", []),
+    ("older_than:x", []),
+    ("older_than:5", []),
+    ("the has:x", []),
+    ("-has:x", ["plan", "lunch", "after", "recent"]),
+    ("-newer_than:x", ["plan", "lunch", "after", "recent"]),
+    ("-older_than:5", ["plan", "lunch", "after", "recent"]),
+    ("has:attachment", ["plan"]),
+    ("-has:attachment", ["lunch", "after", "recent"]),
+    ("has:Attachment", []),
+    ("-has:Attachment", ["plan", "lunch", "after", "recent"]),
+    ("has:Drive", []),
+    ("has:orange-gbang", []),
+    ("newer_than:30d", ["recent"]),
+    ("older_than:30d", ["plan", "lunch", "after"]),
+    ("older_than:720h", ["plan", "lunch", "after"]),
+    ("older_than:720H", ["plan", "lunch", "after"]),
+    ("newer_than:720h", ["recent"]),
+    ("newer_than:720H", ["recent"]),
+    ("newer_than:\u0663\u0660d", []),
+    ("newer_than:\uff13\uff10d", []),
+    ("older_than:\u0663\u0660d", []),
+    ("older_than:\uff13\uff10d", []),
+    (".", ["plan", "lunch", "after", "recent"]),
+    ("@", ["plan", "lunch", "after", "recent"]),
+    (",", ["plan", "lunch", "after", "recent"]),
+    ("!", ["plan", "lunch", "after", "recent"]),
+    ("...", ["plan", "lunch", "after", "recent"]),
+    ("?", ["plan", "lunch", "after", "recent"]),
+    ("#", ["plan", "lunch", "after", "recent"]),
+    ("}", ["plan", "lunch", "after", "recent"]),
+    ("\u2026", ["plan", "lunch", "after", "recent"]),
+    ("\u3002", ["plan", "lunch", "after", "recent"]),
+    ("\U0001f600", ["plan", "lunch", "after", "recent"]),
+    ("&", []),
+    ("_", []),
+    ("the .", ["plan", "after"]),
+    ("the ?", ["plan", "after"]),
+    ("subject:plan", ["plan"]),
+    ("subject:.plan", ["plan"]),
+    ("subject:plan.", ["plan"]),
+    ("subject:plan,", ["plan"]),
+    ("subject:,plan", ["plan"]),
+    ("subject:...plan", ["plan"]),
+    ("-subject:.plan", ["lunch", "after", "recent"]),
+    ("subject:.", ["plan", "lunch", "after", "recent"]),
+    ("-subject:.", ["plan", "lunch", "after", "recent"]),
+    ("-subject:...", ["plan", "lunch", "after", "recent"]),
+    ('has:"attachment"', []),
+    ('has:"pdf"', []),
+    ('has:"drive"', []),
+    ("has:(x)", []),
+    ("has:(attachment)", []),
+    ("has:(x y)", []),
+    ("-has:(x)", ["plan", "lunch", "after", "recent"]),
+    ("-has:(attachment)", ["plan", "lunch", "after", "recent"]),
+    ("-has:(x y)", ["plan", "lunch", "after", "recent"]),
+    ("newer_than:(x)", []),
+    ("newer_than:(30d)", []),
+    ("-newer_than:(x)", ["plan", "lunch", "after", "recent"]),
+    ("-newer_than:(30d)", ["plan", "lunch", "after", "recent"]),
+    ("older_than:(30d)", []),
+    ("-older_than:(30d)", ["plan", "lunch", "after", "recent"]),
+    ('in:"" .', ["plan", "lunch", "after", "recent"]),
+    ('in:"()" .', ["plan", "lunch", "after", "recent"]),
+    ("in: .", ["plan", "lunch", "after", "recent"]),
+    ('in:"" . the', []),
+    ('-in:"" . the', ["plan", "lunch", "after", "recent"]),
+    ('label:"()" .', ["plan", "lunch", "after", "recent"]),
+    ('in:"()" subject:the', []),
+]
+
+
+def test_gmail_an_unknown_operator_value_matches_nothing(tmp_path):
+    """Each row is how the comments at `_GMAIL_SEPARATOR_ONLY`, `_GMAIL_REL_UNIT` and
+    `_GMAIL_HAS_VALUES`, those in `_gmail_group_items`, `_parse_gmail_q` and `_gmail_op_match`, and
+    the docstring of `_gmail_subject_value` read its query, over both listings."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+            **({"attachments": attachments} if attachments else {}),
+        }
+        for doc_id, title, content, attachments in [
+            (
+                "plan",
+                "Rollout plan",
+                "the rollout is attached",
+                [{"filename": "deck.pdf", "mime": "application/pdf", "content": "deck"}],
+            ),
+            ("lunch", "Lunch", "Friday?", None),
+            ("after", "Later", "see after the meeting", None),
+        ]
+    ]
+    # The message within 30 days, dated from now so the row never goes stale.
+    records.append(
+        {
+            "source_type": "gmail",
+            "doc_id": "recent",
+            "mailbox": "ava",
+            "title": "Soon",
+            "content": "bring snacks",
+            "author_email": "ava@acme.com",
+            "readers": ["ava@acme.com"],
+            "created": (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=10)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    )
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_UNKNOWN_VALUE_ROWS
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 

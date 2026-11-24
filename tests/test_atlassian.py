@@ -6073,6 +6073,24 @@ _JQL_ROWS = [
         for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
     ],
     ("post", 2, {}, {"jql": "order by key", "maxResults": 1}, _UNBOUNDED_JQL),
+    *[
+        row
+        for jql, sentence in (
+            (
+                "labels = select",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it "
+                "in quotation marks to use it in a query. (line 1, character 10)",
+            ),
+            (
+                "labels is not foo",
+                "Your query couldn't be processed. Make sure it's valid and try again later.",
+            ),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence)),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, _jql_error(sentence)),
+        )
+    ],
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
@@ -6295,6 +6313,44 @@ _JQL_ROWS = [
                 "cf[10016 is EMPTY",
                 "Error in the JQL Query: Expecting ']' but got 'is'. (line 1, character 10)",
             ),
+            (
+                "labels = true",
+                "Error in the JQL Query: 'true' is a reserved JQL word. You must surround it "
+                "in quotation marks to use it in a query. (line 1, character 10)",
+            ),
+            (
+                "select = zzq",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it "
+                "in quotation marks to use it in a query. (line 1, character 1)",
+            ),
+            (
+                "labels = a\\b",
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = by",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence))
+        for jql, sentence in (
+            (
+                "(" * 100 + "labels = zzq" + ")" * 100 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 220)",
+            ),
+            (
+                "(" * 101 + "labels = zzq" + ")" * 101 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 222)",
+            ),
+            (
+                "(" * 1000 + "labels = zzq" + ")" * 1000 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 2020)",
+            ),
         )
     ],
     *[
@@ -6314,6 +6370,8 @@ _JQL_ROWS = [
             "project is not EMPTY order by cf[10016]",
             "labels is foo",
             "labels in (zzq, (x))",
+            'labels = "select"',
+            "labels = 'true'",
             "status was Open",
             "status was not in (Open)",
             "status was Open during (startOfDay(-7d), now())",

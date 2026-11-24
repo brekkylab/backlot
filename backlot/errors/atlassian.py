@@ -2268,6 +2268,22 @@ def jql_parse_error(sentence: str) -> AtlassianError:
     )
 
 
+def jql_could_not_process() -> AtlassianError:
+    """Jira's 400 for a `search/jql` whose `jql` parses but real cannot run — `IS NOT` with a
+    value other than `EMPTY` — on GET or POST: the sentence is not a parse error, so it carries
+    no `Error in the JQL Query` prefix and no position (Jira Cloud, 2026-11-23)."""
+    return AtlassianError(
+        400,
+        {
+            "errorMessages": [
+                "Your query couldn't be processed. Make sure it's valid and try again later."
+            ],
+            "errors": {},
+        },
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def properties_null_element(index: int) -> AtlassianError:
     """Jira's 500 for a `search/jql` body whose `properties` list holds a ``null``, measured
     2026-10-10: the message names the first null's index (`["a", null]` names index 1), on the

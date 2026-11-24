@@ -1057,9 +1057,9 @@ async def jira_search(request: Request):
         if isinstance(raw_jql, (list, dict)) or isinstance(raw_token, (list, dict)):
             # Measured 2026-09-18 on both fields: a `jql` or `nextPageToken` shaped as a list or an
             # object is the same refusal as an unknown field, where a scalar (a number, a bool)
-            # instead reaches its own handling below — the JQL parser for `jql`, which
-            # `_str_param`'s docstring already documents as lenient here, and the token decoder for
-            # `nextPageToken`.
+            # instead reaches its own handling below: the JQL parser for `jql`, where `{"jql": 1}`
+            # is the parse error for a field with no operator (2026-11-23), and the token decoder
+            # for `nextPageToken`.
             raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
         raw_fields = body.get("fields")
         if raw_fields is not None and (
@@ -1139,9 +1139,20 @@ async def jira_search(request: Request):
         # Checked after the page token and before the unbounded-JQL refusal, both measured too
         # (2026-09-18).
         raise errors_atlassian.max_results_out_of_range()
-    # No `jql` at all is refused rather than answered as the unfiltered corpus (measured
-    # 2026-09-16; see test_jira_search_refuses_no_jql_at_all).
+    # No `jql` at all (measured 2026-09-16) is refused rather than answered as the unfiltered
+    # corpus.
     if not jql.strip():
+        raise errors_atlassian.unbounded_jql()
+    parse_error = _jql_parse_error(jql)
+    if parse_error is not None:
+        # A `jql` Jira's parser cannot parse is its 400 naming what the parser expected, not
+        # the unbounded refusal below: the parser runs first, so an `ORDER BY` with no field
+        # or with junk after it is this 400, while one that parses still draws the refusal.
+        raise errors_atlassian.jql_parse_error(parse_error)
+    # One with nothing before its `ORDER BY` (measured 2026-11-21 and 2026-11-22) is refused
+    # rather than answered as the unfiltered corpus: the requests real refused with this on Jira
+    # Cloud, and those it served beside them, are rows of test_jira_search_reads_a_jql_as_real_does.
+    if re.match(r"[ \t\n\r]*order[ \t\n\r]+by\b", jql, flags=re.IGNORECASE | re.ASCII):
         raise errors_atlassian.unbounded_jql()
     if reconcile_null:
         # Real answers this after the page token, the range and the JQL, and before it looks up
@@ -1258,29 +1269,58 @@ async def jira_issue_comments(key: str, request: Request):
     }
 
 
-@router.get("/rest/api/3/issueLinkType")
-async def jira_link_types(request: Request):
-    # No credential check: real Jira answers this to an anonymous caller (measured 2026-09-04).
-    # The four default names, IDs and self links were measured on one Jira Cloud tenant
-    # on 2026-10-09; this mirrors that default set, not tenant-customized link types.
-    site = _site(request)
-    types = {
-        "issueLinkTypes": [
-            {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-            {"id": "10001", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
-            {
-                "id": "10002",
-                "name": "Duplicate",
-                "inward": "is duplicated by",
-                "outward": "duplicates",
-            },
-            {"id": "10003", "name": "Relates", "inward": "relates to", "outward": "relates to"},
-        ]
+#: The four default link types, by id: name, inward and outward. Measured on Jira Cloud on
+#: 2026-10-09; this is that default set, not a site's customized one.
+_JIRA_LINK_TYPES = {
+    "10000": ("Blocks", "is blocked by", "blocks"),
+    "10001": ("Cloners", "is cloned by", "clones"),
+    "10002": ("Duplicate", "is duplicated by", "duplicates"),
+    "10003": ("Relates", "relates to", "relates to"),
+}
+
+
+def _jira_link_type(request: Request, type_id: str) -> dict:
+    """One link type, members in real's order, its `self` under the mount the request came in on:
+    `/rest/api/2/` from the v2 list, measured 2026-10-15."""
+    name, inward, outward = _JIRA_LINK_TYPES[type_id]
+    mount = _JIRA_MOUNT.search(request.url.path).group()
+    return {
+        "id": type_id,
+        "name": name,
+        "inward": inward,
+        "outward": outward,
+        "self": f"{_site(request)}{mount}issueLinkType/{type_id}",
     }
 
-    for item in types["issueLinkTypes"]:
-        item["self"] = f"{site}/rest/api/3/issueLinkType/{item['id']}"
-    return types
+
+@router.get("/rest/api/2/issueLinkType")
+@router.get("/rest/api/3/issueLinkType")
+async def jira_link_types(request: Request):
+    """Every link type to a caller whose credential resolves, and none to a caller with no
+    credential, a failed pair or an unknown scheme, as a site whose anonymous caller sees no project
+    answers (Jira Cloud: `/3` on 2026-10-15, `/2` and `/3` on 2026-11-23). A site with public
+    projects lists its types to a caller with no credential (Jira Cloud, 2026-10-15); Backlot's
+    anonymous caller sees no project, so it answers as the first site does."""
+    if _jira_caller(request).is_anonymous:
+        return {"issueLinkTypes": []}
+    return {"issueLinkTypes": [_jira_link_type(request, i) for i in _JIRA_LINK_TYPES]}
+
+
+@router.get("/rest/api/2/issueLinkType/{type_id}")
+@router.get("/rest/api/3/issueLinkType/{type_id}")
+async def jira_link_type(type_id: str, request: Request):
+    """One link type, the URL each listed type's `self` names, its id read as :func:`_parse_long`
+    reads it (Jira Cloud, `/3` on 2026-10-15, `/2` and `/3` on 2026-11-23). An id it cannot read is
+    ``errors.atlassian.invalid_link_type_id`` from every caller, and one that names no type, or is
+    asked for by a caller :func:`jira_link_types` lists none to, is
+    ``errors.atlassian.no_such_link_type``. Each names the id as sent."""
+    type_long = _parse_long(type_id)
+    if type_long is None:
+        raise errors_atlassian.invalid_link_type_id(type_id)
+    canonical = str(type_long)
+    if _jira_caller(request).is_anonymous or canonical not in _JIRA_LINK_TYPES:
+        raise errors_atlassian.no_such_link_type(type_id)
+    return _jira_link_type(request, canonical)
 
 
 # The standard system fields, used by clients (e.g. mcp-atlassian) for field/epic discovery.
@@ -1437,6 +1477,349 @@ async def jira_fields(request: Request):
 # collapse "unresolvable" into "unfiltered" (the fidelity gap found & fixed for Confluence's
 # space= handling applies identically to Jira's project= handling).
 _JIRA_PROJECT_UNRESOLVED = object()
+
+
+#: The characters JQL separates words with. A no-break space or U+2003 is part of the word beside
+#: it, and U+000B, U+000C and U+001C are characters real asks to have escaped (Jira Cloud,
+#: 2026-11-22).
+_JQL_WHITESPACE = " \t\n\r"
+
+#: Characters real refuses outside quotes, each where it followed a word (`labels = a+b`) on
+#: 2026-11-23, where `.` and `-` were read as part of the word (`labels = a.b`, `created > -7d`).
+_JQL_RESERVED_CHARACTERS = "@*?/+;#%"
+
+#: The operators and punctuation of JQL, longest first so `!=` is not read as `!` and `=`.
+#: `&&` and `&` are `AND`, `||` and `|` are `OR`, `!` is `NOT` (each served on 2026-11-23).
+_JQL_SYMBOLS = (
+    *("!=", "!~", "<=", ">=", "&&", "||"),
+    *("=", "<", ">", "~", "!", "&", "|", "(", ")", ",", "[", "]"),
+)
+
+#: A word outside quotes: a run of anything that is not whitespace, a quote, a symbol's character or
+#: a reserved character. `café` and `가나` are words (both served on 2026-11-23).
+_JQL_WORD = re.compile(
+    "[^"
+    + re.escape(_JQL_WHITESPACE + "\"'=!<>~&|(),[]" + _JQL_RESERVED_CHARACTERS)
+    + "\\x00-\\x1f]+"
+)
+
+#: Words real refuses unquoted where a field name goes, and where a value goes. `empty` and `null`
+#: are values (measured 2026-11-22 and 2026-11-23).
+_JQL_FIELD_WORDS = frozenset(
+    {"and", "or", "in", "is", "empty", "null", "order", "by", "asc", "desc", "was", "changed"}
+)
+_JQL_VALUE_WORDS = frozenset(
+    {"and", "or", "not", "in", "is", "order", "asc", "desc", "was", "changed"}
+)
+
+#: The operator list real's sentence names when a field is not followed by one.
+_JQL_OPERATORS = "'=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and 'IS NOT'"
+
+#: How deep the parser follows nested parentheses before it serves the query unchecked. Real
+#: parsed 1000 levels (2026-11-23); a level here is at most three Python frames.
+_JQL_MAX_DEPTH = 100
+
+_JQL_PREFIX = "Error in the JQL Query: "
+#: Real's sentences for a missing or unquoted value open without `the` (2026-11-23).
+_JQL_VALUE_PREFIX = "Error in JQL Query: "
+_JQL_CLOSE_AT_END = _JQL_PREFIX + "Expecting ')' before the end of the query."
+
+
+class _JqlParseError(Exception):
+    """Raised with the sentence `_jql_parse_error` returns."""
+
+
+class _JqlUnchecked(Exception):
+    """Raised past `_JQL_MAX_DEPTH`."""
+
+
+class _JqlParser:
+    """A `jql` read the way Jira's parser reads it: clauses (`field operator value`, `IN`, `IS`,
+    `WAS`, `CHANGED` and their history clauses), `AND`, `OR`, `NOT` and parentheses, values, lists
+    and function calls, and an `ORDER BY` of fields with optional `ASC` or `DESC`. Each refusal is
+    real's sentence, measured on Jira Cloud on 2026-11-22 or 2026-11-23 in the rows of
+    test_jira_search_reads_a_jql_as_real_does. Reserved words (`select`, `true`) and backslash
+    escapes are not read, so a `jql` that uses one is served.
+    """
+
+    def __init__(self, jql: str):
+        self.jql = jql
+        self.tokens = self._tokens()
+        self.pos = 0
+
+    def _position(self, offset: int) -> tuple[int, int]:
+        """The line and character of `offset`, the character counted in UTF-16 code units as real
+        counts it: an emoji before the error moves it by two (2026-11-23)."""
+        start = self.jql.rfind("\n", 0, offset) + 1
+        character = len(self.jql[start:offset].encode("utf-16-le")) // 2 + 1
+        return self.jql.count("\n", 0, offset) + 1, character
+
+    def _at(self, offset: int) -> str:
+        return " (line {}, character {})".format(*self._position(offset))
+
+    def _tokens(self) -> list[tuple[str, int, bool]]:
+        """Each token's text, its offset, and whether it is a string (a word or a quoted string)."""
+        jql, tokens, i = self.jql, [], 0
+        while i < len(jql):
+            c = jql[i]
+            if c in _JQL_WHITESPACE:
+                i += 1
+            elif c < " ":
+                line, character = self._position(i)
+                raise _JqlParseError(
+                    f"{_JQL_PREFIX}The character 'U+{ord(c):04X}' on line {line} at position"
+                    f" {character} must be escaped. Use the escape '\\u{ord(c):04x}' instead."
+                    f"{self._at(i)}"
+                )
+            elif c in _JQL_RESERVED_CHARACTERS:
+                raise _JqlParseError(
+                    f"{_JQL_PREFIX}The character '{c}' is a reserved JQL character. You must"
+                    f" enclose it in a string or use the escape '\\u{ord(c):04x}' instead."
+                    f"{self._at(i)}"
+                )
+            elif c in "\"'":
+                j = i + 1
+                while j < len(jql) and jql[j] != c:
+                    j += 2 if jql[j] == "\\" else 1
+                if j >= len(jql):
+                    raise _JqlParseError(
+                        f"{_JQL_PREFIX}The quoted string '{jql[i + 1 :]}' has not been completed."
+                        f"{self._at(i)}"
+                    )
+                tokens.append((jql[i : j + 1], i, True))
+                i = j + 1
+            elif symbol := next((s for s in _JQL_SYMBOLS if jql.startswith(s, i)), None):
+                tokens.append((symbol, i, False))
+                i += len(symbol)
+            else:
+                word = _JQL_WORD.match(jql, i)
+                tokens.append((word.group(), i, True))
+                i = word.end()
+        return tokens
+
+    def _peek(self, ahead: int = 0) -> tuple[str, int, bool] | None:
+        i = self.pos + ahead
+        return self.tokens[i] if i < len(self.tokens) else None
+
+    def _next(self) -> tuple[str, int, bool] | None:
+        tok = self._peek()
+        self.pos += 1
+        return tok
+
+    def _is_word(self, tok: tuple[str, int, bool] | None, *words: str) -> bool:
+        return tok is not None and tok[0].lower() in words
+
+    def _or_and(self, tok: tuple[str, int, bool]) -> _JqlParseError:
+        return _JqlParseError(
+            f"{_JQL_PREFIX}Expecting either 'OR' or 'AND' but got '{tok[0]}'.{self._at(tok[1])}"
+        )
+
+    def parse(self) -> None:
+        if not self._is_word(self._peek(), "order"):
+            self._parse_clause(0)
+        if self._is_word(self._peek(), "order"):
+            self._parse_order_by()
+        rest = self._peek()
+        if rest is not None:
+            raise self._or_and(rest)
+
+    def _parse_clause(self, depth: int) -> None:
+        self._parse_and(depth)
+        while self._is_word(self._peek(), "or", "||", "|"):
+            self._next()
+            self._parse_and(depth)
+
+    def _parse_and(self, depth: int) -> None:
+        self._parse_not(depth)
+        while self._is_word(self._peek(), "and", "&&", "&"):
+            self._next()
+            self._parse_not(depth)
+
+    def _parse_not(self, depth: int) -> None:
+        while self._is_word(self._peek(), "not", "!"):
+            self._next()
+        tok = self._peek()
+        if tok is None or tok[0] != "(":
+            self._parse_predicate(depth)
+            return
+        if depth >= _JQL_MAX_DEPTH:
+            raise _JqlUnchecked
+        self._next()
+        self._parse_clause(depth + 1)
+        closer = self._next()
+        if closer is None:
+            raise _JqlParseError(_JQL_CLOSE_AT_END)
+        if closer[0] != ")":
+            raise self._or_and(closer)
+
+    def _expect_field(self) -> None:
+        tok = self._next()
+        if tok is None:
+            raise _JqlParseError(f"{_JQL_PREFIX}Expecting a field name at the end of the query.")
+        if not tok[2] or tok[0].lower() in _JQL_FIELD_WORDS:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}Expecting a field name but got '{tok[0]}'. You must surround"
+                f" '{tok[0]}' in quotation marks to use it as a field name.{self._at(tok[1])}"
+            )
+        if tok[0].lower() == "cf":
+            self._custom_field_id()
+
+    def _custom_field_id(self) -> None:
+        """The `[10016]` after `cf`, in any case and with spaces inside the brackets (each served
+        on 2026-11-23), where `cf` alone is no field name."""
+        bracket = self._next()
+        if bracket is None:
+            raise _JqlParseError(f"{_JQL_PREFIX}Expecting '[' before the end of the query.")
+        if bracket[0] != "[":
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}Expecting '[' but got '{bracket[0]}'.{self._at(bracket[1])}"
+            )
+        number = self._next()
+        if number is None:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}Expecting a custom field id (a positive number) before the end of"
+                " the query."
+            )
+        if not re.fullmatch("[0-9]+", number[0]):
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}Expecting a custom field id (a positive number) but got"
+                f" '{number[0]}'.{self._at(number[1])}"
+            )
+        closer = self._next()
+        if closer is None:
+            raise _JqlParseError(f"{_JQL_PREFIX}Expecting ']' before the end of the query.")
+        if closer[0] != "]":
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}Expecting ']' but got '{closer[0]}'.{self._at(closer[1])}"
+            )
+
+    def _parse_predicate(self, depth: int) -> None:
+        self._expect_field()
+        tok = self._peek()
+        if tok is None:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}Expecting operator before the end of the query. The valid operators"
+                f" are {_JQL_OPERATORS}."
+            )
+        if self._is_word(tok, "not") and self._is_word(self._peek(1), "in"):
+            self._next()
+            tok = self._peek()
+        if self._is_word(tok, "is", "in"):
+            # `IS` takes any value, as `IN` does: `labels is foo` was served (2026-11-23).
+            self._next()
+            if self._is_word(tok, "is") and self._is_word(self._peek(), "not"):
+                self._next()
+            self._parse_value(depth)
+        elif self._is_word(tok, "was"):
+            self._next()
+            while self._is_word(self._peek(), "not", "in"):
+                self._next()
+            self._parse_value(depth)
+            self._parse_history(depth)
+        elif self._is_word(tok, "changed"):
+            self._next()
+            self._parse_history(depth)
+            value = self._peek()
+            if (
+                value is not None
+                and value[2]
+                and value[0][0] not in "\"'"
+                and value[0].lower() not in ("and", "or", "order")
+            ):
+                raise _JqlParseError(
+                    f"{_JQL_VALUE_PREFIX}The CHANGED operator does not support the use of values"
+                    f' without predicates. You must prefix the "{value[0]}" value with a suitable'
+                    " predicate."
+                )
+        elif not tok[2] and tok[0] in ("=", "!=", "<", ">", "<=", ">=", "~", "!~"):
+            self._next()
+            self._parse_value(depth)
+        else:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}Expecting operator but got '{tok[0]}'. The valid operators are"
+                f" {_JQL_OPERATORS}.{self._at(tok[1])}"
+            )
+
+    def _parse_history(self, depth: int) -> None:
+        while self._is_word(self._peek(), "from", "to", "by", "after", "before", "on", "during"):
+            self._next()
+            self._parse_value(depth)
+
+    def _parse_value(self, depth: int) -> None:
+        tok = self._next()
+        if tok is None:
+            raise _JqlParseError(
+                f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function before the end of"
+                " the query."
+            )
+        if tok[0] == "(":
+            if depth >= _JQL_MAX_DEPTH:
+                raise _JqlUnchecked
+            self._parse_value(depth + 1)
+            while True:
+                tok = self._next()
+                if tok is None:
+                    raise _JqlParseError(_JQL_CLOSE_AT_END)
+                if tok[0] == ")":
+                    return
+                if tok[0] != ",":
+                    raise _JqlParseError(
+                        f"{_JQL_PREFIX}Expecting ',' or ')' but got '{tok[0]}'.{self._at(tok[1])}"
+                    )
+                self._parse_value(depth + 1)
+        if not tok[2] or tok[0].lower() in _JQL_VALUE_WORDS:
+            raise _JqlParseError(
+                f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function but got"
+                f" '{tok[0]}'. You must surround '{tok[0]}' in quotation marks to use it as a"
+                f" value.{self._at(tok[1])}"
+            )
+        if self._is_word(self._peek(), "("):
+            # A function call: `currentUser()`, `startOfDay(-1d)`. Its arguments are read as
+            # tokens up to the parenthesis that closes it.
+            open_ = 0
+            while (tok := self._next()) is not None:
+                open_ += {"(": 1, ")": -1}.get(tok[0], 0)
+                if open_ == 0:
+                    return
+            raise _JqlParseError(_JQL_CLOSE_AT_END)
+
+    def _parse_order_by(self) -> None:
+        self._next()  # `order`
+        by = self._next()
+        if by is None:
+            raise _JqlParseError(f"{_JQL_PREFIX}Expecting 'by' before the end of the query.")
+        if not self._is_word(by, "by"):
+            raise _JqlParseError(f"{_JQL_PREFIX}Expecting 'by' but got '{by[0]}'.{self._at(by[1])}")
+        self._expect_field()
+        while (tok := self._peek()) is not None:
+            if self._is_word(tok, "asc", "desc"):
+                self._next()
+                tok = self._peek()
+                if tok is None:
+                    return
+                if tok[0] != ",":
+                    raise _JqlParseError(
+                        f"{_JQL_PREFIX}Expecting ',' but got '{tok[0]}'.{self._at(tok[1])}"
+                    )
+            elif tok[0] != ",":
+                raise _JqlParseError(
+                    f"{_JQL_PREFIX}Expecting either 'ASC' or 'DESC' but got '{tok[0]}'."
+                    f"{self._at(tok[1])}"
+                )
+            self._next()
+            self._expect_field()
+
+
+def _jql_parse_error(jql: str) -> str | None:
+    """Real's `errorMessages` sentence for a `jql` its parser refuses, or ``None`` for one it
+    parses or one nested deeper than `_JQL_MAX_DEPTH`."""
+    try:
+        _JqlParser(jql).parse()
+    except _JqlParseError as exc:
+        return str(exc)
+    except _JqlUnchecked:
+        return None
+    return None
 
 
 def _project_from_jql(conn, jql: str, request: Request | None = None):
@@ -2886,6 +3269,95 @@ def _confluence_ts(updated_ts, created_ts, cid) -> int:
     return synth.epoch(str(cid))
 
 
+def _confluence_webresource(terms: list[str]) -> dict:
+    """The `webresource` member a body representation serves when an `expand` term names it.
+
+    The member alone is `superbatch` with its three names still under `_expandable`, then an
+    `_expandable` of `uris`, `keys`, `contexts` and `tags`. A name under it is expanded inside
+    it, measured on Confluence Cloud on 2026-11-17: `uris`, `tags`, `keys` and `contexts` stand
+    before `superbatch` in the order `keys`, `contexts`, `uris`, `tags`, and leave `_expandable`;
+    all four named leave no `_expandable`. `uris` and `tags` start as `_expandable` objects;
+    `keys` and `contexts` are `[]`. Under `superbatch`, `uris` and `tags` are those same objects
+    and `metatags` is the `ajs-context-path` tag; all three named stand as `uris`, `tags`,
+    `metatags` with no `_expandable`. Directly under `webresource`, only `uris.all` expands
+    (to `[]`); `uris.css` and `uris.js` expand nothing. Each name under `tags` is `""`, in the
+    order `all`, `data`, `css`, `js`. Under `superbatch`, `uris.all`, `uris.css` and `uris.js`
+    are `[]` and each `tags.*` is `""`, as `uris.all` and `tags.*` are outside it, where real
+    served the site's asset URLs and script tags; `keys` is `[]` on every representation, as on
+    `storage`, where real listed web-resource keys on `view`. An unknown name (`x`, `metatags`,
+    `Uris`, `superbatch` or `superbatch.x`) leaves the member as the member alone is, and so
+    does an empty one (`webresource..uris`, `superbatch..uris`, 2026-11-23); a name under an
+    expanded member (`uris.x`, `uris..all`, `superbatch.metatags.x`) still expands that member.
+    """
+    wr_names = ("uris", "keys", "contexts", "tags")
+    sb_names = ("uris", "metatags", "tags")
+    wr_requested: dict[str, set[str]] = {}
+    sb_requested: dict[str, set[str]] = {}
+    for term in terms:
+        head, *rest = term.split(".")
+        if head in wr_names:
+            wr_requested.setdefault(head, set()).update(rest[:1])
+        elif head == "superbatch" and rest and rest[0] in sb_names:
+            sb_requested.setdefault(rest[0], set()).update(rest[1:2])
+
+    def uris_value(children: set[str], *, under_superbatch: bool) -> dict:
+        expandable = ("all", "css", "js")
+        served_names = expandable if under_superbatch else ("all",)
+        served = [name for name in served_names if name in children]
+        if not served:
+            return {"_expandable": dict.fromkeys(expandable, "")}
+        out = {name: [] for name in served}
+        leftover = [name for name in expandable if name not in served]
+        if leftover:
+            out["_expandable"] = dict.fromkeys(leftover, "")
+        return out
+
+    def tags_value(children: set[str]) -> dict:
+        # Served names stand in the measured order all, data, css, js. The unexpanded
+        # `_expandable` object, measured 2026-11-17, lists all, css, data, js.
+        served_order = ("all", "data", "css", "js")
+        expandable_order = ("all", "css", "data", "js")
+        served = [name for name in served_order if name in children]
+        if not served:
+            return {"_expandable": dict.fromkeys(expandable_order, "")}
+        out = {name: "" for name in served}
+        leftover = [name for name in expandable_order if name not in served]
+        if leftover:
+            out["_expandable"] = dict.fromkeys(leftover, "")
+        return out
+
+    out: dict = {}
+    builders = {
+        "keys": lambda _c: [],
+        "contexts": lambda _c: [],
+        "uris": lambda c: uris_value(c, under_superbatch=False),
+        "tags": tags_value,
+    }
+    for name in ("keys", "contexts", "uris", "tags"):
+        if name in wr_requested:
+            out[name] = builders[name](wr_requested[name])
+
+    superbatch: dict = {}
+    for name in ("uris", "tags", "metatags"):
+        if name not in sb_requested:
+            continue
+        if name == "uris":
+            superbatch[name] = uris_value(sb_requested[name], under_superbatch=True)
+        elif name == "tags":
+            superbatch[name] = tags_value(sb_requested[name])
+        else:
+            superbatch[name] = "<meta name='ajs-context-path' content='/wiki'>"
+    leftover = [name for name in sb_names if name not in sb_requested]
+    if leftover:
+        superbatch["_expandable"] = dict.fromkeys(leftover, "")
+    out["superbatch"] = superbatch
+
+    leftover = [name for name in wr_names if name not in wr_requested]
+    if leftover:
+        out["_expandable"] = dict.fromkeys(leftover, "")
+    return out
+
+
 def _confluence_media_token(request: Request, cid) -> dict:
     """The `mediaToken` member a body representation serves when an `expand` term names it.
 
@@ -2982,17 +3454,18 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
     # third segment of `body.<representation>.<name>`, where the name is one of the three a
     # representation carries beside `value` and `representation`. A name under `embeddedContent`
     # or `mediaToken` names the member, as real answers it with what the member alone draws
-    # (2026-11-17: `x` under each, `token` under `mediaToken`). Real expands a name under
-    # `webresource` inside it instead (`uris`, `tags`, `keys` and `contexts`, and `uris`, `tags`
-    # and `metatags` under its `superbatch`, 2026-11-17), which this server does not serve: such
-    # a term draws `webresource` as the member alone is. The tuple is the order real names the
+    # (2026-11-17: `x` under each, `token` under `mediaToken`). A name under `webresource` is
+    # expanded inside it, by `_confluence_webresource`. The tuple is the order real names the
     # unserved ones under `_expandable`.
     body_member_names = ("webresource", "embeddedContent", "mediaToken")
     body_members: dict[str, set[str]] = {}
+    webresource_terms: dict[str, list[str]] = {}
     for term in (expand or "").split(","):
         parts = term.split(".")
         if len(parts) >= 3 and parts[0] == "body" and parts[2] in body_member_names:
             body_members.setdefault(parts[1], set()).add(parts[2])
+            if parts[2] == "webresource":
+                webresource_terms.setdefault(parts[1], []).append(".".join(parts[3:]))
     space_obj = {
         "id": synth.github_user_id(row["space"]),
         "key": key,
@@ -3203,10 +3676,7 @@ def _confluence_page(conn, request: Request, row, expand: str, search: bool = Fa
                 rep["mediaToken"] = _confluence_media_token(request, cid)
             rep["value"] = body_writers[name]()
             if "webresource" in members:
-                rep["webresource"] = {
-                    "superbatch": {"_expandable": {"uris": "", "metatags": "", "tags": ""}},
-                    "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
-                }
+                rep["webresource"] = _confluence_webresource(webresource_terms.get(name, []))
             rep["representation"] = name
             if "embeddedContent" in members:
                 rep["embeddedContent"] = []
@@ -3490,18 +3960,17 @@ def _jira_json_number(read, oversized: list[_JiraOversizedNumber]):
 
 
 def _refuse_a_search_media_type(request: Request) -> None:
-    """Raises ``errors.atlassian.unsupported_media_type`` for a `POST search/jql` whose
+    """Raises the 415 ``errors.atlassian.refuse_a_media_type`` builds for a `POST search/jql` whose
     `Content-Type` is not JSON.
 
-    Measured 2026-09-15. The `Content-Type` is checked first and on its own: a perfectly good JSON
-    body sent without the header is the same 415 as one sent with `text/plain`, so the header
-    decides before the bytes are looked at. The match is on the media type alone, case-insensitively
-    and ignoring parameters — `APPLICATION/JSON` and `application/json; charset=utf-8` are both
-    read, `*/*` and `application/xml` are not. :func:`_checked_before_the_route` has its place.
+    The header decides on its own, before the bytes are looked at: a perfectly good JSON body sent
+    without it is the same 415 as one sent with `text/plain` (measured 2026-09-15).
     """
-    content_type = request.headers.get("content-type")
-    if (content_type or "").split(";")[0].strip().lower() != "application/json":
-        raise errors_atlassian.unsupported_media_type(_echoed_path(request), content_type)
+    refusal = errors_atlassian.refuse_a_media_type(
+        _echoed_path(request), request.headers, ("application/json",)
+    )
+    if refusal is not None:
+        raise refusal
 
 
 async def _jira_search_body(request: Request) -> dict:
@@ -3584,9 +4053,8 @@ def _str_param(request: Request, name: str, default: str | None = None) -> str |
     naming `NOPE1,NOPE2`. So a repeated string is one value with a comma in it, and reading the last
     alone answers 200 to whichever ordering happens to put a valid spelling second.
 
-    The join is what is reproduced here, not every refusal that follows from it: a repeated `jql`
-    reaches `_project_from_jql`, which is lenient where real's JQL parser is not, so Backlot answers
-    200 to a joined query real refuses. That leniency is the parser's and predates this.
+    A repeated `jql` reaches the JQL parser joined: `?jql=labels = zzq&jql=labels = zzq` is the
+    parse error at the comma, as real answered it on 2026-11-23.
     """
     values = request.query_params.getlist(name)
     return ",".join(values) if values else default
@@ -6732,10 +7200,15 @@ def vendor_headers(request: Request, status_code: int) -> dict[str, str]:
     # of this module seeds an account id from for one (see :func:`_conf_user`).
     headers["x-aaccountid"] = synth.atlassian_account_id(caller.email or "unknown")
     # the quota rides on what a route answers, and on an `OPTIONS` at its path; a 405 carries none,
-    # and neither does the 406 a route refuses an `Accept` with (`POST search/jql`, 2026-10-13)
-    if not request.scope.get("atlassian_accept_refused") and (
-        _a_route_answers(request)
-        or (request.method == "OPTIONS" and _some_atlassian_route_matches(request))
+    # and neither does the 415 a route refuses a `Content-Type` with or the 406 it refuses an
+    # `Accept` with (`POST search/jql`, 2026-10-13)
+    if (
+        status_code != 415
+        and not request.scope.get("atlassian_accept_refused")
+        and (
+            _a_route_answers(request)
+            or (request.method == "OPTIONS" and _some_atlassian_route_matches(request))
+        )
     ):
         headers.update(rate_limit_headers(request, caller))
     return headers

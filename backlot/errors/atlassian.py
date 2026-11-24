@@ -956,27 +956,6 @@ def zero_limit_not_allowed() -> AtlassianError:
     )
 
 
-def unsupported_media_type(path: str, content_type: str | None) -> AtlassianError:
-    """Jira's 415 for a POST body it will not read, measured 2026-09-15 on `POST search/jql`.
-
-    RFC 7807 again, the same five keys and the same media type as
-    :func:`integer_conversion_failure`. The ``detail`` names the type that arrived, and a request
-    carrying no ``Content-Type`` at all is named ``'null'`` — the literal string, which is the
-    header's absence rendered by a Java formatter rather than a JSON null.
-    """
-    return AtlassianError(
-        415,
-        {
-            "type": "about:blank",
-            "title": "Unsupported Media Type",
-            "status": 415,
-            "detail": f"Content-Type '{content_type or 'null'}' is not supported.",
-            "instance": _instance(path),
-        },
-        media_type=PROBLEM_JSON,
-    )
-
-
 #: A token, as Spring's `MimeType` checks one: ASCII, no control character, no separator.
 _TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
@@ -1417,13 +1396,21 @@ _JAVA_TRIMMED = "".join(chr(code) for code in range(0x21))
 
 def _java_double(text: str) -> float | None:
     """``text`` as Java's `Double.parseDouble` reads it, or None where it throws; the hexadecimal
-    `0x1p-1` is 0.5."""
+    `0x1p-1` is 0.5. A hexadecimal value past a double's range, `0x1p1024`, is infinity here, where
+    `float.fromhex` raises: as a `q`, Confluence's 415 calls it a quality outside 0.0 to 1.0 and
+    HubSpot's 405 serves its page for it, where a number Java cannot read draws neither
+    (2026-11-21)."""
     text = text.strip(_JAVA_TRIMMED)
     if not _JAVA_DOUBLE.fullmatch(text):
         return None
     sign = -1.0 if text.startswith("-") else 1.0
     body = text.lstrip("+-").rstrip("fFdD")
-    return sign * (float.fromhex(body) if body[:2] in ("0x", "0X") else float(body))
+    if body[:2] not in ("0x", "0X"):
+        return sign * float(body)
+    try:
+        return sign * float.fromhex(body)
+    except OverflowError:
+        return sign * math.inf
 
 
 def _java_number_format(text: str) -> str:
@@ -2313,9 +2300,9 @@ def failed_to_read_request(path: str) -> AtlassianError:
 
 
 def unbounded_jql() -> AtlassianError:
-    """Jira's 400 for `search/jql` given no `jql` at all — on GET or POST, measured 2026-09-16
-    on Jira Cloud. The sentence is Backlot's own: real answers in the account's language, as it does
-    the `nextPageToken` and `orderBy` refusals.
+    """Jira's 400 for `search/jql` given no `jql` at all or one with nothing before its
+    `ORDER BY`, on GET or POST. The sentence is Backlot's own: real answers in the account's
+    language, as it does the `nextPageToken` and `orderBy` refusals.
     """
     return AtlassianError(
         400,
@@ -2325,6 +2312,18 @@ def unbounded_jql() -> AtlassianError:
             ],
             "errors": {},
         },
+    )
+
+
+def jql_parse_error(sentence: str) -> AtlassianError:
+    """Jira's 400 for a `search/jql` whose `jql` its parser cannot parse, on GET or POST:
+    `sentence` is the `errorMessages` entry the router's JQL parser writes, on
+    `application/json;charset=UTF-8` with an empty `errors` (Jira Cloud, 2026-11-22).
+    """
+    return AtlassianError(
+        400,
+        {"errorMessages": [sentence], "errors": {}},
+        media_type=JIRA_JSON_MEDIA_TYPE,
     )
 
 
@@ -2419,7 +2418,8 @@ def bad_page_token() -> AtlassianError:
 # the three methods `/rest/api/3/project/{projectIdOrKey}` takes, so `search` binds as a project key
 # there and the measurement is what the row states. `project/{key}/role/{id}`: a `POST` with an
 # unknown key is that route's 404 rather than a 405, so no 405 could be measured and its row is the
-# document's four methods alone.
+# document's four methods alone. `issueLinkType/{id}`, measured on 2026-11-23 on both mounts,
+# answers the document's three.
 _JIRA_ALLOW = (
     ("/rest/api/{version}/serverInfo", ("GET",)),
     ("/rest/api/{version}/field", ("GET", "POST")),
@@ -2427,6 +2427,7 @@ _JIRA_ALLOW = (
     ("/rest/api/{version}/issue/{key}/comment", ("GET", "POST")),
     ("/rest/api/{version}/search/jql", ("GET", "POST")),
     ("/rest/api/{version}/issueLinkType", ("GET", "POST")),
+    ("/rest/api/{version}/issueLinkType/{id}", ("GET", "PUT", "DELETE")),
     ("/rest/api/{version}/project/search", ("GET", "PUT", "DELETE")),
     ("/rest/api/{version}/project/{key}/role", ("GET",)),
     ("/rest/api/{version}/project/{key}/role/{id}", ("GET", "POST", "PUT", "DELETE")),
@@ -2570,6 +2571,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
 # search route itself and names three methods rather than five. Real spells the list without spaces
 # after the commas, where its 405 `Allow` has them, and the order of the set varied between two
 # requests, so the order below is one measured spelling and not a sequence a client can rely on.
+# `issueLinkType/{id}` is its 405 set plus `HEAD` and `OPTIONS`, measured on 2026-11-23: five
+# requests on both mounts answered five orders of that set, the first of them the order below.
 _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/serverInfo", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/field", "POST,GET,HEAD,OPTIONS"),
@@ -2577,6 +2580,7 @@ _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/issue/{key}/comment", "GET,HEAD,POST,OPTIONS"),
     ("/rest/api/{version}/search/jql", "GET,HEAD,POST,OPTIONS"),
     ("/rest/api/{version}/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/issueLinkType/{id}", "PUT,GET,HEAD,DELETE,OPTIONS"),
     ("/rest/api/{version}/project/search", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/project/{key}/role", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/project/{key}/role/{id}", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
@@ -2998,6 +3002,29 @@ def no_such_role() -> AtlassianError:
     read the project's roles, for `-1`, `-0x1`, `11` and a `1` on either side of an em space, each
     read as ``backlot.routers.atlassian._java_long`` reads it."""
     return AtlassianError(404, {"errorMessages": [], "errors": {}}, media_type=JIRA_JSON_MEDIA_TYPE)
+
+
+def no_such_link_type(raw: str) -> AtlassianError:
+    """Jira's 404 for `issueLinkType/{id}` with an id that names no link type, and for one that
+    does to a caller with no credential on a site whose anonymous caller sees no project. Measured
+    on Jira Cloud 2026-10-15 for `99999` with a credential and `10003` with none."""
+    return AtlassianError(
+        404,
+        _jira_envelope(
+            f"No issue link type with id '{raw}' found or you do not have permission to view it."
+        ),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
+def invalid_link_type_id(raw: str) -> AtlassianError:
+    """Jira's 400 for `issueLinkType/{id}` with an id ``backlot.routers.atlassian._parse_long``
+    does not read, measured on Jira Cloud 2026-10-15 for `abc` with a credential."""
+    return AtlassianError(
+        400,
+        _jira_envelope(f"Invalid issue link type id '{raw}' specified."),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
 
 
 def not_a_project_admin(realm: str) -> AtlassianError:

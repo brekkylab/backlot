@@ -101,32 +101,89 @@ def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, admi
         signed = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
         assert info.status_code == 200
         assert list(info.json().items()) == [(k, v) for k, v in signed.items() if k != "serverTime"]
+    # `issueLinkType` lists none and finds none by id, measured with each of the three on `/2` and
+    # `/3` (see `jira_link_types` and `jira_link_type`)
+    for ver in ("2", "3"):
+        listed = client.get(f"/atlassian/rest/api/{ver}/issueLinkType", headers=headers)
+        assert (listed.status_code, listed.json()) == (200, {"issueLinkTypes": []})
+        one = client.get(f"/atlassian/rest/api/{ver}/issueLinkType/10003", headers=headers)
+        assert (one.status_code, one.json()) == (
+            404,
+            {
+                "errorMessages": [
+                    "No issue link type with id '10003' found or you do not have permission to "
+                    "view it."
+                ],
+                "errors": {},
+            },
+        )
 
 
-@pytest.mark.parametrize("path", ["/rest/api/3/field", "/rest/api/3/issueLinkType"])
-def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
-    """Both answer 200 to a failed pair on the real sites, so neither is behind the credential."""
-    assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
+def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client):
+    """`field` answers 200 to a failed pair on the real sites: it is not behind the credential."""
+    assert client.get("/atlassian/rest/api/3/field", headers=FAILED_PAIR).status_code == 200
 
 
 @pytest.mark.parametrize("host", [None, "jira.example.test"])
 def test_jira_link_types_match_measured_metadata(client, admin_h, host):
     """The default four types and self links measured beside `jira_link_types`, members in real's
-    order, for a caller whose credential resolves."""
+    order, under the mount asked for, for a caller whose credential resolves, and one type by its
+    id with the 404 and the 400 `jira_link_type` names."""
     headers = {**admin_h, "Host": host} if host else admin_h
-    response = client.get("/atlassian/rest/api/3/issueLinkType", headers=headers)
-    assert response.status_code == 200
-    base = f"http://{host or 'testserver'}/rest/api/3/issueLinkType"
-    types = response.json()["issueLinkTypes"]
-    assert [list(item.items()) for item in types] == [
-        [("id", i), ("name", n), ("inward", a), ("outward", b), ("self", f"{base}/{i}")]
-        for i, n, a, b in [
-            ("10000", "Blocks", "is blocked by", "blocks"),
-            ("10001", "Cloners", "is cloned by", "clones"),
-            ("10002", "Duplicate", "is duplicated by", "duplicates"),
-            ("10003", "Relates", "relates to", "relates to"),
-        ]
+    site = f"http://{host or 'testserver'}"
+
+    def linked(version, i, n, a, b):
+        link = f"{site}/rest/api/{version}/issueLinkType/{i}"
+        return {"id": i, "name": n, "inward": a, "outward": b, "self": link}
+
+    types = [
+        ("10000", "Blocks", "is blocked by", "blocks"),
+        ("10001", "Cloners", "is cloned by", "clones"),
+        ("10002", "Duplicate", "is duplicated by", "duplicates"),
+        ("10003", "Relates", "relates to", "relates to"),
     ]
+
+    def refused(message):
+        return {"errorMessages": [message], "errors": {}}
+
+    def missing(i):
+        return refused(
+            f"No issue link type with id '{i}' found or you do not have permission to view it."
+        )
+
+    def invalid(i):
+        return refused(f"Invalid issue link type id '{i}' specified.")
+
+    rows = [
+        ("3", 200, {"issueLinkTypes": [linked("3", *t) for t in types]}),
+        ("2", 200, {"issueLinkTypes": [linked("2", *t) for t in types]}),
+        ("3/10003", 200, linked("3", *types[3])),
+        ("3/99999", 404, missing("99999")),
+        ("3/abc", 400, invalid("abc")),
+        # `/2`, and ids as `jira_link_type` reads them
+        ("2/10003", 200, linked("2", *types[3])),
+        ("2/010003", 200, linked("2", *types[3])),
+        ("3/+10003", 200, linked("3", *types[3])),
+        ("3/\uff11\uff10\uff10\uff10\uff13", 200, linked("3", *types[3])),
+        ("3/-1", 404, missing("-1")),
+        ("3/+99999", 404, missing("+99999")),
+        ("3/1_0003", 400, invalid("1_0003")),
+        ("3/9223372036854775808", 400, invalid("9223372036854775808")),
+    ]
+
+    def ordered(body):
+        return json.loads(json.dumps(body), object_pairs_hook=tuple)
+
+    answered = {}
+    for tail, *_ in rows:
+        version, _, type_id = tail.partition("/")
+        path = f"/atlassian/rest/api/{version}/issueLinkType" + (f"/{type_id}" if type_id else "")
+        r = client.get(path, headers=headers)
+        answered[tail] = (r.status_code, r.headers["content-type"], ordered(r.json()))
+    assert answered == {
+        tail: (status, errors_atlassian.JIRA_JSON_MEDIA_TYPE, ordered(body))
+        for tail, status, body in rows
+    }
 
 
 def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
@@ -1160,7 +1217,7 @@ def test_jira_search_filtered_by_project(client, admin_h):
     # is the only Jira project in the SAMPLE corpus -- the earlier assertions are what prove
     # filtering, not this equality). It still has to RESTRICT, or real refuses it: an empty jql,
     # and an `ORDER BY` alone, are both the unbounded refusal -- see
-    # test_jira_search_refuses_no_jql_at_all.
+    # test_jira_search_reads_a_jql_as_real_does.
     unfiltered = client.get(
         "/atlassian/rest/api/3/search/jql", headers=admin_h, params={"jql": "project is not EMPTY"}
     ).json()
@@ -3242,6 +3299,337 @@ def test_confluence_body_representation_members_named_by_expand(tmp_path):
             params={"expand": "body.storage.mediaToken"},
         ).json()["body"]["storage"]["mediaToken"]
         assert other["clientId"] == token["clientId"]
+
+
+def test_confluence_webresource_names_under_the_member_are_expanded_inside_it(tmp_path):
+    page = {
+        "source_type": "confluence",
+        "doc_id": "p",
+        "space": "eng",
+        "title": "probe",
+        "content": "body",
+        "author_email": "ava@acme.com",
+        "visibility": "public",
+        "created": "2026-10-01T09:00:00Z",
+    }
+    settings = tiny_corpus(tmp_path, [page])
+    empty_uris = {"_expandable": {"all": "", "css": "", "js": ""}}
+    empty_tags = {"_expandable": {"all": "", "css": "", "data": "", "js": ""}}
+    empty_superbatch = {"_expandable": {"uris": "", "metatags": "", "tags": ""}}
+    empty_wr = {
+        "superbatch": empty_superbatch,
+        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+    }
+    metatags = "<meta name='ajs-context-path' content='/wiki'>"
+    W = "body.storage.webresource"
+    rows = (
+        (
+            f"{W}.uris",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.tags",
+            {
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.keys",
+            {
+                "keys": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts",
+            {
+                "contexts": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts,{W}.keys,{W}.tags,{W}.uris",
+            {
+                "keys": [],
+                "contexts": [],
+                "uris": empty_uris,
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+            },
+        ),
+        (
+            f"{W}.uris,{W}.tags,{W}.keys,{W}.contexts",
+            {
+                "keys": [],
+                "contexts": [],
+                "uris": empty_uris,
+                "tags": empty_tags,
+                "superbatch": empty_superbatch,
+            },
+        ),
+        (
+            f"{W}.superbatch.uris",
+            {
+                "superbatch": {"uris": empty_uris, "_expandable": {"metatags": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags",
+            {
+                "superbatch": {"tags": empty_tags, "_expandable": {"uris": "", "metatags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.metatags",
+            {
+                "superbatch": {"metatags": metatags, "_expandable": {"uris": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags,{W}.superbatch.metatags,{W}.superbatch.uris",
+            {
+                "superbatch": {"uris": empty_uris, "tags": empty_tags, "metatags": metatags},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.all",
+            {
+                "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.css",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.js",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris.all,{W}.uris.css",
+            {
+                "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.tags.all",
+            {
+                "tags": {"all": "", "_expandable": {"css": "", "data": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.css",
+            {
+                "tags": {"css": "", "_expandable": {"all": "", "data": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.data",
+            {
+                "tags": {"data": "", "_expandable": {"all": "", "css": "", "js": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.js",
+            {
+                "tags": {"js": "", "_expandable": {"all": "", "css": "", "data": ""}},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.tags.all,{W}.tags.css,{W}.tags.data,{W}.tags.js",
+            {
+                "tags": {"all": "", "data": "", "css": "", "js": ""},
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "contexts": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.all",
+            {
+                "superbatch": {
+                    "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.css",
+            {
+                "superbatch": {
+                    "uris": {"css": [], "_expandable": {"all": "", "js": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.uris.js",
+            {
+                "superbatch": {
+                    "uris": {"js": [], "_expandable": {"all": "", "css": ""}},
+                    "_expandable": {"metatags": "", "tags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.tags.data",
+            {
+                "superbatch": {
+                    "tags": {"data": "", "_expandable": {"all": "", "css": "", "js": ""}},
+                    "_expandable": {"uris": "", "metatags": ""},
+                },
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (f"{W}.metatags", empty_wr),
+        (f"{W}.superbatch", empty_wr),
+        (f"{W}.x", empty_wr),
+        (f"{W}.Uris", empty_wr),
+        (f"{W}.superbatch.x", empty_wr),
+        (f"{W}..uris", empty_wr),
+        (f"{W}.superbatch..uris", empty_wr),
+        (
+            f"{W}.uris.x",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.uris..all",
+            {
+                "uris": empty_uris,
+                "superbatch": empty_superbatch,
+                "_expandable": {"keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.keys.x",
+            {
+                "keys": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "contexts": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.contexts.x",
+            {
+                "contexts": [],
+                "superbatch": empty_superbatch,
+                "_expandable": {"uris": "", "keys": "", "tags": ""},
+            },
+        ),
+        (
+            f"{W}.superbatch.metatags.x",
+            {
+                "superbatch": {"metatags": metatags, "_expandable": {"uris": "", "tags": ""}},
+                "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+            },
+        ),
+    )
+    with client_for(settings, reload=True) as c:
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        api = "/atlassian/wiki/rest/api"
+        pid = served_id("confluence", "p")
+
+        def shape(value):
+            if isinstance(value, dict):
+                return [(key, shape(item)) for key, item in value.items()]
+            return value
+
+        got = []
+        for expand, _expected in rows:
+            web = c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                "body"
+            ]["storage"]["webresource"]
+            got.append(web)
+        assert [shape(web) for web in got] == [shape(expected) for _expand, expected in rows]
+        # The other three representations this server renders serve the same values.
+        other = []
+        expected_other = []
+        for rep_name in ("view", "export_view", "atlas_doc_format"):
+            for suffix, expected in (
+                (
+                    "uris",
+                    {
+                        "uris": empty_uris,
+                        "superbatch": empty_superbatch,
+                        "_expandable": {"keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "keys",
+                    {
+                        "keys": [],
+                        "superbatch": empty_superbatch,
+                        "_expandable": {"uris": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "superbatch.metatags",
+                    {
+                        "superbatch": {
+                            "metatags": metatags,
+                            "_expandable": {"uris": "", "tags": ""},
+                        },
+                        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+                (
+                    "superbatch.uris.all",
+                    {
+                        "superbatch": {
+                            "uris": {"all": [], "_expandable": {"css": "", "js": ""}},
+                            "_expandable": {"metatags": "", "tags": ""},
+                        },
+                        "_expandable": {"uris": "", "keys": "", "contexts": "", "tags": ""},
+                    },
+                ),
+            ):
+                expand = f"body.{rep_name}.webresource.{suffix}"
+                web = c.get(f"{api}/content/{pid}", headers=h, params={"expand": expand}).json()[
+                    "body"
+                ][rep_name]["webresource"]
+                other.append((rep_name, suffix, web))
+                expected_other.append((rep_name, suffix, expected))
+        assert [(rep, suffix, shape(web)) for rep, suffix, web in other] == [
+            (rep, suffix, shape(expected)) for rep, suffix, expected in expected_other
+        ]
 
 
 # --- Jira ------------------------------------------------------------------------
@@ -5707,22 +6095,343 @@ def test_jira_search_post_takes_its_parameters_from_the_body_and_get_from_the_qu
     assert got.json()["issues"][0]["key"] == in_body.json()["issues"][0]["key"]
 
 
-@pytest.mark.parametrize("method", ["get", "post"])
-def test_jira_search_refuses_no_jql_at_all(client, admin_h, method):
-    """Measured 2026-09-16, on both methods: no `jql` anywhere Backlot reads it for that method is
-    the same 400 real gives, not the unfiltered corpus. A POST's own query string carrying a `jql`
-    still draws it, because the body is the only place POST reads one."""
-    if method == "get":
-        r = client.get("/atlassian/rest/api/3/search/jql?maxResults=5", headers=admin_h)
+_UNBOUNDED_JQL = {
+    "errorMessages": [
+        "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
+    ],
+    "errors": {},
+}
+
+
+def _jql_error(sentence):
+    return {"errorMessages": [sentence], "errors": {}}
+
+
+# Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page
+# and the 400's body otherwise. No `jql` where the method reads one (POST reads it from the body
+# alone, so one in its query string is none) and a `jql` with nothing before its `ORDER BY` are
+# the unbounded refusal; a `jql` the parser cannot read is the parse error, whose sentence names
+# what the parser expected and, unless it reached the end of the query, the line and the
+# character in UTF-16 units. Both refusals are on `application/json;charset=UTF-8`.
+_JQL_ROWS = [
+    ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
+    ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _UNBOUNDED_JQL)
+        for jql in (
+            *("order by key", "ORDER BY created DESC", "Order By key", "order by nosuchfield"),
+            *("order  by key", "order\tby key", "order\nby key", "order\rby key"),
+            *("  order by key", "\r\norder by key", "order by\tkey"),
+            "ORDER BY key ASC, created DESC",
+        )
+    ],
+    *[
+        ("get", 3, {"jql": jql, "maxResults": 1}, None, _UNBOUNDED_JQL)
+        for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
+    ],
+    ("post", 2, {}, {"jql": "order by key", "maxResults": 1}, _UNBOUNDED_JQL),
+    ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
+    ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
+    ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
+    ("post", 2, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
+    *[
+        row
+        for jql, sentence in (
+            (
+                "order by",
+                "Error in the JQL Query: Expecting a field name at the end of the query.",
+            ),
+            (
+                "order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 7)",
+            ),
+            (
+                "orderby key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 9)",
+            ),
+            (
+                "(order by key)",
+                "Error in the JQL Query: Expecting a field name but got 'order'. You must "
+                "surround 'order' in quotation marks to use it as a field name. "
+                "(line 1, character 2)",
+            ),
+            (
+                "order by key project is not EMPTY",
+                "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'project'. "
+                "(line 1, character 14)",
+            ),
+            (
+                "ORDER BY key DESC NULLS FIRST",
+                "Error in the JQL Query: Expecting ',' but got 'NULLS'. (line 1, character 19)",
+            ),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence)),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, _jql_error(sentence)),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence))
+        for jql, sentence in (
+            (
+                "order\xa0by key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 10)",
+            ),
+            (
+                "order\u2003by key",
+                "Error in the JQL Query: Expecting operator but got 'key'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 10)",
+            ),
+            (
+                "order\x0bby key",
+                "Error in the JQL Query: The character 'U+000B' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u000b' instead. (line 1, character 6)",
+            ),
+            (
+                "order\x0cby key",
+                "Error in the JQL Query: The character 'U+000C' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u000c' instead. (line 1, character 6)",
+            ),
+            (
+                "order\x1cby key",
+                "Error in the JQL Query: The character 'U+001C' on line 1 at position 6 must be "
+                "escaped. Use the escape '\\u001c' instead. (line 1, character 6)",
+            ),
+            (
+                "\xa0order by key",
+                "Error in the JQL Query: Expecting operator but got 'by'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 8)",
+            ),
+            (
+                "labels = zzq\xa0and labels = zzq",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'labels'. "
+                "(line 1, character 18)",
+            ),
+            (
+                "labels",
+                "Error in the JQL Query: Expecting operator before the end of the query. The "
+                "valid operators are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', "
+                "'IS' and 'IS NOT'.",
+            ),
+            (
+                "labels =",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "labels is",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "labels in ()",
+                "Error in JQL Query: Expecting either a value, list or function but got ')'. You "
+                "must surround ')' in quotation marks to use it as a value. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels <> zzq",
+                "Error in JQL Query: Expecting either a value, list or function but got '>'. You "
+                "must surround '>' in quotation marks to use it as a value. (line 1, character 9)",
+            ),
+            (
+                "labels = and",
+                "Error in JQL Query: Expecting either a value, list or function but got 'and'. "
+                "You must surround 'and' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels in (zzq labels)",
+                "Error in the JQL Query: Expecting ',' or ')' but got 'labels'. "
+                "(line 1, character 16)",
+            ),
+            (
+                "labels = currentUser(",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "= zzq",
+                "Error in the JQL Query: Expecting a field name but got '='. You must surround "
+                "'=' in quotation marks to use it as a field name. (line 1, character 1)",
+            ),
+            (
+                "labels = zzq and )",
+                "Error in the JQL Query: Expecting a field name but got ')'. You must surround "
+                "')' in quotation marks to use it as a field name. (line 1, character 18)",
+            ),
+            (
+                "labels = zzq,",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ','. "
+                "(line 1, character 13)",
+            ),
+            (
+                "(labels = zzq",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "(labels = zzq labels = zzq)",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'labels'. "
+                "(line 1, character 15)",
+            ),
+            (
+                "labels = zzq order",
+                "Error in the JQL Query: Expecting 'by' before the end of the query.",
+            ),
+            (
+                "labels = ava@acme.com",
+                "Error in the JQL Query: The character '@' is a reserved JQL character. You must "
+                "enclose it in a string or use the escape '\\u0040' instead. "
+                "(line 1, character 13)",
+            ),
+            (
+                "summary ~ win*",
+                "Error in the JQL Query: The character '*' is a reserved JQL character. You must "
+                "enclose it in a string or use the escape '\\u002a' instead. "
+                "(line 1, character 14)",
+            ),
+            (
+                'summary ~ "abc',
+                "Error in the JQL Query: The quoted string 'abc' has not been completed. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = zzq\norder bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 2, character 7)",
+            ),
+            (
+                'summary ~ "\U0001f600" order bykey',
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 22)",
+            ),
+            (
+                "labels in (zzq",
+                "Error in the JQL Query: Expecting ')' before the end of the query.",
+            ),
+            (
+                "labels in (zzq,",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "status was",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "status changed foo",
+                "Error in JQL Query: The CHANGED operator does not support the use of values "
+                'without predicates. You must prefix the "foo" value with a suitable predicate.',
+            ),
+            ("cf", "Error in the JQL Query: Expecting '[' before the end of the query."),
+            (
+                "cf = zzq",
+                "Error in the JQL Query: Expecting '[' but got '='. (line 1, character 4)",
+            ),
+            (
+                "cf[",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) before "
+                "the end of the query.",
+            ),
+            (
+                "cf[abc] is EMPTY",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) but got "
+                "'abc'. (line 1, character 4)",
+            ),
+            (
+                "cf[] is EMPTY",
+                "Error in the JQL Query: Expecting a custom field id (a positive number) but got "
+                "']'. (line 1, character 4)",
+            ),
+            ("cf[10016", "Error in the JQL Query: Expecting ']' before the end of the query."),
+            (
+                "cf[10016 is EMPTY",
+                "Error in the JQL Query: Expecting ']' but got 'is'. (line 1, character 10)",
+            ),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, None)
+        for jql in (
+            "labels = zzq && summary ~ zzq",
+            "labels = zzq & summary ~ zzq",
+            "labels = zzq || summary ~ zzq",
+            "labels = zzq | summary ~ zzq",
+            "!labels = zzq",
+            "not not labels = zzq",
+            "summary ~ caf\xe9",
+            "labels = \uac00\ub098",
+            "cf[10016] is EMPTY",
+            "CF[10016] is EMPTY",
+            "cf[ 10016 ] is EMPTY",
+            "project is not EMPTY order by cf[10016]",
+            "labels is foo",
+            "labels in (zzq, (x))",
+            "status was Open",
+            "status was not in (Open)",
+            "status was Open during (startOfDay(-7d), now())",
+            "status changed from Open to Done",
+            "status CHANGED",
+            "labels not in (zzq)",
+            "labels is not EMPTY",
+            "assignee = currentUser()",
+            "created > startOfDay(-1d)",
+            "(" * 250 + "labels = zzq" + ")" * 250,
+            "(" * 1000 + "labels = zzq" + ")" * 1000,
+            "labels in " + "(" * 300 + "zzq" + ")" * 300,
+            "not " * 1000 + "labels = zzq",
+        )
+    ],
+    # A number is read as its digits, a field with no operator after it.
+    (
+        "post",
+        3,
+        {},
+        {"jql": 1, "maxResults": 1},
+        _jql_error(
+            "Error in the JQL Query: Expecting operator before the end of the query. The valid "
+            "operators are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+            "'IS NOT'."
+        ),
+    ),
+    # A repeated `jql` is read as the values joined with a comma.
+    (
+        "get",
+        3,
+        [("jql", "labels = zzq"), ("jql", "labels = zzq"), ("maxResults", 1)],
+        None,
+        _jql_error(
+            "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ','. "
+            "(line 1, character 13)"
+        ),
+    ),
+]
+
+
+def _jql_search(client, admin_h, method, version, query, body, refused):
+    r = client.request(
+        method,
+        f"/atlassian/rest/api/{version}/search/jql",
+        headers=admin_h,
+        params=query,
+        json=body,
+    )
+    if refused is None:
+        assert r.status_code == 200, r.text
     else:
-        r = _search_post(client, admin_h, query="?jql=project+%3D+payments&maxResults=1")
-    assert r.status_code == 400, r.text
-    assert r.json() == {
-        "errorMessages": [
-            "Unbounded JQL queries are not allowed here. Add a search restriction to the query."
-        ],
-        "errors": {},
-    }
+        assert (r.status_code, r.headers["content-type"], r.json()) == (
+            400,
+            "application/json;charset=UTF-8",
+            refused,
+        ), r.text
+
+
+def test_jira_search_reads_a_jql_as_real_does(client, admin_h):
+    assert _failures(_jql_search, _JQL_ROWS, client, admin_h) == {}
 
 
 def test_jira_search_reads_a_null_jql_as_one_that_was_not_sent(client, admin_h):
@@ -6066,12 +6775,22 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
     assert paths["post"]["requestBody"]["required"] is True
 
 
+#: a `Content-Type` Spring cannot read, which the 415 names no type for
+_UNREAD = object()
+
+
 @pytest.mark.parametrize(
     "content_type,named,slash",
     [
         (None, "null", ""),
         (None, "null", "/"),
         ("text/plain", "text/plain", ""),
+        ("TEXT/Plain;Charset=UTF-8", "text/plain;Charset=UTF-8", ""),
+        ("foo", _UNREAD, ""),
+        ("application/json;q=0x1p1024", _UNREAD, ""),
+        # measured 2026-10-16
+        ("application/json" + chr(0xA0), _UNREAD, ""),
+        (chr(0x85) + "application/json", _UNREAD, ""),
         ("application/xml", "application/xml", ""),
         ("*/*", "*/*", ""),
     ],
@@ -6079,29 +6798,40 @@ def test_jira_search_declares_each_placement_on_the_method_that_reads_it(client)
 def test_jira_search_post_refuses_a_media_type_it_does_not_read(
     client, admin_h, content_type, named, slash
 ):
-    """Measured: the header decides before the bytes are looked at, so the JSON body sent with each
-    of these is never reached."""
+    """The 415 ``routers.atlassian._refuse_a_search_media_type`` describes: the header decides
+    before the bytes are looked at, so the JSON body sent with each of these is never reached. Names
+    the type as Spring reads it, sends Accept, and carries none of the rate-limit headers."""
     headers = dict(admin_h)
     if content_type is not None:
-        headers["Content-Type"] = content_type
-    r = client.post(
+        headers["Content-Type"] = content_type.encode("latin-1")
+    request = client.build_request(
+        "POST",
         f"/atlassian/rest/api/3/search/jql{slash}",
         headers=headers,
         content=json.dumps({"jql": "project = payments"}),
     )
+    r = _send_as_latin1(client, request)
     assert r.status_code == 415, r.text
     assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+    assert r.headers["accept"] == "application/json"
+    assert "x-aaccountid" in r.headers
+    for name in ("ratelimit", "ratelimit-policy", "x-ratelimit-limit", "x-ratelimit-remaining"):
+        assert name not in r.headers
     assert r.json() == {
         "type": "about:blank",
         "title": "Unsupported Media Type",
         "status": 415,
-        "detail": f"Content-Type '{named}' is not supported.",
+        "detail": (
+            "Could not parse Content-Type."
+            if named is _UNREAD
+            else f"Content-Type '{named}' is not supported."
+        ),
         "instance": f"/rest/api/3/search/jql{slash}",
     }
 
 
 def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(client, admin_h):
-    """Case-insensitive, and parameters are ignored — all three are read on real."""
+    """Case-insensitive, and a parameter Spring can read changes nothing: real reads all four."""
     statuses = {
         content_type: client.post(
             "/atlassian/rest/api/3/search/jql",
@@ -6112,6 +6842,7 @@ def test_jira_search_post_reads_the_media_type_the_way_real_matches_it(client, a
             "application/json",
             "APPLICATION/JSON",
             "application/json; charset=utf-8",
+            "application/json;q=0.5",
         )
     }
     assert statuses == dict.fromkeys(statuses, 200)
@@ -6384,6 +7115,9 @@ _WRONG_METHODS = [
         # the row the vendor's own document disagrees with: it declares GET alone on
         # `project/search`
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
+        # measured on the day ``errors.atlassian._JIRA_ALLOW`` gives, the set Jira's own document
+        # declares
+        ("post", "/rest/api/3/issueLinkType/10003", "GET, PUT, DELETE"),
         # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
         ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
         ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
@@ -6688,7 +7422,10 @@ def _routes(keys: dict[str, str]) -> list[str]:
         "/atlassian/rest/api/3/serverInfo",
         "/atlassian/rest/api/2/field",
         "/atlassian/rest/api/3/field",
+        "/atlassian/rest/api/2/issueLinkType",
         "/atlassian/rest/api/3/issueLinkType",
+        "/atlassian/rest/api/2/issueLinkType/10003",
+        "/atlassian/rest/api/3/issueLinkType/10003",
         "/atlassian/rest/api/3/project/search",
         f"/atlassian/rest/api/3/project/{p}/role",
         f"/atlassian/rest/api/3/project/{p}/role/10002",
@@ -6783,6 +7520,7 @@ _OPTIONS_ALLOW = [
     ("/atlassian/rest/api/3/issue/NOPE-1/comment", "GET,HEAD,POST,OPTIONS"),
     ("/atlassian/rest/api/2/search/jql", "GET,HEAD,POST,OPTIONS"),
     ("/atlassian/rest/api/3/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/atlassian/rest/api/2/issueLinkType/10003", "PUT,GET,HEAD,DELETE,OPTIONS"),
     ("/atlassian/rest/api/3/project/NOPE/role", "GET,HEAD,OPTIONS"),
     ("/atlassian/rest/api/3/project/NOPE/role/10002", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
     # the row that parts from the 405 table (see ``errors.atlassian._JIRA_OPTIONS_ALLOW``)
@@ -7068,8 +7806,6 @@ _PREFERENCES = "/atlassian/rest/api/3/mypreferences"
 _JSON_OR_TEXT = "application/json, text/plain"
 _AGENTS = "/atlassian/rest/api/3/agents/bulk/invoke/batch"
 _POLICIES = "/atlassian/rest/api/3/policies/project/NOPE/policies"
-#: a `Content-Type` Spring cannot read, which the 415 names no type for
-_UNREAD = object()
 _JSON = "application/json"
 
 
@@ -7111,6 +7847,16 @@ _JSON = "application/json"
         ("POST", _AGENTS, "none", None, None, 415, "null", _JSON),
         ("POST", _AGENTS, "none", _JSON, "{}", 401, None, None),
         ("POST", _AGENTS, "admin", _JSON, "{}", 404, None, None),
+        (
+            "POST",
+            "/atlassian/rest/api/3/jql/parse",
+            "admin",
+            "application/json;q=0x1p1024",
+            "{}",
+            415,
+            _UNREAD,
+            _JSON,
+        ),
         # an `OPTIONS` is not checked, and an unreadable bearer is refused before the check
         ("OPTIONS", _BANNER, "none", "text/plain", "x", 401, None, None),
         ("PUT", _BANNER, "unreadable-bearer", "text/plain", "x", 403, None, None),
@@ -8648,6 +9394,7 @@ _OPERATION_REFUSALS = [
             ('application/xml;q=" 2"', _OUT_OF_RANGE.format(" 2")),
             ("application/xml;q=NaN", _OUT_OF_RANGE.format("NaN")),
             ("application/xml;q=0x1.8p0", _OUT_OF_RANGE.format("0x1.8p0")),
+            ("text/plain;q=0x1p1024", _OUT_OF_RANGE.format("0x1p1024")),
             ("application/xml;Q=0.5;q=2", _OUT_OF_RANGE.format("2")),
             ("application/xml;Charset=bogus;q=2", _OUT_OF_RANGE.format("2")),
             ("application/xml;charset=ISO_8859-1:1987;q=2", _OUT_OF_RANGE.format("2")),
@@ -9760,6 +10507,14 @@ _ACCEPT_ROWS = [
     ("GET", _INFO, "none", "application/json,*.*", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "*/json", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;q=2", None, 406, _EMPTY_HTML, b"", {}),
+    *(
+        ("GET", _INFO, "admin", accept, None, 406, _EMPTY_HTML, b"", {})
+        for accept in (
+            "application/json;q=0x1p1024",
+            "text/csv;q=0x1p1024",
+            "application/json, text/plain;q=0x1p1024",
+        )
+    ),
     ("GET", _INFO, "none", "application/json;q=1e0", None, 200, _JIRA_JSON, None, {}),
     ("GET", _INFO, "none", "application/json;q=\"0.5'", None, 406, _EMPTY_HTML, b"", {}),
     ("GET", _INFO, "none", "application/json;q=10.51", None, 406, _EMPTY_HTML, b"", {}),
@@ -10436,6 +11191,7 @@ _JIRA_401 = [
     ("OPTIONS", "application/json, foo", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json,*.*", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;q=2", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
+    ("OPTIONS", "application/json;q=0x1p1024", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "text/html;q=abc, application/json", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;charset=bogus", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),
     ("OPTIONS", "application/json;charset=base64", 401, _EMPTY_HTML, b"", _UNREAD_ALLOW),

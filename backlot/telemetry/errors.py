@@ -75,7 +75,10 @@ _JIRA = [
     ),
     (r"^(Failed to convert |The max number of issues to reconcile is )", "invalid_parameter"),
     (r"^No endpoint ", "no_endpoint"),
-    (r"^Content-Type '.*' is not supported", "unsupported_media_type"),
+    (
+        r"^(Content-Type '.*' is not supported|Could not parse Content-Type\.)",
+        "unsupported_media_type",
+    ),
     (r"^Acceptable representations: ", "not_acceptable"),
     (r"^Method '\w+' is not supported", "method_not_allowed"),
     (

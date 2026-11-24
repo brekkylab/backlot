@@ -21,7 +21,7 @@ Generated from `backlot/schemas/*.schema.json` and the app's own `/openapi.json`
 | `gmail` | Gmail | `/gmail/v1` | 8 | [`gmail.schema.json`](../backlot/schemas/gmail.schema.json) | A Gmail message. |
 | `google_drive` | Google Drive, Docs, Sheets, Slides | `/drive/v3` `/docs/v1` `/sheets/v4` `/slides/v1` | 23 | [`google_drive.schema.json`](../backlot/schemas/google_drive.schema.json) | A Google Drive file. |
 | `hubspot` | HubSpot | `/hubspot` | 5 | [`hubspot.schema.json`](../backlot/schemas/hubspot.schema.json) | A HubSpot CRM record (contact, company, deal, ticket, note, …). |
-| `jira` | Jira | `/atlassian/rest/api` | 14 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
+| `jira` | Jira | `/atlassian/rest/api` | 17 | [`jira.schema.json`](../backlot/schemas/jira.schema.json) | A Jira issue. |
 | `linear` | Linear | `/linear/graphql` | GraphQL (one endpoint, `POST` or `GET`) | [`linear.schema.json`](../backlot/schemas/linear.schema.json) | A Linear issue. |
 | `msteams` | Microsoft Teams | `/msgraph/v1.0` | 13 | [`msteams.schema.json`](../backlot/schemas/msteams.schema.json) | A Microsoft Teams channel message. |
 | `notion` | Notion | `/notion/v1` | 12 | [`notion.schema.json`](../backlot/schemas/notion.schema.json) | A Notion page or database. |
@@ -222,9 +222,10 @@ archive reads (2026-11-10, 2026-11-15 and 2026-11-16).
 
 **Every response carries the five `x-ratelimit-*` headers** real puts on every answer its API gives,
 the errors included: `limit` at real's numbers (60 an hour for a caller with no credential, 5000 for
-a token, 30 and 10 for `search` and `code_search`), `remaining` and `used` counted per credential
-and per resource, `reset` the second that window closes, `resource` the one the request counted
-against. `core` measures an hour and the two search resources measure a minute, as real's do. A
+a token, 30 and 10 for `search` and `code_search`, 500 for `webhook_deliveries`, which a token's
+operations on a repository's or an organization's webhooks count against), `remaining` and `used`
+counted per credential and per resource, `reset` the second that window closes, `resource` the one
+the request counted against. `core` measures an hour and the other three a minute, as real's do. A
 window that runs out is refused, 403, with `used` pinned at `limit` across the five headers, ahead
 of the API version check, the 401 a route that needs a credential answers a caller without one, and
 routing alike, for a caller with no credential (measured against api.github.com 2026-09-17 and
@@ -594,13 +595,13 @@ carry none and count against neither. Nothing is refused past either count.
 | `issue/{key}` | |
 | `issue/{key}/comment` | `startAt`, `maxResults` (max 100), `orderBy` `created`/`+created`/`-created` |
 | `field` | |
-| `issueLinkType` | |
+| `issueLinkType[/{id}]` | Lists none, and finds none by id, for a caller with no credential that resolves |
 | `project/search` | |
 | `project/{key}/role[/{id}]` | `{key}` is the key or the id `project/search` lists. Admin token only: any other caller who sees the project gets 401 `You cannot edit the configuration of this project.` |
 | `serverInfo` | |
 
-`search/jql`, `issue/{key}`, `issue/{key}/comment`, `field` and `serverInfo` are served under
-`rest/api/2` as well as `/3`.
+`search/jql`, `issue/{key}`, `issue/{key}/comment`, `field`, `issueLinkType[/{id}]` and
+`serverInfo` are served under `rest/api/2` as well as `/3`.
 
 Issue and comment reads accept the key or the exact numeric `id` reported by search and issue
 responses. Numeric ids are assigned uniquely at import, including when keys hash alike, and remain

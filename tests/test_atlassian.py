@@ -11690,6 +11690,10 @@ _CQL_NOT_PARSED = "Could not parse cql : "
 _CQL_CURRENT_SPACE = (
     "Unable to execute function 'currentSpace', the required contexts were not present : space"
 )
+_CQL_NO_SINGLE_VALUE = (
+    "Unable to execute function 'recentlyViewedContent', "
+    "expecting a function that returns a single value"
+)
 
 
 def _cql_reserved(word):
@@ -14875,18 +14879,22 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
 def test_confluence_cql_value_refusals_name_a_function_at_a_moment():
     """The value a `type` or `filesize` refusal names for a function value
     (:func:`backlot.routers.atlassian._cql_named_value`) for a caller and a moment. Called
-    directly: the route names the moment it answers at."""
+    directly: the route names the moment it answers at. A date function is named in the site's
+    time zone, Asia/Seoul on the site measured, and `endOfMonth()` is the next month's first
+    minute, as :func:`backlot.routers.atlassian._cql_named_value` records."""
     from backlot.routers.atlassian import _cql_cannot_run, _cql_tokens
 
     account = "5b0123456789abcdef012345"
     rows = [
         ("type = currentUser()", _CQL_PREFIX + _cql_unsupported_type(account)),
-        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-23 16:15")),
-        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-24 00:00")),
-        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-11-30 23:59")),
+        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-24 01:15")),
+        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-25 00:00")),
+        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-12-01 00:00")),
         ("filesize = currentUser()", _CQL_PREFIX + _CQL_FILESIZE + account),
-        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-23 16:15"),
-        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 00:00"),
+        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 01:15"),
+        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-25 00:00"),
+        # a function that returns no single value answers for itself, not for the value
+        ("type = recentlyViewedContent(5)", _CQL_PREFIX + _CQL_NO_SINGLE_VALUE),
         # a function that cannot run answers for itself, not for the value it would be
         ("type = currentSpace()", _CQL_PREFIX + _CQL_CURRENT_SPACE),
     ]

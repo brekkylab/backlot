@@ -593,6 +593,19 @@ def cql_invalid_size_limit(value: str) -> AtlassianError:
     return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
 
 
+def cql_function_returns_no_single_value(name: str) -> AtlassianError:
+    """The CQL search's refusal of a function that returns more than one value where a single
+    value goes: `type = recentlyViewedContent(5)` answered `Unable to execute function
+    'recentlyViewedContent', expecting a function that returns a single value` (Confluence Cloud,
+    2026-11-24). Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unable to execute function '{name}', expecting a function that returns a single value",
+    )
+
+
 def cql_escaped_end_quote(text: str) -> AtlassianError:
     """The CQL search's refusal of a quoted value whose closing quote follows a backslash, named
     as sent with its quotes. On Confluence Cloud on 2026-10-30 `title ~ "a\\\\"` answered

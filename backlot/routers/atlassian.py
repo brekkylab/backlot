@@ -5137,21 +5137,33 @@ def _cql_clauses(tokens: list[tuple[str, str]]):
         at += listed
 
 
+# The time zone real names a date function in when it refuses a value: the one site measured
+# keeps Asia/Seoul, and this server carries no site time zone, so the refusal names the moment in
+# that zone. Whether the site's setting or the caller's profile picks the zone was not measured,
+# nor whether a date clause that is not refused is read in that zone too (Confluence Cloud,
+# 2026-11-24).
+_CQL_NAMED_VALUE_TZ = timezone(timedelta(hours=9))
+
+
 def _cql_named_value(kind: str, text: str, call, current_user: str | None, now: datetime):
     """A value as real names it in a refusal: a quoted value without its quotes, a word or a number
     as sent, `currentUser()` the caller as :func:`_cql_function_value` reads it, `currentContent()`
     `0`, and a date function the minute of :func:`_cql_date_function_moment`, as `yyyy-MM-dd HH:mm`
-    in UTC. Real named `currentContent()` `0`, `currentUser()` the caller's account id and a date
-    function as `yyyy-MM-dd HH:mm` (Confluence Cloud, 2026-11-24). `recentlyViewedContent` gives
-    None: real refused `type = recentlyViewedContent(5)` as no function that returns a single value,
-    which is left standing here."""
+    in the site's time zone (:data:`_CQL_NAMED_VALUE_TZ`). Real named `currentContent()` `0`,
+    `currentUser()` the caller's account id and a date function as `yyyy-MM-dd HH:mm` (Confluence
+    Cloud, 2026-11-24). `recentlyViewedContent` gives None: real refused
+    `type = recentlyViewedContent(5)` as no function that returns a single value, which
+    :func:`_cql_cannot_run` answers instead of a value fault."""
     if call is None:
         return _cql_unquote(kind, text)
     name, args = call
     if name == "currentContent":
         return "0"
     if name in _CQL_DATE_FUNCTIONS:
-        return _cql_date_function_moment(name, args, now).strftime("%Y-%m-%d %H:%M")
+        moment = _cql_date_function_moment(
+            name, args, now.astimezone(_CQL_NAMED_VALUE_TZ), _CQL_NAMED_VALUE_TZ
+        )
+        return moment.strftime("%Y-%m-%d %H:%M")
     if name == "recentlyViewedContent":
         return None
     return _cql_function_value(name, args, current_user)
@@ -5238,10 +5250,12 @@ def _cql_search_refuses(field: str, operator: str, kind: str, text: str, call) -
 def _cql_cannot_run(tokens: list[tuple[str, str]], current_user: str | None, now: datetime):
     """The 400 real answers a CQL it reads but cannot run, or None for one it runs, after
     :func:`_cql_refusal` and before :func:`_cql_search_after`: a function that cannot run, an
-    escaped end quote (``errors.atlassian.cql_escaped_end_quote``) and a value its field does not
-    take (:func:`_cql_value_fault`), the first of them from the left, and with none of them a clause
-    the search service refuses (`_CQL_SEARCH_REFUSES`). A function value is named for
-    ``current_user`` at ``now`` (:func:`_cql_named_value`). With an even number of backslashes
+    escaped end quote (``errors.atlassian.cql_escaped_end_quote``), a function that returns no
+    single value where one goes (``errors.atlassian.cql_function_returns_no_single_value``) and a
+    value its field does not take (:func:`_cql_value_fault`), the first of them from the left, and
+    with none of them a clause the search service refuses (`_CQL_SEARCH_REFUSES`). A function value
+    is named for ``current_user`` at ``now`` (:func:`_cql_named_value`). With an even number of
+    backslashes
     before a quote, `_CQL_TOKEN` reads them in pairs and the quote closes the value; with an odd
     number the quote is escaped, and where no later quote closes the value the token ends at it all
     the same. Each of those tokens ends in a backslash and its quote, an escaped end quote. A value
@@ -5278,6 +5292,16 @@ def _cql_cannot_run(tokens: list[tuple[str, str]], current_user: str | None, now
     for field, operator, values in clauses:
         for at, kind, text, call in values:
             if at in faulted:
+                continue
+            if (
+                call is not None
+                and call[0] == "recentlyViewedContent"
+                and operator not in ("in", "not in")
+            ):
+                # A function that returns more than one value is no single value: real refused
+                # `type = recentlyViewedContent(5)` this way, where `id in
+                # recentlyViewedContent(5)` runs (Confluence Cloud, 2026-11-24).
+                faults.append((at, errors_atlassian.cql_function_returns_no_single_value(call[0])))
                 continue
             named = _cql_named_value(kind, text, call, current_user, now)
             fault = None if named is None else _cql_value_fault(field, operator, named)
@@ -5342,26 +5366,26 @@ def _cql_apply_offset(moment: datetime, amount: int, unit: str) -> datetime:
     return _cql_add_months(moment, amount * 12)
 
 
-def _cql_date_function_moment(name: str, args: list[tuple[str, str]], now: datetime) -> datetime:
-    """The moment a call of the date function ``name`` with ``args`` reads at ``now``, in UTC: `now`
-    itself, the start of its day, week, month or year, or the second before the next month starts,
-    moved by the relative date in its one quoted argument, if any. :func:`_cql_cannot_run` refuses
-    an argument that is no relative date before this reads it."""
+def _cql_date_function_moment(
+    name: str, args: list[tuple[str, str]], now: datetime, tz: timezone = timezone.utc
+) -> datetime:
+    """The moment a call of the date function ``name`` with ``args`` reads at ``now``, in ``tz``:
+    `now` itself, the start of its day, week, month or year, or the start of the next month, moved
+    by the relative date in its one quoted argument, if any. :func:`_cql_cannot_run` refuses an
+    argument that is no relative date before this reads it. `endOfMonth()` is the start of the next
+    month, not its last minute: real named it `2026-12-01 00:00` for November (Confluence Cloud,
+    2026-11-24)."""
     base = now
     if name == "startOfYear":
-        base = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+        base = datetime(now.year, 1, 1, tzinfo=tz)
     elif name == "startOfMonth":
-        base = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        base = datetime(now.year, now.month, 1, tzinfo=tz)
     elif name == "startOfDay":
-        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        base = datetime(now.year, now.month, now.day, tzinfo=tz)
     elif name == "startOfWeek":
-        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(
-            days=now.weekday()
-        )
+        base = datetime(now.year, now.month, now.day, tzinfo=tz) - timedelta(days=now.weekday())
     elif name == "endOfMonth":
-        base = _cql_add_months(
-            datetime(now.year, now.month, 1, tzinfo=timezone.utc), 1
-        ) - timedelta(seconds=1)
+        base = _cql_add_months(datetime(now.year, now.month, 1, tzinfo=tz), 1)
     if args:
         match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
         base = _cql_apply_offset(base, int(match.group(1)), match.group(2))

@@ -595,10 +595,9 @@ def cql_invalid_size_limit(value: str) -> AtlassianError:
 
 def cql_function_returns_no_single_value(name: str) -> AtlassianError:
     """The CQL search's refusal of a function that returns more than one value where a single
-    value goes: `type = recentlyViewedContent(5)` answered `Unable to execute function
-    'recentlyViewedContent', expecting a function that returns a single value` (Confluence Cloud,
+    value goes, worded as real answered `type = recentlyViewedContent(5)` (Confluence Cloud,
     2026-11-24). Where it falls among the search's other refusals is
-    ``routers.atlassian._cql_cannot_run``'s."""
+    ``routers.atlassian._cql_refusal``'s."""
     return _service_refusal(
         400,
         "api.BadRequestException",

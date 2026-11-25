@@ -4727,10 +4727,11 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
 def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
     """The 400 real answers a CQL the grammar cannot read with, or None for one it can, before
     :func:`_cql_refusal` reads the faults it walks from the left: a function call with the wrong
-    arguments, a second argument or an empty `recentlyViewedContent()`, a negative number among a
-    call's arguments, a function other than `recentlyViewedContent` in place of an `in` list, and a
-    `(` never closed with a `)` anywhere after it, a list's or a call's `)` included; a `(` never
-    closed with no `)` after it is the missing parenthesis of :func:`_cql_refusal`. Measured on
+    arguments, a second argument or an empty `recentlyViewedContent()` (a `recentlyViewedContent`
+    straight after an operator is :func:`_cql_refusal`'s), a negative number among a call's
+    arguments, a function other than `recentlyViewedContent` in place of an `in` list, and a `(`
+    never closed with a `)` anywhere after it, a list's or a call's `)` included; a `(` never closed
+    with no `)` after it is the missing parenthesis of :func:`_cql_refusal`. Measured on
     Confluence Cloud on 2026-10-31: a second argument or an empty `recentlyViewedContent()` was
     answered `Could not parse cql : ` beside any other wrong in the CQL, even a missing value or an
     unknown field earlier in it, and `(label = foo()`, `(space = currentSpace()` and
@@ -4764,7 +4765,11 @@ def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
                 return errors_atlassian.cql_not_parsed()
             if any(k == "NUMBER" and t.startswith("-") for k, t in args):
                 return errors_atlassian.cql_not_parsed()
-            if name in _CQL_FUNCTIONS and _cql_function_arity(name, args):
+            if (
+                name in _CQL_FUNCTIONS
+                and not (name == "recentlyViewedContent" and at and tokens[at - 1][0] == "OP")
+                and _cql_function_arity(name, args)
+            ):
                 return errors_atlassian.cql_not_parsed()
             if name != "recentlyViewedContent" and at and tokens[at - 1][1].lower() == "in":
                 return errors_atlassian.cql_not_parsed()
@@ -4806,9 +4811,16 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     `foo = x and space.key ~ x` answered the unknown field and `space.key ~ x and foo = x` the
     operator, `foo = select` the unknown field and `space.key ~ select` the reserved word, `foo =`
     the unknown field, and `foo = x and created > "x"`, `title and created > "x"` and
-    `created > 20260910 and created > 2026-02-30` `Could not parse cql : `. A query read to its end
-    with none of these is ``cql_not_parsed`` when a `space.key` value holds a single quote. A value
-    real refuses for another reason, an escaped end quote included, is :func:`_cql_cannot_run`'s."""
+    `created > 20260910 and created > 2026-02-30` `Could not parse cql : `. A
+    `recentlyViewedContent` straight after an operator is
+    ``errors.atlassian.cql_function_returns_no_single_value`` at the call, placed among those faults
+    as a reserved word is and before its arguments are read. Measured on Confluence Cloud on
+    2026-11-25: `type = recentlyViewedContent()`, `type = recentlyViewedContent(5) and bogus = x`
+    and `type = currentSpace() and type = recentlyViewedContent(5)` answered it, where
+    `bogus = x and type = recentlyViewedContent(5)` answered the unknown field and
+    `type = recentlyViewedContent(-1)` `Could not parse cql : `. A query read to its end with none
+    of these is ``cql_not_parsed`` when a `space.key` value holds a single quote. A value real
+    refuses for another reason, an escaped end quote included, is :func:`_cql_cannot_run`'s."""
     at = 0
     recorded = None  # (place, refusal) of the first fault recorded, the furthest left
     groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
@@ -4905,6 +4917,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 # space, a quoted one with its quotes (Confluence Cloud, 2026-11-05).
                 call = f"{name}({','.join(text for _, text in args)})"
                 raise _Stop(errors_atlassian.cql_unknown_function(call))
+            if name == "recentlyViewedContent" and tokens[at - 2][0] == "OP":
+                record(at - 1, errors_atlassian.cql_function_returns_no_single_value(name))
             # `now(select)`: the arguments follow the `(`, one comma between each two.
             for i, (arg_kind, arg_text) in enumerate(args):
                 if arg_kind == "WORD" and arg_text.lower() in _CQL_KEYWORDS:
@@ -5153,7 +5167,7 @@ def _cql_named_value(kind: str, text: str, call, current_user: str | None, now: 
     `currentUser()` the caller's account id and a date function as `yyyy-MM-dd HH:mm` (Confluence
     Cloud, 2026-11-24). `recentlyViewedContent` gives None: real refused
     `type = recentlyViewedContent(5)` as no function that returns a single value, which
-    :func:`_cql_cannot_run` answers instead of a value fault."""
+    :func:`_cql_refusal` answers before a value is named."""
     if call is None:
         return _cql_unquote(kind, text)
     name, args = call
@@ -5250,12 +5264,10 @@ def _cql_search_refuses(field: str, operator: str, kind: str, text: str, call) -
 def _cql_cannot_run(tokens: list[tuple[str, str]], current_user: str | None, now: datetime):
     """The 400 real answers a CQL it reads but cannot run, or None for one it runs, after
     :func:`_cql_refusal` and before :func:`_cql_search_after`: a function that cannot run, an
-    escaped end quote (``errors.atlassian.cql_escaped_end_quote``), a function that returns no
-    single value where one goes (``errors.atlassian.cql_function_returns_no_single_value``) and a
-    value its field does not take (:func:`_cql_value_fault`), the first of them from the left, and
-    with none of them a clause the search service refuses (`_CQL_SEARCH_REFUSES`). A function value
-    is named for ``current_user`` at ``now`` (:func:`_cql_named_value`). With an even number of
-    backslashes
+    escaped end quote (``errors.atlassian.cql_escaped_end_quote``) and a value its field does not
+    take (:func:`_cql_value_fault`), the first of them from the left, and with none of them a clause
+    the search service refuses (`_CQL_SEARCH_REFUSES`). A function value is named for
+    ``current_user`` at ``now`` (:func:`_cql_named_value`). With an even number of backslashes
     before a quote, `_CQL_TOKEN` reads them in pairs and the quote closes the value; with an odd
     number the quote is escaped, and where no later quote closes the value the token ends at it all
     the same. Each of those tokens ends in a backslash and its quote, an escaped end quote. A value
@@ -5292,16 +5304,6 @@ def _cql_cannot_run(tokens: list[tuple[str, str]], current_user: str | None, now
     for field, operator, values in clauses:
         for at, kind, text, call in values:
             if at in faulted:
-                continue
-            if (
-                call is not None
-                and call[0] == "recentlyViewedContent"
-                and operator not in ("in", "not in")
-            ):
-                # A function that returns more than one value is no single value: real refused
-                # `type = recentlyViewedContent(5)` this way, where `id in
-                # recentlyViewedContent(5)` runs (Confluence Cloud, 2026-11-24).
-                faults.append((at, errors_atlassian.cql_function_returns_no_single_value(call[0])))
                 continue
             named = _cql_named_value(kind, text, call, current_user, now)
             fault = None if named is None else _cql_value_fault(field, operator, named)

@@ -1761,6 +1761,27 @@ def _gmail_long_runs(q: str) -> str:
     return "".join(out) + q[at:]
 
 
+#: A `has:` at a term's start, a quote after it, and no second quote to the end of the search.
+_GMAIL_HAS_UNCLOSED_QUOTE = re.compile(r'(?<![^ \t\n\r\f\v(])(has:)"([^"]*)$', re.IGNORECASE)
+
+
+def _gmail_has_unclosed_quote(m: re.Match) -> str:
+    """The phrase a `has:` with an unclosed quoted value opens, or the match as it stands.
+
+    The phrase is the operator's name and what follows the quote, read as one run of free
+    text. What follows that is a value `has:` takes (see `_GMAIL_HAS_VALUES`) is no phrase,
+    and neither is a `has:` a `-` or a `NOT` in front of negates. Measured on 2026-11-23 and
+    2026-11-25: `has:"the` answered the ids of `"has the"`.
+    """
+    before = m.string[: m.start()].rstrip(" \t")
+    rest = m.group(2).strip()
+    if before.upper().endswith("NOT") or before.endswith("-"):
+        return m.group(0)
+    if not re.search(r"\w", rest) or rest.lower() in _GMAIL_HAS_VALUES:
+        return m.group(0)
+    return f'"has {rest}"'
+
+
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
     """Split a Gmail search `q` into (free_text, operators). Honors from:/to:/cc:/bcc:/subject:/
     after:/before:/newer:/older:/newer_than:/older_than:/label:/in:/has: — the rest is free text
@@ -1768,20 +1789,29 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q = _gmail_brace_leads(q)
     q, any_groups, not_any_groups = _gmail_braces(q)
     q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
-    # A quoted `in:` value holding no letter, digit, `_` or `&` is `in:""`. `in:""`, and an `in:`
-    # a space follows, read the next word as their value (`_GMAIL_SPACED`), past a word of
-    # punctuation alone (`_GMAIL_SEPARATOR_ONLY`). Measured on 2026-11-23: `in:"()"`, `in:"( )"`
-    # and `in:"."` answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and
-    # `in:"()" has` nothing, as `in:"" the` and `in:"" has` did; `the in:"()"` the ids of `the`;
+    # A quoted `in:`, `label:` or `subject:` value holding no letter, digit, `_` or `&` is
+    # `in:""`, and likewise for the other two. Such an operator, and one a space follows, reads
+    # the next word as its value (`_GMAIL_SPACED`), past a word of punctuation alone
+    # (`_GMAIL_SEPARATOR_ONLY`). Measured on 2026-11-23: `in:"()"`, `in:"( )"` and `in:"."`
+    # answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and `in:"()" has`
+    # nothing, as `in:"" the` and `in:"" has` did; `the in:"()"` the ids of `the`;
     # `in:"()" label:inbox` those of `label:inbox`; `in:"" .`, `in:"()" .` and `in: .` every
     # message; `in:"" . the`, `in:"" . . the` and `in:"" - the` nothing; and `in:"" . inbox` and
-    # `in: ? inbox` the ids of `in:inbox`.
-    q = re.sub(r'(?<![^ \t\n\r\f\v(-])(in:)"[^"\w&\xa0]*"', r'\1""', q, flags=re.IGNORECASE)
+    # `in: ? inbox` the ids of `in:inbox`. Measured on 2026-11-23 and 2026-11-25: `label:"" .`
+    # answered every message and `label:"()" . the` nothing; `label:"()" inbox` and
+    # `label:"" inbox` answered the ids of `label:inbox`, `label:"()" the` nothing, and
+    # `subject:"()" the` the ids of `subject:the`, where `. the` answered the ids of `the`.
+    q = re.sub(
+        r'(?<![^ \t\n\r\f\v(-])((?:in|label|subject):)"[^"\w&\xa0]*"',
+        r'\1""',
+        q,
+        flags=re.IGNORECASE,
+    )
     # Only outside a quoted run: `subject:"log in: - now"` and `"sign in: . now"` keep their text.
     # A no-break space is no punctuation here: an `in:` value holding one matches nothing
     # (`_GMAIL_SPACED_NBSP`).
     q = re.sub(
-        r'(?<![^ \t\n\r\f\v(-])(in:(?:"")?)(?:[ \t]+[^\w&"() \t\n\r\f\v\xa0]+)+(?=[ \t\n\r\f\v]|\Z)',
+        r'(?<![^ \t\n\r\f\v(-])((?:in|label|subject):(?:"")?)(?:[ \t]+[^\w&"() \t\n\r\f\v\xa0]+)+(?=[ \t\n\r\f\v]|\Z)',
         lambda m: m.group(0) if m.string.count('"', 0, m.start()) % 2 else m.group(1),
         q,
         flags=re.IGNORECASE,
@@ -1791,6 +1821,12 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
         if (lone.group(1).count("NOT") + bool(lone.group(2))) % 2 == 0:
             return "", {_GMAIL_NOTHING: [lone.group(0)]}
         q = q[: lone.start()]
+    # A `has:` at a term's start whose quoted value no later quote closes reads as the
+    # phrase it opens, the operator's name its first word, where what follows is no value
+    # `has:` takes: measured on 2026-11-23 and 2026-11-25, `has:"the` answered the ids of
+    # `"has the"`. A following word that is a value `has:` takes keeps the reading `_take`
+    # gives it, and a negated `has:` is left as it stands.
+    q = _GMAIL_HAS_UNCLOSED_QUOTE.sub(_gmail_has_unclosed_quote, q)
     ops: dict[str, list[str]] = {}
 
     def _take(m):

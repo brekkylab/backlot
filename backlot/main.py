@@ -1730,8 +1730,8 @@ async def answer_an_atlassian_write_that_fails(request: Request, call_next):
 async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     """Answer a `HEAD` as the `GET` with the body left off, which is how real GitHub, both Atlassian
     products, Notion, Drive, Gmail and HubSpot answer one — but for a `HEAD` on one of GitHub's
-    `/agents/automations` operations, which real's agents backend refuses with a 405
-    (:func:`errors.github.head_method_not_allowed`).
+    `/agents/automations`, `/agents/repos` or `/agents/tasks` operations, which real's agents
+    backend refuses with a 405 (:func:`errors.github.head_method_not_allowed`).
 
     FastAPI's ``APIRoute`` does not add `HEAD` to a GET route the way Starlette's ``Route`` does, so
     without this a `HEAD` on a route that serves the GET is a 405, whatever the GET answers. Real

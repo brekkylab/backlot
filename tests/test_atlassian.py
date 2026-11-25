@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
@@ -101,32 +101,89 @@ def test_jira_processes_a_credential_it_cannot_resolve_as_anonymous(client, admi
         signed = client.get(f"/atlassian/rest/api/{ver}/serverInfo", headers=admin_h).json()
         assert info.status_code == 200
         assert list(info.json().items()) == [(k, v) for k, v in signed.items() if k != "serverTime"]
+    # `issueLinkType` lists none and finds none by id, measured with each of the three on `/2` and
+    # `/3` (see `jira_link_types` and `jira_link_type`)
+    for ver in ("2", "3"):
+        listed = client.get(f"/atlassian/rest/api/{ver}/issueLinkType", headers=headers)
+        assert (listed.status_code, listed.json()) == (200, {"issueLinkTypes": []})
+        one = client.get(f"/atlassian/rest/api/{ver}/issueLinkType/10003", headers=headers)
+        assert (one.status_code, one.json()) == (
+            404,
+            {
+                "errorMessages": [
+                    "No issue link type with id '10003' found or you do not have permission to "
+                    "view it."
+                ],
+                "errors": {},
+            },
+        )
 
 
-@pytest.mark.parametrize("path", ["/rest/api/3/field", "/rest/api/3/issueLinkType"])
-def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client, path):
-    """Both answer 200 to a failed pair on the real sites, so neither is behind the credential."""
-    assert client.get(f"/atlassian{path}", headers=FAILED_PAIR).status_code == 200
+def test_jira_serves_its_field_metadata_to_an_anonymous_caller(client):
+    """`field` answers 200 to a failed pair on the real sites: it is not behind the credential."""
+    assert client.get("/atlassian/rest/api/3/field", headers=FAILED_PAIR).status_code == 200
 
 
 @pytest.mark.parametrize("host", [None, "jira.example.test"])
 def test_jira_link_types_match_measured_metadata(client, admin_h, host):
     """The default four types and self links measured beside `jira_link_types`, members in real's
-    order, for a caller whose credential resolves."""
+    order, under the mount asked for, for a caller whose credential resolves, and one type by its
+    id with the 404 and the 400 `jira_link_type` names."""
     headers = {**admin_h, "Host": host} if host else admin_h
-    response = client.get("/atlassian/rest/api/3/issueLinkType", headers=headers)
-    assert response.status_code == 200
-    base = f"http://{host or 'testserver'}/rest/api/3/issueLinkType"
-    types = response.json()["issueLinkTypes"]
-    assert [list(item.items()) for item in types] == [
-        [("id", i), ("name", n), ("inward", a), ("outward", b), ("self", f"{base}/{i}")]
-        for i, n, a, b in [
-            ("10000", "Blocks", "is blocked by", "blocks"),
-            ("10001", "Cloners", "is cloned by", "clones"),
-            ("10002", "Duplicate", "is duplicated by", "duplicates"),
-            ("10003", "Relates", "relates to", "relates to"),
-        ]
+    site = f"http://{host or 'testserver'}"
+
+    def linked(version, i, n, a, b):
+        link = f"{site}/rest/api/{version}/issueLinkType/{i}"
+        return {"id": i, "name": n, "inward": a, "outward": b, "self": link}
+
+    types = [
+        ("10000", "Blocks", "is blocked by", "blocks"),
+        ("10001", "Cloners", "is cloned by", "clones"),
+        ("10002", "Duplicate", "is duplicated by", "duplicates"),
+        ("10003", "Relates", "relates to", "relates to"),
     ]
+
+    def refused(message):
+        return {"errorMessages": [message], "errors": {}}
+
+    def missing(i):
+        return refused(
+            f"No issue link type with id '{i}' found or you do not have permission to view it."
+        )
+
+    def invalid(i):
+        return refused(f"Invalid issue link type id '{i}' specified.")
+
+    rows = [
+        ("3", 200, {"issueLinkTypes": [linked("3", *t) for t in types]}),
+        ("2", 200, {"issueLinkTypes": [linked("2", *t) for t in types]}),
+        ("3/10003", 200, linked("3", *types[3])),
+        ("3/99999", 404, missing("99999")),
+        ("3/abc", 400, invalid("abc")),
+        # `/2`, and ids as `jira_link_type` reads them
+        ("2/10003", 200, linked("2", *types[3])),
+        ("2/010003", 200, linked("2", *types[3])),
+        ("3/+10003", 200, linked("3", *types[3])),
+        ("3/\uff11\uff10\uff10\uff10\uff13", 200, linked("3", *types[3])),
+        ("3/-1", 404, missing("-1")),
+        ("3/+99999", 404, missing("+99999")),
+        ("3/1_0003", 400, invalid("1_0003")),
+        ("3/9223372036854775808", 400, invalid("9223372036854775808")),
+    ]
+
+    def ordered(body):
+        return json.loads(json.dumps(body), object_pairs_hook=tuple)
+
+    answered = {}
+    for tail, *_ in rows:
+        version, _, type_id = tail.partition("/")
+        path = f"/atlassian/rest/api/{version}/issueLinkType" + (f"/{type_id}" if type_id else "")
+        r = client.get(path, headers=headers)
+        answered[tail] = (r.status_code, r.headers["content-type"], ordered(r.json()))
+    assert answered == {
+        tail: (status, errors_atlassian.JIRA_JSON_MEDIA_TYPE, ordered(body))
+        for tail, status, body in rows
+    }
 
 
 def test_atlassian_lists_only_the_containers_the_caller_can_open(tmp_path):
@@ -1738,9 +1795,8 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + ' and title ~ "Gu\\"ide"', {"Guide"}),
         (three + ' and title ~ "Gu\\ide"', {"Guide"}),
         (three + ' and title ~ "Gu\\\\ide"', set()),
-        # not real's answers: real refused `type = "pa\ge"` with a 400 naming `pa\ge`, and `label`
-        # was not measured, as no content there carried one; these pin how `_cql_unquote` reads them
-        (three + ' and type = "pa\\ge"', set()),
+        # `label` was not measured, as no content there carried one: these pin how `_cql_unquote`
+        # reads its value
         (three + ' and label = "pag\\"er"', {"Child"}),
         (three + ' and label = "pag\\er"', set()),
         (three + " and id not in ({Guide})", {"Child", "Grand"}),
@@ -1816,12 +1872,6 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
             (f'id in ("{first}\\"{second}")', {"Guide"}),
             (f'ancestor = "{first}\\"{second}"', {"Child", "Grand"}),
             (f'parent = "{first}\\"{second}"', {"Child"}),
-            # not real's answers: real refused each of these with 400 `Can't parse as a ContentId`;
-            # they pin the value read with its backslash kept
-            (f'id = "{first}\\"\\"{second}"', set()),
-            (f'id = "{first}\\{second}"', set()),
-            (f'ancestor = "{first}\\{second}"', set()),
-            (f'parent = "{first}\\{second}"', set()),
         ]
         answered = {}
         for template, _ in rows:
@@ -1968,7 +2018,14 @@ def test_confluence_cql_search_reads_creator_and_contributor(tmp_path):
                 "/atlassian/wiki/rest/api/search", headers=headers[caller], params={"cql": cql}
             ).json()
             answered[(caller, template)] = ({x["title"] for x in r["results"]}, r["totalSize"])
+        refused = c.get(
+            "/atlassian/wiki/rest/api/search",
+            headers=headers["ava@acme.com"],
+            params={"cql": "filesize = currentUser()"},
+        ).json()["message"]
     assert answered == {(caller, cql): (want, len(want)) for caller, cql, want in rows}
+    # the refusal of a value names the caller's account as `currentUser()` reads it
+    assert refused == _CQL_PREFIX + _CQL_FILESIZE + accounts["ava"]
 
 
 def test_confluence_cql_search_reads_its_rows_once_in_a_needed_terms_order(tmp_path, monkeypatch):
@@ -6073,6 +6130,23 @@ _JQL_ROWS = [
         for jql in ("order by key", "ORDER BY created DESC", "order\tby key", "  order by key")
     ],
     ("post", 2, {}, {"jql": "order by key", "maxResults": 1}, _UNBOUNDED_JQL),
+    *[
+        row
+        for jql, refused in (
+            (
+                "labels = select",
+                _jql_error(
+                    "Error in the JQL Query: 'select' is a reserved JQL word. You must surround "
+                    "it in quotation marks to use it in a query. (line 1, character 10)"
+                ),
+            ),
+            ("labels is not foo", None),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
+        )
+    ],
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
@@ -6295,7 +6369,292 @@ _JQL_ROWS = [
                 "cf[10016 is EMPTY",
                 "Error in the JQL Query: Expecting ']' but got 'is'. (line 1, character 10)",
             ),
+            (
+                "labels = true",
+                "Error in the JQL Query: 'true' is a reserved JQL word. You must surround it "
+                "in quotation marks to use it in a query. (line 1, character 10)",
+            ),
+            (
+                "select = zzq",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it "
+                "in quotation marks to use it in a query. (line 1, character 1)",
+            ),
+            (
+                "labels = a\\b",
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = by",
+                "Error in JQL Query: Expecting either a value, list or function before "
+                "the end of the query.",
+            ),
+            (
+                "labels = SELECT",
+                "Error in the JQL Query: 'SELECT' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 10)",
+            ),
+            (
+                "labels = True",
+                "Error in the JQL Query: 'True' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 10)",
+            ),
+            (
+                "SELECT = zzq",
+                "Error in the JQL Query: 'SELECT' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 1)",
+            ),
+            (
+                "labels in (zzq, select)",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 17)",
+            ),
+            (
+                "labels in membersOf(select)",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 21)",
+            ),
+            (
+                "labels = zzq order by select",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 23)",
+            ),
+            (
+                "status was Open by select",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 20)",
+            ),
+            (
+                "labels is not select",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 15)",
+            ),
+            (
+                'labels = "a\\b"',
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = 'a\\b'",
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = a\\=b",
+                "Error in the JQL Query: '\\=' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = a\\@b",
+                "Error in the JQL Query: '\\@' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "\\b = zzq",
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 1)",
+            ),
+            (
+                "labels = a\\u",
+                "Error in the JQL Query: '\\u' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = a\\u12zz",
+                "Error in the JQL Query: '\\u12z' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                'labels = "a\\u12"',
+                "Error in the JQL Query: '\\u12\"' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = a\\",
+                "Error in the JQL Query: The escape sequence has not been completed. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                'labels = "a\\"',
+                "Error in the JQL Query: The quoted string 'a\\\"' has not been completed. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels = = a\\b",
+                "Error in JQL Query: Expecting either a value, list or function but got '='. You "
+                "must surround '=' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels = = a@b",
+                "Error in JQL Query: Expecting either a value, list or function but got '='. You "
+                "must surround '=' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels zzq a\\b",
+                "Error in the JQL Query: Expecting operator but got 'zzq'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 8)",
+            ),
+            (
+                "labels = after",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels = by zzq",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels = by (zzq)",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels is not by",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels = by zzq)",
+                "Error in JQL Query: Expecting either a value, list or function but got ')'. You "
+                "must surround ')' in quotation marks to use it as a value. "
+                "(line 1, character 16)",
+            ),
+            (
+                "labels = by and labels = zzq",
+                "Error in JQL Query: Expecting either a value, list or function but got 'and'. "
+                "You must surround 'and' in quotation marks to use it as a value. "
+                "(line 1, character 13)",
+            ),
+            (
+                "labels = on order by key",
+                "Error in JQL Query: Expecting either a value, list or function but got 'order'. "
+                "You must surround 'order' in quotation marks to use it as a value. "
+                "(line 1, character 13)",
+            ),
+            (
+                "labels in (by)",
+                "Error in JQL Query: Expecting either a value, list or function but got 'by'. You "
+                "must surround 'by' in quotation marks to use it as a value. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = cf",
+                "Error in JQL Query: Expecting either a value, list or function but got 'cf'. You "
+                "must surround 'cf' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels = by zzq zzq",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'zzq'. "
+                "(line 1, character 17)",
+            ),
+            (
+                "status was by zzq Open",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'Open'. "
+                "(line 1, character 19)",
+            ),
+            (
+                "during = zzq",
+                "Error in the JQL Query: Expecting a field name but got 'during'. You must "
+                "surround 'during' in quotation marks to use it as a field name. "
+                "(line 1, character 1)",
+            ),
+            (
+                "labels is not foo)",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ')'. "
+                "(line 1, character 18)",
+            ),
+            (
+                "labels is not foo order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 25)",
+            ),
         )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence))
+        for jql, sentence in (
+            (
+                "(" * 100 + "labels = zzq" + ")" * 100 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 220)",
+            ),
+            (
+                "(" * 101 + "labels = zzq" + ")" * 101 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 222)",
+            ),
+            (
+                "(" * 1000 + "labels = zzq" + ")" * 1000 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 2020)",
+            ),
+            (
+                "(" * 1001 + "labels = zzq" + ")" * 1001 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 2022)",
+            ),
+            (
+                "(" * 6000 + "labels = zzq" + ")" * 6000 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 12020)",
+            ),
+            (
+                "labels in " + "(" * 1001 + "zzq" + ")" * 1001 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 2023)",
+            ),
+        )
+    ],
+    # `_JQL_RESERVED_WORDS` as values and as fields, then the English words of the same vendor
+    # list, which were served.
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused)
+        for word in """
+        abort access add alias alter any as audit avg begin between boolean break byte catch char
+        character check checkpoint collate collation column commit connect continue count create
+        current date decimal declare decrement default defaults define delete delimiter difference
+        distinct divide do double drop else encoding end equals escape exclusive exec execute exists
+        explain false fetch field file first float for function go goto grant greater group having
+        identified if immediate increment index initial inner inout input insert int integer
+        intersect intersection into isempty isnull join last left less like limit lock long max min
+        minus mode modify modulo more multiply next noaudit notin nowait number object of option
+        outer output power previous prior privileges public raise raw remainder rename resource
+        return returns revoke right row rowid rownum rows select session set share size sqrt start
+        strict string subtract sum synonym table then trans transaction trigger true uid union
+        unique update user validate values view when whenever where while with
+        """.split()
+        for jql, refused in (
+            (
+                f"labels = {word}",
+                _jql_error(
+                    f"Error in the JQL Query: '{word}' is a reserved JQL word. You must surround "
+                    "it in quotation marks to use it in a query. (line 1, character 10)"
+                ),
+            ),
+            (
+                f"{word} = zzq",
+                _jql_error(
+                    f"Error in the JQL Query: '{word}' is a reserved JQL word. You must surround "
+                    "it in quotation marks to use it in a query. (line 1, character 1)"
+                ),
+            ),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, None)
+        for word in (
+            *("a", "an", "all", "are", "at", "be", "but", "it", "no", "such", "that", "the"),
+            *("their", "there", "these", "they", "this", "will"),
+        )
+        for jql in (f"labels = {word}", f"{word} = zzq")
     ],
     *[
         ("post", 3, {}, {"jql": jql, "maxResults": 1}, None)
@@ -6314,6 +6673,22 @@ _JQL_ROWS = [
             "project is not EMPTY order by cf[10016]",
             "labels is foo",
             "labels in (zzq, (x))",
+            'labels = "select"',
+            "labels = 'true'",
+            "labels is not bar",
+            "labels is not null",
+            'labels is not "foo"',
+            "labels is not (EMPTY)",
+            "labels is not currentUser()",
+            "labels is not foo or labels = zzq",
+            "labels is not foo order by key",
+            "assignee is not foo",
+            "labels = a\\ b",
+            "labels = a\\'b",
+            "labels = a\\\\b",
+            "labels = \\u0061",
+            'labels = "a\\ b"',
+            "status was Open by zzq by zzq",
             "status was Open",
             "status was not in (Open)",
             "status was Open during (startOfDay(-7d), now())",
@@ -7058,6 +7433,9 @@ _WRONG_METHODS = [
         # the row the vendor's own document disagrees with: it declares GET alone on
         # `project/search`
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
+        # measured on the day ``errors.atlassian._JIRA_ALLOW`` gives, the set Jira's own document
+        # declares
+        ("post", "/rest/api/3/issueLinkType/10003", "GET, PUT, DELETE"),
         # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
         ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
         ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
@@ -7362,7 +7740,10 @@ def _routes(keys: dict[str, str]) -> list[str]:
         "/atlassian/rest/api/3/serverInfo",
         "/atlassian/rest/api/2/field",
         "/atlassian/rest/api/3/field",
+        "/atlassian/rest/api/2/issueLinkType",
         "/atlassian/rest/api/3/issueLinkType",
+        "/atlassian/rest/api/2/issueLinkType/10003",
+        "/atlassian/rest/api/3/issueLinkType/10003",
         "/atlassian/rest/api/3/project/search",
         f"/atlassian/rest/api/3/project/{p}/role",
         f"/atlassian/rest/api/3/project/{p}/role/10002",
@@ -7457,6 +7838,7 @@ _OPTIONS_ALLOW = [
     ("/atlassian/rest/api/3/issue/NOPE-1/comment", "GET,HEAD,POST,OPTIONS"),
     ("/atlassian/rest/api/2/search/jql", "GET,HEAD,POST,OPTIONS"),
     ("/atlassian/rest/api/3/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/atlassian/rest/api/2/issueLinkType/10003", "PUT,GET,HEAD,DELETE,OPTIONS"),
     ("/atlassian/rest/api/3/project/NOPE/role", "GET,HEAD,OPTIONS"),
     ("/atlassian/rest/api/3/project/NOPE/role/10002", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
     # the row that parts from the 405 table (see ``errors.atlassian._JIRA_OPTIONS_ALLOW``)
@@ -11317,6 +11699,23 @@ def _cql_reserved(word):
     )
 
 
+def _cql_unsupported_type(value):
+    """The message real answers a `type` value outside the types it lists with."""
+    return (
+        f"Unsupported value for type, got : {value}, expected one of : [space, user, page, "
+        "blogpost, comment, attachment, database, whiteboard, slide, embed, folder, "
+        "com.atlassian.confluence.extra.team-calendars:calendar-content-type, "
+        "com.atlassian.confluence.extra.team-calendars:space-calendars-view-content-type]"
+    )
+
+
+_CQL_CONTENT_ID = "Can't parse as a ContentId"
+_CQL_FILESIZE = "field filesize requires a value between 0 and 9223372036854775807 instead got "
+_CQL_USER_OPERATOR = (
+    "Operator is not supported for field 'user'. Supported operators are : =, !=, IN, NOT IN"
+)
+
+
 # What real answered each `cql` with on Confluence Cloud, as `_CQL_TOKEN`, `_cql_written_back`
 # and `_cql_refusal` in `backlot.routers.atlassian` record it: the `cqlQuery` of a 200, or the
 # message of a 400 after `_CQL_PREFIX`.
@@ -11396,7 +11795,20 @@ _CQL_PARSE_ROWS = [
             ('space = "han\\dbook"', 'space = "han\\dbook"'),
             ('space = "handbook"', 'space = "handbook"'),
             ('type = "pa\\"ge"', 'type = "pa\\"ge"'),
-            ('type = "pa\\ge"', 'type = "pa\\ge"'),
+            ("id = 05", "id = 05"),
+            ("id = 0", "id = 0"),
+            ('id = "5"', 'id = "5"'),
+            ("id = att5", "id = att5"),
+            ('id = "att5"', 'id = "att5"'),
+            ("id in (1, att5)", "id in ( 1 , att5 )"),
+            ("id != currentContent()", "id != currentContent ( )"),
+            ("filesize = 05", "filesize = 05"),
+            ("filesize = currentContent()", "filesize = currentContent ( )"),
+            ("space ~ currentContent()", "space ~ currentContent ( )"),
+            ('label = ""', 'label = ""'),
+            ("user = x", "user = x"),
+            ("user != x", "user != x"),
+            ("user in (x)", "user in ( x )"),
             ('title~"a\\b"', 'title ~ "a\\b"'),
             ("title~'a\"b'", "title ~ 'a\"b'"),
             ('created>now("-1d")', 'created > now ( "-1d" )'),
@@ -11792,6 +12204,128 @@ _CQL_PARSE_ROWS = [
                 'Escaped end quote in phrase query near : "a\\"',
             ),
             ('created > now("x") and title ~ "a\\"', "Invalid relative date : x"),
+        ]
+    ],
+    # The refusals of `_cql_value_fault` in `backlot.routers.atlassian`, then a clause the search
+    # service refuses (`_CQL_SEARCH_REFUSES`), answered with `_REFUSED`. The rows of two clauses pin
+    # the order the refusals are answered in.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            *[
+                (f"type {op} {value}", _cql_unsupported_type(named))
+                for op in ("=", "!=")
+                for value, named in [
+                    ("x", "x"),
+                    ('"x"', "x"),
+                    ("1", "1"),
+                    ('"2026-01-01"', "2026-01-01"),
+                    ('""', ""),
+                ]
+            ],
+            *[
+                (f"type {op} ({value})", _cql_unsupported_type(named))
+                for op in ("in", "not in")
+                for value, named in [
+                    ("x", "x"),
+                    ('"x"', "x"),
+                    ("1", "1"),
+                    ('"2026-01-01"', "2026-01-01"),
+                ]
+            ],
+            ("Type = Page", _cql_unsupported_type("Page")),
+            ('type = "Page"', _cql_unsupported_type("Page")),
+            ("type = 1.5", _cql_unsupported_type("1.5")),
+            ("type in (page, Page, Blogpost)", _cql_unsupported_type("Page")),
+            ("type in (Page, blogpost)", _cql_unsupported_type("Page")),
+            ("type = currentContent()", _cql_unsupported_type("0")),
+            ("type in (currentContent())", _cql_unsupported_type("0")),
+            ('type = "pa\\ge"', _cql_unsupported_type("pa\\ge")),
+            ('type = "pa\\"\\"ge"', _cql_unsupported_type('pa""ge')),
+            *[
+                (f"{field} {op} {value}", _CQL_CONTENT_ID)
+                for field in ("ancestor", "container", "content", "id", "parent")
+                for op in ("=", "!=")
+                for value in ("x", '"x"', '"2026-01-01"', 'now("-1d")', "currentUser()")
+            ],
+            *[
+                (f"{field} {op} ({value})", _CQL_CONTENT_ID)
+                for field in ("ancestor", "container", "content", "id")
+                for op in ("in", "not in")
+                for value in ("x", '"x"', '"2026-01-01"', "currentUser()")
+            ],
+            ("id = 9223372036854775808", _CQL_CONTENT_ID),
+            *[
+                (f'{field} = "2294{escaped}69"', _CQL_CONTENT_ID)
+                for field in ("id", "ancestor", "parent")
+                for escaped in ('\\"\\"', "\\")
+            ],
+            ("filesize = 1.5", _CQL_FILESIZE + "1.5"),
+            ("filesize = .5", _CQL_FILESIZE + ".5"),
+            ("filesize = 9223372036854775808", _CQL_FILESIZE + "9223372036854775808"),
+            *[
+                (f"user {op} {value}", _CQL_USER_OPERATOR)
+                for op in ("~", "!~")
+                for value in ("x", '"x"', '"2026-01-01"', '""', 'now("-1d")', "currentUser()")
+            ],
+            ("USER ~ x", _CQL_USER_OPERATOR),
+            *[
+                (f'{field} != ""', _REFUSED)
+                for field in (
+                    "approvalStatus",
+                    "embeddedProduct",
+                    "fileExtension",
+                    "generatedby",
+                    "jsdCategoryId",
+                    "jsdFeaturedInCategoryId",
+                    "label",
+                    "mediaType.description",
+                    "pageStatus",
+                    "publicLinkStatus",
+                    "space.category",
+                    "subtype",
+                    "title",
+                )
+            ],
+            *[
+                (f'{field} = ""', _REFUSED)
+                for field in ("jsdCategoryId", "jsdFeaturedInCategoryId")
+            ],
+            ('title = ""', _REFUSED),
+            ("mediaType.description != 2026-01-01", _REFUSED),
+            *[
+                (f"{field} {op} {value}", _REFUSED)
+                for field in ("mediaType.description", "space", "space.title")
+                for op in ("~", "!~")
+                for value in ('now("-1d")', "currentUser()")
+            ],
+            *[
+                (f"siteSearch !~ {value}", _REFUSED)
+                for value in ("x", '"x"', '"2026-01-01"', '""', 'now("-1d")', "currentUser()")
+            ],
+            (
+                "type=Page and foo=bar",
+                "No field exists with the name: 'foo' Did you mean one of : favorite, filesize, "
+                "favourite, fileExtension",
+            ),
+            ('id=abc and created > now("x")', _CQL_CONTENT_ID),
+            ('created > now("x") and id=abc', "Invalid relative date : x"),
+            ("type=Page and id=abc", _cql_unsupported_type("Page")),
+            ("id=abc and type=Page", _CQL_CONTENT_ID),
+            ('title = "" and type=Page', _cql_unsupported_type("Page")),
+            ('type=Page and title = ""', _cql_unsupported_type("Page")),
+            ("user ~ x and type = Page", _CQL_USER_OPERATOR),
+            ("type = Page and user ~ x", _cql_unsupported_type("Page")),
+            ("id = abc and filesize = currentUser()", _CQL_CONTENT_ID),
+            ("type = Page and id = 2026-01-01", _cql_unsupported_type("Page")),
+            ('title = "" and created > now("x")', "Invalid relative date : x"),
+            ('created > now("x") and title = ""', "Invalid relative date : x"),
+            ("siteSearch !~ x and id = abc", _CQL_CONTENT_ID),
+            ("id = 1.5 and type = page", _CQL_CONTENT_ID),
+            ('id = abc and title ~ "a\\"', _CQL_CONTENT_ID),
+            ('title ~ "a\\" and id = abc', 'Escaped end quote in phrase query near : "a\\"'),
+            ('type = Page and title ~ "a\\"', _cql_unsupported_type("Page")),
+            ('title = "" or title ~ x', _REFUSED),
         ]
     ],
     # A clause real refuses for its field, its operator or the shape of its value, as
@@ -14320,11 +14854,13 @@ _CQL_PARSE_ROWS = [
 
 def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
     """The rows `_CQL_PARSE_ROWS` records, each refusal with the `data` object of a service
-    refusal."""
+    refusal but `_REFUSED`, the search service's, which carries none."""
 
     def answer(status, written):
         if status == 200:
             return (200, written)
+        if written == _REFUSED:
+            return (400, {"statusCode": 400, "message": _REFUSED})
         refused = {"authorized": True, "valid": True, "errors": [], "successful": True}
         return (400, {"statusCode": 400, "data": refused, "message": _CQL_PREFIX + written})
 
@@ -14334,6 +14870,31 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
         answered[cql] = (r.status_code, r.json()["cqlQuery"] if r.status_code == 200 else r.json())
     assert len(answered) == len(_CQL_PARSE_ROWS)
     assert answered == {cql: answer(status, written) for cql, status, written in _CQL_PARSE_ROWS}
+
+
+def test_confluence_cql_value_refusals_name_a_function_at_a_moment():
+    """The value a `type` or `filesize` refusal names for a function value
+    (:func:`backlot.routers.atlassian._cql_named_value`) for a caller and a moment. Called
+    directly: the route names the moment it answers at."""
+    from backlot.routers.atlassian import _cql_cannot_run, _cql_tokens
+
+    account = "5b0123456789abcdef012345"
+    rows = [
+        ("type = currentUser()", _CQL_PREFIX + _cql_unsupported_type(account)),
+        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-23 16:15")),
+        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-24 00:00")),
+        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-11-30 23:59")),
+        ("filesize = currentUser()", _CQL_PREFIX + _CQL_FILESIZE + account),
+        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-23 16:15"),
+        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 00:00"),
+        # a function that cannot run answers for itself, not for the value it would be
+        ("type = currentSpace()", _CQL_PREFIX + _CQL_CURRENT_SPACE),
+    ]
+    now = datetime(2026, 11, 24, 16, 15, tzinfo=timezone.utc)
+    answered = {
+        cql: _cql_cannot_run(_cql_tokens(cql), account, now).body["message"] for cql, _ in rows
+    }
+    assert answered == dict(rows)
 
 
 def test_confluence_child_listings_refuse_a_page_ending_past_java_int(client, admin_h):

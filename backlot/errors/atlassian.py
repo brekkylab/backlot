@@ -606,6 +606,63 @@ def cql_escaped_end_quote(text: str) -> AtlassianError:
     )
 
 
+#: The values real lists for `type` in its refusal of a value outside them (Confluence Cloud,
+#: 2026-10-31).
+CQL_TYPE_VALUES = (
+    "space",
+    "user",
+    "page",
+    "blogpost",
+    "comment",
+    "attachment",
+    "database",
+    "whiteboard",
+    "slide",
+    "embed",
+    "folder",
+    "com.atlassian.confluence.extra.team-calendars:calendar-content-type",
+    "com.atlassian.confluence.extra.team-calendars:space-calendars-view-content-type",
+)
+
+
+def cql_unsupported_type_value(value: str) -> AtlassianError:
+    """The CQL search's refusal of a `type` value outside :data:`CQL_TYPE_VALUES`, naming the value
+    and that list. Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_value_fault``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unsupported value for type, got : {value}, expected one of : "
+        f"[{', '.join(CQL_TYPE_VALUES)}]",
+    )
+
+
+def cql_content_id_not_parsed() -> AtlassianError:
+    """The CQL search's refusal of a content id it cannot read, which names no value. Which fields
+    and values it refuses is ``routers.atlassian._cql_value_fault``'s."""
+    return _service_refusal(400, "api.BadRequestException", "Can't parse as a ContentId")
+
+
+def cql_filesize_out_of_range(value: str) -> AtlassianError:
+    """The CQL search's refusal of a `filesize` value, naming the value. Which values it refuses is
+    ``routers.atlassian._cql_value_fault``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"field filesize requires a value between 0 and 9223372036854775807 instead got {value}",
+    )
+
+
+def cql_user_operator_not_supported() -> AtlassianError:
+    """The CQL search's refusal of `user ~` and `user !~`, which names no operator, where
+    :func:`cql_operator_not_supported` names the one sent."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        "Operator is not supported for field 'user'. Supported operators are : =, !=, IN, NOT IN",
+    )
+
+
 def no_space_with_key(space_key: str) -> AtlassianError:
     """`content`'s refusal of a space key naming no space, as sent: the key is not trimmed (`' '` is
     named as a space), and a repeated one is its comma-join, which no key holds. Where it comes
@@ -806,7 +863,9 @@ def start_too_large() -> AtlassianError:
 def search_cursor_refused(*, failed: bool = False) -> AtlassianError:
     """The CQL search's refusal of a `cursor` it cannot page by
     (``backlot.routers.atlassian._cql_search_after`` says which): a 400, or with ``failed`` a 500.
-    Both bodies name the search service behind the route, which is where the token is read."""
+    Both bodies name the search service behind the route, which is where the token is read. The
+    400 is also the refusal of a clause that service refuses
+    (``backlot.routers.atlassian._CQL_SEARCH_REFUSES``)."""
     status = 500 if failed else 400
     failure = (
         "There was an error returned from XP-Search Aggregator API: HTTP/1.1 500 Internal Server "
@@ -2359,7 +2418,8 @@ def bad_page_token() -> AtlassianError:
 # the three methods `/rest/api/3/project/{projectIdOrKey}` takes, so `search` binds as a project key
 # there and the measurement is what the row states. `project/{key}/role/{id}`: a `POST` with an
 # unknown key is that route's 404 rather than a 405, so no 405 could be measured and its row is the
-# document's four methods alone.
+# document's four methods alone. `issueLinkType/{id}`, measured on 2026-11-23 on both mounts,
+# answers the document's three.
 _JIRA_ALLOW = (
     ("/rest/api/{version}/serverInfo", ("GET",)),
     ("/rest/api/{version}/field", ("GET", "POST")),
@@ -2367,6 +2427,7 @@ _JIRA_ALLOW = (
     ("/rest/api/{version}/issue/{key}/comment", ("GET", "POST")),
     ("/rest/api/{version}/search/jql", ("GET", "POST")),
     ("/rest/api/{version}/issueLinkType", ("GET", "POST")),
+    ("/rest/api/{version}/issueLinkType/{id}", ("GET", "PUT", "DELETE")),
     ("/rest/api/{version}/project/search", ("GET", "PUT", "DELETE")),
     ("/rest/api/{version}/project/{key}/role", ("GET",)),
     ("/rest/api/{version}/project/{key}/role/{id}", ("GET", "POST", "PUT", "DELETE")),
@@ -2510,6 +2571,8 @@ def method_not_allowed(path: str, method: str) -> AtlassianError:
 # search route itself and names three methods rather than five. Real spells the list without spaces
 # after the commas, where its 405 `Allow` has them, and the order of the set varied between two
 # requests, so the order below is one measured spelling and not a sequence a client can rely on.
+# `issueLinkType/{id}` is its 405 set plus `HEAD` and `OPTIONS`, measured on 2026-11-23: five
+# requests on both mounts answered five orders of that set, the first of them the order below.
 _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/serverInfo", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/field", "POST,GET,HEAD,OPTIONS"),
@@ -2517,6 +2580,7 @@ _JIRA_OPTIONS_ALLOW = (
     ("/rest/api/{version}/issue/{key}/comment", "GET,HEAD,POST,OPTIONS"),
     ("/rest/api/{version}/search/jql", "GET,HEAD,POST,OPTIONS"),
     ("/rest/api/{version}/issueLinkType", "POST,GET,HEAD,OPTIONS"),
+    ("/rest/api/{version}/issueLinkType/{id}", "PUT,GET,HEAD,DELETE,OPTIONS"),
     ("/rest/api/{version}/project/search", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/project/{key}/role", "GET,HEAD,OPTIONS"),
     ("/rest/api/{version}/project/{key}/role/{id}", "DELETE,POST,PUT,GET,HEAD,OPTIONS"),
@@ -2938,6 +3002,29 @@ def no_such_role() -> AtlassianError:
     read the project's roles, for `-1`, `-0x1`, `11` and a `1` on either side of an em space, each
     read as ``backlot.routers.atlassian._java_long`` reads it."""
     return AtlassianError(404, {"errorMessages": [], "errors": {}}, media_type=JIRA_JSON_MEDIA_TYPE)
+
+
+def no_such_link_type(raw: str) -> AtlassianError:
+    """Jira's 404 for `issueLinkType/{id}` with an id that names no link type, and for one that
+    does to a caller with no credential on a site whose anonymous caller sees no project. Measured
+    on Jira Cloud 2026-10-15 for `99999` with a credential and `10003` with none."""
+    return AtlassianError(
+        404,
+        _jira_envelope(
+            f"No issue link type with id '{raw}' found or you do not have permission to view it."
+        ),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
+def invalid_link_type_id(raw: str) -> AtlassianError:
+    """Jira's 400 for `issueLinkType/{id}` with an id ``backlot.routers.atlassian._parse_long``
+    does not read, measured on Jira Cloud 2026-10-15 for `abc` with a credential."""
+    return AtlassianError(
+        400,
+        _jira_envelope(f"Invalid issue link type id '{raw}' specified."),
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
 
 
 def not_a_project_admin(realm: str) -> AtlassianError:

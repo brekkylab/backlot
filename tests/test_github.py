@@ -3956,9 +3956,10 @@ def test_github_a_head_is_the_get_with_the_body_left_off(gh_client, gh_admin_h, 
     assert c.head("/slack/api/auth.test", headers=gh_admin_h).status_code == 405
 
 
-#: A `HEAD` on an `/agents/automations` operation with no `Authorization` or a bad bearer, and the
-#: `x-ratelimit-resource` of real's 401: the credential is read before the 405 a token that resolves
-#: gets (``backlot.errors.github.head_method_not_allowed``).
+#: A `HEAD` on an `/agents/automations` operation, and on an `/agents/repos` or `/agents/tasks`
+#: one, with no `Authorization` or a bad bearer, and the `x-ratelimit-resource` of real's 401: the
+#: credential is read before the 405 a token that resolves gets
+#: (``backlot.errors.github.head_method_not_allowed``).
 _AUTOMATIONS_HEAD_REFUSED_ROWS = [
     ("/agents/automations", {}, "core"),
     ("/agents/automations/2", {}, "core"),
@@ -3966,6 +3967,8 @@ _AUTOMATIONS_HEAD_REFUSED_ROWS = [
     ("/agents/automations", {"Authorization": "Bearer nope"}, None),
     ("/agents/automations/2", {"Authorization": "Bearer nope"}, None),
     ("/agents/automations/1/tasks", {"Authorization": "Bearer nope"}, None),
+    ("/agents/repos/psf/requests/tasks", {}, "core"),
+    ("/agents/tasks/1", {"Authorization": "Bearer nope"}, None),
 ]
 
 
@@ -8855,7 +8858,7 @@ _JSON_404 = (
     0,
     None,
 )
-_HEAD_405 = (405, None, b"", "core", 1, "GET")
+_HEAD_405 = (405, None, b"", "core", 1, ("GET",))
 _HEAD_TEXT_404 = (404, "text/plain", b"", "core", 1, None)
 _HEAD_JSON_404 = (404, "application/json", b"", None, 0, None)
 _AUTOMATIONS_ROWS = [
@@ -8900,14 +8903,12 @@ _AUTOMATIONS_ROWS = [
 ]
 
 
-def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it(
-    gh_client, gh_admin_h
-):
+def test_github_an_agents_path_is_answered_as_the_agents_backend_answers_it(gh_client, gh_admin_h):
     """Each answer carries no version echo, with an unknown version pinned or not."""
     c, _ = gh_client
     pinned = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
     answered, expected = {}, {}
-    for method, path, answer in _AUTOMATIONS_ROWS:
+    for method, path, answer in (*_AUTOMATIONS_ROWS, *_AGENT_REPOS_AND_TASKS_ROWS):
         for headers in (gh_admin_h, pinned):
             r = c.request(method, f"/github{path}", headers=headers)
             again = c.request(method, f"/github{path}", headers=headers)
@@ -8919,11 +8920,73 @@ def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it
                 r.headers.get("x-ratelimit-resource"),
                 int(again.headers.get("x-ratelimit-used", 0))
                 - int(r.headers.get("x-ratelimit-used", 0)),
-                r.headers.get("allow"),
+                tuple(r.headers.get_list("allow")) or None,
                 r.headers.get("x-github-api-version-selected"),
             )
             expected[(method, path, headers is pinned)] = (*answer, None)
     assert answered == expected
+
+
+#: (method, a path under `/github/agents/repos` or `/github/agents/tasks`, and what a token that
+#: resolves gets, in the columns of `_AUTOMATIONS_ROWS`): the router's JSON 404 with the five
+#: `x-ratelimit-*` on `core` for an operation the baseline lists as missing, the agents backend's
+#: text `404 page not found` for a path no operation names or an operation spelt in another case,
+#: and for a `HEAD` the agents backend's 405 with the `Allow` lines of
+#: ``backlot.routers.github._AGENT_HEAD_ALLOW`` and the GET's answer with no body elsewhere.
+_JSON_404_CORE = (
+    404,
+    "application/json",
+    b'{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}',
+    "core",
+    1,
+    None,
+)
+_HEAD_405_GET_POST = (405, None, b"", "core", 1, ("GET", "POST"))
+_HEAD_405_GET_PATCH_DELETE = (405, None, b"", "core", 1, ("GET", "PATCH", "DELETE"))
+_HEAD_405_DELETE_GET_PATCH = (405, None, b"", "core", 1, ("DELETE", "GET", "PATCH"))
+_HEAD_405_GET = (405, None, b"", "core", 1, ("GET",))
+_HEAD_405_DELETE_GET_PUT = (405, None, b"", "core", 1, ("DELETE", "GET", "PUT"))
+_HEAD_405_GET_PATCH = (405, None, b"", "core", 1, ("GET", "PATCH"))
+_AGENT_REPOS_AND_TASKS_ROWS = [
+    ("GET", "/agents/repos/psf/requests/automations", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/automations/available-tools", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/automations/available-triggers", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/automations/1", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/automations/2", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/automations/1/revisions", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/automations/1/revisions/1", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/automations/1/tasks", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/pulls/1/agent-merge", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/tasks", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/tasks/1", _JSON_404_CORE),
+    ("GET", "/agents/tasks", _JSON_404_CORE),
+    ("GET", "/agents/tasks/1", _JSON_404_CORE),
+    ("GET", "/agents/repos/psf/requests/nosuch", _TEXT_404),
+    ("GET", "/agents/tasks/1/nosuch", _TEXT_404),
+    ("GET", "/AGENTS/repos/psf/requests/tasks", _TEXT_404),
+    ("GET", "/agents/REPOS/psf/requests/tasks", _TEXT_404),
+    ("HEAD", "/agents/repos/psf/requests/automations", _HEAD_405_GET_POST),
+    ("HEAD", "/agents/repos/psf/requests/automations/available-tools", _HEAD_405_GET_PATCH_DELETE),
+    (
+        "HEAD",
+        "/agents/repos/psf/requests/automations/available-triggers",
+        _HEAD_405_GET_PATCH_DELETE,
+    ),
+    ("HEAD", "/agents/repos/psf/requests/automations/1", _HEAD_405_DELETE_GET_PATCH),
+    ("HEAD", "/agents/repos/psf/requests/automations/2", _HEAD_405_DELETE_GET_PATCH),
+    ("HEAD", "/agents/repos/psf/requests/automations/1/revisions", _HEAD_405_GET),
+    ("HEAD", "/agents/repos/psf/requests/automations/1/revisions/1", _HEAD_405_GET),
+    ("HEAD", "/agents/repos/psf/requests/automations/1/tasks", _HEAD_405_GET_POST),
+    ("HEAD", "/agents/repos/psf/requests/pulls/1/agent-merge", _HEAD_405_DELETE_GET_PUT),
+    ("HEAD", "/agents/repos/psf/requests/tasks", _HEAD_405_GET_POST),
+    ("HEAD", "/agents/repos/psf/requests/tasks/1", _HEAD_405_GET_PATCH),
+    ("HEAD", "/agents/tasks", _HEAD_405_GET_POST),
+    ("HEAD", "/agents/tasks/1", _HEAD_405_DELETE_GET_PATCH),
+    ("HEAD", "/agents/repos/psf/requests/nosuch", _HEAD_TEXT_404),
+    ("HEAD", "/agents/tasks/1/nosuch", _HEAD_TEXT_404),
+    ("HEAD", "/AGENTS/repos/psf/requests/tasks", _HEAD_TEXT_404),
+    ("HEAD", "/agents/REPOS/psf/requests/tasks", _HEAD_TEXT_404),
+]
 
 
 @pytest.mark.parametrize("headers", _COUNTED_TOKEN_SHAPED)

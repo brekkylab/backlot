@@ -397,12 +397,14 @@ def test_serve_passes_its_arguments_through_to_uvicorn(monkeypatch, a_data_dir_w
 
 def test_serve_defaults_match_uvicorns_own(monkeypatch, a_data_dir_with_a_corpus):
     """`backlot serve` keeps uvicorn's own defaults rather than a second set to keep in step with
-    them; the HTTP protocol is the one thing it picks (``backlot.protocol``)."""
+    them; the HTTP protocol (``backlot.protocol``) and the `server` header, which it turns off,
+    are the two things it picks."""
     defaults = _uvicorn_defaults()  # before the spy, or this inspects the spy
     seen = _spy_uvicorn(monkeypatch)
     assert cli.main(["serve"]) == 0
     for key in ("host", "port", "proxy_headers", "reload"):
         assert seen[key] == defaults[key].default, key
+    assert seen["server_header"] is False
 
 
 def test_no_proxy_headers_is_the_only_way_to_turn_them_off(monkeypatch, a_data_dir_with_a_corpus):

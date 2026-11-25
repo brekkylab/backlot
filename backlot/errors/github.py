@@ -310,33 +310,43 @@ def validation_body(path: str, errors) -> tuple[int, dict]:
 
 
 def head_method_not_allowed(request: Request, response: Response) -> Response | None:
-    """The 405 for a `HEAD` on an `/agents/automations` operation, or ``None`` where the `HEAD`
-    stays the GET's answer.
+    """The 405 for a `HEAD` on an `/agents/automations` operation, or on an `/agents/repos` or
+    `/agents/tasks` one, or ``None`` where the `HEAD` stays the GET's answer.
 
     Real's agents backend serves no `HEAD` on the operations it publishes there: with a token that
     resolves, `HEAD /agents/automations`, `/agents/automations/2`, `/agents/automations/1/tasks`
     and `/agents/automations/available-tools` were each the 405 with `Allow: GET` and no
     `content-type` and no `content-length`, on `core` (measured against api.github.com on
     2026-11-22), counted as the GET is and with no version echo, an unknown version pinned or not
-    (2026-11-23). The credential is read before the 405 — with no `Authorization` or a bad bearer
-    each was the 401 — so the GET's answer decides: only its 404, the answer a token that resolves
-    gets, is refused this way. A `HEAD` on a path no operation names
-    (`/agents/automations/1/nosuch`, `/agents/automations/`) keeps the GET's JSON 404, and one on
-    an operation spelt in another case (`/AGENTS/automations`, 2026-11-23) the GET's text 404.
+    (2026-11-23). On an `/agents/repos` or `/agents/tasks` operation the 405 names the methods of
+    :data:`backlot.routers.github._AGENT_HEAD_ALLOW`, one `Allow` line each. The credential is read
+    before the 405 — with no `Authorization` or a bad bearer each was the 401 — so the GET's answer
+    decides: only its 404, the answer a token that resolves gets, is refused this way. A `HEAD` on a
+    path no operation names keeps the GET's answer: the JSON 404 on `/agents/automations/1/nosuch`
+    and `/agents/automations/`, and the text 404 on `/agents/repos/{o}/{r}/nosuch` and
+    `/agents/tasks/1/nosuch` (2026-11-24). One on an operation spelt in another case keeps the
+    GET's text 404 (`/AGENTS/automations`, 2026-11-23; `/AGENTS/repos/{o}/{r}/tasks`, 2026-11-24).
     Imported lazily, as :func:`_routes` is, so the dependency between this package and the router
     stays one-way.
     """
-    from backlot.routers.github import is_an_automations_operation
+    from backlot.routers.github import agent_head_allow, is_an_automations_operation
 
-    if response.status_code != 404 or not is_an_automations_operation("GET", request.scope["path"]):
+    if response.status_code != 404:
         return None
+    if is_an_automations_operation("GET", request.scope["path"]):
+        allow = ("GET",)
+    else:
+        allow = agent_head_allow("GET", request.scope["path"])
+        if allow is None:
+            return None
     headers = {
         name: value
         for name, value in response.headers.items()
         if name.lower() not in ("content-type", "content-length")
     }
-    headers["allow"] = "GET"
     refusal = Response(status_code=405, headers=headers)
+    for method in allow:
+        refusal.headers.append("allow", method)
     # Starlette adds a `content-length` of the empty body at construction; real sends none.
     if "content-length" in refusal.headers:
         del refusal.headers["content-length"]

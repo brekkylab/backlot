@@ -1495,29 +1495,59 @@ _JQL_SYMBOLS = (
     *("=", "<", ">", "~", "!", "&", "|", "(", ")", ",", "[", "]"),
 )
 
-#: A word outside quotes: a run of anything that is not whitespace, a quote, a symbol's character or
-#: a reserved character. `café` and `가나` are words (both served on 2026-11-23).
+#: A word outside quotes is a run of anything that is not whitespace, a quote, a symbol's
+#: character or a reserved character, with backslash escapes inside it (`a\ b`). `café` and `가나`
+#: are words (both served on 2026-11-23). `_lex` reads a word as runs of this pattern and the
+#: escapes between them.
 _JQL_WORD = re.compile(
     "[^"
-    + re.escape(_JQL_WHITESPACE + "\"'=!<>~&|(),[]" + _JQL_RESERVED_CHARACTERS)
+    + re.escape(_JQL_WHITESPACE + "\"'=!<>~&|(),[]\\" + _JQL_RESERVED_CHARACTERS)
     + "\\x00-\\x1f]+"
 )
 
+#: The words that open a history predicate (`status was Open by zzq`).
+_JQL_HISTORY_WORDS = ("after", "before", "by", "during", "from", "on", "to")
+
 #: Words real refuses unquoted where a field name goes, and where a value goes. `empty` and `null`
-#: are values (measured 2026-11-22 and 2026-11-23).
+#: are values (measured 2026-11-22, 2026-11-23 and 2026-11-24).
 _JQL_FIELD_WORDS = frozenset(
-    {"and", "or", "in", "is", "empty", "null", "order", "by", "asc", "desc", "was", "changed"}
+    {"and", "or", "in", "is", "empty", "null", "order", "asc", "desc", "was", "changed"}
+    | set(_JQL_HISTORY_WORDS)
 )
 _JQL_VALUE_WORDS = frozenset(
-    {"and", "or", "not", "in", "is", "order", "asc", "desc", "was", "changed"}
+    {"and", "or", "not", "in", "is", "order", "asc", "desc", "was", "changed", "cf"}
+    | set(_JQL_HISTORY_WORDS)
+)
+
+#: Words real refuses unquoted as a field or a value, with the reserved-word sentence rather than
+#: the field or value one (`SELECT` and `True` too). Of the 195 words the vendor's documentation
+#: lists as reserved, these 159 drew it, each sent as a value and as a field on Jira Cloud on
+#: 2026-11-24; the other 36 (`a`, `the`, `and`, `empty` …) were served or drew another sentence.
+_JQL_RESERVED_WORDS = frozenset(
+    """
+    abort access add alias alter any as audit avg begin between boolean break byte catch char
+    character check checkpoint collate collation column commit connect continue count create current
+    date decimal declare decrement default defaults define delete delimiter difference distinct
+    divide do double drop else encoding end equals escape exclusive exec execute exists explain
+    false fetch field file first float for function go goto grant greater group having identified if
+    immediate increment index initial inner inout input insert int integer intersect intersection
+    into isempty isnull join last left less like limit lock long max min minus mode modify modulo
+    more multiply next noaudit notin nowait number object of option outer output power previous
+    prior privileges public raise raw remainder rename resource return returns revoke right row
+    rowid rownum rows select session set share size sqrt start strict string subtract sum synonym
+    table then trans transaction trigger true uid union unique update user validate values view when
+    whenever where while with
+    """.split()
+)
+
+#: The valid backslash escapes, as real's illegal-escape sentence lists them (Jira Cloud,
+#: 2026-11-23).
+_JQL_ESCAPE_LIST = (
+    "The valid escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX."
 )
 
 #: The operator list real's sentence names when a field is not followed by one.
 _JQL_OPERATORS = "'=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and 'IS NOT'"
-
-#: How deep the parser follows nested parentheses before it serves the query unchecked. Real
-#: parsed 1000 levels (2026-11-23); a level here is at most three Python frames.
-_JQL_MAX_DEPTH = 100
 
 _JQL_PREFIX = "Error in the JQL Query: "
 #: Real's sentences for a missing or unquoted value open without `the` (2026-11-23).
@@ -1529,22 +1559,21 @@ class _JqlParseError(Exception):
     """Raised with the sentence `_jql_parse_error` returns."""
 
 
-class _JqlUnchecked(Exception):
-    """Raised past `_JQL_MAX_DEPTH`."""
-
-
 class _JqlParser:
     """A `jql` read the way Jira's parser reads it: clauses (`field operator value`, `IN`, `IS`,
     `WAS`, `CHANGED` and their history clauses), `AND`, `OR`, `NOT` and parentheses, values, lists
     and function calls, and an `ORDER BY` of fields with optional `ASC` or `DESC`. Each refusal is
-    real's sentence, measured on Jira Cloud on 2026-11-22 or 2026-11-23 in the rows of
-    test_jira_search_reads_a_jql_as_real_does. Reserved words (`select`, `true`) and backslash
-    escapes are not read, so a `jql` that uses one is served.
+    real's sentence, measured on Jira Cloud between 2026-11-22 and 2026-11-24 in the rows of
+    test_jira_search_reads_a_jql_as_real_does. A token is read when the parser first asks for it,
+    so a parse error ahead of a character real refuses is the one it answers (`labels = = a@b`,
+    2026-11-24). Parentheses are counted rather than followed by recursion: real read 6000 levels
+    and answered 8000 with a 500 (2026-11-24), which is not modelled.
     """
 
     def __init__(self, jql: str):
         self.jql = jql
-        self.tokens = self._tokens()
+        self.tokens: list[tuple[str, int, bool]] = []
+        self.offset = 0
         self.pos = 0
 
     def _position(self, offset: int) -> tuple[int, int]:
@@ -1557,49 +1586,86 @@ class _JqlParser:
     def _at(self, offset: int) -> str:
         return " (line {}, character {})".format(*self._position(offset))
 
-    def _tokens(self) -> list[tuple[str, int, bool]]:
-        """Each token's text, its offset, and whether it is a string (a word or a quoted string)."""
-        jql, tokens, i = self.jql, [], 0
-        while i < len(jql):
-            c = jql[i]
-            if c in _JQL_WHITESPACE:
-                i += 1
-            elif c < " ":
-                line, character = self._position(i)
+    def _lex(self) -> bool:
+        """Append the next token to `tokens`: its text, its offset, and whether it is a string (a
+        word or a quoted string). False at the end of the `jql`."""
+        jql, i = self.jql, self.offset
+        while i < len(jql) and jql[i] in _JQL_WHITESPACE:
+            i += 1
+        if i == len(jql):
+            self.offset = i
+            return False
+        c = jql[i]
+        if c < " ":
+            line, character = self._position(i)
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}The character 'U+{ord(c):04X}' on line {line} at position"
+                f" {character} must be escaped. Use the escape '\\u{ord(c):04x}' instead."
+                f"{self._at(i)}"
+            )
+        if c in _JQL_RESERVED_CHARACTERS:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}The character '{c}' is a reserved JQL character. You must"
+                f" enclose it in a string or use the escape '\\u{ord(c):04x}' instead."
+                f"{self._at(i)}"
+            )
+        if c in "\"'":
+            j = i + 1
+            while j < len(jql) and jql[j] != c:
+                j = self._escape(j) if jql[j] == "\\" else j + 1
+            if j == len(jql):
                 raise _JqlParseError(
-                    f"{_JQL_PREFIX}The character 'U+{ord(c):04X}' on line {line} at position"
-                    f" {character} must be escaped. Use the escape '\\u{ord(c):04x}' instead."
+                    f"{_JQL_PREFIX}The quoted string '{jql[i + 1 :]}' has not been completed."
                     f"{self._at(i)}"
                 )
-            elif c in _JQL_RESERVED_CHARACTERS:
-                raise _JqlParseError(
-                    f"{_JQL_PREFIX}The character '{c}' is a reserved JQL character. You must"
-                    f" enclose it in a string or use the escape '\\u{ord(c):04x}' instead."
-                    f"{self._at(i)}"
-                )
-            elif c in "\"'":
-                j = i + 1
-                while j < len(jql) and jql[j] != c:
-                    j += 2 if jql[j] == "\\" else 1
-                if j >= len(jql):
-                    raise _JqlParseError(
-                        f"{_JQL_PREFIX}The quoted string '{jql[i + 1 :]}' has not been completed."
-                        f"{self._at(i)}"
-                    )
-                tokens.append((jql[i : j + 1], i, True))
-                i = j + 1
-            elif symbol := next((s for s in _JQL_SYMBOLS if jql.startswith(s, i)), None):
-                tokens.append((symbol, i, False))
-                i += len(symbol)
-            else:
-                word = _JQL_WORD.match(jql, i)
-                tokens.append((word.group(), i, True))
-                i = word.end()
-        return tokens
+            self.tokens.append((jql[i : j + 1], i, True))
+            self.offset = j + 1
+        elif symbol := next((s for s in _JQL_SYMBOLS if jql.startswith(s, i)), None):
+            self.tokens.append((symbol, i, False))
+            self.offset = i + len(symbol)
+        else:
+            j = i
+            while j < len(jql):
+                if jql[j] == "\\":
+                    j = self._escape(j)
+                elif run := _JQL_WORD.match(jql, j):
+                    j = run.end()
+                else:
+                    break
+            self.tokens.append((jql[i:j], i, True))
+            self.offset = j
+        return True
+
+    def _escape(self, i: int) -> int:
+        """The offset past the backslash escape at `i`, in a word or a quoted string. One real does
+        not know is refused with a sentence naming it through the first character that does not
+        fit, or with no sequence when the `jql` ends at the backslash, and where the backslash sits
+        (Jira Cloud, 2026-11-23 and 2026-11-24)."""
+        jql, j = self.jql, i + 2
+        if j > len(jql):
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}The escape sequence has not been completed. {_JQL_ESCAPE_LIST}"
+                f"{self._at(i)}"
+            )
+        if jql[i + 1] in "'\"tnr\\ ":
+            return j
+        if jql[i + 1] == "u":
+            while j < min(i + 6, len(jql)) and jql[j] in "0123456789abcdefABCDEF":
+                j += 1
+            if j == i + 6:
+                return j
+            j += 1
+        raise _JqlParseError(
+            f"{_JQL_PREFIX}'{jql[i:j]}' is an illegal JQL escape sequence. "
+            f"{_JQL_ESCAPE_LIST}{self._at(i)}"
+        )
 
     def _peek(self, ahead: int = 0) -> tuple[str, int, bool] | None:
         i = self.pos + ahead
-        return self.tokens[i] if i < len(self.tokens) else None
+        while len(self.tokens) <= i:
+            if not self._lex():
+                return None
+        return self.tokens[i]
 
     def _next(self) -> tuple[str, int, bool] | None:
         tok = self._peek()
@@ -1616,46 +1682,46 @@ class _JqlParser:
 
     def parse(self) -> None:
         if not self._is_word(self._peek(), "order"):
-            self._parse_clause(0)
+            self._parse_clause()
         if self._is_word(self._peek(), "order"):
             self._parse_order_by()
         rest = self._peek()
         if rest is not None:
             raise self._or_and(rest)
 
-    def _parse_clause(self, depth: int) -> None:
-        self._parse_and(depth)
-        while self._is_word(self._peek(), "or", "||", "|"):
+    def _parse_clause(self) -> None:
+        open_ = 0
+        while True:
+            while self._is_word(tok := self._peek(), "not", "!", "("):
+                self._next()
+                if tok[0] == "(":
+                    open_ += 1
+            self._parse_predicate()
+            while not self._is_word(self._peek(), "and", "&&", "&", "or", "||", "|"):
+                if not open_:
+                    return
+                closer = self._next()
+                if closer is None:
+                    raise _JqlParseError(_JQL_CLOSE_AT_END)
+                if closer[0] != ")":
+                    raise self._or_and(closer)
+                open_ -= 1
             self._next()
-            self._parse_and(depth)
 
-    def _parse_and(self, depth: int) -> None:
-        self._parse_not(depth)
-        while self._is_word(self._peek(), "and", "&&", "&"):
-            self._next()
-            self._parse_not(depth)
-
-    def _parse_not(self, depth: int) -> None:
-        while self._is_word(self._peek(), "not", "!"):
-            self._next()
-        tok = self._peek()
-        if tok is None or tok[0] != "(":
-            self._parse_predicate(depth)
-            return
-        if depth >= _JQL_MAX_DEPTH:
-            raise _JqlUnchecked
-        self._next()
-        self._parse_clause(depth + 1)
-        closer = self._next()
-        if closer is None:
-            raise _JqlParseError(_JQL_CLOSE_AT_END)
-        if closer[0] != ")":
-            raise self._or_and(closer)
+    def _reserved_word(self, tok: tuple[str, int, bool]) -> None:
+        """A reserved word where a field or a value goes: real's sentence names the word and
+        where it starts (Jira Cloud, 2026-11-23)."""
+        if tok[2] and tok[0][0] not in "\"'" and tok[0].lower() in _JQL_RESERVED_WORDS:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}'{tok[0]}' is a reserved JQL word. You must surround it in"
+                f" quotation marks to use it in a query.{self._at(tok[1])}"
+            )
 
     def _expect_field(self) -> None:
         tok = self._next()
         if tok is None:
             raise _JqlParseError(f"{_JQL_PREFIX}Expecting a field name at the end of the query.")
+        self._reserved_word(tok)
         if not tok[2] or tok[0].lower() in _JQL_FIELD_WORDS:
             raise _JqlParseError(
                 f"{_JQL_PREFIX}Expecting a field name but got '{tok[0]}'. You must surround"
@@ -1693,7 +1759,7 @@ class _JqlParser:
                 f"{_JQL_PREFIX}Expecting ']' but got '{closer[0]}'.{self._at(closer[1])}"
             )
 
-    def _parse_predicate(self, depth: int) -> None:
+    def _parse_predicate(self) -> None:
         self._expect_field()
         tok = self._peek()
         if tok is None:
@@ -1705,20 +1771,21 @@ class _JqlParser:
             self._next()
             tok = self._peek()
         if self._is_word(tok, "is", "in"):
-            # `IS` takes any value, as `IN` does: `labels is foo` was served (2026-11-23).
+            # `IS` and `IS NOT` take any value, as `IN` does: `labels is foo` was served
+            # (2026-11-23), and `labels is not foo` on GET and POST (2026-11-24).
             self._next()
             if self._is_word(tok, "is") and self._is_word(self._peek(), "not"):
                 self._next()
-            self._parse_value(depth)
+            self._parse_operand()
         elif self._is_word(tok, "was"):
             self._next()
             while self._is_word(self._peek(), "not", "in"):
                 self._next()
-            self._parse_value(depth)
-            self._parse_history(depth)
+            self._parse_operand()
+            self._parse_history()
         elif self._is_word(tok, "changed"):
             self._next()
-            self._parse_history(depth)
+            self._parse_history()
             value = self._peek()
             if (
                 value is not None
@@ -1733,55 +1800,81 @@ class _JqlParser:
                 )
         elif not tok[2] and tok[0] in ("=", "!=", "<", ">", "<=", ">=", "~", "!~"):
             self._next()
-            self._parse_value(depth)
+            self._parse_operand()
         else:
             raise _JqlParseError(
                 f"{_JQL_PREFIX}Expecting operator but got '{tok[0]}'. The valid operators are"
                 f" {_JQL_OPERATORS}.{self._at(tok[1])}"
             )
 
-    def _parse_history(self, depth: int) -> None:
-        while self._is_word(self._peek(), "from", "to", "by", "after", "before", "on", "during"):
-            self._next()
-            self._parse_value(depth)
+    def _parse_operand(self) -> None:
+        """The value after an operator. A history word there opens history predicates with the
+        value left out: real reads them, then asks for the value at the token after them when that
+        token can follow a clause (the end, `AND`, `OR`, `ORDER` or `)`, as in `labels = by zzq`),
+        and for `OR` or `AND` at any other, as at the word in `labels = by zzq zzq` (2026-11-24)."""
+        if not self._is_word(self._peek(), *_JQL_HISTORY_WORDS):
+            self._parse_value()
+            return
+        self._parse_history()
+        tok = self._peek()
+        if tok is not None and not self._is_word(
+            tok, "and", "&&", "&", "or", "||", "|", "order", ")"
+        ):
+            raise self._or_and(tok)
+        self._parse_value()
 
-    def _parse_value(self, depth: int) -> None:
-        tok = self._next()
-        if tok is None:
-            raise _JqlParseError(
-                f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function before the end of"
-                " the query."
-            )
-        if tok[0] == "(":
-            if depth >= _JQL_MAX_DEPTH:
-                raise _JqlUnchecked
-            self._parse_value(depth + 1)
-            while True:
+    def _parse_history(self) -> None:
+        while self._is_word(self._peek(), *_JQL_HISTORY_WORDS):
+            self._next()
+            self._parse_value()
+
+    def _parse_value(self) -> None:
+        """A value, a function call, or a list of them in parentheses, nested to any depth."""
+        open_ = 0
+        while True:
+            tok = self._next()
+            if tok is None:
+                raise _JqlParseError(
+                    f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function before the"
+                    " end of the query."
+                )
+            self._reserved_word(tok)
+            if tok[0] == "(":
+                open_ += 1
+                continue
+            if not tok[2] or tok[0].lower() in _JQL_VALUE_WORDS:
+                raise _JqlParseError(
+                    f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function but got"
+                    f" '{tok[0]}'. You must surround '{tok[0]}' in quotation marks to use it as a"
+                    f" value.{self._at(tok[1])}"
+                )
+            if self._is_word(self._peek(), "("):
+                self._parse_arguments()
+            while open_:
                 tok = self._next()
                 if tok is None:
                     raise _JqlParseError(_JQL_CLOSE_AT_END)
-                if tok[0] == ")":
-                    return
-                if tok[0] != ",":
+                if tok[0] == ",":
+                    break
+                if tok[0] != ")":
                     raise _JqlParseError(
                         f"{_JQL_PREFIX}Expecting ',' or ')' but got '{tok[0]}'.{self._at(tok[1])}"
                     )
-                self._parse_value(depth + 1)
-        if not tok[2] or tok[0].lower() in _JQL_VALUE_WORDS:
-            raise _JqlParseError(
-                f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function but got"
-                f" '{tok[0]}'. You must surround '{tok[0]}' in quotation marks to use it as a"
-                f" value.{self._at(tok[1])}"
-            )
-        if self._is_word(self._peek(), "("):
-            # A function call: `currentUser()`, `startOfDay(-1d)`. Its arguments are read as
-            # tokens up to the parenthesis that closes it.
-            open_ = 0
-            while (tok := self._next()) is not None:
-                open_ += {"(": 1, ")": -1}.get(tok[0], 0)
-                if open_ == 0:
-                    return
-            raise _JqlParseError(_JQL_CLOSE_AT_END)
+                open_ -= 1
+            if not open_:
+                return
+
+    def _parse_arguments(self) -> None:
+        """A function call's arguments (`currentUser()`, `startOfDay(-1d)`): the tokens up to the
+        parenthesis that closes them, a reserved word among them refused as anywhere else
+        (`membersOf(select)`, 2026-11-24)."""
+        open_ = 0
+        while (tok := self._next()) is not None:
+            self._reserved_word(tok)
+            open_ += {"(": 1, ")": -1}.get(tok[0], 0)
+            if open_ == 0:
+                return
+        raise _JqlParseError(_JQL_CLOSE_AT_END)
 
     def _parse_order_by(self) -> None:
         self._next()  # `order`
@@ -1812,13 +1905,11 @@ class _JqlParser:
 
 def _jql_parse_error(jql: str) -> str | None:
     """Real's `errorMessages` sentence for a `jql` its parser refuses, or ``None`` for one it
-    parses or one nested deeper than `_JQL_MAX_DEPTH`."""
+    parses."""
     try:
         _JqlParser(jql).parse()
     except _JqlParseError as exc:
         return str(exc)
-    except _JqlUnchecked:
-        return None
     return None
 
 

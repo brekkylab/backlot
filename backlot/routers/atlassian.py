@@ -1143,7 +1143,11 @@ async def jira_search(request: Request):
     # corpus.
     if not jql.strip():
         raise errors_atlassian.unbounded_jql()
-    parse_error = _jql_parse_error(jql)
+    try:
+        parse_error = _jql_parse_error(jql)
+    except _JqlTooDeep:
+        # A `jql` nested past the depth real's parser answers with a 500 (see `_JqlParser`).
+        raise errors_atlassian.jql_stack_overflow()
     if parse_error is not None:
         # A `jql` Jira's parser cannot parse is its 400 naming what the parser expected, not
         # the unbounded refusal below: the parser runs first, so an `ORDER BY` with no field
@@ -1554,9 +1558,24 @@ _JQL_PREFIX = "Error in the JQL Query: "
 _JQL_VALUE_PREFIX = "Error in JQL Query: "
 _JQL_CLOSE_AT_END = _JQL_PREFIX + "Expecting ')' before the end of the query."
 
+#: A `\uXXXX` escape inside a word, for reading the word it spells (`sel\u0065ct` is `select`).
+_JQL_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+#: The clause-parenthesis depth past which real answers a 500: 6000 levels still drew the parse
+#: error at the end of the query, 8000 drew the 500, both measured on Jira Cloud on 2026-11-24;
+#: where between them the 500 starts was not measured, so the largest depth measured to parse
+#: is the bound. Only clause parentheses were measured; a value list's own depth is not bounded
+#: here.
+_JQL_MAX_PARENS = 6000
+
 
 class _JqlParseError(Exception):
     """Raised with the sentence `_jql_parse_error` returns."""
+
+
+class _JqlTooDeep(Exception):
+    """Raised when a `jql` nests clause parentheses past `_JQL_MAX_PARENS`: real answers that
+    with a 500 rather than a parse error."""
 
 
 class _JqlParser:
@@ -1566,8 +1585,9 @@ class _JqlParser:
     real's sentence, measured on Jira Cloud between 2026-11-22 and 2026-11-24 in the rows of
     test_jira_search_reads_a_jql_as_real_does. A token is read when the parser first asks for it,
     so a parse error ahead of a character real refuses is the one it answers (`labels = = a@b`,
-    2026-11-24). Parentheses are counted rather than followed by recursion: real read 6000 levels
-    and answered 8000 with a 500 (2026-11-24), which is not modelled.
+    2026-11-24). Parentheses are counted rather than followed by recursion, and past
+    `_JQL_MAX_PARENS` of them real answers a 500, which `_JqlTooDeep` carries: real read 6000
+    levels and answered 8000 with a 500 (2026-11-24).
     """
 
     def __init__(self, jql: str):
@@ -1696,6 +1716,8 @@ class _JqlParser:
                 self._next()
                 if tok[0] == "(":
                     open_ += 1
+                    if open_ > _JQL_MAX_PARENS:
+                        raise _JqlTooDeep
             self._parse_predicate()
             while not self._is_word(self._peek(), "and", "&&", "&", "or", "||", "|"):
                 if not open_:
@@ -1710,12 +1732,15 @@ class _JqlParser:
 
     def _reserved_word(self, tok: tuple[str, int, bool]) -> None:
         """A reserved word where a field or a value goes: real's sentence names the word and
-        where it starts (Jira Cloud, 2026-11-23)."""
-        if tok[2] and tok[0][0] not in "\"'" and tok[0].lower() in _JQL_RESERVED_WORDS:
-            raise _JqlParseError(
-                f"{_JQL_PREFIX}'{tok[0]}' is a reserved JQL word. You must surround it in"
-                f" quotation marks to use it in a query.{self._at(tok[1])}"
-            )
+        where it starts (Jira Cloud, 2026-11-23). A word spelt with a `\\uXXXX` escape is the
+        word the escape spells (`sel\\u0065ct` is refused as `select`, Jira Cloud, 2026-11-24)."""
+        if tok[2] and tok[0][0] not in "\"'":
+            word = _JQL_UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), tok[0])
+            if word.lower() in _JQL_RESERVED_WORDS:
+                raise _JqlParseError(
+                    f"{_JQL_PREFIX}'{word}' is a reserved JQL word. You must surround it in"
+                    f" quotation marks to use it in a query.{self._at(tok[1])}"
+                )
 
     def _expect_field(self) -> None:
         tok = self._next()
@@ -1801,11 +1826,30 @@ class _JqlParser:
         elif not tok[2] and tok[0] in ("=", "!=", "<", ">", "<=", ">=", "~", "!~"):
             self._next()
             self._parse_operand()
+            if tok[0] == "=":
+                self._refuse_history_after_equals()
         else:
             raise _JqlParseError(
                 f"{_JQL_PREFIX}Expecting operator but got '{tok[0]}'. The valid operators are"
                 f" {_JQL_OPERATORS}.{self._at(tok[1])}"
             )
+
+    def _refuse_history_after_equals(self) -> None:
+        """A history word after an `=` value (`labels = zzq by zzq`): real refuses the predicate
+        the operator does not take, naming the word and its value (Jira Cloud, 2026-11-24). A
+        history word with nothing after it, or with a keyword after it, is left to the
+        `OR`/`AND` refusal, which is what those drew before."""
+        word = self._peek()
+        if not self._is_word(word, *_JQL_HISTORY_WORDS):
+            return
+        value = self._peek(1)
+        if value is None or not value[2] or value[0].lower() in _JQL_VALUE_WORDS:
+            return
+        text = value[0] if value[0].startswith('"') else f'"{value[0]}"'
+        raise _JqlParseError(
+            f"{_JQL_VALUE_PREFIX}The EQUALS operator does not support the use of the "
+            f"{word[0].lower()} {text} predicate."
+        )
 
     def _parse_operand(self) -> None:
         """The value after an operator. A history word there opens history predicates with the
@@ -1905,7 +1949,8 @@ class _JqlParser:
 
 def _jql_parse_error(jql: str) -> str | None:
     """Real's `errorMessages` sentence for a `jql` its parser refuses, or ``None`` for one it
-    parses."""
+    parses. A `jql` nested past the depth real answers with a 500 raises `_JqlTooDeep` instead.
+    """
     try:
         _JqlParser(jql).parse()
     except _JqlParseError as exc:

@@ -6108,11 +6108,12 @@ def _jql_error(sentence):
 
 
 # Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page
-# and the 400's body otherwise. No `jql` where the method reads one (POST reads it from the body
-# alone, so one in its query string is none) and a `jql` with nothing before its `ORDER BY` are
-# the unbounded refusal; a `jql` the parser cannot read is the parse error, whose sentence names
-# what the parser expected and, unless it reached the end of the query, the line and the
-# character in UTF-16 units. Both refusals are on `application/json;charset=UTF-8`.
+# and the 400's body otherwise, or a `(status, body)` pair where real answers another status.
+# No `jql` where the method reads one (POST reads it from the body alone, so one in its query
+# string is none) and a `jql` with nothing before its `ORDER BY` are the unbounded refusal; a
+# `jql` the parser cannot read is the parse error, whose sentence names what the parser expected
+# and, unless it reached the end of the query, the line and the character in UTF-16 units. Both
+# refusals are on `application/json;charset=UTF-8`.
 _JQL_ROWS = [
     ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
     ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
@@ -6145,6 +6146,70 @@ _JQL_ROWS = [
         for row in (
             ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
             ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
+        )
+    ],
+    *[
+        row
+        for jql, refused in (
+            (
+                "labels = sel\\u0065ct",
+                _jql_error(
+                    "Error in the JQL Query: 'select' is a reserved JQL word. You must surround "
+                    "it in quotation marks to use it in a query. (line 1, character 10)"
+                ),
+            ),
+            (
+                "labels = zzq by zzq",
+                _jql_error(
+                    "Error in JQL Query: The EQUALS operator does not support the use of the "
+                    'by "zzq" predicate.'
+                ),
+            ),
+            (
+                "(" * 6000 + "labels = zzq" + ")" * 6000 + " order bykey",
+                _jql_error(
+                    "Error in the JQL Query: Expecting 'by' but got 'bykey'. "
+                    "(line 1, character 12020)"
+                ),
+            ),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
+        )
+    ],
+    *[
+        row
+        for jql in ("(" * 8000 + "labels = zzq" + ")" * 8000 + " order bykey",)
+        for row in (
+            (
+                "post",
+                3,
+                {},
+                {"jql": jql, "maxResults": 1},
+                (
+                    500,
+                    {
+                        "message": "Handler dispatch failed: java.lang.StackOverflowError",
+                        "status-code": 500,
+                        "stack-trace": "",
+                    },
+                ),
+            ),
+            (
+                "get",
+                3,
+                {"jql": jql, "maxResults": 1},
+                None,
+                (
+                    500,
+                    {
+                        "message": "Handler dispatch failed: java.lang.StackOverflowError",
+                        "status-code": 500,
+                        "stack-trace": "",
+                    },
+                ),
+            ),
         )
     ],
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
@@ -6741,10 +6806,11 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
     if refused is None:
         assert r.status_code == 200, r.text
     else:
+        status, answer = refused if isinstance(refused, tuple) else (400, refused)
         assert (r.status_code, r.headers["content-type"], r.json()) == (
-            400,
+            status,
             "application/json;charset=UTF-8",
-            refused,
+            answer,
         ), r.text
 
 

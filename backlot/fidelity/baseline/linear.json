@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-19",
+  "measured": "2026-11-25",
   "root": {
     "query": "Query"
   },
@@ -845,6 +845,9 @@
         "documentContentId": {
           "status": "implemented"
         },
+        "generalAccess": {
+          "status": "implemented"
+        },
         "hiddenAt": {
           "status": "implemented"
         },
@@ -872,6 +875,9 @@
           "severity": "breaking",
           "detail": "Backlot serves parentDocument: Document; the vendor has no such field",
           "note": "Answered by api.linear.app but absent from introspection: measured 2026-11-10, `__type(name:\"Document\")` lists no `parentDocument`, and a query selecting it answers 200 without a validation error, while an unknown field answers 400 `GRAPHQL_VALIDATION_FAILED`. Backlot keeps serving it."
+        },
+        "personalUser": {
+          "status": "implemented"
         },
         "project": {
           "status": "implemented"
@@ -951,11 +957,7 @@
           "status": "implemented"
         },
         "workspaceAccess": {
-          "status": "missing",
-          "type": "DocumentShareRole",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "The vendor lists `workspaceAccess: DocumentShareRole` on `Document`; Backlot does not serve it. Measured 2026-11-10 against api.linear.app: introspection lists it. A corpus carries no Linear documents, so `documents` answers an empty page and nothing reads the field."
+          "status": "implemented"
         }
       }
     },
@@ -1101,6 +1103,21 @@
           "status": "implemented"
         },
         "updatedAt": {
+          "status": "implemented"
+        }
+      }
+    },
+    "DocumentShareRole": {
+      "type_kind": "ENUM",
+      "status": "implemented",
+      "values": {
+        "comment": {
+          "status": "implemented"
+        },
+        "edit": {
+          "status": "implemented"
+        },
+        "view": {
           "status": "implemented"
         }
       }

@@ -6151,67 +6151,139 @@ _JQL_ROWS = [
     *[
         row
         for jql, refused in (
+            *[
+                (
+                    jql,
+                    _jql_error(
+                        f"Error in JQL Query: The {name} operator does not support the use of the "
+                        'by "zzq" predicate.'
+                    ),
+                )
+                for jql, name in (
+                    ("labels = zzq by zzq", "EQUALS"),
+                    ("labels != zzq by zzq", "NOT_EQUALS"),
+                    ("labels < zzq by zzq", "LESS_THAN"),
+                    ("created > 2020-01-01 by zzq", "GREATER_THAN"),
+                    ("created <= -1d by zzq", "LESS_THAN_EQUALS"),
+                    ("labels >= zzq by zzq", "GREATER_THAN_EQUALS"),
+                    ("summary ~ zzq by zzq", "LIKE"),
+                    ("summary !~ zzq by zzq", "NOT_LIKE"),
+                    ("labels in (zzq) by zzq", "IN"),
+                    ("labels not in (zzq) by zzq", "NOT_IN"),
+                    ("labels is empty by zzq", "IS"),
+                    ("labels is not empty by zzq", "IS_NOT"),
+                )
+            ],
+            *[
+                (
+                    jql,
+                    _jql_error(
+                        "Error in JQL Query: The EQUALS operator does not support the use of the "
+                        f"{predicates} predicate."
+                    ),
+                )
+                for jql, predicates in (
+                    ("labels = zzq by 'zzq'", 'by "zzq"'),
+                    ("labels = zzq by currentUser()", "by currentUser()"),
+                    ("labels = zzq by membersOf(\"x\", 'y', z)", "by membersOf(x, y, z)"),
+                    ("labels = zzq by 05", "by 5"),
+                    ("labels = zzq by -0", "by 0"),
+                    ("labels = zzq by 5.5", 'by "5.5"'),
+                    ("labels = zzq by 99999999999999999999", 'by "99999999999999999999"'),
+                    ("labels = zzq by (currentUser(), 5, empty)", "by (currentUser(), 5, EMPTY)"),
+                    ("labels = zzq by ((a, b), c)", 'by (("a", "b"), "c")'),
+                    ("labels = zzq by null", "by EMPTY"),
+                    ('labels = zzq by "zz\\"q"', 'by "zz"q"'),
+                    ("labels = zzq by z\\u0061q", 'by "zaq"'),
+                    ("labels = zzq during (a, b)", 'during ("a", "b")'),
+                    ("labels = zzq BY zzq AFTER zzq", 'by "zzq" after "zzq" '),
+                    (
+                        "labels = zzq by zzq after zzq before zzq",
+                        'by "zzq" after "zzq" before "zzq" ',
+                    ),
+                    ("labels = zzq by zzq ,zzq", 'by "zzq"'),
+                    ("labels = zzq by zzq)", 'by "zzq"'),
+                    ("labels = zzq by zzq and labels != zzq by zzq", 'by "zzq"'),
+                    ("labels = zzq by zzq order bykey", 'by "zzq"'),
+                )
+            ],
+            *[
+                (
+                    jql,
+                    _jql_error(
+                        f"Error in the JQL Query: '{word}' is a reserved JQL word. You must "
+                        "surround it in quotation marks to use it in a query. (line 1, "
+                        f"character {character})"
+                    ),
+                )
+                for jql, word, character in (
+                    ("labels = sel\\u0065ct", "select", 10),
+                    ("labels = sel\\u0045ct", "selEct", 10),
+                    ("labels = \\u0061nd", "and", 10),
+                    ("\\u006frder = zzq", "order", 1),
+                    ("labels = zzq \\u0061nd labels = zzq", "and", 14),
+                    ("labels = zzq order by key \\u0061sc", "asc", 27),
+                    ("labels = zzq select", "select", 14),
+                    ("(labels = zzq select)", "select", 15),
+                    ("labels = by zzq select", "select", 17),
+                    ("labels = zzq order by key select", "select", 27),
+                    ("labels = zzq by zzq select", "select", 21),
+                    ("labels = zzq by membersOf(select)", "select", 27),
+                )
+            ],
             (
-                "labels = sel\\u0065ct",
+                "labels = zzq by",
                 _jql_error(
-                    "Error in the JQL Query: 'select' is a reserved JQL word. You must surround "
-                    "it in quotation marks to use it in a query. (line 1, character 10)"
+                    "Error in JQL Query: Expecting either a value, list or function before the end "
+                    "of the query."
                 ),
             ),
             (
-                "labels = zzq by zzq",
+                "labels = zzq by and labels = zzq",
                 _jql_error(
-                    "Error in JQL Query: The EQUALS operator does not support the use of the "
-                    'by "zzq" predicate.'
+                    "Error in JQL Query: Expecting either a value, list or function but got 'and'. "
+                    "You must surround 'and' in quotation marks to use it as a value. (line 1, "
+                    "character 17)"
                 ),
             ),
             (
-                "(" * 6000 + "labels = zzq" + ")" * 6000 + " order bykey",
+                "labels = zzq by zzq zzq",
                 _jql_error(
-                    "Error in the JQL Query: Expecting 'by' but got 'bykey'. "
-                    "(line 1, character 12020)"
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'zzq'. "
+                    "(line 1, character 21)"
                 ),
             ),
+            ("labels = \\u0074he", None),
+            ("labels = \\u0064uring", None),
         )
         for row in (
             ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
             ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
         )
     ],
-    *[
-        row
-        for jql in ("(" * 8000 + "labels = zzq" + ")" * 8000 + " order bykey",)
-        for row in (
-            (
-                "post",
-                3,
-                {},
-                {"jql": jql, "maxResults": 1},
-                (
-                    500,
-                    {
-                        "message": "Handler dispatch failed: java.lang.StackOverflowError",
-                        "status-code": 500,
-                        "stack-trace": "",
-                    },
-                ),
-            ),
-            (
-                "get",
-                3,
-                {"jql": jql, "maxResults": 1},
-                None,
-                (
-                    500,
-                    {
-                        "message": "Handler dispatch failed: java.lang.StackOverflowError",
-                        "status-code": 500,
-                        "stack-trace": "",
-                    },
-                ),
-            ),
-        )
-    ],
+    (
+        "post",
+        3,
+        {},
+        {"jql": "(" * 7200 + "labels = zzq" + ")" * 7200 + " order bykey", "maxResults": 1},
+        _jql_error(
+            "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 14420)"
+        ),
+    ),
+    (
+        "post",
+        3,
+        {},
+        {"jql": "(" * 8000 + "labels = zzq" + ")" * 8000, "maxResults": 1},
+        (
+            500,
+            {
+                "message": "Handler dispatch failed: java.lang.StackOverflowError",
+                "status-code": 500,
+                "stack-trace": "",
+            },
+        ),
+    ),
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),

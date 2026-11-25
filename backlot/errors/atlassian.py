@@ -2328,9 +2328,9 @@ def jql_parse_error(sentence: str) -> AtlassianError:
 
 
 def jql_stack_overflow() -> AtlassianError:
-    """Jira's 500 for a `search/jql` whose `jql` nests parentheses past the depth its parser
-    answers with a 500, measured 2026-11-24: 6000 levels still drew the parse error at the end
-    of the query, 8000 drew this, on the same `application/json;charset=UTF-8` as the 400s.
+    """Jira's 500 for a `search/jql` whose `jql` nests clause parentheses past
+    ``backlot.routers.atlassian._JQL_MAX_PARENS``, on the same `application/json;charset=UTF-8`
+    as the 400s (POST, 2026-11-24 and 2026-11-25).
     """
     return AtlassianError(
         500,

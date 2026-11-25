@@ -2726,6 +2726,13 @@
           "kind": "missing_field",
           "severity": "gap"
         },
+        "addedToProjectAt": {
+          "status": "missing",
+          "type": "NullableDateComparator",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Conditions on when the issue joined its current project. Changing projects resets this time; removing the project clears it. Issues added to a project before this time was recorded have none.\" Backlot answers `Issue.addedToProjectAt` null on every issue, one in a project included, so `IssueFilter` does not declare it and a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED` rather than matched against that null. Measured against api.linear.app on 2026-11-25, with a key that reads eight issues, none in a project: `issues(first: 50, filter: {addedToProjectAt: {null: true}})` answers 200 with all eight, `{addedToProjectAt: {null: false}}` and `{addedToProjectAt: {gt: \"2000-01-01T00:00:00.000Z\"}}` answer 200 with an empty `nodes`, and `{zzBogus: {null: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`."
+        },
         "ageTime": {
           "status": "missing",
           "type": "NullableDurationComparator",

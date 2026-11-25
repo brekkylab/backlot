@@ -7720,6 +7720,19 @@ def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
     assert r.text == page
 
 
+#: The paths of the operations the v3 document publishes and the v2 document does not.
+_V3_ONLY_PATHS = (
+    "agents/bulk/invoke/batch",
+    "agents/bulk/invoke/uniform",
+    "bulk/issues/delete",
+    "bulk/issues/fields",
+    "bulk/issues/move",
+    "bulk/issues/transition",
+    "bulk/issues/unwatch",
+    "bulk/issues/watch",
+    "bulk/queue/999999999",
+)
+
 _CREDENTIALS = {
     "none": {},
     "failed-pair": FAILED_PAIR,
@@ -7744,6 +7757,23 @@ _CREDENTIALS = {
         ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
         ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "admin", 404),
         ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
+        # one only the v3 document publishes, which real answers under `/rest/api/2` as well
+        *(
+            ("GET", f"/atlassian/rest/api/{version}/{path}", "none", 401)
+            for version in ("2", "3")
+            for path in (
+                "bulk/issues/fields?issueIdsOrKeys=NOPE-1",
+                "bulk/issues/transition?issueIdsOrKeys=NOPE-1",
+                "bulk/queue/999999999",
+            )
+        ),
+        ("GET", "/atlassian/rest/api/2/bulk/queue/999999999", "admin", 404),
+        ("GET", "/atlassian/rest/api/3/bulk/queue/999999999", "admin", 404),
+        *(
+            ("OPTIONS", f"/atlassian/rest/api/{version}/{path}", "none", 401)
+            for version in ("2", "3")
+            for path in _V3_ONLY_PATHS
+        ),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "failed-pair", 401),
@@ -7847,6 +7877,25 @@ _JSON = "application/json"
         ("POST", _AGENTS, "none", None, None, 415, "null", _JSON),
         ("POST", _AGENTS, "none", _JSON, "{}", 401, None, None),
         ("POST", _AGENTS, "admin", _JSON, "{}", 404, None, None),
+        # and on each write only the v3 document publishes, under `/rest/api/2` as under
+        # `/rest/api/3`, where a path neither publishes is the URL's 404
+        *(
+            ("POST", f"/atlassian/rest/api/{version}/{path}", "none") + answer
+            for version in ("2", "3")
+            for path in _V3_ONLY_PATHS
+            if not path.startswith("bulk/queue/")
+            for answer in (
+                (_JSON, "{}", 401, None, None),
+                ("text/plain", "x", 415, "text/plain", _JSON),
+            )
+        ),
+        ("POST", "/atlassian/rest/api/2/agents/bulk/invoke/batch", "admin", _JSON, "{}", 404)
+        + (None, None),
+        *(
+            ("POST", f"/atlassian/rest/api/{version}/bulk/issues/nosuchthing", "none", _JSON)
+            + ("{}", 404, None, None)
+            for version in ("2", "3")
+        ),
         (
             "POST",
             "/atlassian/rest/api/3/jql/parse",

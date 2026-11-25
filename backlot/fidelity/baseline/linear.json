@@ -62,7 +62,7 @@
         },
         "context": {
           "status": "missing",
-          "type": "JSON!",
+          "type": "JSONObject!",
           "kind": "missing_field",
           "severity": "gap"
         },
@@ -125,7 +125,7 @@
         },
         "plan": {
           "status": "missing",
-          "type": "JSON",
+          "type": "JSONObject",
           "kind": "missing_field",
           "severity": "gap"
         },
@@ -143,7 +143,7 @@
         },
         "sourceMetadata": {
           "status": "missing",
-          "type": "JSON",
+          "type": "JSONObject",
           "kind": "missing_field",
           "severity": "gap"
         },

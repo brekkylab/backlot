@@ -885,6 +885,10 @@ _PRINTABLE = [
             b"drive/v3/about",
             b"drive/v3/files",
             b"drive/v3/nope",
+            b"drive/v2",
+            b"drive/v2/",
+            b"drive/v2/about",
+            b"drive/v2/nope",
             b"%64rive/v3/about",
             b"gmail",
             b"gmail/v1x",
@@ -905,6 +909,22 @@ _PRINTABLE = [
             (b"drive/v3/about x", "google 1555"),
         )
     ),
+    # elsewhere on www.googleapis.com the `\` is read as a `/`
+    *(
+        ("", b"\\" + rest, "as /" + rest.decode())
+        for rest in (
+            b"drive/v3x",
+            b"drive",
+            b"drive%2Fv3/about",
+            b"drive/v3%2Fabout",
+            b"drive/v2x",
+            b"drive/v1/about",
+            b"batch/drive/v3",
+            b"upload",
+            b"upload/drive/v3/files",
+        )
+    ),
+    ("", b"\\batch", "uvicorn"),
     ("", b"\\_meta/overlay", "uvicorn"),
     *(
         (base, b"nope%cx" % c, "as nope%%%02Xx" % c)

@@ -34,7 +34,8 @@ from backlot import auth, errors, utf8_escapes
 from backlot.routers import atlassian, s3
 
 #: The scope key :mod:`backlot.protocol` leaves the request target on, as sent, where it
-#: percent-encoded a byte of it or, for a `\` first, put a `/` ahead of it (:func:`encode_line`).
+#: percent-encoded a byte of it or, for a `\` first, put a `/` ahead of it or in its place
+#: (:func:`encode_line`).
 SENT = "raw_request_target"
 
 #: The scope key a rule sets where the front door reads the target as another request and closes
@@ -74,25 +75,50 @@ def with_a_fragment(line: bytes) -> bytes | None:
     return parts[2] if parts is not None and b"#" in parts[2] else None
 
 
-def _backslash_first_at_google(target: bytes) -> bool:
-    """Whether ``target``, as sent, starts with a `\\` and the path after it, its escapes but `%2F`
-    decoded, is under `/gmail` or under Drive's `/drive/v3`: Google's front door answers such a
-    target with its 400 page (:func:`answer`), and httptools refuses it for its first byte."""
+#: The paths of www.googleapis.com here: Drive's, its upload host's and the batch endpoint's
+#: below it, `/batch` itself drawing an answer of its own (:func:`printable_answer`).
+_WWW_GOOGLEAPIS = ("/drive", "/upload", "/batch/")
+
+
+def _after_a_backslash(target: bytes) -> str | None:
+    """The path of ``target``, as sent, after a `\\` that is its first byte, its escapes but `%2F`
+    decoded and a `/` ahead of it; ``None`` where its first byte is no `\\`."""
     if not target.startswith(b"\\"):
-        return False
+        return None
     rest = re.sub(rb"%2[Ff]", b"%252F", target[1:].partition(b"?")[0])
-    path = "/" + urllib.parse.unquote(rest.decode("latin-1"))
-    return _under(path, "/gmail") or _under(path, "/drive/v3")
+    return "/" + urllib.parse.unquote(rest.decode("latin-1"))
+
+
+def _backslash_first_at_google(target: bytes) -> bool:
+    """Whether ``target``, as sent, starts with a `\\` and the path after it
+    (:func:`_after_a_backslash`) is under `/gmail` or under Drive's `/drive/v3` or `/drive/v2`:
+    Google's front door answers such a target with its 400 page (:func:`answer`), and httptools
+    refuses it for its first byte."""
+    path = _after_a_backslash(target)
+    return path is not None and any(_under(path, p) for p in ("/gmail", "/drive/v3", "/drive/v2"))
+
+
+def _backslash_read_as_a_slash(target: bytes) -> bool:
+    """Whether ``target``, as sent, starts with a `\\` that www.googleapis.com reads as a `/`: one
+    the path after it (:func:`_after_a_backslash`) puts on that host, outside
+    :func:`_backslash_first_at_google`'s paths (:func:`printable_answer` has the measurement)."""
+    path = _after_a_backslash(target)
+    return (
+        path is not None
+        and path.startswith(_WWW_GOOGLEAPIS)
+        and not _backslash_first_at_google(target)
+    )
 
 
 def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
     """``line``, a request line ending in its LF, with each byte of :data:`_RAW` in its target
     (:func:`_parts`) percent-encoded, and the target as sent; or ``line`` and ``None`` where the
-    target holds none of them and is no target of :func:`_backslash_first_at_google`, or where the
-    line is not `METHOD target HTTP/x.y`.
+    target holds none of them and starts with no `\\` of :func:`_backslash_first_at_google` or
+    :func:`_backslash_read_as_a_slash`, or where the line is not `METHOD target HTTP/x.y`.
 
-    A target of :func:`_backslash_first_at_google` gains a `/` ahead of it as well, which httptools
-    reads, and is left on the scope as sent: the answer is :func:`answer`'s."""
+    A target of :func:`_backslash_first_at_google` gains a `/` ahead of it as well, and one of
+    :func:`_backslash_read_as_a_slash` has its `\\` read as a `/`, which httptools reads; each is
+    left on the scope as sent, and the answer is :func:`answer`'s."""
     parts = _parts(line)
     if parts is None:
         return line, None
@@ -100,6 +126,8 @@ def encode_line(line: bytes) -> tuple[bytes, bytes | None]:
     encoded = _RAW.sub(lambda m: b"%%%02X" % m[0][0], sent)
     if _backslash_first_at_google(sent):
         encoded = b"/" + encoded
+    elif _backslash_read_as_a_slash(sent):
+        encoded = b"/" + encoded[1:]
     if encoded == sent:
         return line, None
     return b"%s %s%s %s\n" % (method, lead_spaces, encoded, version), sent
@@ -524,10 +552,12 @@ def answer(scope: Scope) -> Response | None:
     door, prefix = front_door(scope["path"]) or (None, None)
     sent_path, _, sent_query = scope[SENT].partition(b"?")
     in_path, in_query = _kinds(sent_path), _kinds(sent_query)
-    if sent_path.startswith(b"\\"):  # Drive's or Gmail's target, which :func:`encode_line` read
+    if _backslash_first_at_google(sent_path):  # which :func:`encode_line` read
         if (refused := _google(in_path, in_query)) is not None:
             return refused
         return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
+    if not (in_path or in_query):  # a `\` first read as a `/` (:func:`_backslash_read_as_a_slash`)
+        return None
     if door == "github":
         return _github()
     if door == "slack":
@@ -717,8 +747,15 @@ def printable_answer(scope: Scope) -> Response | None:
     does not. Elsewhere on www.googleapis.com a `\\` first was not refused: `\\drive/v3x`,
     `\\drive`, `\\drive%2Fv3/about` and `\\drive/v3%2Fabout` were its 404 page, `\\batch/drive/v3`
     the 404 and `\\upload/drive/v3/files` the 405 that a `GET` at that path with no `\\` draws; but
-    `\\drive/v2/about`, under a version Backlot does not serve, was the 1,555-byte page. Each of
-    those is left to uvicorn's 400 here.
+    `\\drive/v2/about`, under a version Backlot does not serve, was the 1,555-byte page. On
+    2026-11-25 (UTC), with no credential and one connection per request, `\\drive/v2`,
+    `\\drive/v2/` and `\\drive/v2/nope` were that page too, and `\\drive/v3x`, `\\drive`,
+    `\\drive%2Fv3/about`, `\\drive/v3%2Fabout`, `\\batch/drive/v3`, `\\upload/drive/v3/files`,
+    `\\drive/v2x`, `\\drive/v1/about` and `\\upload` drew the status, body and kept connection
+    their twins with a `/` for the `\\` draw: :func:`encode_line` reads that `\\` as a `/`
+    (:func:`_backslash_read_as_a_slash`), so each is answered as its twin is here. `\\batch` alone
+    was a chunked `text/plain` `400 Bad Request`, where `/batch` is Google's 1,451-byte 400 page,
+    and is left to uvicorn's 400 here.
 
     On api.github.com its page for a `#` anywhere, and on slack.com envoy's empty 400; then on
     slack.com Apache's page (:data:`SLACK_APACHE_PAGE`) for a broken escape in the path; on Graph

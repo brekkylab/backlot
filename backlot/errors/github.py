@@ -318,16 +318,14 @@ def head_method_not_allowed(request: Request, response: Response) -> Response | 
     and `/agents/automations/available-tools` were each the 405 with `Allow: GET` and no
     `content-type` and no `content-length`, on `core` (measured against api.github.com on
     2026-11-22), counted as the GET is and with no version echo, an unknown version pinned or not
-    (2026-11-23). On the `/agents/repos` and `/agents/tasks` operations the 405 carries the
-    `Allow` of :data:`backlot.routers.github._AGENT_HEAD_ALLOW` instead — the methods real sends,
-    not the methods the baseline lists (measured against api.github.com on 2026-11-23).
-    The credential is read before the 405 — with no `Authorization` or a bad bearer
-    each was the 401 — so the GET's answer decides: only its 404, the answer a token that resolves
-    gets, is refused this way. A `HEAD` on a path no operation names
-    (`/agents/automations/1/nosuch`, `/agents/automations/`, `/agents/repos/{o}/{r}/nosuch`)
-    keeps the GET's JSON 404, and one on an operation spelt in another case
-    (`/AGENTS/automations`, 2026-11-23) the GET's text 404 — as one on
-    `/AGENTS/repos/{o}/{r}/tasks` does, the operation match being spelt as published.
+    (2026-11-23). On an `/agents/repos` or `/agents/tasks` operation the 405 names the methods of
+    :data:`backlot.routers.github._AGENT_HEAD_ALLOW`, one `Allow` line each. The credential is read
+    before the 405 — with no `Authorization` or a bad bearer each was the 401 — so the GET's answer
+    decides: only its 404, the answer a token that resolves gets, is refused this way. A `HEAD` on a
+    path no operation names keeps the GET's answer: the JSON 404 on `/agents/automations/1/nosuch`
+    and `/agents/automations/`, and the text 404 on `/agents/repos/{o}/{r}/nosuch` and
+    `/agents/tasks/1/nosuch` (2026-11-24). One on an operation spelt in another case keeps the
+    GET's text 404 (`/AGENTS/automations`, 2026-11-23; `/AGENTS/repos/{o}/{r}/tasks`, 2026-11-24).
     Imported lazily, as :func:`_routes` is, so the dependency between this package and the router
     stays one-way.
     """
@@ -336,7 +334,7 @@ def head_method_not_allowed(request: Request, response: Response) -> Response | 
     if response.status_code != 404:
         return None
     if is_an_automations_operation("GET", request.scope["path"]):
-        allow = "GET"
+        allow = ("GET",)
     else:
         allow = agent_head_allow("GET", request.scope["path"])
         if allow is None:
@@ -346,8 +344,9 @@ def head_method_not_allowed(request: Request, response: Response) -> Response | 
         for name, value in response.headers.items()
         if name.lower() not in ("content-type", "content-length")
     }
-    headers["allow"] = allow
     refusal = Response(status_code=405, headers=headers)
+    for method in allow:
+        refusal.headers.append("allow", method)
     # Starlette adds a `content-length` of the empty body at construction; real sends none.
     if "content-length" in refusal.headers:
         del refusal.headers["content-length"]

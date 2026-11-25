@@ -8815,7 +8815,7 @@ _JSON_404 = (
     0,
     None,
 )
-_HEAD_405 = (405, None, b"", "core", 1, "GET")
+_HEAD_405 = (405, None, b"", "core", 1, ("GET",))
 _HEAD_TEXT_404 = (404, "text/plain", b"", "core", 1, None)
 _HEAD_JSON_404 = (404, "application/json", b"", None, 0, None)
 _AUTOMATIONS_ROWS = [
@@ -8860,14 +8860,12 @@ _AUTOMATIONS_ROWS = [
 ]
 
 
-def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it(
-    gh_client, gh_admin_h
-):
+def test_github_an_agents_path_is_answered_as_the_agents_backend_answers_it(gh_client, gh_admin_h):
     """Each answer carries no version echo, with an unknown version pinned or not."""
     c, _ = gh_client
     pinned = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
     answered, expected = {}, {}
-    for method, path, answer in _AUTOMATIONS_ROWS:
+    for method, path, answer in (*_AUTOMATIONS_ROWS, *_AGENT_REPOS_AND_TASKS_ROWS):
         for headers in (gh_admin_h, pinned):
             r = c.request(method, f"/github{path}", headers=headers)
             again = c.request(method, f"/github{path}", headers=headers)
@@ -8879,7 +8877,7 @@ def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it
                 r.headers.get("x-ratelimit-resource"),
                 int(again.headers.get("x-ratelimit-used", 0))
                 - int(r.headers.get("x-ratelimit-used", 0)),
-                r.headers.get("allow"),
+                tuple(r.headers.get_list("allow")) or None,
                 r.headers.get("x-github-api-version-selected"),
             )
             expected[(method, path, headers is pinned)] = (*answer, None)
@@ -8887,12 +8885,11 @@ def test_github_an_automations_path_is_answered_as_the_agents_backend_answers_it
 
 
 #: (method, a path under `/github/agents/repos` or `/github/agents/tasks`, and what a token that
-#: resolves gets: the status, media type, body, `x-ratelimit-resource`, how far the next request
-#: moves `x-ratelimit-used` and `allow`): the router's JSON 404 with the five `x-ratelimit-*` on
-#: `core` for an operation the baseline lists as missing, the agents backend's text `404 page
-#: not found` for a path no operation names or an operation spelt in another case, and for a
-#: `HEAD` the agents backend's 405 with the `Allow` of the table below
-#: (``backlot.errors.github.head_method_not_allowed``) and the GET's answer with no body elsewhere.
+#: resolves gets, in the columns of `_AUTOMATIONS_ROWS`): the router's JSON 404 with the five
+#: `x-ratelimit-*` on `core` for an operation the baseline lists as missing, the agents backend's
+#: text `404 page not found` for a path no operation names or an operation spelt in another case,
+#: and for a `HEAD` the agents backend's 405 with the `Allow` lines of
+#: ``backlot.routers.github._AGENT_HEAD_ALLOW`` and the GET's answer with no body elsewhere.
 _JSON_404_CORE = (
     404,
     "application/json",
@@ -8901,13 +8898,13 @@ _JSON_404_CORE = (
     1,
     None,
 )
-_HEAD_405_GET_POST = (405, None, b"", "core", 1, "GET, POST")
-_HEAD_405_GET_PATCH_DELETE = (405, None, b"", "core", 1, "GET, PATCH, DELETE")
-_HEAD_405_DELETE_GET_PATCH = (405, None, b"", "core", 1, "DELETE, GET, PATCH")
-_HEAD_405_GET = (405, None, b"", "core", 1, "GET")
-_HEAD_405_DELETE_GET_PUT = (405, None, b"", "core", 1, "DELETE, GET, PUT")
-_HEAD_405_GET_PATCH = (405, None, b"", "core", 1, "GET, PATCH")
-_AGENT_FAMILY_ROWS = [
+_HEAD_405_GET_POST = (405, None, b"", "core", 1, ("GET", "POST"))
+_HEAD_405_GET_PATCH_DELETE = (405, None, b"", "core", 1, ("GET", "PATCH", "DELETE"))
+_HEAD_405_DELETE_GET_PATCH = (405, None, b"", "core", 1, ("DELETE", "GET", "PATCH"))
+_HEAD_405_GET = (405, None, b"", "core", 1, ("GET",))
+_HEAD_405_DELETE_GET_PUT = (405, None, b"", "core", 1, ("DELETE", "GET", "PUT"))
+_HEAD_405_GET_PATCH = (405, None, b"", "core", 1, ("GET", "PATCH"))
+_AGENT_REPOS_AND_TASKS_ROWS = [
     ("GET", "/agents/repos/psf/requests/automations", _JSON_404_CORE),
     ("GET", "/agents/repos/psf/requests/automations/available-tools", _JSON_404_CORE),
     ("GET", "/agents/repos/psf/requests/automations/available-triggers", _JSON_404_CORE),
@@ -8947,32 +8944,6 @@ _AGENT_FAMILY_ROWS = [
     ("HEAD", "/AGENTS/repos/psf/requests/tasks", _HEAD_TEXT_404),
     ("HEAD", "/agents/REPOS/psf/requests/tasks", _HEAD_TEXT_404),
 ]
-
-
-def test_github_an_agents_repos_or_tasks_path_is_answered_as_the_agents_backend_answers_it(
-    gh_client, gh_admin_h
-):
-    """Each answer carries no version echo, with an unknown version pinned or not."""
-    c, _ = gh_client
-    pinned = {**gh_admin_h, "X-GitHub-Api-Version": "1999-01-01"}
-    answered, expected = {}, {}
-    for method, path, answer in _AGENT_FAMILY_ROWS:
-        for headers in (gh_admin_h, pinned):
-            r = c.request(method, f"/github{path}", headers=headers)
-            again = c.request(method, f"/github{path}", headers=headers)
-            content_type = r.headers.get("content-type")
-            answered[(method, path, headers is pinned)] = (
-                r.status_code,
-                content_type.split(";")[0] if content_type else None,
-                r.content,
-                r.headers.get("x-ratelimit-resource"),
-                int(again.headers.get("x-ratelimit-used", 0))
-                - int(r.headers.get("x-ratelimit-used", 0)),
-                r.headers.get("allow"),
-                r.headers.get("x-github-api-version-selected"),
-            )
-            expected[(method, path, headers is pinned)] = (*answer, None)
-    assert answered == expected
 
 
 @pytest.mark.parametrize("headers", _COUNTED_TOKEN_SHAPED)

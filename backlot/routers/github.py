@@ -697,15 +697,16 @@ _ROUTED_UNPUBLISHED = published.operations(
 _AUTOMATIONS_OPERATIONS = published.operations(
     ("GET /agents/automations", "GET /agents/automations/{}", "GET /agents/automations/{}/tasks")
 )
-#: The `Allow` real's agents backend answers a `HEAD` with on each `/agents/repos` or
-#: `/agents/tasks` operation, as (operations, `Allow`): the methods real sends, not the methods
-#: the baseline lists — `PATCH` on `/agents/repos/{o}/{r}/tasks/{}` and `DELETE` and `PATCH` on
+#: The methods real's agents backend names in the 405 a `HEAD` gets on each `/agents/repos` or
+#: `/agents/tasks` operation, as (operations, methods): the methods real sends, not the methods the
+#: baseline lists — `PATCH` on `/agents/repos/{o}/{r}/tasks/{}` and `DELETE` and `PATCH` on
 #: `/agents/tasks/{}`, and `POST` on `/agents/tasks`, are in no published operation (measured
-#: against api.github.com on 2026-11-23: each `HEAD` the 405 with the `Allow` below, no
-#: `content-type` and no `content-length`, on `core` — the `mission_control` paths included,
-#: whose `GET` carries `core` here, so a 405 that copies the GET's rate-limit headers does too).
+#: against api.github.com on 2026-11-23: each `HEAD` the 405 with no `content-type` and no
+#: `content-length`). Real sends one `Allow` line for each method, in an order that changes from one
+#: request to the next: eight `HEAD`s on `/agents/tasks/1` on 2026-11-24 named `GET`, `PATCH`,
+#: `DELETE` twice and `DELETE`, `GET`, `PATCH` six times. Each order below is one real sent.
 _AGENT_HEAD_ALLOW = (
-    (published.operations(("GET /agents/repos/{}/{}/automations",)), "GET, POST"),
+    (published.operations(("GET /agents/repos/{}/{}/automations",)), ("GET", "POST")),
     (
         published.operations(
             (
@@ -713,9 +714,12 @@ _AGENT_HEAD_ALLOW = (
                 "GET /agents/repos/{}/{}/automations/available-triggers",
             )
         ),
-        "GET, PATCH, DELETE",
+        ("GET", "PATCH", "DELETE"),
     ),
-    (published.operations(("GET /agents/repos/{}/{}/automations/{}",)), "DELETE, GET, PATCH"),
+    (
+        published.operations(("GET /agents/repos/{}/{}/automations/{}",)),
+        ("DELETE", "GET", "PATCH"),
+    ),
     (
         published.operations(
             (
@@ -723,26 +727,26 @@ _AGENT_HEAD_ALLOW = (
                 "GET /agents/repos/{}/{}/automations/{}/revisions/{}",
             )
         ),
-        "GET",
+        ("GET",),
     ),
     (
         published.operations(("GET /agents/repos/{}/{}/automations/{}/tasks",)),
-        "GET, POST",
+        ("GET", "POST"),
     ),
     (
         published.operations(("GET /agents/repos/{}/{}/pulls/{}/agent-merge",)),
-        "DELETE, GET, PUT",
+        ("DELETE", "GET", "PUT"),
     ),
-    (published.operations(("GET /agents/repos/{}/{}/tasks",)), "GET, POST"),
-    (published.operations(("GET /agents/repos/{}/{}/tasks/{}",)), "GET, PATCH"),
-    (published.operations(("GET /agents/tasks",)), "GET, POST"),
-    (published.operations(("GET /agents/tasks/{}",)), "DELETE, GET, PATCH"),
+    (published.operations(("GET /agents/repos/{}/{}/tasks",)), ("GET", "POST")),
+    (published.operations(("GET /agents/repos/{}/{}/tasks/{}",)), ("GET", "PATCH")),
+    (published.operations(("GET /agents/tasks",)), ("GET", "POST")),
+    (published.operations(("GET /agents/tasks/{}",)), ("DELETE", "GET", "PATCH")),
 )
 
 
-def agent_head_allow(method: str, path: str) -> str | None:
-    """The `Allow` for a `HEAD` on an `/agents/repos` or `/agents/tasks` operation
-    (:data:`_AGENT_HEAD_ALLOW`), or ``None`` where the `HEAD` stays the GET's answer."""
+def agent_head_allow(method: str, path: str) -> tuple[str, ...] | None:
+    """The methods :data:`_AGENT_HEAD_ALLOW` names for ``method`` on the `/github` ``path``, or
+    ``None`` on a path it does not name."""
     path = path.removeprefix("/github")
     for ops, allow in _AGENT_HEAD_ALLOW:
         if published.includes(ops, method, path):

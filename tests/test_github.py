@@ -6020,6 +6020,16 @@ def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org,
     assert first.rsplit(":", 1)[0] == again.rsplit(":", 1)[0]
     assert c.get("/health").headers.get("x-github-request-id") is None
     assert len(c.get("/health").headers.get_list("date")) == 1
+    # Starlette's 500 for an exception no handler takes carries one `Date` too. No `with`: a second
+    # lifespan on the app would overwrite the state gh_client started.
+    from tests._helpers import TestClient
+
+    def crash(*_):
+        raise RuntimeError
+
+    monkeypatch.setattr(gh, "request_id", crash)
+    crashed = TestClient(c.app, raise_server_exceptions=False).get(repo, headers=gh_admin_h)
+    assert (crashed.status_code, len(crashed.headers.get_list("date"))) == (500, 1)
 
 
 def _date_second(date: str) -> int:
@@ -6029,11 +6039,7 @@ def _date_second(date: str) -> int:
 
 
 def test_github_answers_over_uvicorn_carry_one_date_no_earlier_than_their_request_id(live_server):
-    """Over a real server, each answer carries a single `Date`, and it is the second its
-    `x-github-request-id` names or a later one, as real's was on all 160 answers measured
-    (``backlot.main._Dated``), a request sent just after a second starts included: uvicorn's own
-    `Date`, which it reads from the clock once a second, named the second before on those, and
-    beside the app's would be a second header. Another source's answers carry one `Date` too."""
+    """The `/slack` and `/health` answers carry one `Date` as well."""
     import httpx
 
     base_url, settings = live_server
@@ -6047,8 +6053,8 @@ def test_github_answers_over_uvicorn_carry_one_date_no_earlier_than_their_reques
     ]
     got = {}
     with httpx.Client(base_url=base_url, timeout=10) as client:
+        time.sleep(1 - time.time() % 1 + 0.02)  # just after a second starts
         for path, headers in rows:
-            time.sleep(1 - time.time() % 1 + 0.02)  # just after a second starts
             r = client.get(path, headers=headers)
             dates = r.headers.get_list("date")
             rid = r.headers.get("x-github-request-id")

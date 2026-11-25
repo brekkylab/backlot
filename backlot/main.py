@@ -2632,8 +2632,8 @@ async def answer_a_host_in_brackets_that_holds_no_ipv6_address(request: Request,
     return await call_next(request)
 
 
-# Registered after every middleware above, which makes it outside each of them but `_Dated`: it
-# sees every answer, including one a middleware gives without reaching a route.
+# Registered after every middleware above, which makes it outside each of them: it sees every
+# answer, including one a middleware gives without reaching a route.
 app.add_middleware(TelemetryMiddleware)
 
 
@@ -2646,8 +2646,10 @@ class _Dated:
     `x-github-request-id` names (``backlot.routers.github.request_id``). Real's `Date` was the id's
     second or up to two past it on all 160 answers measured on api.github.com on 2026-10-18 and
     2026-10-19. A server started as `uvicorn backlot.main:app` sends two `Date`s unless it is also
-    given `--no-date-header`. Registered last, so the outermost: it dates every answer, a
-    middleware's included, and reads the clock after any route or middleware below it has."""
+    given `--no-date-header`. It wraps the stack Starlette builds, outside the
+    `ServerErrorMiddleware` Starlette puts around every middleware `add_middleware` registers, whose
+    500 for an exception no handler takes goes out past them: it dates every answer, a middleware's
+    and that 500 included, and reads the clock after any route or middleware inside it has."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -2667,7 +2669,8 @@ class _Dated:
         await self.app(scope, receive, send_dated)
 
 
-app.add_middleware(_Dated)
+_build_middleware_stack = app.build_middleware_stack
+app.build_middleware_stack = lambda: _Dated(_build_middleware_stack())
 
 
 @app.get("/health")

@@ -391,6 +391,7 @@ def test_serve_passes_its_arguments_through_to_uvicorn(monkeypatch, a_data_dir_w
     from backlot.protocol import Protocol
 
     assert seen["http"] is Protocol
+    assert seen["date_header"] is False  # the app writes its own (``backlot.main._Dated``)
     assert (seen["host"], seen["port"], seen["log_level"]) == ("0.0.0.0", 9999, "warning")
 
 

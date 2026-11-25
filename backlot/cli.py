@@ -368,6 +368,9 @@ def serve(
         # the class, not its import string, which uvicorn resolves only from 0.36 on; --reload
         # pickles it by reference
         http=Protocol,
+        # The app writes `Date` itself (``backlot.main._Dated``); uvicorn's would be a second one,
+        # and one that can name the second before the answer's
+        date_header=False,
     )
     # The app is passed as an import STRING because that is what --reload requires.
     app = "backlot.main:app"

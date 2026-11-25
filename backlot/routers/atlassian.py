@@ -1269,29 +1269,58 @@ async def jira_issue_comments(key: str, request: Request):
     }
 
 
-@router.get("/rest/api/3/issueLinkType")
-async def jira_link_types(request: Request):
-    # No credential check: real Jira answers this to an anonymous caller (measured 2026-09-04).
-    # The four default names, IDs and self links were measured on one Jira Cloud tenant
-    # on 2026-10-09; this mirrors that default set, not tenant-customized link types.
-    site = _site(request)
-    types = {
-        "issueLinkTypes": [
-            {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
-            {"id": "10001", "name": "Cloners", "inward": "is cloned by", "outward": "clones"},
-            {
-                "id": "10002",
-                "name": "Duplicate",
-                "inward": "is duplicated by",
-                "outward": "duplicates",
-            },
-            {"id": "10003", "name": "Relates", "inward": "relates to", "outward": "relates to"},
-        ]
+#: The four default link types, by id: name, inward and outward. Measured on Jira Cloud on
+#: 2026-10-09; this is that default set, not a site's customized one.
+_JIRA_LINK_TYPES = {
+    "10000": ("Blocks", "is blocked by", "blocks"),
+    "10001": ("Cloners", "is cloned by", "clones"),
+    "10002": ("Duplicate", "is duplicated by", "duplicates"),
+    "10003": ("Relates", "relates to", "relates to"),
+}
+
+
+def _jira_link_type(request: Request, type_id: str) -> dict:
+    """One link type, members in real's order, its `self` under the mount the request came in on:
+    `/rest/api/2/` from the v2 list, measured 2026-10-15."""
+    name, inward, outward = _JIRA_LINK_TYPES[type_id]
+    mount = _JIRA_MOUNT.search(request.url.path).group()
+    return {
+        "id": type_id,
+        "name": name,
+        "inward": inward,
+        "outward": outward,
+        "self": f"{_site(request)}{mount}issueLinkType/{type_id}",
     }
 
-    for item in types["issueLinkTypes"]:
-        item["self"] = f"{site}/rest/api/3/issueLinkType/{item['id']}"
-    return types
+
+@router.get("/rest/api/2/issueLinkType")
+@router.get("/rest/api/3/issueLinkType")
+async def jira_link_types(request: Request):
+    """Every link type to a caller whose credential resolves, and none to a caller with no
+    credential, a failed pair or an unknown scheme, as a site whose anonymous caller sees no project
+    answers (Jira Cloud: `/3` on 2026-10-15, `/2` and `/3` on 2026-11-23). A site with public
+    projects lists its types to a caller with no credential (Jira Cloud, 2026-10-15); Backlot's
+    anonymous caller sees no project, so it answers as the first site does."""
+    if _jira_caller(request).is_anonymous:
+        return {"issueLinkTypes": []}
+    return {"issueLinkTypes": [_jira_link_type(request, i) for i in _JIRA_LINK_TYPES]}
+
+
+@router.get("/rest/api/2/issueLinkType/{type_id}")
+@router.get("/rest/api/3/issueLinkType/{type_id}")
+async def jira_link_type(type_id: str, request: Request):
+    """One link type, the URL each listed type's `self` names, its id read as :func:`_parse_long`
+    reads it (Jira Cloud, `/3` on 2026-10-15, `/2` and `/3` on 2026-11-23). An id it cannot read is
+    ``errors.atlassian.invalid_link_type_id`` from every caller, and one that names no type, or is
+    asked for by a caller :func:`jira_link_types` lists none to, is
+    ``errors.atlassian.no_such_link_type``. Each names the id as sent."""
+    type_long = _parse_long(type_id)
+    if type_long is None:
+        raise errors_atlassian.invalid_link_type_id(type_id)
+    canonical = str(type_long)
+    if _jira_caller(request).is_anonymous or canonical not in _JIRA_LINK_TYPES:
+        raise errors_atlassian.no_such_link_type(type_id)
+    return _jira_link_type(request, canonical)
 
 
 # The standard system fields, used by clients (e.g. mcp-atlassian) for field/epic discovery.
@@ -1466,29 +1495,59 @@ _JQL_SYMBOLS = (
     *("=", "<", ">", "~", "!", "&", "|", "(", ")", ",", "[", "]"),
 )
 
-#: A word outside quotes: a run of anything that is not whitespace, a quote, a symbol's character or
-#: a reserved character. `café` and `가나` are words (both served on 2026-11-23).
+#: A word outside quotes is a run of anything that is not whitespace, a quote, a symbol's
+#: character or a reserved character, with backslash escapes inside it (`a\ b`). `café` and `가나`
+#: are words (both served on 2026-11-23). `_lex` reads a word as runs of this pattern and the
+#: escapes between them.
 _JQL_WORD = re.compile(
     "[^"
-    + re.escape(_JQL_WHITESPACE + "\"'=!<>~&|(),[]" + _JQL_RESERVED_CHARACTERS)
+    + re.escape(_JQL_WHITESPACE + "\"'=!<>~&|(),[]\\" + _JQL_RESERVED_CHARACTERS)
     + "\\x00-\\x1f]+"
 )
 
+#: The words that open a history predicate (`status was Open by zzq`).
+_JQL_HISTORY_WORDS = ("after", "before", "by", "during", "from", "on", "to")
+
 #: Words real refuses unquoted where a field name goes, and where a value goes. `empty` and `null`
-#: are values (measured 2026-11-22 and 2026-11-23).
+#: are values (measured 2026-11-22, 2026-11-23 and 2026-11-24).
 _JQL_FIELD_WORDS = frozenset(
-    {"and", "or", "in", "is", "empty", "null", "order", "by", "asc", "desc", "was", "changed"}
+    {"and", "or", "in", "is", "empty", "null", "order", "asc", "desc", "was", "changed"}
+    | set(_JQL_HISTORY_WORDS)
 )
 _JQL_VALUE_WORDS = frozenset(
-    {"and", "or", "not", "in", "is", "order", "asc", "desc", "was", "changed"}
+    {"and", "or", "not", "in", "is", "order", "asc", "desc", "was", "changed", "cf"}
+    | set(_JQL_HISTORY_WORDS)
+)
+
+#: Words real refuses unquoted as a field or a value, with the reserved-word sentence rather than
+#: the field or value one (`SELECT` and `True` too). Of the 195 words the vendor's documentation
+#: lists as reserved, these 159 drew it, each sent as a value and as a field on Jira Cloud on
+#: 2026-11-24; the other 36 (`a`, `the`, `and`, `empty` …) were served or drew another sentence.
+_JQL_RESERVED_WORDS = frozenset(
+    """
+    abort access add alias alter any as audit avg begin between boolean break byte catch char
+    character check checkpoint collate collation column commit connect continue count create current
+    date decimal declare decrement default defaults define delete delimiter difference distinct
+    divide do double drop else encoding end equals escape exclusive exec execute exists explain
+    false fetch field file first float for function go goto grant greater group having identified if
+    immediate increment index initial inner inout input insert int integer intersect intersection
+    into isempty isnull join last left less like limit lock long max min minus mode modify modulo
+    more multiply next noaudit notin nowait number object of option outer output power previous
+    prior privileges public raise raw remainder rename resource return returns revoke right row
+    rowid rownum rows select session set share size sqrt start strict string subtract sum synonym
+    table then trans transaction trigger true uid union unique update user validate values view when
+    whenever where while with
+    """.split()
+)
+
+#: The valid backslash escapes, as real's illegal-escape sentence lists them (Jira Cloud,
+#: 2026-11-23).
+_JQL_ESCAPE_LIST = (
+    "The valid escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX."
 )
 
 #: The operator list real's sentence names when a field is not followed by one.
 _JQL_OPERATORS = "'=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and 'IS NOT'"
-
-#: How deep the parser follows nested parentheses before it serves the query unchecked. Real
-#: parsed 1000 levels (2026-11-23); a level here is at most three Python frames.
-_JQL_MAX_DEPTH = 100
 
 _JQL_PREFIX = "Error in the JQL Query: "
 #: Real's sentences for a missing or unquoted value open without `the` (2026-11-23).
@@ -1500,22 +1559,21 @@ class _JqlParseError(Exception):
     """Raised with the sentence `_jql_parse_error` returns."""
 
 
-class _JqlUnchecked(Exception):
-    """Raised past `_JQL_MAX_DEPTH`."""
-
-
 class _JqlParser:
     """A `jql` read the way Jira's parser reads it: clauses (`field operator value`, `IN`, `IS`,
     `WAS`, `CHANGED` and their history clauses), `AND`, `OR`, `NOT` and parentheses, values, lists
     and function calls, and an `ORDER BY` of fields with optional `ASC` or `DESC`. Each refusal is
-    real's sentence, measured on Jira Cloud on 2026-11-22 or 2026-11-23 in the rows of
-    test_jira_search_reads_a_jql_as_real_does. Reserved words (`select`, `true`) and backslash
-    escapes are not read, so a `jql` that uses one is served.
+    real's sentence, measured on Jira Cloud between 2026-11-22 and 2026-11-24 in the rows of
+    test_jira_search_reads_a_jql_as_real_does. A token is read when the parser first asks for it,
+    so a parse error ahead of a character real refuses is the one it answers (`labels = = a@b`,
+    2026-11-24). Parentheses are counted rather than followed by recursion: real read 6000 levels
+    and answered 8000 with a 500 (2026-11-24), which is not modelled.
     """
 
     def __init__(self, jql: str):
         self.jql = jql
-        self.tokens = self._tokens()
+        self.tokens: list[tuple[str, int, bool]] = []
+        self.offset = 0
         self.pos = 0
 
     def _position(self, offset: int) -> tuple[int, int]:
@@ -1528,49 +1586,86 @@ class _JqlParser:
     def _at(self, offset: int) -> str:
         return " (line {}, character {})".format(*self._position(offset))
 
-    def _tokens(self) -> list[tuple[str, int, bool]]:
-        """Each token's text, its offset, and whether it is a string (a word or a quoted string)."""
-        jql, tokens, i = self.jql, [], 0
-        while i < len(jql):
-            c = jql[i]
-            if c in _JQL_WHITESPACE:
-                i += 1
-            elif c < " ":
-                line, character = self._position(i)
+    def _lex(self) -> bool:
+        """Append the next token to `tokens`: its text, its offset, and whether it is a string (a
+        word or a quoted string). False at the end of the `jql`."""
+        jql, i = self.jql, self.offset
+        while i < len(jql) and jql[i] in _JQL_WHITESPACE:
+            i += 1
+        if i == len(jql):
+            self.offset = i
+            return False
+        c = jql[i]
+        if c < " ":
+            line, character = self._position(i)
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}The character 'U+{ord(c):04X}' on line {line} at position"
+                f" {character} must be escaped. Use the escape '\\u{ord(c):04x}' instead."
+                f"{self._at(i)}"
+            )
+        if c in _JQL_RESERVED_CHARACTERS:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}The character '{c}' is a reserved JQL character. You must"
+                f" enclose it in a string or use the escape '\\u{ord(c):04x}' instead."
+                f"{self._at(i)}"
+            )
+        if c in "\"'":
+            j = i + 1
+            while j < len(jql) and jql[j] != c:
+                j = self._escape(j) if jql[j] == "\\" else j + 1
+            if j == len(jql):
                 raise _JqlParseError(
-                    f"{_JQL_PREFIX}The character 'U+{ord(c):04X}' on line {line} at position"
-                    f" {character} must be escaped. Use the escape '\\u{ord(c):04x}' instead."
+                    f"{_JQL_PREFIX}The quoted string '{jql[i + 1 :]}' has not been completed."
                     f"{self._at(i)}"
                 )
-            elif c in _JQL_RESERVED_CHARACTERS:
-                raise _JqlParseError(
-                    f"{_JQL_PREFIX}The character '{c}' is a reserved JQL character. You must"
-                    f" enclose it in a string or use the escape '\\u{ord(c):04x}' instead."
-                    f"{self._at(i)}"
-                )
-            elif c in "\"'":
-                j = i + 1
-                while j < len(jql) and jql[j] != c:
-                    j += 2 if jql[j] == "\\" else 1
-                if j >= len(jql):
-                    raise _JqlParseError(
-                        f"{_JQL_PREFIX}The quoted string '{jql[i + 1 :]}' has not been completed."
-                        f"{self._at(i)}"
-                    )
-                tokens.append((jql[i : j + 1], i, True))
-                i = j + 1
-            elif symbol := next((s for s in _JQL_SYMBOLS if jql.startswith(s, i)), None):
-                tokens.append((symbol, i, False))
-                i += len(symbol)
-            else:
-                word = _JQL_WORD.match(jql, i)
-                tokens.append((word.group(), i, True))
-                i = word.end()
-        return tokens
+            self.tokens.append((jql[i : j + 1], i, True))
+            self.offset = j + 1
+        elif symbol := next((s for s in _JQL_SYMBOLS if jql.startswith(s, i)), None):
+            self.tokens.append((symbol, i, False))
+            self.offset = i + len(symbol)
+        else:
+            j = i
+            while j < len(jql):
+                if jql[j] == "\\":
+                    j = self._escape(j)
+                elif run := _JQL_WORD.match(jql, j):
+                    j = run.end()
+                else:
+                    break
+            self.tokens.append((jql[i:j], i, True))
+            self.offset = j
+        return True
+
+    def _escape(self, i: int) -> int:
+        """The offset past the backslash escape at `i`, in a word or a quoted string. One real does
+        not know is refused with a sentence naming it through the first character that does not
+        fit, or with no sequence when the `jql` ends at the backslash, and where the backslash sits
+        (Jira Cloud, 2026-11-23 and 2026-11-24)."""
+        jql, j = self.jql, i + 2
+        if j > len(jql):
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}The escape sequence has not been completed. {_JQL_ESCAPE_LIST}"
+                f"{self._at(i)}"
+            )
+        if jql[i + 1] in "'\"tnr\\ ":
+            return j
+        if jql[i + 1] == "u":
+            while j < min(i + 6, len(jql)) and jql[j] in "0123456789abcdefABCDEF":
+                j += 1
+            if j == i + 6:
+                return j
+            j += 1
+        raise _JqlParseError(
+            f"{_JQL_PREFIX}'{jql[i:j]}' is an illegal JQL escape sequence. "
+            f"{_JQL_ESCAPE_LIST}{self._at(i)}"
+        )
 
     def _peek(self, ahead: int = 0) -> tuple[str, int, bool] | None:
         i = self.pos + ahead
-        return self.tokens[i] if i < len(self.tokens) else None
+        while len(self.tokens) <= i:
+            if not self._lex():
+                return None
+        return self.tokens[i]
 
     def _next(self) -> tuple[str, int, bool] | None:
         tok = self._peek()
@@ -1587,46 +1682,46 @@ class _JqlParser:
 
     def parse(self) -> None:
         if not self._is_word(self._peek(), "order"):
-            self._parse_clause(0)
+            self._parse_clause()
         if self._is_word(self._peek(), "order"):
             self._parse_order_by()
         rest = self._peek()
         if rest is not None:
             raise self._or_and(rest)
 
-    def _parse_clause(self, depth: int) -> None:
-        self._parse_and(depth)
-        while self._is_word(self._peek(), "or", "||", "|"):
+    def _parse_clause(self) -> None:
+        open_ = 0
+        while True:
+            while self._is_word(tok := self._peek(), "not", "!", "("):
+                self._next()
+                if tok[0] == "(":
+                    open_ += 1
+            self._parse_predicate()
+            while not self._is_word(self._peek(), "and", "&&", "&", "or", "||", "|"):
+                if not open_:
+                    return
+                closer = self._next()
+                if closer is None:
+                    raise _JqlParseError(_JQL_CLOSE_AT_END)
+                if closer[0] != ")":
+                    raise self._or_and(closer)
+                open_ -= 1
             self._next()
-            self._parse_and(depth)
 
-    def _parse_and(self, depth: int) -> None:
-        self._parse_not(depth)
-        while self._is_word(self._peek(), "and", "&&", "&"):
-            self._next()
-            self._parse_not(depth)
-
-    def _parse_not(self, depth: int) -> None:
-        while self._is_word(self._peek(), "not", "!"):
-            self._next()
-        tok = self._peek()
-        if tok is None or tok[0] != "(":
-            self._parse_predicate(depth)
-            return
-        if depth >= _JQL_MAX_DEPTH:
-            raise _JqlUnchecked
-        self._next()
-        self._parse_clause(depth + 1)
-        closer = self._next()
-        if closer is None:
-            raise _JqlParseError(_JQL_CLOSE_AT_END)
-        if closer[0] != ")":
-            raise self._or_and(closer)
+    def _reserved_word(self, tok: tuple[str, int, bool]) -> None:
+        """A reserved word where a field or a value goes: real's sentence names the word and
+        where it starts (Jira Cloud, 2026-11-23)."""
+        if tok[2] and tok[0][0] not in "\"'" and tok[0].lower() in _JQL_RESERVED_WORDS:
+            raise _JqlParseError(
+                f"{_JQL_PREFIX}'{tok[0]}' is a reserved JQL word. You must surround it in"
+                f" quotation marks to use it in a query.{self._at(tok[1])}"
+            )
 
     def _expect_field(self) -> None:
         tok = self._next()
         if tok is None:
             raise _JqlParseError(f"{_JQL_PREFIX}Expecting a field name at the end of the query.")
+        self._reserved_word(tok)
         if not tok[2] or tok[0].lower() in _JQL_FIELD_WORDS:
             raise _JqlParseError(
                 f"{_JQL_PREFIX}Expecting a field name but got '{tok[0]}'. You must surround"
@@ -1664,7 +1759,7 @@ class _JqlParser:
                 f"{_JQL_PREFIX}Expecting ']' but got '{closer[0]}'.{self._at(closer[1])}"
             )
 
-    def _parse_predicate(self, depth: int) -> None:
+    def _parse_predicate(self) -> None:
         self._expect_field()
         tok = self._peek()
         if tok is None:
@@ -1676,20 +1771,21 @@ class _JqlParser:
             self._next()
             tok = self._peek()
         if self._is_word(tok, "is", "in"):
-            # `IS` takes any value, as `IN` does: `labels is foo` was served (2026-11-23).
+            # `IS` and `IS NOT` take any value, as `IN` does: `labels is foo` was served
+            # (2026-11-23), and `labels is not foo` on GET and POST (2026-11-24).
             self._next()
             if self._is_word(tok, "is") and self._is_word(self._peek(), "not"):
                 self._next()
-            self._parse_value(depth)
+            self._parse_operand()
         elif self._is_word(tok, "was"):
             self._next()
             while self._is_word(self._peek(), "not", "in"):
                 self._next()
-            self._parse_value(depth)
-            self._parse_history(depth)
+            self._parse_operand()
+            self._parse_history()
         elif self._is_word(tok, "changed"):
             self._next()
-            self._parse_history(depth)
+            self._parse_history()
             value = self._peek()
             if (
                 value is not None
@@ -1704,55 +1800,81 @@ class _JqlParser:
                 )
         elif not tok[2] and tok[0] in ("=", "!=", "<", ">", "<=", ">=", "~", "!~"):
             self._next()
-            self._parse_value(depth)
+            self._parse_operand()
         else:
             raise _JqlParseError(
                 f"{_JQL_PREFIX}Expecting operator but got '{tok[0]}'. The valid operators are"
                 f" {_JQL_OPERATORS}.{self._at(tok[1])}"
             )
 
-    def _parse_history(self, depth: int) -> None:
-        while self._is_word(self._peek(), "from", "to", "by", "after", "before", "on", "during"):
-            self._next()
-            self._parse_value(depth)
+    def _parse_operand(self) -> None:
+        """The value after an operator. A history word there opens history predicates with the
+        value left out: real reads them, then asks for the value at the token after them when that
+        token can follow a clause (the end, `AND`, `OR`, `ORDER` or `)`, as in `labels = by zzq`),
+        and for `OR` or `AND` at any other, as at the word in `labels = by zzq zzq` (2026-11-24)."""
+        if not self._is_word(self._peek(), *_JQL_HISTORY_WORDS):
+            self._parse_value()
+            return
+        self._parse_history()
+        tok = self._peek()
+        if tok is not None and not self._is_word(
+            tok, "and", "&&", "&", "or", "||", "|", "order", ")"
+        ):
+            raise self._or_and(tok)
+        self._parse_value()
 
-    def _parse_value(self, depth: int) -> None:
-        tok = self._next()
-        if tok is None:
-            raise _JqlParseError(
-                f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function before the end of"
-                " the query."
-            )
-        if tok[0] == "(":
-            if depth >= _JQL_MAX_DEPTH:
-                raise _JqlUnchecked
-            self._parse_value(depth + 1)
-            while True:
+    def _parse_history(self) -> None:
+        while self._is_word(self._peek(), *_JQL_HISTORY_WORDS):
+            self._next()
+            self._parse_value()
+
+    def _parse_value(self) -> None:
+        """A value, a function call, or a list of them in parentheses, nested to any depth."""
+        open_ = 0
+        while True:
+            tok = self._next()
+            if tok is None:
+                raise _JqlParseError(
+                    f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function before the"
+                    " end of the query."
+                )
+            self._reserved_word(tok)
+            if tok[0] == "(":
+                open_ += 1
+                continue
+            if not tok[2] or tok[0].lower() in _JQL_VALUE_WORDS:
+                raise _JqlParseError(
+                    f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function but got"
+                    f" '{tok[0]}'. You must surround '{tok[0]}' in quotation marks to use it as a"
+                    f" value.{self._at(tok[1])}"
+                )
+            if self._is_word(self._peek(), "("):
+                self._parse_arguments()
+            while open_:
                 tok = self._next()
                 if tok is None:
                     raise _JqlParseError(_JQL_CLOSE_AT_END)
-                if tok[0] == ")":
-                    return
-                if tok[0] != ",":
+                if tok[0] == ",":
+                    break
+                if tok[0] != ")":
                     raise _JqlParseError(
                         f"{_JQL_PREFIX}Expecting ',' or ')' but got '{tok[0]}'.{self._at(tok[1])}"
                     )
-                self._parse_value(depth + 1)
-        if not tok[2] or tok[0].lower() in _JQL_VALUE_WORDS:
-            raise _JqlParseError(
-                f"{_JQL_VALUE_PREFIX}Expecting either a value, list or function but got"
-                f" '{tok[0]}'. You must surround '{tok[0]}' in quotation marks to use it as a"
-                f" value.{self._at(tok[1])}"
-            )
-        if self._is_word(self._peek(), "("):
-            # A function call: `currentUser()`, `startOfDay(-1d)`. Its arguments are read as
-            # tokens up to the parenthesis that closes it.
-            open_ = 0
-            while (tok := self._next()) is not None:
-                open_ += {"(": 1, ")": -1}.get(tok[0], 0)
-                if open_ == 0:
-                    return
-            raise _JqlParseError(_JQL_CLOSE_AT_END)
+                open_ -= 1
+            if not open_:
+                return
+
+    def _parse_arguments(self) -> None:
+        """A function call's arguments (`currentUser()`, `startOfDay(-1d)`): the tokens up to the
+        parenthesis that closes them, a reserved word among them refused as anywhere else
+        (`membersOf(select)`, 2026-11-24)."""
+        open_ = 0
+        while (tok := self._next()) is not None:
+            self._reserved_word(tok)
+            open_ += {"(": 1, ")": -1}.get(tok[0], 0)
+            if open_ == 0:
+                return
+        raise _JqlParseError(_JQL_CLOSE_AT_END)
 
     def _parse_order_by(self) -> None:
         self._next()  # `order`
@@ -1783,13 +1905,11 @@ class _JqlParser:
 
 def _jql_parse_error(jql: str) -> str | None:
     """Real's `errorMessages` sentence for a `jql` its parser refuses, or ``None`` for one it
-    parses or one nested deeper than `_JQL_MAX_DEPTH`."""
+    parses."""
     try:
         _JqlParser(jql).parse()
     except _JqlParseError as exc:
         return str(exc)
-    except _JqlUnchecked:
-        return None
     return None
 
 
@@ -2491,7 +2611,11 @@ async def confluence_cql_search(request: Request):
     refusal = _cql_refusal(tokens)
     if refusal is not None:
         raise refusal
-    cannot_run = _cql_cannot_run(tokens)
+    # the caller `currentUser()` names and the moment the date functions read, for the refusals that
+    # name a value and for the reading below
+    account = synth.atlassian_account_id(caller.email) if caller.email else None
+    now = datetime.now(timezone.utc)
+    cannot_run = _cql_cannot_run(tokens, account, now)
     if cannot_run is not None:
         raise cannot_run
 
@@ -2591,8 +2715,7 @@ async def confluence_cql_search(request: Request):
     # with none, as this route does (Confluence Cloud, 2026-10-28). Where the tokens do not parse
     # this way, the clause readers above stay the answer.
     try:
-        account = synth.atlassian_account_id(caller.email) if caller.email else None
-        expr = _cql_parse(tokens, account)
+        expr = _cql_parse(tokens, account, now)
         term_sets: dict[str, set[str]] = {}
 
         # `expr` nests a level per operator on its deepest path, as deep as Python's recursion
@@ -4685,9 +4808,7 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     the unknown field, and `foo = x and created > "x"`, `title and created > "x"` and
     `created > 20260910 and created > 2026-02-30` `Could not parse cql : `. A query read to its end
     with none of these is ``cql_not_parsed`` when a `space.key` value holds a single quote. A value
-    real refuses for another reason, and a cell real answers with a 500, are left standing here. An
-    escaped end quote, `title ~ "a\\"`, is not refused here: it is read after this walk, beside a
-    function that cannot run (``_cql_cannot_run``)."""
+    real refuses for another reason, an escaped end quote included, is :func:`_cql_cannot_run`'s."""
     at = 0
     recorded = None  # (place, refusal) of the first fault recorded, the furthest left
     groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
@@ -4972,17 +5093,168 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     return None
 
 
-def _cql_cannot_run(tokens: list[tuple[str, str]]):
-    """The 400 real answers a CQL with a function that cannot run or an escaped end quote
-    (``errors.atlassian.cql_escaped_end_quote``), or None for one with neither, after
-    :func:`_cql_refusal` and before :func:`_cql_search_after`: the first such fault from the left.
-    With an even number of backslashes before a quote, `_CQL_TOKEN` reads them in pairs and the
-    quote closes the value; with an odd number the quote is escaped, and where no later quote closes
-    the value the token ends at it all the same. Each of those tokens ends in a backslash and its
-    quote, an escaped end quote. Measured on Confluence Cloud on 2026-10-31 and 2026-11-04:
+def _cql_clauses(tokens: list[tuple[str, str]]):
+    """Each clause of a query :func:`_cql_refusal` reads to its end, as ``(field, operator,
+    values)``: the field in lower case, the operator as sent or as `in` or `not in`, and each value
+    as ``(at, kind, text, call)``, ``at`` its place, and ``call`` the ``(name, args)`` of a
+    function value or None. A function in place of an `in` list gives no value."""
+    at = 0
+    while at < len(tokens):
+        kind, field = tokens[at]
+        after = [text.lower() for _, text in tokens[at + 1 : at + 3]]
+        if kind != "WORD" or field.lower() in _CQL_KEYWORDS or not after:
+            at += 1
+            continue
+        if tokens[at + 1][0] == "OP":
+            operator, at = tokens[at + 1][1], at + 2
+        elif after[0] == "in":
+            operator, at = "in", at + 2
+        elif after == ["not", "in"]:
+            operator, at = "not in", at + 3
+        else:
+            at += 1
+            continue
+        listed = operator in ("in", "not in")
+        if listed and tokens[at] != ("PUNCT", "("):
+            yield field.lower(), operator, []
+            _, _, at = _cql_function_call(tokens, at)
+            continue
+        at += listed
+        values = []
+        while True:
+            kind, text = tokens[at]
+            if at + 1 < len(tokens) and tokens[at + 1] == ("PUNCT", "("):
+                name, args, after_call = _cql_function_call(tokens, at)
+                values.append((at, kind, text, (name, args)))
+                at = after_call
+            else:
+                values.append((at, kind, text, None))
+                at += 1
+            if not listed or tokens[at] != ("PUNCT", ","):
+                break
+            at += 1
+        yield field.lower(), operator, values
+        at += listed
+
+
+def _cql_named_value(kind: str, text: str, call, current_user: str | None, now: datetime):
+    """A value as real names it in a refusal: a quoted value without its quotes, a word or a number
+    as sent, `currentUser()` the caller as :func:`_cql_function_value` reads it, `currentContent()`
+    `0`, and a date function the minute of :func:`_cql_date_function_moment`, as `yyyy-MM-dd HH:mm`
+    in UTC. Real named `currentContent()` `0`, `currentUser()` the caller's account id and a date
+    function as `yyyy-MM-dd HH:mm` (Confluence Cloud, 2026-11-24). `recentlyViewedContent` gives
+    None: real refused `type = recentlyViewedContent(5)` as no function that returns a single value,
+    which is left standing here."""
+    if call is None:
+        return _cql_unquote(kind, text)
+    name, args = call
+    if name == "currentContent":
+        return "0"
+    if name in _CQL_DATE_FUNCTIONS:
+        return _cql_date_function_moment(name, args, now).strftime("%Y-%m-%d %H:%M")
+    if name == "recentlyViewedContent":
+        return None
+    return _cql_function_value(name, args, current_user)
+
+
+def _cql_value_fault(field: str, operator: str, named: str):
+    """The 400 real answers a value its field does not take, named as :func:`_cql_named_value` names
+    it, or None for one it takes: ``errors.atlassian.cql_unsupported_type_value`` for a `type` value
+    outside ``errors.atlassian.CQL_TYPE_VALUES``; ``cql_content_id_not_parsed`` for an `ancestor`,
+    `container`, `content`, `id` or `parent` value that does not start with `att` and
+    :func:`_parse_long` does not read; ``cql_filesize_out_of_range`` for a `filesize` value
+    :func:`_parse_long` does not read; and ``cql_user_operator_not_supported`` for any value under
+    `user ~` or `user !~`. Real answered a 500 for a bare date on `type` and on those five fields,
+    an empty value on those five fields, `id = attx`, and `parent in` and `parent not in` whatever
+    the value, which are left standing here. Measured over the grid behind `_CQL_FIELD_INFO`, and on
+    Confluence Cloud on 2026-11-24: `type = Page` and `Type = Page` named `Page`,
+    `type in (page, Page, Blogpost)` named `Page`, `id = 05`, `id = 0`, `id = "5"`, `id = att5` and
+    `id in (1, att5)` answered 200 where `id = 9223372036854775808` and `id = 1.5` were refused,
+    `filesize = 1.5`, `filesize = .5` and `filesize = 9223372036854775808` named the number where
+    `filesize = 05` answered 200, and `USER ~ x` and `FILESIZE = currentUser()` named the field in
+    lower case."""
+    if field == "type":
+        if named not in errors_atlassian.CQL_TYPE_VALUES:
+            return errors_atlassian.cql_unsupported_type_value(named)
+    elif field in ("ancestor", "container", "content", "id", "parent"):
+        if not named.startswith("att") and _parse_long(named) is None:
+            return errors_atlassian.cql_content_id_not_parsed()
+    elif field == "filesize":
+        if _parse_long(named) is None:
+            return errors_atlassian.cql_filesize_out_of_range(named)
+    elif field == "user" and operator in ("~", "!~"):
+        return errors_atlassian.cql_user_operator_not_supported()
+    return None
+
+
+# The clauses the search service behind the route refuses with the cursor's 400
+# (``errors.atlassian.search_cursor_refused``), by field and operator, each with the values it
+# refused: `""` an empty quoted value, `date` a bare date, `word` and `quoted` any other word or
+# quoted value, and a function by its name. Measured over the grid behind `_CQL_FIELD_INFO`, whose
+# values were `x`, `"x"`, `1`, `2026-01-01`, `"2026-01-01"`, `""`, `now("-1d")` and
+# `currentUser()`; on Confluence Cloud on 2026-11-24 `space ~ currentContent()` and `label = ""`
+# answered 200.
+_CQL_SEARCH_REFUSES = {
+    **{
+        (field, "!="): {'""'}
+        for field in (
+            "approvalstatus",
+            "embeddedproduct",
+            "fileextension",
+            "generatedby",
+            "jsdcategoryid",
+            "jsdfeaturedincategoryid",
+            "label",
+            "pagestatus",
+            "publiclinkstatus",
+            "space.category",
+            "subtype",
+            "title",
+        )
+    },
+    ("mediatype.description", "!="): {'""', "date"},
+    **{(field, "="): {'""'} for field in ("jsdcategoryid", "jsdfeaturedincategoryid", "title")},
+    **{
+        (field, operator): {"now", "currentUser"}
+        for field in ("mediatype.description", "space", "space.title")
+        for operator in ("~", "!~")
+    },
+    ("sitesearch", "!~"): {"word", "quoted", '""', "now", "currentUser"},
+}
+
+
+def _cql_search_refuses(field: str, operator: str, kind: str, text: str, call) -> bool:
+    """Whether `_CQL_SEARCH_REFUSES` holds the clause `field` under `operator` with the value
+    ``(kind, text, call)`` as :func:`_cql_clauses` gives it."""
+    if call is not None:
+        shape = call[0]
+    elif kind == "QUOTED":
+        shape = '""' if len(text) == 2 else "quoted"
+    else:
+        shape = kind.lower()
+    return shape in _CQL_SEARCH_REFUSES.get((field, operator), ())
+
+
+def _cql_cannot_run(tokens: list[tuple[str, str]], current_user: str | None, now: datetime):
+    """The 400 real answers a CQL it reads but cannot run, or None for one it runs, after
+    :func:`_cql_refusal` and before :func:`_cql_search_after`: a function that cannot run, an
+    escaped end quote (``errors.atlassian.cql_escaped_end_quote``) and a value its field does not
+    take (:func:`_cql_value_fault`), the first of them from the left, and with none of them a clause
+    the search service refuses (`_CQL_SEARCH_REFUSES`). A function value is named for
+    ``current_user`` at ``now`` (:func:`_cql_named_value`). With an even number of backslashes
+    before a quote, `_CQL_TOKEN` reads them in pairs and the quote closes the value; with an odd
+    number the quote is escaped, and where no later quote closes the value the token ends at it all
+    the same. Each of those tokens ends in a backslash and its quote, an escaped end quote. A value
+    that is such a token, or a function that cannot run, answers that and not its field's refusal.
+    Measured on Confluence Cloud on 2026-10-31 and 2026-11-04:
     `space = currentSpace() or created > now("x")` was answered with the first of the two, and
     either beside `title ~ "a\\"` with the first of the two in the CQL, and the cursor's 400 came
-    after each fault of this pass."""
+    after a function that cannot run and after an escaped end quote. On 2026-11-24
+    `id=abc and created > now("x")`, `id = abc and title ~ "a\\"`, `type=Page and id=abc` and
+    `user ~ x and type = Page` each answered the refusal of its first clause, and so did each with
+    its two clauses the other way round, where `title = "" and type=Page`,
+    `title = "" and created > now("x")` and `siteSearch !~ x and id = abc` answered the refusal of
+    the second."""
     faults = []
     for at, (kind, text) in enumerate(tokens):
         if (
@@ -5001,9 +5273,22 @@ def _cql_cannot_run(tokens: list[tuple[str, str]]):
                     faults.append((at, fault))
         elif kind == "QUOTED" and text[-2] == "\\":
             faults.append((at, errors_atlassian.cql_escaped_end_quote(text)))
-    if not faults:
-        return None
-    return min(faults, key=lambda fault: fault[0])[1]
+    faulted = {at for at, _ in faults}
+    clauses = list(_cql_clauses(tokens))
+    for field, operator, values in clauses:
+        for at, kind, text, call in values:
+            if at in faulted:
+                continue
+            named = _cql_named_value(kind, text, call, current_user, now)
+            fault = None if named is None else _cql_value_fault(field, operator, named)
+            if fault is not None:
+                faults.append((at, fault))
+    if faults:
+        return min(faults, key=lambda fault: fault[0])[1]
+    for field, operator, values in clauses:
+        if any(_cql_search_refuses(field, operator, *value[1:]) for value in values):
+            return errors_atlassian.search_cursor_refused()
+    return None
 
 
 class _CQLParseError(Exception):
@@ -5055,6 +5340,32 @@ def _cql_apply_offset(moment: datetime, amount: int, unit: str) -> datetime:
     if unit == "M":
         return _cql_add_months(moment, amount)
     return _cql_add_months(moment, amount * 12)
+
+
+def _cql_date_function_moment(name: str, args: list[tuple[str, str]], now: datetime) -> datetime:
+    """The moment a call of the date function ``name`` with ``args`` reads at ``now``, in UTC: `now`
+    itself, the start of its day, week, month or year, or the second before the next month starts,
+    moved by the relative date in its one quoted argument, if any. :func:`_cql_cannot_run` refuses
+    an argument that is no relative date before this reads it."""
+    base = now
+    if name == "startOfYear":
+        base = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+    elif name == "startOfMonth":
+        base = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    elif name == "startOfDay":
+        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+    elif name == "startOfWeek":
+        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(
+            days=now.weekday()
+        )
+    elif name == "endOfMonth":
+        base = _cql_add_months(
+            datetime(now.year, now.month, 1, tzinfo=timezone.utc), 1
+        ) - timedelta(seconds=1)
+    if args:
+        match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
+        base = _cql_apply_offset(base, int(match.group(1)), match.group(2))
+    return base
 
 
 def _cql_date_hit(spec: tuple, op: str, moment: int) -> bool:
@@ -5171,9 +5482,7 @@ _CQL_READABLE = {
 }
 
 
-def _cql_parse(
-    tokens: list[tuple[str, str]], current_user: str | None = None, now: datetime | None = None
-):
+def _cql_parse(tokens: list[tuple[str, str]], current_user: str | None, now: datetime):
     """The tokens of a CQL query as a boolean expression, over the grammar `_cql_refusal`
     walks: an `or` of `and`s of `not`s of atoms and groups, `and` binding tighter than `or`,
     a `not` only straight after `and`, stopping at `order by`.
@@ -5202,8 +5511,6 @@ def _cql_parse(
     `type=page` followed by 800 `or id=1`, each sent percent-encoded, with the pages `type=page`
     alone answered (Confluence Cloud, 2026-11-06)."""
     at = 0
-    if now is None:
-        now = datetime.now(timezone.utc)
     operator_refusals = []
 
     def peek(offset=0):
@@ -5263,25 +5570,7 @@ def _cql_parse(
             return ("never",)
         if args and args[0][0] != "QUOTED":
             raise _CQLRefusal(errors_atlassian.cql_not_parsed())
-        base = now
-        if name == "startOfYear":
-            base = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-        elif name == "startOfMonth":
-            base = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-        elif name == "startOfDay":
-            base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-        elif name == "startOfWeek":
-            base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(
-                days=now.weekday()
-            )
-        elif name == "endOfMonth":
-            base = _cql_add_months(
-                datetime(now.year, now.month, 1, tzinfo=timezone.utc), 1
-            ) - timedelta(seconds=1)
-        if args:
-            match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
-            base = _cql_apply_offset(base, int(match.group(1)), match.group(2))
-        return ("instant", int(base.timestamp()))
+        return ("instant", int(_cql_date_function_moment(name, args, now).timestamp()))
 
     def _cql_parsed_date(text):
         """A date or datetime string as a spec: a date alone is its whole UTC day, a datetime

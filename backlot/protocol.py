@@ -285,6 +285,7 @@ class _Head:
         self.request_line = bytearray()
         self.in_request_line = True
         self.blank = 0
+        self.leading = b""
         self.ended = False
         self.bound: head_bounds.Bound | None = None
         self.named = False
@@ -298,7 +299,8 @@ class _Head:
         self.read_to = 0
 
     def read(self, data: bytes) -> bytes | None:
-        """The vendor's answer where ``data`` takes the head to its front door's bound, else None.
+        """The front door's answer where ``data`` takes the head to its bound or completes a
+        head S3 refuses for leading empty lines, else None.
         Nothing after the empty line that ends the head is read: :attr:`read_to` is how many bytes
         of ``data`` were."""
         pos = 0
@@ -323,6 +325,9 @@ class _Head:
                 self._end_header()
             if self.in_request_line and empty:
                 self.blank = self.size
+                # Two CRLFs are the longest leading sequence measured for this S3 refusal.
+                if self.blank <= 4:
+                    self.leading += bytes(self.request_line) + b"\n"
                 self.request_line = bytearray()
             elif self.in_request_line:
                 self.in_request_line = False
@@ -366,9 +371,9 @@ class _Head:
         self.value = b""
 
     def _over(self) -> bytes | None:
-        """The answer once the head has reached its bound, the front door's refusal of the request
-        line where it refuses the line ahead of the bound
-        (:meth:`backlot.head_bounds.Bound.refused`)."""
+        """The front door's bound answer, including a request line refused ahead of the bound
+        (:meth:`backlot.head_bounds.Bound.refused`), or S3's parse 400 for an HTTP/1.1 service-root
+        GET preceded by LF, CRLF or two CRLFs."""
         if not self.named and (
             not self.in_request_line or len(self.request_line) >= head_bounds.NAMED_WITHIN
         ):
@@ -379,10 +384,19 @@ class _Head:
         answer = self.bound.answer(
             self.size, self.blank, self.line, self.in_request_line, self.ended
         )
-        if answer is None:
-            return None
-        line = bytes(self.request_line)
-        return self.bound.refused(line, not self.in_request_line, self.blank) or answer
+        if answer is not None:
+            line = bytes(self.request_line)
+            return self.bound.refused(line, not self.in_request_line, self.blank) or answer
+        # The leading-line probes used short heads. Preserve existing behavior at the bound.
+        if (
+            self.ended
+            and self.bound.door == "s3"
+            and self.leading
+            and self.blank == len(self.leading)
+            and self.size - self.bound.mount < self.bound.limit
+        ):
+            return head_bounds.s3_leading_line(self.leading, bytes(self.request_line))
+        return None
 
 
 #: How much of a header line's name, and of a `Transfer-Encoding`'s value, :class:`_Head` keeps:

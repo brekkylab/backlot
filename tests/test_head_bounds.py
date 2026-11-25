@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import http.client
 import re
 import select
 import socket
@@ -325,6 +326,68 @@ def _status(base_url: str, head: bytes) -> int:
     with _connect(base_url) as c:
         c.sendall(head)
         return int(c.makefile("rb").readline().split()[1])
+
+
+_S3_PARSE_400 = (
+    400,
+    "Bad Request",
+    None,
+    "application/xml",
+    True,
+    None,
+    r"[1-9A-F][0-9A-F]{0,15}",
+    '<?xml version="1.0" encoding="UTF-8"?><Error><Code>BadRequest</Code>'
+    "<Message>An error occurred when parsing the HTTP request.</Message>"
+    "<RequestId>{request_id}</RequestId><HostId>{host_id}</HostId></Error>",
+)
+
+
+@pytest.mark.parametrize(
+    "leading, expected",
+    [
+        (
+            b"",
+            (
+                307,
+                "Temporary Redirect",
+                "https://aws.amazon.com/s3/",
+                None,
+                False,
+                "0",
+                r"[0-9A-HJKMNP-TV-Z]{16}",
+                "",
+            ),
+        ),
+        (b"\r\n", _S3_PARSE_400),
+        (b"\n", _S3_PARSE_400),
+        (b"\r\n\r\n", _S3_PARSE_400),
+    ],
+    ids=["clean", "crlf", "lf", "two-crlfs"],
+)
+def test_s3_refuses_an_empty_line_ahead_of_the_request_line(live_server, leading, expected):
+    base_url, _ = live_server
+    # The anonymous service-root GET measured in head_bounds.s3_leading_line.
+    with _connect(base_url) as c:
+        c.sendall(
+            leading + b"GET /s3/?_=probe HTTP/1.1\r\nHost: x\r\n"
+            b"User-Agent: backlot-test\r\nConnection: close\r\n\r\n"
+        )
+        with http.client.HTTPResponse(c) as response:
+            response.begin()
+            status, reason, location, media_type, chunked, length, id_pattern, body = expected
+            assert (
+                response.status,
+                response.reason,
+                response.getheader("Location"),
+                response.getheader("Content-Type"),
+                response.chunked,
+                response.getheader("Content-Length"),
+            ) == (status, reason, location, media_type, chunked, length)
+            request_id = response.getheader("x-amz-request-id")
+            host_id = response.getheader("x-amz-id-2")
+            assert request_id and re.fullmatch(id_pattern, request_id)
+            assert host_id
+            assert response.read() == body.format(request_id=request_id, host_id=host_id).encode()
 
 
 def _short_id(value: object) -> str | None:

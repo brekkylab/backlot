@@ -1761,25 +1761,9 @@ def _gmail_long_runs(q: str) -> str:
     return "".join(out) + q[at:]
 
 
-#: A `has:` at a term's start, a quote after it, and no second quote to the end of the search.
-_GMAIL_HAS_UNCLOSED_QUOTE = re.compile(r'(?<![^ \t\n\r\f\v(])(has:)"([^"]*)$', re.IGNORECASE)
-
-
-def _gmail_has_unclosed_quote(m: re.Match) -> str:
-    """The phrase a `has:` with an unclosed quoted value opens, or the match as it stands.
-
-    The phrase is the operator's name and what follows the quote, read as one run of free
-    text. What follows that is a value `has:` takes (see `_GMAIL_HAS_VALUES`) is no phrase,
-    and neither is a `has:` a `-` or a `NOT` in front of negates. Measured on 2026-11-23 and
-    2026-11-25: `has:"the` answered the ids of `"has the"`.
-    """
-    before = m.string[: m.start()].rstrip(" \t")
-    rest = m.group(2).strip()
-    if before.upper().endswith("NOT") or before.endswith("-"):
-        return m.group(0)
-    if not re.search(r"\w", rest) or rest.lower() in _GMAIL_HAS_VALUES:
-        return m.group(0)
-    return f'"has {rest}"'
+#: A `has:` at a term's start or after a `-`, a quote after it, and no second quote to the end of
+#: the search.
+_GMAIL_HAS_UNCLOSED_QUOTE = re.compile(r'(?<![^ \t\n\r\f\v(-])has:"[^"]*$', re.IGNORECASE)
 
 
 def _parse_gmail_q(q: str) -> tuple[str, dict]:
@@ -1821,12 +1805,14 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
         if (lone.group(1).count("NOT") + bool(lone.group(2))) % 2 == 0:
             return "", {_GMAIL_NOTHING: [lone.group(0)]}
         q = q[: lone.start()]
-    # A `has:` at a term's start whose quoted value no later quote closes reads as the
-    # phrase it opens, the operator's name its first word, where what follows is no value
-    # `has:` takes: measured on 2026-11-23 and 2026-11-25, `has:"the` answered the ids of
-    # `"has the"`. A following word that is a value `has:` takes keeps the reading `_take`
-    # gives it, and a negated `has:` is left as it stands.
-    q = _GMAIL_HAS_UNCLOSED_QUOTE.sub(_gmail_has_unclosed_quote, q)
+    # A `has:` outside a quoted run whose quote no later quote closes reads as if a quote closed
+    # it at the end of the search. Measured on 2026-11-25: `has:"the`, `-has:"the`,
+    # `NOT has:"the`, `has:"the the`, `has:"attachment` and `-has:"attachment` each answered the
+    # ids of the same search with the closing quote, `has:"the` those of `"has the"` and
+    # `-has:"the` those of `-"has the"`.
+    q = _GMAIL_HAS_UNCLOSED_QUOTE.sub(
+        lambda m: m.group(0) if m.string.count('"', 0, m.start()) % 2 else m.group(0) + '"', q
+    )
     ops: dict[str, list[str]] = {}
 
     def _take(m):

@@ -15710,12 +15710,14 @@ _GMAIL_WORDLESS_VALUE_ROWS = [
     ('label:"" inbox', ["phrase", "other"]),
     ('subject:"()" the', ["plain"]),
     ('has:"the', ["phrase"]),
+    ('-has:"the', ["plain", "other"]),
+    ('NOT has:"the', ["plain", "other"]),
 ]
 
 
 def test_gmail_a_wordless_quoted_value_reads_the_next_word(tmp_path):
     """Each row is how the comments in `_parse_gmail_q`, at the normalization of a wordless
-    quoted `in:`, `label:` or `subject:` value and at `_gmail_has_unclosed_quote`, read its
+    quoted `in:`, `label:` or `subject:` value and at `_GMAIL_HAS_UNCLOSED_QUOTE`, read its
     query, over both listings. `phrase` holds `has the` in its body, `plain` holds `the` in
     its title and body but never after `has`, and `other` holds neither."""
     records = [

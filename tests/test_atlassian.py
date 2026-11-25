@@ -7047,9 +7047,9 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
 _WRONG_METHODS = [
     (*row, slash)
     for row in [
-        # every row measured on Jira Cloud, 2026-09-16, by sending a method the vendor defines on no
-        # route of that path; real's ORDER varies per response, so only the set is real's and the
-        # order below is `_JIRA_ALLOW`'s
+        # the rows down to `project/search` measured on Jira Cloud, 2026-09-16, by sending a method
+        # the vendor defines on no route of that path; real's ORDER varies per response, so only the
+        # set is real's and the order below is ``errors.atlassian.jira_allow``'s
         ("post", "/rest/api/3/serverInfo", "GET"),
         ("put", "/rest/api/3/field", "GET, POST"),
         ("post", "/rest/api/3/issue/PAY-1", "GET, PUT, DELETE"),
@@ -7058,9 +7058,13 @@ _WRONG_METHODS = [
         # the row the vendor's own document disagrees with: it declares GET alone on
         # `project/search`
         ("post", "/rest/api/3/project/search", "GET, PUT, DELETE"),
-        # the same refusal on a path Jira publishes GET alone at and no route serves —
-        # ``unmatched_path``'s docstring records the measurement; the 405 comes ahead of the
-        # anonymous 401 and of `myself`'s `Accept` 406
+        # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
+        ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/issue/A%3FB", "GET, PUT, DELETE"),
+        # a path Jira's documents publish at and no route serves, `Allow` naming every method they
+        # publish on a template it matches; ``errors.atlassian._JIRA_PUBLISHED_OPS`` and
+        # ``routers.atlassian.unmatched_path`` record the measurements
         ("delete", "/rest/api/3/myself", "GET"),
         ("put", "/rest/api/3/myself", "GET"),
         ("post", "/rest/api/3/myself", "GET"),
@@ -7068,10 +7072,14 @@ _WRONG_METHODS = [
         ("post", "/rest/api/3/instance/license", "GET"),
         ("delete", "/rest/api/2/invalid-jqls-access-log", "GET"),
         ("put", "/rest/api/2/invalid-jqls-access-log", "GET"),
-        # an escape in the path, echoed as ``errors.atlassian.echoed_spelling`` spells it
-        ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
-        ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
-        ("post", "/rest/api/3/issue/A%3FB", "GET, PUT, DELETE"),
+        ("post", "/rest/api/3/dashboard/search", "DELETE, GET, PUT"),
+        ("post", "/rest/api/3/filter/favourite", "DELETE, GET, PUT"),
+        ("post", "/rest/api/3/issuetype/project", "DELETE, GET, PUT"),
+        ("delete", "/rest/atlassian-connect/1/service-registry", "GET"),
+        ("put", "/rest/atlassian-connect/1/app/module/dynamic", "DELETE, GET, POST"),
+        ("put", "/rest/atlassian-connect/1/migration/x/y/task", "GET, POST"),
+        ("post", "/rest/forge/1/app/properties", "GET"),
+        ("get", "/rest/internal/api/latest/worklog/bulk", "POST"),
     ]
     # a trailing slash on the plain path and on each escape
     for slash in ("", "/")
@@ -7691,13 +7699,15 @@ _CREDENTIALS = {
         ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
         ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "admin", 404),
         ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
-        # ahead of that 401 and of `myself`'s `Accept` 406: a method the documents do not publish
-        # on a path they do is the 405 for a caller real would refuse the GET on (the measurement
-        # is ``unmatched_path``'s docstring's), the published method itself staying the baseline's
-        # 404 gap above
+        # ahead of that 401 and of `myself`'s `Accept` 406, though not of the Connect-token 403: a
+        # method the documents do not publish on a path they do is the 405 (the measurement is
+        # ``unmatched_path``'s docstring's), the published method itself staying the baseline's 404
+        # gap above
         ("DELETE", "/atlassian/rest/api/3/myself", "none", 405),
         ("DELETE", "/atlassian/rest/api/3/myself", "failed-pair", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "unknown-scheme", 405),
         ("DELETE", "/atlassian/rest/api/3/myself", "none-text-html", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
         ("POST", "/atlassian/rest/api/3/instance/license", "none", 405),
         ("PUT", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", 405),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
@@ -7724,7 +7734,7 @@ def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
     `text/html` it has for the test client's `Accept: */*`: on the operations
     ``backlot/data/jira_unserved.json`` refuses and on an `OPTIONS` wherever Jira publishes
     something, for each credential that comment names. Where Jira publishes nothing, the URL's 404
-    answers first."""
+    answers first, and where it publishes only other methods, the 405 answers ahead of that 401."""
     headers = admin_h if credential == "admin" else _CREDENTIALS[credential]
     r = client.request(method, path, headers=headers)
     assert r.status_code == status, r.text

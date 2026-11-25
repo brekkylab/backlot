@@ -6075,20 +6075,19 @@ _JQL_ROWS = [
     ("post", 2, {}, {"jql": "order by key", "maxResults": 1}, _UNBOUNDED_JQL),
     *[
         row
-        for jql, sentence in (
+        for jql, refused in (
             (
                 "labels = select",
-                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it "
-                "in quotation marks to use it in a query. (line 1, character 10)",
+                _jql_error(
+                    "Error in the JQL Query: 'select' is a reserved JQL word. You must surround "
+                    "it in quotation marks to use it in a query. (line 1, character 10)"
+                ),
             ),
-            (
-                "labels is not foo",
-                "Your query couldn't be processed. Make sure it's valid and try again later.",
-            ),
+            ("labels is not foo", None),
         )
         for row in (
-            ("post", 3, {}, {"jql": jql, "maxResults": 1}, _jql_error(sentence)),
-            ("get", 3, {"jql": jql, "maxResults": 1}, None, _jql_error(sentence)),
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
         )
     ],
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
@@ -6334,6 +6333,198 @@ _JQL_ROWS = [
                 "Error in JQL Query: Expecting either a value, list or function before "
                 "the end of the query.",
             ),
+            (
+                "labels = SELECT",
+                "Error in the JQL Query: 'SELECT' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 10)",
+            ),
+            (
+                "labels = True",
+                "Error in the JQL Query: 'True' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 10)",
+            ),
+            (
+                "SELECT = zzq",
+                "Error in the JQL Query: 'SELECT' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 1)",
+            ),
+            (
+                "labels in (zzq, select)",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 17)",
+            ),
+            (
+                "labels in membersOf(select)",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 21)",
+            ),
+            (
+                "labels = zzq order by select",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 23)",
+            ),
+            (
+                "status was Open by select",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 20)",
+            ),
+            (
+                "labels is not select",
+                "Error in the JQL Query: 'select' is a reserved JQL word. You must surround it in "
+                "quotation marks to use it in a query. (line 1, character 15)",
+            ),
+            (
+                'labels = "a\\b"',
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = 'a\\b'",
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = a\\=b",
+                "Error in the JQL Query: '\\=' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = a\\@b",
+                "Error in the JQL Query: '\\@' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "\\b = zzq",
+                "Error in the JQL Query: '\\b' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 1)",
+            ),
+            (
+                "labels = a\\u",
+                "Error in the JQL Query: '\\u' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                "labels = a\\u12zz",
+                "Error in the JQL Query: '\\u12z' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                'labels = "a\\u12"',
+                "Error in the JQL Query: '\\u12\"' is an illegal JQL escape sequence. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = a\\",
+                "Error in the JQL Query: The escape sequence has not been completed. The valid "
+                "escape sequences are \\', \\\", \\t, \\n, \\r, \\\\, '\\ ' and \\uXXXX. "
+                "(line 1, character 11)",
+            ),
+            (
+                'labels = "a\\"',
+                "Error in the JQL Query: The quoted string 'a\\\"' has not been completed. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels = = a\\b",
+                "Error in JQL Query: Expecting either a value, list or function but got '='. You "
+                "must surround '=' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels = = a@b",
+                "Error in JQL Query: Expecting either a value, list or function but got '='. You "
+                "must surround '=' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels zzq a\\b",
+                "Error in the JQL Query: Expecting operator but got 'zzq'. The valid operators "
+                "are '=', '!=', '<', '>', '<=', '>=', '~', '!~', 'IN', 'NOT IN', 'IS' and "
+                "'IS NOT'. (line 1, character 8)",
+            ),
+            (
+                "labels = after",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels = by zzq",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels = by (zzq)",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels is not by",
+                "Error in JQL Query: Expecting either a value, list or function before the end of "
+                "the query.",
+            ),
+            (
+                "labels = by zzq)",
+                "Error in JQL Query: Expecting either a value, list or function but got ')'. You "
+                "must surround ')' in quotation marks to use it as a value. "
+                "(line 1, character 16)",
+            ),
+            (
+                "labels = by and labels = zzq",
+                "Error in JQL Query: Expecting either a value, list or function but got 'and'. "
+                "You must surround 'and' in quotation marks to use it as a value. "
+                "(line 1, character 13)",
+            ),
+            (
+                "labels = on order by key",
+                "Error in JQL Query: Expecting either a value, list or function but got 'order'. "
+                "You must surround 'order' in quotation marks to use it as a value. "
+                "(line 1, character 13)",
+            ),
+            (
+                "labels in (by)",
+                "Error in JQL Query: Expecting either a value, list or function but got 'by'. You "
+                "must surround 'by' in quotation marks to use it as a value. "
+                "(line 1, character 12)",
+            ),
+            (
+                "labels = cf",
+                "Error in JQL Query: Expecting either a value, list or function but got 'cf'. You "
+                "must surround 'cf' in quotation marks to use it as a value. "
+                "(line 1, character 10)",
+            ),
+            (
+                "labels = by zzq zzq",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'zzq'. "
+                "(line 1, character 17)",
+            ),
+            (
+                "status was by zzq Open",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'Open'. "
+                "(line 1, character 19)",
+            ),
+            (
+                "during = zzq",
+                "Error in the JQL Query: Expecting a field name but got 'during'. You must "
+                "surround 'during' in quotation marks to use it as a field name. "
+                "(line 1, character 1)",
+            ),
+            (
+                "labels is not foo)",
+                "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ')'. "
+                "(line 1, character 18)",
+            ),
+            (
+                "labels is not foo order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 25)",
+            ),
         )
     ],
     *[
@@ -6351,7 +6542,62 @@ _JQL_ROWS = [
                 "(" * 1000 + "labels = zzq" + ")" * 1000 + " order bykey",
                 "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 2020)",
             ),
+            (
+                "(" * 1001 + "labels = zzq" + ")" * 1001 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 2022)",
+            ),
+            (
+                "(" * 6000 + "labels = zzq" + ")" * 6000 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 12020)",
+            ),
+            (
+                "labels in " + "(" * 1001 + "zzq" + ")" * 1001 + " order bykey",
+                "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 2023)",
+            ),
         )
+    ],
+    # `_JQL_RESERVED_WORDS` as values and as fields, then the English words of the same vendor
+    # list, which were served.
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused)
+        for word in """
+        abort access add alias alter any as audit avg begin between boolean break byte catch char
+        character check checkpoint collate collation column commit connect continue count create
+        current date decimal declare decrement default defaults define delete delimiter difference
+        distinct divide do double drop else encoding end equals escape exclusive exec execute exists
+        explain false fetch field file first float for function go goto grant greater group having
+        identified if immediate increment index initial inner inout input insert int integer
+        intersect intersection into isempty isnull join last left less like limit lock long max min
+        minus mode modify modulo more multiply next noaudit notin nowait number object of option
+        outer output power previous prior privileges public raise raw remainder rename resource
+        return returns revoke right row rowid rownum rows select session set share size sqrt start
+        strict string subtract sum synonym table then trans transaction trigger true uid union
+        unique update user validate values view when whenever where while with
+        """.split()
+        for jql, refused in (
+            (
+                f"labels = {word}",
+                _jql_error(
+                    f"Error in the JQL Query: '{word}' is a reserved JQL word. You must surround "
+                    "it in quotation marks to use it in a query. (line 1, character 10)"
+                ),
+            ),
+            (
+                f"{word} = zzq",
+                _jql_error(
+                    f"Error in the JQL Query: '{word}' is a reserved JQL word. You must surround "
+                    "it in quotation marks to use it in a query. (line 1, character 1)"
+                ),
+            ),
+        )
+    ],
+    *[
+        ("post", 3, {}, {"jql": jql, "maxResults": 1}, None)
+        for word in (
+            *("a", "an", "all", "are", "at", "be", "but", "it", "no", "such", "that", "the"),
+            *("their", "there", "these", "they", "this", "will"),
+        )
+        for jql in (f"labels = {word}", f"{word} = zzq")
     ],
     *[
         ("post", 3, {}, {"jql": jql, "maxResults": 1}, None)
@@ -6372,6 +6618,20 @@ _JQL_ROWS = [
             "labels in (zzq, (x))",
             'labels = "select"',
             "labels = 'true'",
+            "labels is not bar",
+            "labels is not null",
+            'labels is not "foo"',
+            "labels is not (EMPTY)",
+            "labels is not currentUser()",
+            "labels is not foo or labels = zzq",
+            "labels is not foo order by key",
+            "assignee is not foo",
+            "labels = a\\ b",
+            "labels = a\\'b",
+            "labels = a\\\\b",
+            "labels = \\u0061",
+            'labels = "a\\ b"',
+            "status was Open by zzq by zzq",
             "status was Open",
             "status was not in (Open)",
             "status was Open during (startOfDay(-7d), now())",

@@ -1288,6 +1288,21 @@ def _gmail_group_items(text: str) -> list:
             while j < len(pieces) and depth:
                 depth += {"(": 1, ")": -1}.get(pieces[j], 0)
                 j += 1
+            # Brackets glued to `has:`, `newer_than:` or `older_than:` around a letter, digit, `_`
+            # or `&` are no group either: they and what they hold are the operator's value, which
+            # no message matches, and a `-` in front negates the operator. Measured against
+            # gmail.googleapis.com on 2026-11-23: `has:(x)`, `has:(attachment)`, `has:(x y)`,
+            # `has:((attachment))`, `newer_than:(30d)` and `older_than:(30d)` answered no
+            # messages, where `has:attachment`, `newer_than:30d` and `older_than:30d` answered
+            # many, and each of the six with a `-` in front every message.
+            if (
+                depth == 0
+                and re.fullmatch(r"-*(?:has|newer_than|older_than):", run, re.IGNORECASE)
+                and _GMAIL_ADDRESS_WORD.search("".join(pieces[i + 1 : j - 1]))
+            ):
+                run += re.sub(r"\s+", "", "".join(pieces[i:j]))
+                i = j
+                continue
             negated = bool(run) and not run.strip("-")
             if run and not negated:
                 items.append(run)
@@ -1753,12 +1768,24 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
     q = _gmail_brace_leads(q)
     q, any_groups, not_any_groups = _gmail_braces(q)
     q = _GMAIL_QUOTED_OPERATOR.sub(r"\1\2", q)
-    # A quoted `in:` value holding no letter, digit, `_` or `&` is `in:""`, which reads the next
-    # word as its value (`_GMAIL_SPACED`). Measured on 2026-11-23: `in:"()"`, `in:"( )"` and
-    # `in:"."` answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and
+    # A quoted `in:` value holding no letter, digit, `_` or `&` is `in:""`. `in:""`, and an `in:`
+    # a space follows, read the next word as their value (`_GMAIL_SPACED`), past a word of
+    # punctuation alone (`_GMAIL_SEPARATOR_ONLY`). Measured on 2026-11-23: `in:"()"`, `in:"( )"`
+    # and `in:"."` answered every message, as `in:""` did; `in:"()" the`, `in:"." the` and
     # `in:"()" has` nothing, as `in:"" the` and `in:"" has` did; `the in:"()"` the ids of `the`;
-    # and `in:"()" label:inbox` those of `label:inbox`.
+    # `in:"()" label:inbox` those of `label:inbox`; `in:"" .`, `in:"()" .` and `in: .` every
+    # message; `in:"" . the`, `in:"" . . the` and `in:"" - the` nothing; and `in:"" . inbox` and
+    # `in: ? inbox` the ids of `in:inbox`.
     q = re.sub(r'(?<![^ \t\n\r\f\v(-])(in:)"[^"\w&\xa0]*"', r'\1""', q, flags=re.IGNORECASE)
+    # Only outside a quoted run: `subject:"log in: - now"` and `"sign in: . now"` keep their text.
+    # A no-break space is no punctuation here: an `in:` value holding one matches nothing
+    # (`_GMAIL_SPACED_NBSP`).
+    q = re.sub(
+        r'(?<![^ \t\n\r\f\v(-])(in:(?:"")?)(?:[ \t]+[^\w&"() \t\n\r\f\v\xa0]+)+(?=[ \t\n\r\f\v]|\Z)',
+        lambda m: m.group(0) if m.string.count('"', 0, m.start()) % 2 else m.group(1),
+        q,
+        flags=re.IGNORECASE,
+    )
     lone = _GMAIL_LONE_QUOTE_UNCLOSED.search(q)
     if lone and lone.group(3).count("(") > lone.group(3).count(")"):
         if (lone.group(1).count("NOT") + bool(lone.group(2))) % 2 == 0:
@@ -1877,6 +1904,13 @@ def _parse_gmail_q(q: str) -> tuple[str, dict]:
                 and (not _GMAIL_ADDRESS_WORD.search(value) or _GMAIL_LONG_RUN.search(value))
             ):
                 return stored
+            # Any other quoted `has:` value is the phrase of the word `has` and that value, and
+            # matches no `has:` kind: measured against gmail.googleapis.com on 2026-11-23,
+            # `has:"attachment"`, `has:"pdf"` and `has:"drive"` answered no messages, where
+            # `has:attachment`, `has:pdf` and `has:drive` answered many, and `has:"the"` answered
+            # the ids the phrase `"has the"` answers.
+            if key == "has" and len(value) > 1 and value[0] == value[-1] == '"':
+                return f'{"-" if stored == "-has" else ""}"has {value[1:-1]}"'
             # Brackets and spaces at the ends of a quoted `subject:`, `label:` or `in:` value are
             # no part of it. Measured against gmail.googleapis.com: `subject:"(probe"` answered
             # what `subject:probe` answers on 2026-10-25, and `subject:"(probe)"` on 2026-11-10;

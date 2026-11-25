@@ -2923,12 +2923,11 @@ async def search_issues(
     """Issues-and-PRs search (GitHub `GET /search/issues`): free text over title+body (FTS)
     plus repo:/is:/state:/type:/label:/author: qualifiers, ACL-scoped to the caller.
 
-    A missing or blank `q` is real's 422, field `q`, code `missing`. A blank value is one
-    :func:`backlot.odata.strip_blanks` leaves nothing of: a space, a tab, LF, VT, CR, U+0085,
-    U+00A0 or U+3000, measured against api.github.com on 2026-11-21 (UTC) and earlier for a
-    missing `q`. A `q` of U+001C, U+001D, U+001E or U+001F is the search's 200
-    with `total_count` 0, as U+200B already is — those four are Python whitespace that
-    :func:`~backlot.odata.strip_blanks` keeps."""
+    A missing or blank `q` is real's 422, field `q`, code `missing`, a value being blank when
+    :func:`backlot.odata.strip_blanks` leaves nothing of it: a space, a tab, LF, VT, FF, CR,
+    U+0085, U+00A0, U+2000 and U+3000 were each the 422, where U+001C, U+001D, U+001E, U+001F and
+    U+200B were each the search's 200 with `total_count` 0 (measured against api.github.com on
+    2026-11-21 and 2026-11-24, UTC)."""
     caller = _require(request)
     if not odata.strip_blanks(q):
         raise _search_validation_failed("q")
@@ -3157,20 +3156,9 @@ def _code_hit(conn, owner: str, row, api_base: str) -> dict:
     }
 
 
-#: A `q` real's `/search/code` answers with the parse-fatal 422, measured 2026-11-21 (UTC).
-_CODE_SEARCH_PARSE_FATAL_Q = frozenset({" ", "  ", "\t"})
-
-#: A `q` of whitespace alone that real's `/search/code` still runs, measured 2026-11-21 (UTC).
-_CODE_SEARCH_BLANK_Q_RUNS = frozenset({"\n", "\v", "\r", "\x1c", "\x1f", "\x85", "\xa0", "\u3000"})
-
-
 def _search_query_parsing_fatal() -> HTTPException:
-    """Real's 422 when `/search/code` is given a `q` of a space, two spaces or a tab.
-
-    Measured against api.github.com on 2026-11-21 (UTC): those three
-    values answer this 159-byte body, where other measured blanks run the search and a
-    missing `q` is the deserializer's text/plain 400.
-    """
+    """Real's 422 when `/search/code` is given a `q` of spaces and tabs alone (see
+    :func:`search_code`)."""
     message = "ERROR_TYPE_QUERY_PARSING_FATAL unable to parse query!"
     exc = HTTPException(status_code=422, detail=message)
     exc.github_body = {
@@ -3270,10 +3258,12 @@ async def search_code(
     useful rather than merely located.
 
     A missing `q` is the deserializer's text/plain 400 (see
-    :func:`backlot.pagination.github_code_search_query_refusal`). A `q` of a space, two spaces
-    or a tab is the parse-fatal 422 :func:`_search_query_parsing_fatal` answers; `q=` is the
-    missing-q 422; a `q` of LF, VT, CR, U+001C, U+001F, U+0085, U+00A0 or U+3000 is the
-    search's 200. Measured against api.github.com on 2026-11-21 (UTC).
+    :func:`backlot.pagination.github_code_search_query_refusal`) and `q=` the missing-q 422. `+`,
+    `++`, `+++`, `%09`, `%09%09` and `+%09`, spaces and tabs alone, were each the parse-fatal 422
+    :func:`_search_query_parsing_fatal` answers. The other blanks measured were searched for as text
+    with spaces and tabs trimmed from their ends: `%1D` found 69 files, `%1E` 48 and `%0A%0A`
+    4,009,754,624, where `%0A`, `+%0A`, `%0A+` and `%09%0A%09` found 6,652,166,144 each (measured
+    against api.github.com on 2026-11-21 and 2026-11-24, UTC).
 
     A `page` / `per_page` that is not an unsigned 32-bit integer, or a `q`, `page` or `per_page`
     given twice, is refused once the credential is, and in text/plain: of the ten GitHub surfaces
@@ -3292,21 +3282,22 @@ async def search_code(
     refused at 11 too because it is served at 100. The total does not enter: a 44-result search
     refuses page 34 at 30 a page after serving pages 3 to 33 empty. That is not `/search/issues`'s
     line, which serves page 34 in full and refuses the page that STARTS past 1000 (both rules are
-    :func:`backlot.pagination.github_search_depth_refused`'s). The refusal comes after the blank-`q`
+    :func:`backlot.pagination.github_search_depth_refused`'s). The refusal comes after the missing-q
     422 and before the `repo:` qualifier is read: `repo:psf/ghost-zz-9876` at page 11 of 100 is
-    this 422, not the qualifier's answer (all measured 2026-09-06).
+    this 422, not the qualifier's answer (all measured 2026-09-06). It comes before the parse-fatal
+    422 too: `q=+` at page 11 of 100 is this 422 (measured 2026-11-24).
     """
     caller = _require(request)
     refusal = github_code_search_query_refusal(request.query_params)
     if refusal is not None:
         return PlainTextResponse(refusal, status_code=400)
-    if q in _CODE_SEARCH_PARSE_FATAL_Q:
-        raise _search_query_parsing_fatal()
-    if not q or (q not in _CODE_SEARCH_BLANK_Q_RUNS and not q.strip()):
+    if not q:
         raise _search_validation_failed("q")
     page, per_page = _clamp(page, per_page)
     if github_search_depth_refused(page, per_page, code=True):
         raise _search_beyond_first_results(code=True)
+    if not q.strip(" \t"):
+        raise _search_query_parsing_fatal()
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_CODE_QUALS)
@@ -3335,6 +3326,8 @@ async def search_code(
     if not free:  # qualifier-only, which real also serves
         for r in store.search_repo_files(conn, None, ids, repo=one):
             rows.setdefault((r["repo"], r["path"]), r)
+    if not free and not quals:  # blanks alone, searched for as text (see the docstring)
+        rows = {k: r for k, r in rows.items() if q.strip(" \t") in (r["content"] or "")}
 
     matched = [
         r

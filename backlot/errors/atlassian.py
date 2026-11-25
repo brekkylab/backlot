@@ -1378,6 +1378,40 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     )
 
 
+def refuse_a_multipart_with_no_boundary(headers) -> AtlassianError | None:
+    """The 500 Confluence answers an attachment upload whose `Content-Type` is `multipart/form-data`
+    carrying no `boundary` parameter, or None where it carries one, is no multipart type or is not
+    there at all: the multipart parser fails the request before the operation answers it, ahead of
+    the caller's refusal with a credential or without one. Measured on Confluence Cloud 2026-10-16
+    at `POST content/{id}/child/attachment` with the body `x`: `multipart/form-data` bare was the
+    500, `multipart/form-data;charset=x-MacRoman` the same (a charset is no boundary), and
+    `multipart/form-data; boundary=x` got past it to the XSRF refusal. The body is Spring's `errors`
+    list, the shape of :func:`refuse_a_confluence_media_type`'s 415, written in `application/json`."""
+    value = (headers.get("content-type") or "").strip(" \t")
+    if not value:
+        return None
+    parsed = _spring_media_type(value, charset_in_any_case=False)
+    if parsed is None:
+        return None
+    kind, subtype, parameters = parsed
+    if (kind, subtype) != ("multipart", "form-data"):
+        return None
+    if any(name.lower() == "boundary" for name, _ in parameters):
+        return None
+    return AtlassianError(
+        500,
+        {
+            "errors": [
+                {
+                    "status": 500,
+                    "code": "INTERNAL_SERVER_ERROR",
+                    "title": "Internal Server Error",
+                }
+            ]
+        },
+    )
+
+
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as
 #: `application/json`, byte for byte but for trailing whitespace: measured 2026-10-13 on
 #: `serverInfo` and its 401, where the same value respelled (upper-cased, `q=0.90`, `Q=0.9`, a space

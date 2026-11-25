@@ -10086,6 +10086,46 @@ def test_confluence_answers_an_operation_before_it_runs(client):
     assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
 
 
+#: An attachment upload whose `Content-Type` is `multipart/form-data` with no `boundary` is the
+#: 500 ``errors.atlassian.refuse_a_multipart_with_no_boundary`` carries the measurement for, ahead
+#: of the caller's refusal with a credential or without one; `"admin"` is the admin's token.
+_MULTIPART_NO_BOUNDARY = [
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "multipart/form-data"),
+    ("POST", "/wiki/rest/api/content/abc123/child/attachment", "admin", "multipart/form-data"),
+    (
+        "POST",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        None,
+        "multipart/form-data;charset=x-MacRoman",
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        "admin",
+        "multipart/form-data;charset=x-MacRoman",
+    ),
+]
+
+
+def _multipart_no_boundary(client, admin_h, method, vendor_path, authorization, ctype):
+    headers = [("Content-Type", ctype)]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=b"x")
+    assert r.status_code == 500, r.text[:200]
+    assert r.headers.get("content-type") == "application/json"
+    assert r.json() == {
+        "errors": [
+            {"status": 500, "code": "INTERNAL_SERVER_ERROR", "title": "Internal Server Error"}
+        ]
+    }
+
+
+def test_confluence_fails_a_multipart_upload_with_no_boundary(client, admin_h):
+    assert _failures(_multipart_no_boundary, _MULTIPART_NO_BOUNDARY, client, admin_h) == {}
+
+
 _EMPTY_CHARSET = "text/plain;charset="
 
 #: The status each kind of path answers a `Content-Type` whose charset Java cannot name

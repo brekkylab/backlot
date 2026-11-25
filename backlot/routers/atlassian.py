@@ -6558,6 +6558,14 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
                 refused = errors_atlassian.refuse_a_confluence_media_type(request.headers, consumes)
                 if refused is not None:
                     raise refused
+                # the multipart parser's failure, ahead of the caller's refusal: measured in
+                # ``errors.atlassian.refuse_a_multipart_with_no_boundary``
+                if "multipart/form-data" in consumes:
+                    boundaryless = errors_atlassian.refuse_a_multipart_with_no_boundary(
+                        request.headers
+                    )
+                    if boundaryless is not None:
+                        raise boundaryless
         accept = request.headers.get("accept")
         jaxrs = _confluence_jaxrs_media_refusal(request, vendor_path)
         # Jersey parses `Accept` after Tomcat reads the body's type and before it matches it: a

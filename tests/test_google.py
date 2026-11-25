@@ -13455,9 +13455,10 @@ def test_a_data_filter_may_name_a_grid_range_instead_of_an_a1_string(gc, gh, boo
     assert got["dataFilters"] == [{"gridRange": {k: v for k, v in grid.items() if k != "sheetId"}}]
 
 
-def test_the_answers_come_back_sorted_by_where_each_range_starts(gc, gh, book):
-    """NOT the order the filters arrived in. Measured: column before row, so `A2` precedes `B1`,
-    and a row number sorts numerically, so `B9` precedes `B10`."""
+def test_backlot_orders_data_filter_ranges_by_column_then_row(gc, gh, book):
+    """Backlot's own order, which real's is not (see `where` in
+    `sheets_values_batch_get_by_data_filter`): column before row, so `A2` precedes `B1`, and a row
+    number sorts numerically, so `B9` precedes `B10`."""
     r = _by_filter(
         gc,
         gh,
@@ -15231,6 +15232,7 @@ _GMAIL_LONG_RUN_ROWS = [
     ('-has:"' + "x" * 522 + '"', ["plan", "lunch"]),
     ('-has:""', ["plan", "lunch"]),
     ('-has:"()"', ["plan", "lunch"]),
+    ('has:"it"', ["reply"]),
     ("has:(" + "x" * 522 + ")", ["reply"]),
     ('in:"()"', ["plan", "lunch", "reply"]),
     ('in:"()" has', []),
@@ -15364,11 +15366,12 @@ def test_gmail_an_empty_or_lone_quoted_operator(tmp_path):
 
 
 #: A `has:`, `newer_than:` or `older_than:` with a value Gmail does not know, an age in hours, a
-#: `has:` value in another case, a `q` of separators alone, and a `subject:` value with punctuation
-#: at an end or of punctuation alone. The corpus holds `the` in two messages, an attachment on one,
+#: `has:` value in another case or in quotes, a value of the three in brackets, a `q` of separators
+#: alone, a `subject:` value with punctuation at an end or of punctuation alone, and an empty `in:`
+#: with punctuation alone after it. The corpus holds `the` in two messages, an attachment on one,
 #: three older than 30 days and one within them, so the controls tell the new rows from the old
-#: ones: the one within 30 days is what `newer_than:30d` answers, and what an age in
-#: non-ASCII digits does not.
+#: ones: the one within 30 days is what `newer_than:30d` answers, and what an age in non-ASCII
+#: digits does not.
 _GMAIL_UNKNOWN_VALUE_ROWS = [
     ("has:x", []),
     ("has:zzzq", []),
@@ -15421,13 +15424,35 @@ _GMAIL_UNKNOWN_VALUE_ROWS = [
     ("subject:.", ["plan", "lunch", "after", "recent"]),
     ("-subject:.", ["plan", "lunch", "after", "recent"]),
     ("-subject:...", ["plan", "lunch", "after", "recent"]),
+    ('has:"attachment"', []),
+    ('has:"pdf"', []),
+    ('has:"drive"', []),
+    ("has:(x)", []),
+    ("has:(attachment)", []),
+    ("has:(x y)", []),
+    ("-has:(x)", ["plan", "lunch", "after", "recent"]),
+    ("-has:(attachment)", ["plan", "lunch", "after", "recent"]),
+    ("-has:(x y)", ["plan", "lunch", "after", "recent"]),
+    ("newer_than:(x)", []),
+    ("newer_than:(30d)", []),
+    ("-newer_than:(x)", ["plan", "lunch", "after", "recent"]),
+    ("-newer_than:(30d)", ["plan", "lunch", "after", "recent"]),
+    ("older_than:(30d)", []),
+    ("-older_than:(30d)", ["plan", "lunch", "after", "recent"]),
+    ('in:"" .', ["plan", "lunch", "after", "recent"]),
+    ('in:"()" .', ["plan", "lunch", "after", "recent"]),
+    ("in: .", ["plan", "lunch", "after", "recent"]),
+    ('in:"" . the', []),
+    ('-in:"" . the', ["plan", "lunch", "after", "recent"]),
+    ('label:"()" .', ["plan", "lunch", "after", "recent"]),
+    ('in:"()" subject:the', []),
 ]
 
 
 def test_gmail_an_unknown_operator_value_matches_nothing(tmp_path):
     """Each row is how the comments at `_GMAIL_SEPARATOR_ONLY`, `_GMAIL_REL_UNIT` and
-    `_GMAIL_HAS_VALUES`, those in `_parse_gmail_q` and `_gmail_op_match`, and the docstring of
-    `_gmail_subject_value` read its query, over both listings."""
+    `_GMAIL_HAS_VALUES`, those in `_gmail_group_items`, `_parse_gmail_q` and `_gmail_op_match`, and
+    the docstring of `_gmail_subject_value` read its query, over both listings."""
     records = [
         {
             "source_type": "gmail",

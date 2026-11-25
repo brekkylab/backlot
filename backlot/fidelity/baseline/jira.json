@@ -4,7 +4,7 @@
     "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
     "https://developer.atlassian.com/cloud/jira/platform/swagger.v3.json"
   ],
-  "measured": "2026-10-19",
+  "measured": "2026-11-23",
   "operations": [
     {
       "operation": "DELETE /rest/api/2/attachment/{}",
@@ -1957,16 +1957,12 @@
     {
       "operation": "GET /rest/api/2/issueLinkType",
       "id": "getIssueLinkTypes",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented"
     },
     {
       "operation": "GET /rest/api/2/issueLinkType/{}",
       "id": "getIssueLinkType",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented"
     },
     {
       "operation": "GET /rest/api/2/issuesecurityschemes",
@@ -3925,9 +3921,7 @@
     {
       "operation": "GET /rest/api/3/issueLinkType/{}",
       "id": "getIssueLinkType",
-      "status": "missing",
-      "kind": "missing_operation",
-      "severity": "gap"
+      "status": "implemented"
     },
     {
       "operation": "GET /rest/api/3/issuesecurityschemes",

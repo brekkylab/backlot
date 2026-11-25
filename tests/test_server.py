@@ -76,23 +76,27 @@ def test_serve_with_no_arguments_serves_the_hello_corpus():
 
 
 def test_serve_answers_without_uvicorns_server_header():
-    """`backlot serve` ran uvicorn with its default `server_header`, so uvicorn's
-    `server: uvicorn` went out beside an answer's own `server` — Google's front-end 404 carries
-    `server: ESF` alone. The header is off, so only an answer that sets one carries one.
-    Read over a raw socket, as a client reads it: no client library shows both `server` fields
-    of one answer."""
+    rows = [
+        # Google's front-end 404, which sets `server: ESF`
+        ("GET /drive/v3/nosuch HTTP/1.1", b"HTTP/1.1 404 Not Found", [b"server: ESF"]),
+        # an answer from the app that sets none
+        ("GET /_meta/overlay HTTP/1.1", b"HTTP/1.1 200 OK", []),
+        # uvicorn's own 400, for a header name httptools refuses
+        ("GET /_meta/overlay HTTP/1.1\r\nBad Header: v", b"HTTP/1.1 400 Bad Request", []),
+    ]
+    seen = []
     with backlot.serve() as s:
         u = urllib.parse.urlsplit(s.base_url)
-        with socket.create_connection((u.hostname, u.port)) as c:
-            c.sendall(
-                f"GET /drive/v3/nosuch HTTP/1.1\r\nHost: {u.netloc}\r\nConnection: close\r\n\r\n".encode()
-            )
-            data = b""
-            while chunk := c.recv(65536):
-                data += chunk
-        head = data.split(b"\r\n\r\n")[0].split(b"\r\n")
-        assert head[0] == b"HTTP/1.1 404 Not Found"
-        assert [line for line in head[1:] if line.lower().startswith(b"server")] == [b"server: ESF"]
+        for first, _, _ in rows:
+            with socket.create_connection((u.hostname, u.port)) as c:
+                c.sendall(f"{first}\r\nHost: {u.netloc}\r\nConnection: close\r\n\r\n".encode())
+                data = b""
+                while chunk := c.recv(65536):
+                    data += chunk
+            head = data.split(b"\r\n\r\n")[0].split(b"\r\n")
+            server = [line for line in head[1:] if line.lower().startswith(b"server")]
+            seen.append((first, head[0], server))
+    assert seen == rows
 
 
 @pytest.mark.parametrize(

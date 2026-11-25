@@ -325,8 +325,7 @@ def serve(
 ) -> None:
     """Serve Backlot APIs over the corpus in the data dir.
 
-    Every default here is uvicorn's own but the HTTP protocol, which is backlot.protocol's,
-    and the `server` header, which uvicorn's own would put beside an answer's own.
+    Every default here is uvicorn's own but backlot.protocol for HTTP and no `server` header.
     """  # noqa: E501 — one source line per paragraph: typer renders a docstring newline as a line break, so a wrapped paragraph reaches the help screen broken mid-sentence.
     _use_data_dir(data_dir)
     if disable_telemetry:
@@ -369,10 +368,9 @@ def serve(
         # the class, not its import string, which uvicorn resolves only from 0.36 on; --reload
         # pickles it by reference
         http=Protocol,
-        # uvicorn's own `server: uvicorn` goes out beside an answer's own `server`: Google's
-        # front-end 404 carries `server: ESF` alone, and Slack's 413 for a body past 2 MiB
-        # `server: envoy` alone (measured 2026-11-23), so the header is off and only an
-        # answer that sets one carries one.
+        # off: uvicorn would write `server: uvicorn` ahead of an answer's own headers, a second
+        # `server` beside the 404 `google.front_end_not_found` serves, which Google Drive answered
+        # with `Server: ESF` alone (2026-11-23)
         server_header=False,
     )
     # The app is passed as an import STRING because that is what --reload requires.

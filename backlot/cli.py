@@ -368,6 +368,9 @@ def serve(
         # the class, not its import string, which uvicorn resolves only from 0.36 on; --reload
         # pickles it by reference
         http=Protocol,
+        # The app writes `Date` itself (``backlot.main._Dated``); uvicorn's would be a second one,
+        # and one that can name the second before the answer's
+        date_header=False,
         # off: uvicorn would write `server: uvicorn` ahead of an answer's own headers, a second
         # `server` beside the 404 `google.front_end_not_found` serves, which Google Drive answered
         # with `Server: ESF` alone (2026-11-23)

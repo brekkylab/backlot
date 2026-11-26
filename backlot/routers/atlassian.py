@@ -6408,6 +6408,19 @@ _CONFLUENCE_CONSUMES = tuple(
     for method, pattern in _operations(rows)
 )
 
+#: The three Confluence attachment writes whose `multipart/form-data` upload a credentialled
+#: caller reaches past the caller's refusal: the `POST`s are refused by the XSRF check and the
+#: `PUT` fails for its missing `file` part (``errors.atlassian.refuse_a_credentialled_attachment_write``).
+#: They are the `multipart/form-data` rows of :data:`_CONFLUENCE_CONSUMES`, named here because
+#: the refusal is theirs alone, not every operation that consumes the type.
+_CONFLUENCE_ATTACHMENT_WRITES = _operations(
+    [
+        "POST /wiki/rest/api/content/{}/child/attachment",
+        "PUT /wiki/rest/api/content/{}/child/attachment",
+        "POST /wiki/rest/api/content/{}/child/attachment/{}/data",
+    ]
+)
+
 
 #: The Confluence operation that answers an `Accept` admitting no JSON with its anonymous 403, in
 #: the shape that `Accept` asks for (``errors.atlassian.confluence_refusal``), rather than the 406,
@@ -6675,7 +6688,7 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     return Response(refused.body, status_code=refused.status_code)
 
 
-def _published_answer(request: Request, vendor_path: str) -> Response | None:
+async def _published_answer(request: Request, vendor_path: str) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to
     give but the gap the baseline's `missing` operation acknowledges.
@@ -6697,7 +6710,9 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     caller with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
     (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
     and with one holding no colon, each with a body of a type the operation does not take, and the
-    `Accept` check's 2026-10-13.
+    `Accept` check's 2026-10-13. A credentialled caller on an attachment write with a boundary is
+    then refused before the operation runs
+    (``errors.atlassian.refuse_a_credentialled_attachment_write``).
     """
     method = request.method
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
@@ -6742,7 +6757,19 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
                     produces=produces,
                 ),
             )
-        return _confluence_refusal(request, vendor_path)
+        refusal = _confluence_refusal(request, vendor_path)
+        if refusal is not None:
+            return refusal
+        # a credentialled caller from here: an attachment write with a boundary is refused
+        # before the operation runs, the `POST`s by the XSRF check and the `PUT` for its
+        # missing `file` part (``errors.atlassian.refuse_a_credentialled_attachment_write``)
+        if _is(_CONFLUENCE_ATTACHMENT_WRITES, method, vendor_path):
+            refused = errors_atlassian.refuse_a_credentialled_attachment_write(
+                method, request.headers, await request.body()
+            )
+            if refused is not None:
+                raise refused
+        return None
     if not errors_atlassian.serves_the_jira_api(request.url.path):
         return None
     operation = _jira_operation(method, vendor_path)
@@ -7166,7 +7193,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     served = _some_atlassian_route_matches(request)
     if served and request.method == "OPTIONS":
         return _options_answer(request)
-    published = _published_answer(request, vendor_path)
+    published = await _published_answer(request, vendor_path)
     if published is not None:
         return published
     if served and not _is(_CONFLUENCE_CONVERSION_WRITES, request.method, vendor_path):

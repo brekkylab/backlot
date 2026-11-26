@@ -10224,6 +10224,111 @@ def test_confluence_answers_an_operation_before_it_runs(client):
     assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
 
 
+#: A credentialled attachment write whose `Content-Type` is `multipart/form-data` with a
+#: `boundary` is the answer ``errors.atlassian.refuse_a_credentialled_attachment_write`` carries
+#: the measurement for: the `POST`s the XSRF check's 403, the `PUT` the 500 for the missing `file`
+#: part, each with the body `x`; `"admin"` is the admin's token. With no credential the three are
+#: the caller's 403. A `PUT` whose body carries a part named `file` is not the missing-part 500 —
+#: the operation itself is unserved, so the 405 stands — and a `POST` with one is still the XSRF
+#: 403, which fails whatever the parts.
+_XSRF_403 = {
+    "statusCode": 403,
+    "message": (
+        "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
+        '403 FORBIDDEN "XSRF check failed"'
+    ),
+}
+_MISSING_FILE_PART_500 = {
+    "statusCode": 500,
+    "message": (
+        "org.springframework.web.multipart.support.MissingServletRequestPartException: "
+        "Required request part 'file' is not present"
+    ),
+}
+_CALLER_403 = {"statusCode": 403, "message": errors_atlassian.CONFLUENCE_FORBIDDEN}
+_PUT_405 = {
+    "errors": [
+        {
+            "status": 405,
+            "code": "METHOD_NOT_ALLOWED",
+            "title": (
+                "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                "Request method 'PUT' not supported"
+            ),
+        }
+    ]
+}
+_FILE_PART = (
+    b'--x\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n'
+    b"Content-Type: text/plain\r\n\r\nhello\r\n--x--\r\n"
+)
+_ATTACHMENT_WRITE_WITH_BOUNDARY = [
+    ("POST", "/wiki/rest/api/content/999999999/child/attachment", "admin", b"x", 403, _XSRF_403),
+    (
+        "PUT",
+        "/wiki/rest/api/content/999999999/child/attachment",
+        "admin",
+        b"x",
+        500,
+        _MISSING_FILE_PART_500,
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/999999999/child/attachment/att999999999/data",
+        "admin",
+        b"x",
+        403,
+        _XSRF_403,
+    ),
+    ("POST", "/wiki/rest/api/content/999999999/child/attachment", None, b"x", 403, _CALLER_403),
+    ("PUT", "/wiki/rest/api/content/999999999/child/attachment", None, b"x", 403, _CALLER_403),
+    (
+        "POST",
+        "/wiki/rest/api/content/999999999/child/attachment/att999999999/data",
+        None,
+        b"x",
+        403,
+        _CALLER_403,
+    ),
+    (
+        "PUT",
+        "/wiki/rest/api/content/999999999/child/attachment",
+        "admin",
+        _FILE_PART,
+        405,
+        _PUT_405,
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/999999999/child/attachment",
+        "admin",
+        _FILE_PART,
+        403,
+        _XSRF_403,
+    ),
+]
+
+
+def _attachment_write_with_boundary(
+    client, admin_h, method, vendor_path, authorization, body, status, expected
+):
+    headers = [("Content-Type", "multipart/form-data; boundary=x")]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    assert r.headers.get("content-type") == "application/json"
+    assert r.json() == expected
+
+
+def test_confluence_refuses_a_credentialled_attachment_write_with_a_boundary(client, admin_h):
+    assert (
+        _failures(_attachment_write_with_boundary, _ATTACHMENT_WRITE_WITH_BOUNDARY, client, admin_h)
+        == {}
+    )
+
+
 _EMPTY_CHARSET = "text/plain;charset="
 
 #: The status each kind of path answers a `Content-Type` whose charset Java cannot name

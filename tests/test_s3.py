@@ -332,6 +332,38 @@ def test_s3_a_head_at_the_service_root_is_the_405_without_its_body(live_server, 
     assert _signed(base_url, path, settings.admin_token).status_code == 200
 
 
+def test_s3_an_xml_answer_with_a_body_is_framed_chunked(live_server):
+    """Real frames an XML answer with a body chunked, with no `Content-Length`: the 405, the 400,
+    a `NoSuchBucket` 404 and a listing alike, and the parse 400 a method S3 defines nothing for
+    gets (``backlot.routers.s3._xml`` and ``backlot.errors.s3.rendered``). The answers with no body
+    are framed as they were: the 307 to `GET /` still carries `Content-Length: 0`."""
+    import httpx
+
+    base_url, settings = live_server
+    for method, target, status in (
+        ("PUT", "/s3/", 405),
+        ("OPTIONS", "/s3/", 400),
+        ("GET", "/s3/backlot-nope", 404),
+        ("GET", "/s3/backlot-nope/k", 404),
+    ):
+        r = httpx.request(method, f"{base_url}{target}")
+        assert r.status_code == status
+        assert "content-length" not in r.headers
+        assert r.headers["transfer-encoding"] == "chunked"
+    for method, target in (("LINK", "/s3/backlot-nope"), ("PROPFIND", "/s3/backlot-nope/k")):
+        r = httpx.request(method, f"{base_url}{target}")
+        assert r.status_code == 400
+        assert r.headers["content-type"] == "application/xml"
+        assert "content-length" not in r.headers
+        assert r.headers["transfer-encoding"] == "chunked"
+    headers = _boto3_client(live_server).list_objects_v2(Bucket="eng-artifacts", MaxKeys=1)[
+        "ResponseMetadata"
+    ]["HTTPHeaders"]
+    assert "content-length" not in headers and headers["transfer-encoding"] == "chunked"
+    r = httpx.get(f"{base_url}/s3/")
+    assert r.status_code == 307 and r.headers["content-length"] == "0"
+
+
 # What real answered alike at a bucket's path with and without a trailing slash: the same status,
 # header names and body once the request ids are set aside (s3.amazonaws.com, us-east-1; the GET and
 # HEAD rows on 2026-10-11, the others on 2026-10-13). On the second date no pair differed among the

@@ -47,6 +47,7 @@ from xml.sax.saxutils import escape
 
 import xxhash
 from fastapi import APIRouter, Request, Response
+from starlette.responses import StreamingResponse
 
 from backlot import auth, sigv2, sigv4, store, synth, utf8_escapes
 from backlot.openapi import qp
@@ -540,9 +541,13 @@ def _xml(
 ) -> Response:
     """An XML answer. ``prolog`` and ``media_type`` are what real sends before the body and as its
     type, which is the declaration and a newline as `application/xml` for most answers and something
-    else for a few (``_ANSWERED``, ``_NO_PROLOG`` and ``_CONFIGURATION_LISTS`` name which)."""
-    return Response(
-        content=prolog + body, media_type=media_type, status_code=status, headers=headers
+    else for a few (``_ANSWERED``, ``_NO_PROLOG`` and ``_CONFIGURATION_LISTS`` name which). Real
+    frames an XML answer with a body chunked, with no `Content-Length` — the 405, the 400, a
+    `NoSuchBucket` 404 and a listing alike, measured 2026-11-26 against `s3.us-east-1.amazonaws.com`
+    — so the document is streamed rather than answered whole, which is what names the framing.
+    Starlette writes a `Content-Length` on a whole-document answer."""
+    return StreamingResponse(
+        iter([prolog + body]), media_type=media_type, status_code=status, headers=headers
     )
 
 

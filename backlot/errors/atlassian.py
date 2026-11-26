@@ -34,7 +34,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import HTTPException, Request, Response
 
-from backlot import java_timsort, utf8_escapes
+from backlot import java_timsort, published, utf8_escapes
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -591,6 +591,18 @@ def cql_invalid_size_limit(value: str) -> AtlassianError:
     `id in recentlyViewedContent(1.5)` the same with `1.5` (Confluence Cloud, 2026-11-05). Where it
     falls among the search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
     return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
+
+
+def cql_function_returns_no_single_value(name: str) -> AtlassianError:
+    """The CQL search's refusal of a function that returns more than one value where a single
+    value goes, worded as real answered `type = recentlyViewedContent(5)` (Confluence Cloud,
+    2026-11-24). Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_refusal``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unable to execute function '{name}', expecting a function that returns a single value",
+    )
 
 
 def cql_escaped_end_quote(text: str) -> AtlassianError:
@@ -2464,16 +2476,33 @@ def route_regex(template: str) -> re.Pattern[str]:
 _JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_ALLOW)
 
 
+#: (method, path pattern) for each operation Jira's documents publish, served here or not. Real's
+#: `Allow` names every method published on each template the path matches, measured on Jira Cloud
+#: 2026-11-24 under `/rest/api/3` and on the Connect, Forge and internal mounts: a `POST` on
+#: `dashboard/search`, `filter/favourite` and `issuetype/project` named the `GET` published there
+#: with the `PUT` and `DELETE` published where that segment is an id. The rows above claim every
+#: served path first, so what this adds are the baseline's `missing` operations.
+_JIRA_PUBLISHED_OPS = published.operations(
+    entry["operation"]
+    for entry in json.loads(
+        (_PACKAGE / "fidelity" / "baseline" / "jira.json").read_text(encoding="utf-8")
+    )["operations"]
+)
+
+
 def jira_allow(path: str) -> str | None:
-    """The `Allow` real sends on a 405 at ``path``, or ``None`` for a Jira route no row above
-    covers. ``path`` is Backlot's, prefix and all, and a trailing slash on it is dropped before
-    matching: it is the path a refusal echoes (``backlot.routers.atlassian._echoed_path``), and
-    no row above has one."""
+    """The `Allow` real sends on a 405 at ``path``: the methods of the row above that covers it,
+    else every method :data:`_JIRA_PUBLISHED_OPS` holds for a template it matches, else ``None``.
+    ``path`` is Backlot's, prefix and all, and a trailing slash on it is dropped before matching: it
+    is the path a refusal echoes (``backlot.routers.atlassian._echoed_path``), and no template above
+    has one. A path no route serves gets its 405 from
+    ``backlot.routers.atlassian.unmatched_path``."""
     vendor_path = _instance(path).rstrip("/")
     for pattern, methods in _JIRA_ALLOW_PATTERNS:
         if pattern.fullmatch(vendor_path):
             return ", ".join(methods)
-    return None
+    verbs = [verb for verb, pattern in _JIRA_PUBLISHED_OPS if pattern.fullmatch(vendor_path)]
+    return ", ".join(dict.fromkeys(verbs)) if verbs else None
 
 
 #: The methods each Confluence route here takes, as the `Allow` on its 405's page spells them

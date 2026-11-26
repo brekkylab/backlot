@@ -4858,10 +4858,11 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
 def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
     """The 400 real answers a CQL the grammar cannot read with, or None for one it can, before
     :func:`_cql_refusal` reads the faults it walks from the left: a function call with the wrong
-    arguments, a second argument or an empty `recentlyViewedContent()`, a negative number among a
-    call's arguments, a function other than `recentlyViewedContent` in place of an `in` list, and a
-    `(` never closed with a `)` anywhere after it, a list's or a call's `)` included; a `(` never
-    closed with no `)` after it is the missing parenthesis of :func:`_cql_refusal`. Measured on
+    arguments, a second argument or an empty `recentlyViewedContent()` (a `recentlyViewedContent`
+    straight after an operator is :func:`_cql_refusal`'s), a negative number among a call's
+    arguments, a function other than `recentlyViewedContent` in place of an `in` list, and a `(`
+    never closed with a `)` anywhere after it, a list's or a call's `)` included; a `(` never closed
+    with no `)` after it is the missing parenthesis of :func:`_cql_refusal`. Measured on
     Confluence Cloud on 2026-10-31: a second argument or an empty `recentlyViewedContent()` was
     answered `Could not parse cql : ` beside any other wrong in the CQL, even a missing value or an
     unknown field earlier in it, and `(label = foo()`, `(space = currentSpace()` and
@@ -4895,7 +4896,11 @@ def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
                 return errors_atlassian.cql_not_parsed()
             if any(k == "NUMBER" and t.startswith("-") for k, t in args):
                 return errors_atlassian.cql_not_parsed()
-            if name in _CQL_FUNCTIONS and _cql_function_arity(name, args):
+            if (
+                name in _CQL_FUNCTIONS
+                and not (name == "recentlyViewedContent" and at and tokens[at - 1][0] == "OP")
+                and _cql_function_arity(name, args)
+            ):
                 return errors_atlassian.cql_not_parsed()
             if name != "recentlyViewedContent" and at and tokens[at - 1][1].lower() == "in":
                 return errors_atlassian.cql_not_parsed()
@@ -4937,9 +4942,16 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     `foo = x and space.key ~ x` answered the unknown field and `space.key ~ x and foo = x` the
     operator, `foo = select` the unknown field and `space.key ~ select` the reserved word, `foo =`
     the unknown field, and `foo = x and created > "x"`, `title and created > "x"` and
-    `created > 20260910 and created > 2026-02-30` `Could not parse cql : `. A query read to its end
-    with none of these is ``cql_not_parsed`` when a `space.key` value holds a single quote. A value
-    real refuses for another reason, an escaped end quote included, is :func:`_cql_cannot_run`'s."""
+    `created > 20260910 and created > 2026-02-30` `Could not parse cql : `. A
+    `recentlyViewedContent` straight after an operator is
+    ``errors.atlassian.cql_function_returns_no_single_value`` at the call, placed among those faults
+    as a reserved word is and before its arguments are read. Measured on Confluence Cloud on
+    2026-11-25: `type = recentlyViewedContent()`, `type = recentlyViewedContent(5) and bogus = x`
+    and `type = currentSpace() and type = recentlyViewedContent(5)` answered it, where
+    `bogus = x and type = recentlyViewedContent(5)` answered the unknown field and
+    `type = recentlyViewedContent(-1)` `Could not parse cql : `. A query read to its end with none
+    of these is ``cql_not_parsed`` when a `space.key` value holds a single quote. A value real
+    refuses for another reason, an escaped end quote included, is :func:`_cql_cannot_run`'s."""
     at = 0
     recorded = None  # (place, refusal) of the first fault recorded, the furthest left
     groups: list[int] = []  # the place of each group's `(` not yet closed, outermost first
@@ -5036,6 +5048,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 # space, a quoted one with its quotes (Confluence Cloud, 2026-11-05).
                 call = f"{name}({','.join(text for _, text in args)})"
                 raise _Stop(errors_atlassian.cql_unknown_function(call))
+            if name == "recentlyViewedContent" and tokens[at - 2][0] == "OP":
+                record(at - 1, errors_atlassian.cql_function_returns_no_single_value(name))
             # `now(select)`: the arguments follow the `(`, one comma between each two.
             for i, (arg_kind, arg_text) in enumerate(args):
                 if arg_kind == "WORD" and arg_text.lower() in _CQL_KEYWORDS:
@@ -5268,21 +5282,33 @@ def _cql_clauses(tokens: list[tuple[str, str]]):
         at += listed
 
 
+# The time zone real names a date function in when it refuses a value: the one site measured
+# keeps Asia/Seoul, and this server carries no site time zone, so the refusal names the moment in
+# that zone. Whether the site's setting or the caller's profile picks the zone was not measured,
+# nor whether a date clause that is not refused is read in that zone too (Confluence Cloud,
+# 2026-11-24).
+_CQL_NAMED_VALUE_TZ = timezone(timedelta(hours=9))
+
+
 def _cql_named_value(kind: str, text: str, call, current_user: str | None, now: datetime):
     """A value as real names it in a refusal: a quoted value without its quotes, a word or a number
     as sent, `currentUser()` the caller as :func:`_cql_function_value` reads it, `currentContent()`
     `0`, and a date function the minute of :func:`_cql_date_function_moment`, as `yyyy-MM-dd HH:mm`
-    in UTC. Real named `currentContent()` `0`, `currentUser()` the caller's account id and a date
-    function as `yyyy-MM-dd HH:mm` (Confluence Cloud, 2026-11-24). `recentlyViewedContent` gives
-    None: real refused `type = recentlyViewedContent(5)` as no function that returns a single value,
-    which is left standing here."""
+    in the site's time zone (:data:`_CQL_NAMED_VALUE_TZ`). Real named `currentContent()` `0`,
+    `currentUser()` the caller's account id and a date function as `yyyy-MM-dd HH:mm` (Confluence
+    Cloud, 2026-11-24). `recentlyViewedContent` gives None: real refused
+    `type = recentlyViewedContent(5)` as no function that returns a single value, which
+    :func:`_cql_refusal` answers before a value is named."""
     if call is None:
         return _cql_unquote(kind, text)
     name, args = call
     if name == "currentContent":
         return "0"
     if name in _CQL_DATE_FUNCTIONS:
-        return _cql_date_function_moment(name, args, now).strftime("%Y-%m-%d %H:%M")
+        moment = _cql_date_function_moment(
+            name, args, now.astimezone(_CQL_NAMED_VALUE_TZ), _CQL_NAMED_VALUE_TZ
+        )
+        return moment.strftime("%Y-%m-%d %H:%M")
     if name == "recentlyViewedContent":
         return None
     return _cql_function_value(name, args, current_user)
@@ -5473,26 +5499,26 @@ def _cql_apply_offset(moment: datetime, amount: int, unit: str) -> datetime:
     return _cql_add_months(moment, amount * 12)
 
 
-def _cql_date_function_moment(name: str, args: list[tuple[str, str]], now: datetime) -> datetime:
-    """The moment a call of the date function ``name`` with ``args`` reads at ``now``, in UTC: `now`
-    itself, the start of its day, week, month or year, or the second before the next month starts,
-    moved by the relative date in its one quoted argument, if any. :func:`_cql_cannot_run` refuses
-    an argument that is no relative date before this reads it."""
+def _cql_date_function_moment(
+    name: str, args: list[tuple[str, str]], now: datetime, tz: timezone = timezone.utc
+) -> datetime:
+    """The moment a call of the date function ``name`` with ``args`` reads at ``now``, in ``tz``:
+    `now` itself, the start of its day, week, month or year, or the start of the next month, moved
+    by the relative date in its one quoted argument, if any. :func:`_cql_cannot_run` refuses an
+    argument that is no relative date before this reads it. `endOfMonth()` is the start of the next
+    month, not its last minute: real named it `2026-12-01 00:00` for November (Confluence Cloud,
+    2026-11-24)."""
     base = now
     if name == "startOfYear":
-        base = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+        base = datetime(now.year, 1, 1, tzinfo=tz)
     elif name == "startOfMonth":
-        base = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        base = datetime(now.year, now.month, 1, tzinfo=tz)
     elif name == "startOfDay":
-        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        base = datetime(now.year, now.month, now.day, tzinfo=tz)
     elif name == "startOfWeek":
-        base = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(
-            days=now.weekday()
-        )
+        base = datetime(now.year, now.month, now.day, tzinfo=tz) - timedelta(days=now.weekday())
     elif name == "endOfMonth":
-        base = _cql_add_months(
-            datetime(now.year, now.month, 1, tzinfo=timezone.utc), 1
-        ) - timedelta(seconds=1)
+        base = _cql_add_months(datetime(now.year, now.month, 1, tzinfo=tz), 1)
     if args:
         match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
         base = _cql_apply_offset(base, int(match.group(1)), match.group(2))
@@ -7115,10 +7141,16 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     A path with no route is Jira's RFC 7807 `No endpoint <METHOD> <path>.` (see
     `errors.atlassian.no_endpoint`) or Confluence's own pair of shapes (see
     :func:`_confluence_not_found`), and an `OPTIONS` on such a path is that same answer — measured
-    on both products 2026-09-22. A method a route does not declare is the 405 each product answers
-    (`errors.atlassian.method_not_allowed`, measured too), raised here because this route takes
-    every method on every path it owns and so receives that request; `OPTIONS` is the exception,
-    and :func:`_options_answer` is what real gives it.
+    on both products 2026-09-22. Where Jira's documents publish operations at a path no route
+    serves, a method other than `OPTIONS` that they do not publish there is the 405 instead, `Allow`
+    naming the ones they do (`errors.atlassian.jira_allow`): measured on Jira Cloud 2026-10-19 with
+    `DELETE`, `PUT` and `POST` on `myself`, `instance/license` and `invalid-jqls-access-log`, for a
+    caller with no credential, a failing pair and a credential alike, ahead of the anonymous 401 and
+    of `myself`'s `Accept` 406, and on 2026-11-24 with an unknown scheme, where a bearer real cannot
+    read is the Connect-token 403 first. A method a route does not declare is the 405 each product
+    answers (`errors.atlassian.method_not_allowed`, measured too), raised here because this route
+    takes every method on every path it owns and so receives that request; `OPTIONS` is the
+    exception, and :func:`_options_answer` is what real gives it.
 
     Those are the answers where the vendor publishes nothing for the method at the path. An
     operation it does publish is looked at first, at a served route's path as at any other, since
@@ -7161,6 +7193,18 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             )
         return _confluence_not_found(request)
     if errors_atlassian.serves_the_jira_api(path):
+        # a method the documents do not publish at a path no route serves is the 405 naming the ones
+        # they do; real answers neither the published method nor an `OPTIONS` there with a 405, so
+        # both stay the URL's 404, the baseline's `missing` entry acknowledging the first
+        published_methods = [
+            verb for verb, pattern in _JIRA_PUBLISHED if pattern.fullmatch(vendor_path)
+        ]
+        if (
+            published_methods
+            and request.method != "OPTIONS"
+            and request.method not in published_methods
+        ):
+            raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
         # on a path Jira publishes nothing at, the URL is what answers
         raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
     return _site_surface(request)

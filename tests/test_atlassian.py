@@ -7560,9 +7560,9 @@ def test_confluence_refuses_a_wrong_method_with_springs_errors_list_and_no_allow
 _WRONG_METHODS = [
     (*row, slash)
     for row in [
-        # every row measured on Jira Cloud, 2026-09-16, by sending a method the vendor defines on no
-        # route of that path; real's ORDER varies per response, so only the set is real's and the
-        # order below is `_JIRA_ALLOW`'s
+        # the rows down to `project/search` measured on Jira Cloud, 2026-09-16, by sending a method
+        # the vendor defines on no route of that path; real's ORDER varies per response, so only the
+        # set is real's and the order below is ``errors.atlassian.jira_allow``'s
         ("post", "/rest/api/3/serverInfo", "GET"),
         ("put", "/rest/api/3/field", "GET, POST"),
         ("post", "/rest/api/3/issue/PAY-1", "GET, PUT, DELETE"),
@@ -7578,6 +7578,24 @@ _WRONG_METHODS = [
         ("post", "/rest/api/3/issue/A%20B", "GET, PUT, DELETE"),
         ("post", "/rest/api/3/issue/A%23B", "GET, PUT, DELETE"),
         ("post", "/rest/api/3/issue/A%3FB", "GET, PUT, DELETE"),
+        # a path Jira's documents publish at and no route serves, `Allow` naming every method they
+        # publish on a template it matches; ``errors.atlassian._JIRA_PUBLISHED_OPS`` and
+        # ``routers.atlassian.unmatched_path`` record the measurements
+        ("delete", "/rest/api/3/myself", "GET"),
+        ("put", "/rest/api/3/myself", "GET"),
+        ("post", "/rest/api/3/myself", "GET"),
+        ("delete", "/rest/api/3/instance/license", "GET"),
+        ("post", "/rest/api/3/instance/license", "GET"),
+        ("delete", "/rest/api/2/invalid-jqls-access-log", "GET"),
+        ("put", "/rest/api/2/invalid-jqls-access-log", "GET"),
+        ("post", "/rest/api/3/dashboard/search", "DELETE, GET, PUT"),
+        ("post", "/rest/api/3/filter/favourite", "DELETE, GET, PUT"),
+        ("post", "/rest/api/3/issuetype/project", "DELETE, GET, PUT"),
+        ("delete", "/rest/atlassian-connect/1/service-registry", "GET"),
+        ("put", "/rest/atlassian-connect/1/app/module/dynamic", "DELETE, GET, POST"),
+        ("put", "/rest/atlassian-connect/1/migration/x/y/task", "GET, POST"),
+        ("post", "/rest/forge/1/app/properties", "GET"),
+        ("get", "/rest/internal/api/latest/worklog/bulk", "POST"),
     ]
     # a trailing slash on the plain path and on each escape
     for slash in ("", "/")
@@ -8178,6 +8196,7 @@ def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
 
 _CREDENTIALS = {
     "none": {},
+    "none-text-html": {"Accept": "text/html"},
     "failed-pair": FAILED_PAIR,
     "unknown-scheme": {"Authorization": "Bogus xyz"},
     "unreadable-bearer": {"Authorization": "Bearer nope"},
@@ -8200,6 +8219,17 @@ _CREDENTIALS = {
         ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
         ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "admin", 404),
         ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
+        # ahead of that 401 and of `myself`'s `Accept` 406, though not of the Connect-token 403: a
+        # method the documents do not publish on a path they do is the 405 (the measurement is
+        # ``unmatched_path``'s docstring's), the published method itself staying the baseline's 404
+        # gap above
+        ("DELETE", "/atlassian/rest/api/3/myself", "none", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "failed-pair", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "unknown-scheme", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "none-text-html", 405),
+        ("DELETE", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
+        ("POST", "/atlassian/rest/api/3/instance/license", "none", 405),
+        ("PUT", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", 405),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "failed-pair", 401),
@@ -8224,7 +8254,7 @@ def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
     `text/html` it has for the test client's `Accept: */*`: on the operations
     ``backlot/data/jira_unserved.json`` refuses and on an `OPTIONS` wherever Jira publishes
     something, for each credential that comment names. Where Jira publishes nothing, the URL's 404
-    answers first."""
+    answers first, and where it publishes only other methods, the 405 answers ahead of that 401."""
     headers = admin_h if credential == "admin" else _CREDENTIALS[credential]
     r = client.request(method, path, headers=headers)
     assert r.status_code == status, r.text
@@ -8233,6 +8263,10 @@ def test_jira_refuses_what_it_will_not_run_for_a_caller_it_cannot_name(
         echoed = path.removeprefix("/atlassian")
         assert r.json()["detail"] == f"No endpoint {method} {echoed}."
         assert r.json()["instance"] == echoed
+    if status == 405:
+        # the 405 names what the documents publish at the path, GET alone on each above
+        assert r.headers["allow"] == "GET"
+        assert r.json()["detail"] == f"Method '{method}' is not supported."
     if status != 401:
         assert "www-authenticate" not in r.headers
         return
@@ -11828,6 +11862,10 @@ _CQL_NOT_PARSED = "Could not parse cql : "
 _CQL_CURRENT_SPACE = (
     "Unable to execute function 'currentSpace', the required contexts were not present : space"
 )
+_CQL_NO_SINGLE_VALUE = (
+    "Unable to execute function 'recentlyViewedContent', "
+    "expecting a function that returns a single value"
+)
 
 
 def _cql_reserved(word):
@@ -14784,6 +14822,68 @@ _CQL_PARSE_ROWS = [
             ('created > 20260910 and created > "２０２６-01-01"', _CQL_NOT_PARSED),
         ]
     ],
+    # A `recentlyViewedContent` straight after an operator, which `_cql_refusal` in
+    # `backlot.routers.atlassian` records as no single value before its arguments are read. The
+    # multi-clause rows pin the order it is answered in among the other faults.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            ("type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type != recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("title ~ recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("created > recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent()", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5, 6)", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(zz)", _CQL_NO_SINGLE_VALUE),
+            ('type = recentlyViewedContent("x")', _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(select)", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and bogus = x", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type = foo()", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type = order", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and (type = page", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type =", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type = page page", _CQL_NO_SINGLE_VALUE),
+            ("type = bogus and type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type = currentSpace() and type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type = currentUser() and type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ('created > now("x") and type = recentlyViewedContent(5)', _CQL_NO_SINGLE_VALUE),
+            ('title ~ "a\\\\" and type = recentlyViewedContent(5)', _CQL_NO_SINGLE_VALUE),
+            (
+                "id in recentlyViewedContent(zz) and type = recentlyViewedContent(5)",
+                _CQL_NO_SINGLE_VALUE,
+            ),
+            (
+                "bogus = x and type = recentlyViewedContent(5)",
+                "No field exists with the name: 'bogus'",
+            ),
+            (
+                "type = foo() and type = recentlyViewedContent(5)",
+                "Unable to find query function 'foo()'",
+            ),
+            ("type = select and type = recentlyViewedContent(5)", _cql_reserved("select")),
+            (
+                "space.key ~ x and type = recentlyViewedContent(5)",
+                "Operator '~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type and type = recentlyViewedContent(5)",
+                "Expecting operator for field 'type', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "title ~ 10 and type = recentlyViewedContent(5)",
+                "Expecting a value for operator '~' after field 'title' but got '10'",
+            ),
+            ("type = recentlyViewedContent(-1)", _CQL_NOT_PARSED),
+            ("type = recentlyViewedContent(5) and id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("type = recentlyViewedContent(5) and created > 2026-02-30", _CQL_NOT_PARSED),
+            ("type = recentlyViewedContent(5) and type = page)", _CQL_NOT_PARSED),
+            (
+                "type = recentlyviewedcontent(5)",
+                "Unable to find query function 'recentlyviewedcontent(5)'",
+            ),
+        ]
+    ],
     # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
     # it: every one of the 43 as `label = <word>`, the word in the case it was sent, a reserved word
     # before each token that changes how `_cql_refusal` reads it, a reserved word as a field or left
@@ -15013,18 +15113,20 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
 def test_confluence_cql_value_refusals_name_a_function_at_a_moment():
     """The value a `type` or `filesize` refusal names for a function value
     (:func:`backlot.routers.atlassian._cql_named_value`) for a caller and a moment. Called
-    directly: the route names the moment it answers at."""
+    directly: the route names the moment it answers at. A date function is named in the site's
+    time zone, Asia/Seoul on the site measured, and `endOfMonth()` is the next month's first
+    minute, as :func:`backlot.routers.atlassian._cql_named_value` records."""
     from backlot.routers.atlassian import _cql_cannot_run, _cql_tokens
 
     account = "5b0123456789abcdef012345"
     rows = [
         ("type = currentUser()", _CQL_PREFIX + _cql_unsupported_type(account)),
-        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-23 16:15")),
-        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-24 00:00")),
-        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-11-30 23:59")),
+        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-24 01:15")),
+        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-25 00:00")),
+        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-12-01 00:00")),
         ("filesize = currentUser()", _CQL_PREFIX + _CQL_FILESIZE + account),
-        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-23 16:15"),
-        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 00:00"),
+        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 01:15"),
+        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-25 00:00"),
         # a function that cannot run answers for itself, not for the value it would be
         ("type = currentSpace()", _CQL_PREFIX + _CQL_CURRENT_SPACE),
     ]

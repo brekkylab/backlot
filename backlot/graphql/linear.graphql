@@ -639,7 +639,13 @@ type Document {
   contentState: String
   documentContentId: String
   url: String!
+  personalUser: User
+  generalAccess: DocumentShareRole
+  workspaceAccess: DocumentShareRole
 }
+
+"""Linear's `DocumentShareRole`, its full member list as introspected on 2026-11-25."""
+enum DocumentShareRole { edit comment view }
 
 type DocumentContent {
   content: String

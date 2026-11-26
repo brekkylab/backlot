@@ -2339,6 +2339,22 @@ def jql_parse_error(sentence: str) -> AtlassianError:
     )
 
 
+def jql_stack_overflow() -> AtlassianError:
+    """Jira's 500 for a `search/jql` whose `jql` nests clause parentheses past
+    ``backlot.routers.atlassian._JQL_MAX_PARENS``, on the same `application/json;charset=UTF-8`
+    as the 400s (POST, 2026-11-24 and 2026-11-25).
+    """
+    return AtlassianError(
+        500,
+        {
+            "message": "Handler dispatch failed: java.lang.StackOverflowError",
+            "status-code": 500,
+            "stack-trace": "",
+        },
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def properties_null_element(index: int) -> AtlassianError:
     """Jira's 500 for a `search/jql` body whose `properties` list holds a ``null``, measured
     2026-10-10: the message names the first null's index (`["a", null]` names index 1), on the

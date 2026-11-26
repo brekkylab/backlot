@@ -6108,11 +6108,12 @@ def _jql_error(sentence):
 
 
 # Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page
-# and the 400's body otherwise. No `jql` where the method reads one (POST reads it from the body
-# alone, so one in its query string is none) and a `jql` with nothing before its `ORDER BY` are
-# the unbounded refusal; a `jql` the parser cannot read is the parse error, whose sentence names
-# what the parser expected and, unless it reached the end of the query, the line and the
-# character in UTF-16 units. Both refusals are on `application/json;charset=UTF-8`.
+# and the 400's body otherwise, or a `(status, body)` pair where real answers another status.
+# No `jql` where the method reads one (POST reads it from the body alone, so one in its query
+# string is none) and a `jql` with nothing before its `ORDER BY` are the unbounded refusal; a
+# `jql` the parser cannot read is the parse error, whose sentence names what the parser expected
+# and, unless it reached the end of the query, the line and the character in UTF-16 units. Both
+# refusals are on `application/json;charset=UTF-8`.
 _JQL_ROWS = [
     ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
     ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
@@ -6147,6 +6148,142 @@ _JQL_ROWS = [
             ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
         )
     ],
+    *[
+        row
+        for jql, refused in (
+            *[
+                (
+                    jql,
+                    _jql_error(
+                        f"Error in JQL Query: The {name} operator does not support the use of the "
+                        'by "zzq" predicate.'
+                    ),
+                )
+                for jql, name in (
+                    ("labels = zzq by zzq", "EQUALS"),
+                    ("labels != zzq by zzq", "NOT_EQUALS"),
+                    ("labels < zzq by zzq", "LESS_THAN"),
+                    ("created > 2020-01-01 by zzq", "GREATER_THAN"),
+                    ("created <= -1d by zzq", "LESS_THAN_EQUALS"),
+                    ("labels >= zzq by zzq", "GREATER_THAN_EQUALS"),
+                    ("summary ~ zzq by zzq", "LIKE"),
+                    ("summary !~ zzq by zzq", "NOT_LIKE"),
+                    ("labels in (zzq) by zzq", "IN"),
+                    ("labels not in (zzq) by zzq", "NOT_IN"),
+                    ("labels is empty by zzq", "IS"),
+                    ("labels is not empty by zzq", "IS_NOT"),
+                )
+            ],
+            *[
+                (
+                    jql,
+                    _jql_error(
+                        "Error in JQL Query: The EQUALS operator does not support the use of the "
+                        f"{predicates} predicate."
+                    ),
+                )
+                for jql, predicates in (
+                    ("labels = zzq by 'zzq'", 'by "zzq"'),
+                    ("labels = zzq by currentUser()", "by currentUser()"),
+                    ("labels = zzq by membersOf(\"x\", 'y', z)", "by membersOf(x, y, z)"),
+                    ("labels = zzq by 05", "by 5"),
+                    ("labels = zzq by -0", "by 0"),
+                    ("labels = zzq by 5.5", 'by "5.5"'),
+                    ("labels = zzq by 99999999999999999999", 'by "99999999999999999999"'),
+                    ("labels = zzq by (currentUser(), 5, empty)", "by (currentUser(), 5, EMPTY)"),
+                    ("labels = zzq by ((a, b), c)", 'by (("a", "b"), "c")'),
+                    ("labels = zzq by null", "by EMPTY"),
+                    ('labels = zzq by "zz\\"q"', 'by "zz"q"'),
+                    ("labels = zzq by z\\u0061q", 'by "zaq"'),
+                    ("labels = zzq during (a, b)", 'during ("a", "b")'),
+                    ("labels = zzq BY zzq AFTER zzq", 'by "zzq" after "zzq" '),
+                    (
+                        "labels = zzq by zzq after zzq before zzq",
+                        'by "zzq" after "zzq" before "zzq" ',
+                    ),
+                    ("labels = zzq by zzq ,zzq", 'by "zzq"'),
+                    ("labels = zzq by zzq)", 'by "zzq"'),
+                    ("labels = zzq by zzq and labels != zzq by zzq", 'by "zzq"'),
+                    ("labels = zzq by zzq order bykey", 'by "zzq"'),
+                )
+            ],
+            *[
+                (
+                    jql,
+                    _jql_error(
+                        f"Error in the JQL Query: '{word}' is a reserved JQL word. You must "
+                        "surround it in quotation marks to use it in a query. (line 1, "
+                        f"character {character})"
+                    ),
+                )
+                for jql, word, character in (
+                    ("labels = sel\\u0065ct", "select", 10),
+                    ("labels = sel\\u0045ct", "selEct", 10),
+                    ("labels = \\u0061nd", "and", 10),
+                    ("\\u006frder = zzq", "order", 1),
+                    ("labels = zzq \\u0061nd labels = zzq", "and", 14),
+                    ("labels = zzq order by key \\u0061sc", "asc", 27),
+                    ("labels = zzq select", "select", 14),
+                    ("(labels = zzq select)", "select", 15),
+                    ("labels = by zzq select", "select", 17),
+                    ("labels = zzq order by key select", "select", 27),
+                    ("labels = zzq by zzq select", "select", 21),
+                    ("labels = zzq by membersOf(select)", "select", 27),
+                )
+            ],
+            (
+                "labels = zzq by",
+                _jql_error(
+                    "Error in JQL Query: Expecting either a value, list or function before the end "
+                    "of the query."
+                ),
+            ),
+            (
+                "labels = zzq by and labels = zzq",
+                _jql_error(
+                    "Error in JQL Query: Expecting either a value, list or function but got 'and'. "
+                    "You must surround 'and' in quotation marks to use it as a value. (line 1, "
+                    "character 17)"
+                ),
+            ),
+            (
+                "labels = zzq by zzq zzq",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'zzq'. "
+                    "(line 1, character 21)"
+                ),
+            ),
+            ("labels = \\u0074he", None),
+            ("labels = \\u0064uring", None),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
+        )
+    ],
+    (
+        "post",
+        3,
+        {},
+        {"jql": "(" * 7200 + "labels = zzq" + ")" * 7200 + " order bykey", "maxResults": 1},
+        _jql_error(
+            "Error in the JQL Query: Expecting 'by' but got 'bykey'. (line 1, character 14420)"
+        ),
+    ),
+    (
+        "post",
+        3,
+        {},
+        {"jql": "(" * 8000 + "labels = zzq" + ")" * 8000, "maxResults": 1},
+        (
+            500,
+            {
+                "message": "Handler dispatch failed: java.lang.StackOverflowError",
+                "status-code": 500,
+                "stack-trace": "",
+            },
+        ),
+    ),
     ("post", 3, {}, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None),
     ("post", 3, {}, {"jql": 'summary ~ "order by" order by key', "maxResults": 1}, None),
     ("get", 3, {"jql": "project is not EMPTY order by key", "maxResults": 1}, None, None),
@@ -6741,10 +6878,11 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
     if refused is None:
         assert r.status_code == 200, r.text
     else:
+        status, answer = refused if isinstance(refused, tuple) else (400, refused)
         assert (r.status_code, r.headers["content-type"], r.json()) == (
-            400,
+            status,
             "application/json;charset=UTF-8",
-            refused,
+            answer,
         ), r.text
 
 

@@ -6114,11 +6114,60 @@ def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org,
         rid = r.headers["x-github-request-id"]
         assert shape.fullmatch(rid), rid
         assert before <= int(rid.rsplit(":", 1)[1], 16) <= after, rid
+        # one `Date`, the id's second or later, as on real (``backlot.main._Dated``)
+        (date,) = r.headers.get_list("date")
+        assert int(rid.rsplit(":", 1)[1], 16) <= _date_second(date) <= after, (rid, date)
     # seeded from the request: the same request gets the same first four fields
     first = c.get(repo, headers=gh_admin_h).headers["x-github-request-id"]
     again = c.get(repo, headers=gh_admin_h).headers["x-github-request-id"]
     assert first.rsplit(":", 1)[0] == again.rsplit(":", 1)[0]
     assert c.get("/health").headers.get("x-github-request-id") is None
+    assert len(c.get("/health").headers.get_list("date")) == 1
+    # Starlette's 500 for an exception no handler takes carries one `Date` too. No `with`: a second
+    # lifespan on the app would overwrite the state gh_client started.
+    from tests._helpers import TestClient
+
+    def crash(*_):
+        raise RuntimeError
+
+    monkeypatch.setattr(gh, "request_id", crash)
+    crashed = TestClient(c.app, raise_server_exceptions=False).get(repo, headers=gh_admin_h)
+    assert (crashed.status_code, len(crashed.headers.get_list("date"))) == (500, 1)
+
+
+def _date_second(date: str) -> int:
+    from email.utils import parsedate_to_datetime
+
+    return int(parsedate_to_datetime(date).timestamp())
+
+
+def test_github_answers_over_uvicorn_carry_one_date_no_earlier_than_their_request_id(live_server):
+    """The `/slack` and `/health` answers carry one `Date` as well."""
+    import httpx
+
+    base_url, settings = live_server
+    h = {"Authorization": f"Bearer {settings.admin_token}"}
+    rows = [
+        ("/github/rate_limit", h),
+        ("/github/nonexistent-route-zz", h),
+        ("/github/user/repos", {}),
+        ("/slack/api/api.test", {}),
+        ("/health", {}),
+    ]
+    got = {}
+    with httpx.Client(base_url=base_url, timeout=10) as client:
+        time.sleep(1 - time.time() % 1 + 0.02)  # just after a second starts
+        for path, headers in rows:
+            r = client.get(path, headers=headers)
+            dates = r.headers.get_list("date")
+            rid = r.headers.get("x-github-request-id")
+            behind = (
+                rid is not None
+                and len(dates) == 1
+                and (_date_second(dates[0]) < int(rid.rsplit(":", 1)[1], 16))
+            )
+            got[path] = (len(dates), behind)
+    assert got == {path: (1, False) for path, _ in rows}
 
 
 # --- a pull is a pull, not an issue with extra keys -------------

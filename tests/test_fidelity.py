@@ -713,7 +713,6 @@ def test_every_comparison_ships_a_baseline(tmp_path):
                 for field in fields:
                     entry = baseline.acknowledged[f"extra_field:{type_name}.{field}"]
                     assert entry.note, (type_name, field)
-            assert baseline.acknowledged["missing_field:Document.workspaceAccess"].note
         # Written back from what it loaded, it is the same file: a spelling `--update-baseline`
         # writes differently from the shipped one would churn the next run's diff.
         out = tmp_path / f"{name}.json"

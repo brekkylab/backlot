@@ -1818,6 +1818,7 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         ("type=page and id in recentlyViewedContent(5)", set()),
         (three + " and id in recentlyViewedContent(5)", set()),
         ("id in ({Guide}, recentlyViewedContent(5))", {"Guide"}),
+        ("id in ({Guide}, recentlyViewedContent(5, 6))", {"Guide"}),
         (three + " and not lastmodified > 2999-01-01", {"Guide", "Child", "Grand"}),
         ('id={Guide} or id={Child} and created >= now("-4w")', {"Guide"}),
         (three + ' and (created >= now("-4w") or id={Guide})', {"Guide"}),
@@ -1849,6 +1850,11 @@ def test_confluence_cql_search_filtered_by_each_structured_clause(tmp_path):
         (three + ' and created > startOfWeek("-7w")', set()),
         (three + ' and created > endOfMonth("-1M")', set()),
         (three + ' and created > endOfMonth("-120M")', {"Guide", "Child", "Grand"}),
+        (three + " and created > endOfDay()", set()),
+        (three + " and created < endOfDay()", {"Guide", "Child", "Grand"}),
+        (three + " and created < endOfWeek()", {"Guide", "Child", "Grand"}),
+        (three + " and created < endOfYear()", {"Guide", "Child", "Grand"}),
+        (three + ' and created > endOfDay("-10y")', {"Guide", "Child", "Grand"}),
         # `title` under `=` and `in (...)`: the whole title, case aside
         (three + ' and title = "Guide"', {"Guide"}),
         (three + ' and title != "Guide"', {"Child", "Grand"}),
@@ -12015,6 +12021,32 @@ _CQL_PARSE_ROWS = [
             ("space.key in (x, currentUser())", "space.key in ( 'x' , currentUser() )"),
             ("id in recentlyViewedContent(5)", "id in recentlyViewedContent ( 5 )"),
             ("id in recentlyViewedContent(50)", "id in recentlyViewedContent ( 50 )"),
+            ("id in recentlyViewedContent(5, 6)", "id in recentlyViewedContent ( 5 , 6 )"),
+            ("id in recentlyViewedContent(5,6)", "id in recentlyViewedContent ( 5 , 6 )"),
+            (
+                'id in recentlyViewedContent("5", 6)',
+                'id in recentlyViewedContent ( "5" , 6 )',
+            ),
+            (
+                "id not in recentlyViewedContent(5, 6)",
+                "id not in recentlyViewedContent ( 5 , 6 )",
+            ),
+            (
+                "id in recentlyViewedContent(5, 6) and type = page",
+                "id in recentlyViewedContent ( 5 , 6 ) and type = page",
+            ),
+            # `type in (recentlyViewedContent(5))` answers 200 with no results on this
+            # server: the call stands for the ids it gives, and it gives none here — what
+            # real answers when it gives no id is open.
+            (
+                "type in (recentlyViewedContent(5))",
+                "type in ( recentlyViewedContent ( 5 ) )",
+            ),
+            ("created > endOfDay()", "created > endOfDay ( )"),
+            ("created < endOfWeek()", "created < endOfWeek ( )"),
+            ("created < endOfYear()", "created < endOfYear ( )"),
+            ('created < endOfDay("-1d")', 'created < endOfDay ( "-1d" )'),
+            ("type = page order by title", "type = page order by title"),
             (
                 "id in (1, recentlyViewedContent(5))",
                 "id in ( 1 , recentlyViewedContent ( 5 ) )",
@@ -12098,6 +12130,10 @@ _CQL_PARSE_ROWS = [
             ("label in (a b)", _CQL_NOT_PARSED),
             ("type=page order by", _CQL_NOT_PARSED),
             ("type=page order by created b", _CQL_NOT_PARSED),
+            ("type = page order by bogus", _CQL_NOT_PARSED),
+            ("label = select order by bogus", _CQL_NOT_PARSED),
+            ("bogus = x order by bogus", _CQL_NOT_PARSED),
+            ("type = recentlyViewedContent(5) order by bogus", _CQL_NOT_PARSED),
             ("type=page b and type=page", _CQL_NOT_PARSED),
             ("type=page and label = 5b16", "Unrecognised clause at : b16"),
             ("type=page and title = 5b16", "Unrecognised clause at : b16"),
@@ -12239,6 +12275,18 @@ _CQL_PARSE_ROWS = [
             ("(type = page type", "Missing closing parenthesis near field (()"),
             ("(type = page b", "Missing closing parenthesis near field (()"),
             ("(type = page) and (type = page", "Missing closing parenthesis near field (()"),
+            ("type = page and (", "Missing closing parenthesis near field (()"),
+            ("type = page or (", "Missing closing parenthesis near field (()"),
+            ("bogus = x and (", "No field exists with the name: 'bogus'"),
+            ("label = select and (", _cql_reserved("select")),
+            (
+                "type = recentlyViewedContent(5) and (",
+                _CQL_NO_SINGLE_VALUE,
+            ),
+            (
+                "type = recentlyViewedContent(5) or (",
+                _CQL_NO_SINGLE_VALUE,
+            ),
             (
                 "((type = page) and type = page) and (type = page",
                 "Missing closing parenthesis near field (()",
@@ -12285,6 +12333,8 @@ _CQL_PARSE_ROWS = [
             ('created > now("x")', "Invalid relative date : x"),
             ('label = now("x")', "Invalid relative date : x"),
             ('created > startOfDay("x")', "Invalid relative date : x"),
+            ('created > endOfDay("x")', "Invalid relative date : x"),
+            ('type = endOfDay("x")', "Invalid relative date : x"),
             ('created > now("a\'b")', "Invalid relative date : a'b"),
             ('space.key = now("a\'b")', "Invalid relative date : a'b"),
             ('created > now("1")', "Invalid relative date : 1"),
@@ -12293,11 +12343,12 @@ _CQL_PARSE_ROWS = [
             ('label = now("1")', "Invalid relative date : 1"),
             ('created > now("-1d", "x")', _CQL_NOT_PARSED),
             ("id in recentlyViewedContent()", _CQL_NOT_PARSED),
-            ("id in recentlyViewedContent(5, 6)", _CQL_NOT_PARSED),
             ('label = currentUser("x")', _CQL_NOT_PARSED),
             ('id in recentlyViewedContent("x")', _CQL_NOT_PARSED),
             ("id in recentlyViewedContent(x)", "Invalid size limit : x"),
             ("id in recentlyViewedContent(1.5)", "Invalid size limit : 1.5"),
+            ("id in recentlyViewedContent(5, x)", "Invalid offset : x"),
+            ("id in recentlyViewedContent(5, 6, 7)", _CQL_NOT_PARSED),
             ("id in recentlyViewedContent(-1)", _CQL_NOT_PARSED),
             ("id in recentlyViewedContent(-1.5)", _CQL_NOT_PARSED),
             ("id in recentlyViewedContent(a.b)", "Invalid size limit : a.b"),
@@ -15115,7 +15166,8 @@ def test_confluence_cql_value_refusals_name_a_function_at_a_moment():
     (:func:`backlot.routers.atlassian._cql_named_value`) for a caller and a moment. Called
     directly: the route names the moment it answers at. A date function is named in the site's
     time zone, Asia/Seoul on the site measured, and `endOfMonth()` is the next month's first
-    minute, as :func:`backlot.routers.atlassian._cql_named_value` records."""
+    minute, as are `endOfDay()`, `endOfWeek()` and `endOfYear()` the next day's, the next Monday's
+    and the next year's, as :func:`backlot.routers.atlassian._cql_named_value` records."""
     from backlot.routers.atlassian import _cql_cannot_run, _cql_tokens
 
     account = "5b0123456789abcdef012345"
@@ -15124,6 +15176,10 @@ def test_confluence_cql_value_refusals_name_a_function_at_a_moment():
         ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-24 01:15")),
         ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-25 00:00")),
         ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-12-01 00:00")),
+        ("type = endOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-26 00:00")),
+        ("type = endOfWeek()", _CQL_PREFIX + _cql_unsupported_type("2026-11-30 00:00")),
+        ("type = endOfYear()", _CQL_PREFIX + _cql_unsupported_type("2027-01-01 00:00")),
+        ('type = endOfDay("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-25 00:00")),
         ("filesize = currentUser()", _CQL_PREFIX + _CQL_FILESIZE + account),
         ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 01:15"),
         ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-25 00:00"),

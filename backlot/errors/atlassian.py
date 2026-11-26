@@ -593,6 +593,14 @@ def cql_invalid_size_limit(value: str) -> AtlassianError:
     return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
 
 
+def cql_invalid_offset(value: str) -> AtlassianError:
+    """The CQL search's refusal of a `recentlyViewedContent` offset real cannot read as an offset,
+    the offset as sent: `id in recentlyViewedContent(5, x)` answered `Invalid offset : x`
+    (Confluence Cloud, 2026-11-25 and 2026-11-26). Where it falls among the search's other
+    refusals is ``routers.atlassian._cql_cannot_run``'s."""
+    return _service_refusal(400, "api.BadRequestException", f"Invalid offset : {value}")
+
+
 def cql_function_returns_no_single_value(name: str) -> AtlassianError:
     """The CQL search's refusal of a function that returns more than one value where a single
     value goes, worded as real answered `type = recentlyViewedContent(5)` (Confluence Cloud,

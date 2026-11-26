@@ -4438,10 +4438,11 @@ _CQL_VALUES = frozenset(("WORD", "QUOTED", "NUMBER", "DATE"))
 
 # The CQL query functions real runs, and how many arguments each takes, measured on Confluence
 # Cloud on 2026-10-31: `currentUser`, `currentContent`, `currentSpace`, `now`, `startOfDay`,
-# `startOfWeek`, `startOfMonth`, `startOfYear`, `endOfMonth` and `recentlyViewedContent` are
-# known, and any other name is refused with `Unable to find query function`. No other name was
-# sent, so no other is known here. A date function takes an optional relative date, and
-# `recentlyViewedContent` takes exactly one count.
+# `startOfWeek`, `startOfMonth`, `startOfYear`, `endOfDay`, `endOfWeek`, `endOfMonth`,
+# `endOfYear` and `recentlyViewedContent` are known, and any other name is refused with
+# `Unable to find query function`. No other name was sent, so no other is known here. A date
+# function takes an optional relative date, and `recentlyViewedContent` takes a count and an
+# optional offset.
 _CQL_FUNCTIONS = {
     "currentUser": (0, 0),
     "currentContent": (0, 0),
@@ -4451,11 +4452,24 @@ _CQL_FUNCTIONS = {
     "startOfWeek": (0, 1),
     "startOfMonth": (0, 1),
     "startOfYear": (0, 1),
+    "endOfDay": (0, 1),
+    "endOfWeek": (0, 1),
     "endOfMonth": (0, 1),
-    "recentlyViewedContent": (1, 1),
+    "endOfYear": (0, 1),
+    "recentlyViewedContent": (1, 2),
 }
 _CQL_DATE_FUNCTIONS = frozenset(
-    ("now", "startOfDay", "startOfWeek", "startOfMonth", "startOfYear", "endOfMonth")
+    (
+        "now",
+        "startOfDay",
+        "startOfWeek",
+        "startOfMonth",
+        "startOfYear",
+        "endOfDay",
+        "endOfWeek",
+        "endOfMonth",
+        "endOfYear",
+    )
 )
 # A relative date as a date function reads it: a sign, a number, and a unit. `now("-1d")` and
 # `now("-4w")` were measured, and `now("x")` and `now("a'b")` (Confluence Cloud, 2026-10-31) and
@@ -4720,11 +4734,12 @@ def _cql_function_arity(name: str, args: list[tuple[str, str]]) -> bool:
     integer, and for a date function an unquoted number. A `recentlyViewedContent` count that is a
     word takes any argument count: real answered `recentlyViewedContent(x, 6)` as it answered
     `recentlyViewedContent(x)`, the invalid size limit of :func:`_cql_function_cannot_run`, where
-    `recentlyViewedContent(5, 6)` was ``cql_not_parsed`` (Confluence Cloud, 2026-10-31 and
-    2026-11-07). A negative number among a call's arguments is :func:`_cql_grammar_refusal`'s, and a
-    reserved word for the count :func:`_cql_refusal`'s. Real answered `startOfMonth(-1)` with
-    ``cql_not_parsed`` where it read `startOfMonth("-1")` as a relative date (Confluence Cloud,
-    2026-10-31)."""
+    the 2026-10-31 and 2026-11-07 measurement that `recentlyViewedContent(5, 6)` was
+    ``cql_not_parsed`` does not record the query around the call, and on 2026-11-25 and
+    2026-11-26 `id in recentlyViewedContent(5, 6)` ran. A negative number among a call's
+    arguments is :func:`_cql_grammar_refusal`'s, and a reserved word for the count
+    :func:`_cql_refusal`'s. Real answered `startOfMonth(-1)` with ``cql_not_parsed`` where it read
+    `startOfMonth("-1")` as a relative date (Confluence Cloud, 2026-10-31)."""
     if name == "recentlyViewedContent" and args and args[0][0] == "WORD":
         return False
     low, high = _CQL_FUNCTIONS[name]
@@ -4746,8 +4761,10 @@ def _cql_function_cannot_run(name: str, args: list[tuple[str, str]]):
     cannot read as a relative date, and `recentlyViewedContent` with a word or a decimal for its
     count, which real cannot read as a size limit: `id in recentlyViewedContent(x)` answered
     `Invalid size limit : x`, and `1.5`, `a.b` and `x, 6` for the `x` the same naming `1.5`, `a.b`
-    and `x` (Confluence Cloud, 2026-11-05 and 2026-11-07); a reserved word for the count is
-    :func:`_cql_refusal`'s, read before this. `currentContent()` runs on this route, and
+    and `x` (Confluence Cloud, 2026-11-05 and 2026-11-07); and `recentlyViewedContent` with a
+    second argument real cannot read as an offset: `id in recentlyViewedContent(5, x)` answered
+    `Invalid offset : x` (Confluence Cloud, 2026-11-25 and 2026-11-26). A reserved word for the
+    count is :func:`_cql_refusal`'s, read before this. `currentContent()` runs on this route, and
     `currentUser()`, `now()` and `recentlyViewedContent()` run with what the route has."""
     if name == "currentSpace":
         return errors_atlassian.cql_function_needs_context(name, "space")
@@ -4760,6 +4777,16 @@ def _cql_function_cannot_run(name: str, args: list[tuple[str, str]]):
         kind, text = args[0]
         if kind == "WORD" or kind == "NUMBER" and "." in text:
             return errors_atlassian.cql_invalid_size_limit(text)
+        if len(args) == 2:
+            kind, text = args[1]
+            value = _cql_unquote(kind, text) if kind == "QUOTED" else text
+            if not (
+                kind == "NUMBER"
+                and "." not in text
+                or kind == "QUOTED"
+                and re.fullmatch(r"[+-]?[0-9]+", value)
+            ):
+                return errors_atlassian.cql_invalid_offset(value)
     return None
 
 
@@ -4858,7 +4885,7 @@ def _cql_written_back(tokens: list[tuple[str, str]], space_key) -> str:
 def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
     """The 400 real answers a CQL the grammar cannot read with, or None for one it can, before
     :func:`_cql_refusal` reads the faults it walks from the left: a function call with the wrong
-    arguments, a second argument or an empty `recentlyViewedContent()` (a `recentlyViewedContent`
+    arguments, a third argument or an empty `recentlyViewedContent()` (a `recentlyViewedContent`
     straight after an operator is :func:`_cql_refusal`'s), a negative number among a call's
     arguments, a function other than `recentlyViewedContent` in place of an `in` list, and a `(`
     never closed with a `)` anywhere after it, a list's or a call's `)` included; a `(` never closed
@@ -4866,7 +4893,10 @@ def _cql_grammar_refusal(tokens: list[tuple[str, str]]):
     Confluence Cloud on 2026-10-31: a second argument or an empty `recentlyViewedContent()` was
     answered `Could not parse cql : ` beside any other wrong in the CQL, even a missing value or an
     unknown field earlier in it, and `(label = foo()`, `(space = currentSpace()` and
-    `(created > now("x")` the same, where `(type=page` is the missing parenthesis refusal. On
+    `(created > now("x")` the same, where `(type=page` is the missing parenthesis refusal — but
+    that second-argument measurement does not record the query around the call, and on 2026-11-25
+    and 2026-11-26 `id in recentlyViewedContent(5, 6)` ran, so a second argument is read where
+    the call stands after `in` or `not in`. On
     2026-11-04 `id in now("-1d")`, `label in currentUser()`, `id in currentContent()`,
     `id in currentSpace()`, `id in foo()`, `id in recentlyviewedcontent(5)` and
     `space.key in now("-1d")` were answered `Could not parse cql : ` as well, and `id in now("-1d")`
@@ -4915,8 +4945,8 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
     takes, a `not` anywhere but straight after `and`, `order by` with no clause before it, a list
     that is empty or ends in a comma, and anything left after `order by`; ``cql_expecting_value`` at
     an operator followed by nothing or by a token that is no value, and at an `in` list never
-    closed; ``cql_missing_closing_parenthesis`` at a `(` never closed, a value or an `in` list
-    missing inside it included (a `(` never closed with a `)` after it is
+    closed; ``cql_missing_closing_parenthesis`` at a `(` never closed, a value, an `in` list or a
+    clause missing inside it included (a `(` never closed with a `)` after it is
     :func:`_cql_grammar_refusal`'s); a `)` where a value goes is ``cql_expecting_value`` without
     ` but got ')'` where it closes a group, and with it where it closes none; and
     ``cql_unrecognised_clause`` at words or quoted values left after a whole query. A function call
@@ -5103,6 +5133,13 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
         nonlocal at
         kind, field = peek()
         if kind != "WORD" or field.lower() in _CQL_KEYWORDS:
+            # A clause missing inside a group never closed is the missing parenthesis, not the
+            # missing clause: `type = page and (` answered `Missing closing parenthesis near
+            # field (()`, and a fault recorded ahead of it — an unknown field, a reserved word,
+            # a function that returns no single value — answers instead (Confluence Cloud,
+            # 2026-11-25 and 2026-11-26).
+            if kind is None and groups:
+                raise missing_parenthesis()
             raise not_parsed()
         info = _CQL_FIELD_INFO.get(field.lower())
         if info is None:
@@ -5207,6 +5244,11 @@ def _cql_refusal(tokens: list[tuple[str, str]]):
                 kind, text = peek()
                 if kind != "WORD" or text.lower() in _CQL_KEYWORDS:
                     raise not_parsed()
+                # `order by` takes a field: `type = page order by bogus` answered
+                # `Could not parse cql : `, where `type = page order by title` ran
+                # (Confluence Cloud, 2026-11-25 and 2026-11-26).
+                if text.lower() not in _CQL_FIELD_INFO:
+                    raise not_parsed()
                 at += 1
                 if keyword("asc") or keyword("desc"):
                     at += 1
@@ -5298,7 +5340,11 @@ def _cql_named_value(kind: str, text: str, call, current_user: str | None, now: 
     `currentUser()` the caller's account id and a date function as `yyyy-MM-dd HH:mm` (Confluence
     Cloud, 2026-11-24). `recentlyViewedContent` gives None: real refused
     `type = recentlyViewedContent(5)` as no function that returns a single value, which
-    :func:`_cql_refusal` answers before a value is named."""
+    :func:`_cql_refusal` answers before a value is named. In an `in` list that refusal does not
+    apply, and the call stands for the ids it gives: this server keeps no recently viewed content,
+    so it gives none here and no value is named for the field to refuse — `type in
+    (recentlyViewedContent(5))` answers 200 with no results. What real answers when the function
+    gives no id was not measured, so that standing answer is open."""
     if call is None:
         return _cql_unquote(kind, text)
     name, args = call
@@ -5503,11 +5549,13 @@ def _cql_date_function_moment(
     name: str, args: list[tuple[str, str]], now: datetime, tz: timezone = timezone.utc
 ) -> datetime:
     """The moment a call of the date function ``name`` with ``args`` reads at ``now``, in ``tz``:
-    `now` itself, the start of its day, week, month or year, or the start of the next month, moved
-    by the relative date in its one quoted argument, if any. :func:`_cql_cannot_run` refuses an
-    argument that is no relative date before this reads it. `endOfMonth()` is the start of the next
-    month, not its last minute: real named it `2026-12-01 00:00` for November (Confluence Cloud,
-    2026-11-24)."""
+    `now` itself, the start of its day, week, month or year, or the start of the next day, week,
+    month or year, moved by the relative date in its one quoted argument, if any.
+    :func:`_cql_cannot_run` refuses an argument that is no relative date before this reads it.
+    `endOfMonth()` is the start of the next month, not its last minute: real named it
+    `2026-12-01 00:00` for November (Confluence Cloud, 2026-11-24), and on 2026-11-25 and
+    2026-11-26 `endOfDay()` `2026-11-27 00:00`, `endOfWeek()` `2026-11-30 00:00`, a Monday, and
+    `endOfYear()` `2027-01-01 00:00`."""
     base = now
     if name == "startOfYear":
         base = datetime(now.year, 1, 1, tzinfo=tz)
@@ -5517,8 +5565,14 @@ def _cql_date_function_moment(
         base = datetime(now.year, now.month, now.day, tzinfo=tz)
     elif name == "startOfWeek":
         base = datetime(now.year, now.month, now.day, tzinfo=tz) - timedelta(days=now.weekday())
+    elif name == "endOfDay":
+        base = datetime(now.year, now.month, now.day, tzinfo=tz) + timedelta(days=1)
+    elif name == "endOfWeek":
+        base = datetime(now.year, now.month, now.day, tzinfo=tz) + timedelta(days=7 - now.weekday())
     elif name == "endOfMonth":
         base = _cql_add_months(datetime(now.year, now.month, 1, tzinfo=tz), 1)
+    elif name == "endOfYear":
+        base = datetime(now.year + 1, 1, 1, tzinfo=tz)
     if args:
         match = _CQL_RELATIVE_DATE.fullmatch(_cql_unquote(*args[0]))
         base = _cql_apply_offset(base, int(match.group(1)), match.group(2))

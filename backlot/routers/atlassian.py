@@ -6437,6 +6437,21 @@ _CONFLUENCE_ATTACHMENT_WRITES = _operations(
     ]
 )
 
+#: The Confluence writes outside the attachment writes whose `Content-Type` of
+#: `multipart/form-data` with no `boundary` real fails with a 500 ahead of the operation
+#: (``errors.atlassian.refuse_a_multipart_write_with_no_boundary``), measured 2026-11-26 on
+#: `POST space/{key}/permission`, `POST content/{id}/version` and `POST content`: the attachment
+#: writes are the sibling case, scoped to the operations whose consumes row names
+#: `multipart/form-data`, and the reads and the `DELETE` under the same header answer no 500, so
+#: they stay out of this list.
+_MULTIPART_NO_BOUNDARY_WRITES = _operations(
+    (
+        "POST /wiki/rest/api/content",
+        "POST /wiki/rest/api/content/{}/version",
+        "POST /wiki/rest/api/space/{}/permission",
+    )
+)
+
 
 #: The Confluence operation that answers an `Accept` admitting no JSON with its anonymous 403, in
 #: the shape that `Accept` asks for (``errors.atlassian.confluence_refusal``), rather than the 406,
@@ -6735,6 +6750,15 @@ async def _published_answer(request: Request, vendor_path: str) -> Response | No
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
     # refusals below carry no path, and `_echoed_path` reads the raw spelling where one does)
     if errors_atlassian.is_confluence(request.url.path):
+        # `POST /wiki/api/v2/pages` is published by the v2 API, outside the v1 baseline's list,
+        # so the gate below would skip it: the multipart failure is answered before it, with the
+        # v2 API's member (``errors.atlassian.refuse_a_multipart_write_with_no_boundary``)
+        if method == "POST" and vendor_path == "/wiki/api/v2/pages":
+            refused = errors_atlassian.refuse_a_multipart_write_with_no_boundary(
+                request.headers, request.headers.get("accept"), v2=True
+            )
+            if refused is not None:
+                raise refused
         if method == "OPTIONS" or not (
             _is(_CONFLUENCE_PUBLISHED, method, vendor_path)
             or _is(_CONFLUENCE_OUTSIDE_THE_DOCUMENT, method, vendor_path)
@@ -6742,6 +6766,14 @@ async def _published_answer(request: Request, vendor_path: str) -> Response | No
             return None
         if auth.basic_credential_kind(request) == auth.BASIC_UNPARSEABLE:
             _confluence_caller(request)  # Tomcat's 401, ahead of the media-type check too
+        # the multipart parser's failure, ahead of the caller's refusal and of Spring's 415:
+        # measured in ``errors.atlassian.refuse_a_multipart_write_with_no_boundary``
+        if _is(_MULTIPART_NO_BOUNDARY_WRITES, method, vendor_path):
+            refused = errors_atlassian.refuse_a_multipart_write_with_no_boundary(
+                request.headers, request.headers.get("accept")
+            )
+            if refused is not None:
+                raise refused
         for verb, pattern, consumes in _CONFLUENCE_CONSUMES:
             if verb == method and pattern.fullmatch(vendor_path):
                 if "multipart/form-data" in consumes:

@@ -2277,6 +2277,12 @@ _ISSUE_SEARCH_Q_ANSWERS = {
     "?q=%1E": (200, 0),
     "?q=%1F": (200, 0),
     "?q=%E2%80%8B": (200, 0),
+    "?q=%1C+is:issue": (200, 0),
+    "?q=%1D+is:issue": (200, 0),
+    "?q=%1E+is:issue": (200, 0),
+    "?q=%1F+is:issue": (200, 0),
+    "?q=is:issue+%1C": (200, 0),
+    "?q=is:issue%1C": (200, 0),
 }
 
 
@@ -2300,9 +2306,43 @@ def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h, m
     assert answered == _CODE_SEARCH_Q_ANSWERS
 
 
+def test_github_code_search_finds_a_separator_as_text(tmp_path):
+    """Stated in a corpus of its own, since the bundled ones hold no file with a separator
+    U+001C-U+001F in it. :func:`backlot.routers.github.search_code` records the measurement."""
+    sep = chr(0x1D)
+    files = {"notes.md": f"before{sep}after\n", "main.py": f"A = '{sep}'\n", "plain.md": "plain\n"}
+    records = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-sep-{i}",
+            "repo": "seps",
+            "subtype": "file",
+            "path": path,
+            "content": content,
+            "author_email": "owner@x.com",
+            "visibility": "public",
+        }
+        for i, (path, content) in enumerate(files.items())
+    ]
+    answers = {
+        "%1D": ["main.py", "notes.md"],
+        "%1D+extension:md": ["notes.md"],
+        "%1D+extension:py": ["main.py"],
+        "%1C+extension:md": [],
+    }
+    with corpus_client(tmp_path, records) as (c, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        answered = {}
+        for qs in answers:
+            body = c.get(f"/github/search/code?q={qs}", headers=h).json()
+            answered[qs] = sorted(i["path"] for i in body["items"])
+    assert answered == answers
+
+
 def test_github_issue_search_refuses_a_query_less_search(gh_client, gh_admin_h):
-    """A missing or empty `q` and the `q`s of whitespace or U+200B, each answered as
-    :func:`backlot.routers.github.search_issues` records real answering it."""
+    """A missing or empty `q`, the `q`s of whitespace or U+200B, and a separator U+001C-U+001F
+    beside a qualifier, each answered as :func:`backlot.routers.github.search_issues` records
+    real answering it."""
     c, _ = gh_client
     answered = {}
     for qs in _ISSUE_SEARCH_Q_ANSWERS:

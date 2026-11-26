@@ -982,6 +982,17 @@ def test_github_search_q_parse():
     # `state:` says nothing about a file, so code search leaves it as text rather than swallowing it
     assert _parse_q("state:closed thing", _GH_CODE_QUALS) == ("state:closed thing", {})
 
+    # A separator U+001C-U+001F stays free text on either side of a qualifier. Written as escapes,
+    # never as literal control characters in the source.
+    for sep in ("\u001c", "\u001d", "\u001e", "\u001f"):
+        assert _parse_q(f"{sep} is:issue", _GH_ISSUE_QUALS) == (sep, {"is": ["issue"]})
+        assert _parse_q(f"is:issue{sep}", _GH_ISSUE_QUALS) == (sep, {"is": ["issue"]})
+    # Other whitespace collapses to one space and is stripped from the ends.
+    assert _parse_q("  repo:acme/gateway\tis:pr   refill\t bug  ", _GH_ISSUE_QUALS) == (
+        "refill bug",
+        {"repo": ["acme/gateway"], "is": ["pr"]},
+    )
+
 
 def test_fts_notion_search(db):
     # the SAMPLE 'Notion On-call Runbook' body mentions dashboards

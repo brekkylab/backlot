@@ -15700,6 +15700,65 @@ def test_gmail_brace_groups_and_quoted_punctuation_values(tmp_path):
     assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
 
 
+_GMAIL_WORDLESS_VALUE_ROWS = [
+    ("the", ["phrase", "plain"]),
+    ('"has the"', ["phrase"]),
+    ('label:"" .', ["phrase", "plain", "other"]),
+    ('label:"()" . the', []),
+    ('label:"()" the', []),
+    ('label:"()" inbox', ["phrase", "other"]),
+    ('label:"" inbox', ["phrase", "other"]),
+    ('subject:"()" the', ["plain"]),
+    ('has:"the', ["phrase"]),
+    ('-has:"the', ["plain", "other"]),
+    ('NOT has:"the', ["plain", "other"]),
+]
+
+
+def test_gmail_a_wordless_quoted_value_reads_the_next_word(tmp_path):
+    """Each row is how the comments in `_parse_gmail_q`, at the normalization of a wordless
+    quoted `in:`, `label:` or `subject:` value and at `_GMAIL_HAS_UNCLOSED_QUOTE`, read its
+    query, over both listings. `phrase` holds `has the` in its body, `plain` holds `the` in
+    its title and body but never after `has`, and `other` holds neither."""
+    records = [
+        {
+            "source_type": "gmail",
+            "doc_id": doc_id,
+            "mailbox": "ava",
+            "title": title,
+            "content": content,
+            "author_email": author,
+            "to": to,
+            "label_ids": [label],
+            "readers": ["ava@acme.com"],
+            "created": "2026-03-01T09:00:00Z",
+        }
+        for doc_id, title, content, author, to, label in [
+            (
+                "phrase",
+                "Rollout notes",
+                "the rollout has the final numbers",
+                "bob@acme.com",
+                "ava@acme.com",
+                "INBOX",
+            ),
+            (
+                "plain",
+                "The cafe",
+                "the cafe moved to Friday",
+                "ava@acme.com",
+                "bob@acme.com",
+                "SENT",
+            ),
+            ("other", "Q4 deck", "slides and charts", "bob@acme.com", "ava@acme.com", "INBOX"),
+        ]
+    ]
+    settings = tiny_corpus(tmp_path, records)
+    token = tok(yaml.safe_load(settings.tokens_path.read_text(encoding="utf-8")), "ava@acme.com")
+    rows = _GMAIL_WORDLESS_VALUE_ROWS
+    assert _gmail_searched(settings, token, records, rows) == _gmail_listed(rows)
+
+
 _GMAIL_SUBJECT_BRACE_ROWS = [
     ("Rollout", ["plan", "decoy"]),
     ("subject:Rollout", ["plan"]),

@@ -7010,10 +7010,16 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     A path with no route is Jira's RFC 7807 `No endpoint <METHOD> <path>.` (see
     `errors.atlassian.no_endpoint`) or Confluence's own pair of shapes (see
     :func:`_confluence_not_found`), and an `OPTIONS` on such a path is that same answer — measured
-    on both products 2026-09-22. A method a route does not declare is the 405 each product answers
-    (`errors.atlassian.method_not_allowed`, measured too), raised here because this route takes
-    every method on every path it owns and so receives that request; `OPTIONS` is the exception,
-    and :func:`_options_answer` is what real gives it.
+    on both products 2026-09-22. Where Jira's documents publish operations at a path no route
+    serves, a method other than `OPTIONS` that they do not publish there is the 405 instead, `Allow`
+    naming the ones they do (`errors.atlassian.jira_allow`): measured on Jira Cloud 2026-10-19 with
+    `DELETE`, `PUT` and `POST` on `myself`, `instance/license` and `invalid-jqls-access-log`, for a
+    caller with no credential, a failing pair and a credential alike, ahead of the anonymous 401 and
+    of `myself`'s `Accept` 406, and on 2026-11-24 with an unknown scheme, where a bearer real cannot
+    read is the Connect-token 403 first. A method a route does not declare is the 405 each product
+    answers (`errors.atlassian.method_not_allowed`, measured too), raised here because this route
+    takes every method on every path it owns and so receives that request; `OPTIONS` is the
+    exception, and :func:`_options_answer` is what real gives it.
 
     Those are the answers where the vendor publishes nothing for the method at the path. An
     operation it does publish is looked at first, at a served route's path as at any other, since
@@ -7056,6 +7062,18 @@ async def unmatched_path(request: Request, rest: str) -> Response:
             )
         return _confluence_not_found(request)
     if errors_atlassian.serves_the_jira_api(path):
+        # a method the documents do not publish at a path no route serves is the 405 naming the ones
+        # they do; real answers neither the published method nor an `OPTIONS` there with a 405, so
+        # both stay the URL's 404, the baseline's `missing` entry acknowledging the first
+        published_methods = [
+            verb for verb, pattern in _JIRA_PUBLISHED if pattern.fullmatch(vendor_path)
+        ]
+        if (
+            published_methods
+            and request.method != "OPTIONS"
+            and request.method not in published_methods
+        ):
+            raise errors_atlassian.method_not_allowed(_echoed_path(request), request.method)
         # on a path Jira publishes nothing at, the URL is what answers
         raise errors_atlassian.no_endpoint(_echoed_path(request), request.method)
     return _site_surface(request)

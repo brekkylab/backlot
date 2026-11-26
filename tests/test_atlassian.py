@@ -11724,6 +11724,10 @@ _CQL_NOT_PARSED = "Could not parse cql : "
 _CQL_CURRENT_SPACE = (
     "Unable to execute function 'currentSpace', the required contexts were not present : space"
 )
+_CQL_NO_SINGLE_VALUE = (
+    "Unable to execute function 'recentlyViewedContent', "
+    "expecting a function that returns a single value"
+)
 
 
 def _cql_reserved(word):
@@ -14680,6 +14684,68 @@ _CQL_PARSE_ROWS = [
             ('created > 20260910 and created > "２０２６-01-01"', _CQL_NOT_PARSED),
         ]
     ],
+    # A `recentlyViewedContent` straight after an operator, which `_cql_refusal` in
+    # `backlot.routers.atlassian` records as no single value before its arguments are read. The
+    # multi-clause rows pin the order it is answered in among the other faults.
+    *[
+        (cql, 400, message)
+        for cql, message in [
+            ("type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type != recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("title ~ recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("created > recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent()", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5, 6)", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(zz)", _CQL_NO_SINGLE_VALUE),
+            ('type = recentlyViewedContent("x")', _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(select)", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and bogus = x", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type = foo()", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type = order", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and (type = page", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type =", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type", _CQL_NO_SINGLE_VALUE),
+            ("type = recentlyViewedContent(5) and type = page page", _CQL_NO_SINGLE_VALUE),
+            ("type = bogus and type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type = currentSpace() and type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ("type = currentUser() and type = recentlyViewedContent(5)", _CQL_NO_SINGLE_VALUE),
+            ('created > now("x") and type = recentlyViewedContent(5)', _CQL_NO_SINGLE_VALUE),
+            ('title ~ "a\\\\" and type = recentlyViewedContent(5)', _CQL_NO_SINGLE_VALUE),
+            (
+                "id in recentlyViewedContent(zz) and type = recentlyViewedContent(5)",
+                _CQL_NO_SINGLE_VALUE,
+            ),
+            (
+                "bogus = x and type = recentlyViewedContent(5)",
+                "No field exists with the name: 'bogus'",
+            ),
+            (
+                "type = foo() and type = recentlyViewedContent(5)",
+                "Unable to find query function 'foo()'",
+            ),
+            ("type = select and type = recentlyViewedContent(5)", _cql_reserved("select")),
+            (
+                "space.key ~ x and type = recentlyViewedContent(5)",
+                "Operator '~' is not supported for field 'space.key'. Supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "type and type = recentlyViewedContent(5)",
+                "Expecting operator for field 'type', supported operators are : =, !=, IN, NOT IN",
+            ),
+            (
+                "title ~ 10 and type = recentlyViewedContent(5)",
+                "Expecting a value for operator '~' after field 'title' but got '10'",
+            ),
+            ("type = recentlyViewedContent(-1)", _CQL_NOT_PARSED),
+            ("type = recentlyViewedContent(5) and id in recentlyViewedContent()", _CQL_NOT_PARSED),
+            ("type = recentlyViewedContent(5) and created > 2026-02-30", _CQL_NOT_PARSED),
+            ("type = recentlyViewedContent(5) and type = page)", _CQL_NOT_PARSED),
+            (
+                "type = recentlyviewedcontent(5)",
+                "Unable to find query function 'recentlyviewedcontent(5)'",
+            ),
+        ]
+    ],
     # A reserved word where a value goes, as `cql_reserved_keyword` and `_cql_refusal` record
     # it: every one of the 43 as `label = <word>`, the word in the case it was sent, a reserved word
     # before each token that changes how `_cql_refusal` reads it, a reserved word as a field or left
@@ -14909,18 +14975,20 @@ def test_confluence_cql_search_reads_the_query_as_real_does(client, admin_h):
 def test_confluence_cql_value_refusals_name_a_function_at_a_moment():
     """The value a `type` or `filesize` refusal names for a function value
     (:func:`backlot.routers.atlassian._cql_named_value`) for a caller and a moment. Called
-    directly: the route names the moment it answers at."""
+    directly: the route names the moment it answers at. A date function is named in the site's
+    time zone, Asia/Seoul on the site measured, and `endOfMonth()` is the next month's first
+    minute, as :func:`backlot.routers.atlassian._cql_named_value` records."""
     from backlot.routers.atlassian import _cql_cannot_run, _cql_tokens
 
     account = "5b0123456789abcdef012345"
     rows = [
         ("type = currentUser()", _CQL_PREFIX + _cql_unsupported_type(account)),
-        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-23 16:15")),
-        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-24 00:00")),
-        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-11-30 23:59")),
+        ('type = now("-1d")', _CQL_PREFIX + _cql_unsupported_type("2026-11-24 01:15")),
+        ("type = startOfDay()", _CQL_PREFIX + _cql_unsupported_type("2026-11-25 00:00")),
+        ("type = endOfMonth()", _CQL_PREFIX + _cql_unsupported_type("2026-12-01 00:00")),
         ("filesize = currentUser()", _CQL_PREFIX + _CQL_FILESIZE + account),
-        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-23 16:15"),
-        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 00:00"),
+        ('filesize > now("-1d")', _CQL_PREFIX + _CQL_FILESIZE + "2026-11-24 01:15"),
+        ("filesize = startOfDay()", _CQL_PREFIX + _CQL_FILESIZE + "2026-11-25 00:00"),
         # a function that cannot run answers for itself, not for the value it would be
         ("type = currentSpace()", _CQL_PREFIX + _CQL_CURRENT_SPACE),
     ]

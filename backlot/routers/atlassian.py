@@ -1752,7 +1752,8 @@ class _JqlParser:
     def _or_and(self, tok: tuple[str, int, bool]) -> _JqlParseError:
         self._reserved_word(tok)
         return _JqlParseError(
-            f"{_JQL_PREFIX}Expecting either 'OR' or 'AND' but got '{tok[0]}'.{self._at(tok[1])}"
+            f"{_JQL_PREFIX}Expecting either 'OR' or 'AND' but got '{_jql_text(tok[0])}'."
+            f"{self._at(tok[1])}"
         )
 
     def parse(self) -> None:
@@ -2026,8 +2027,8 @@ class _JqlParser:
             elif tok[0] != ",":
                 self._reserved_word(tok)
                 raise _JqlParseError(
-                    f"{_JQL_PREFIX}Expecting either 'ASC' or 'DESC' but got '{tok[0]}'."
-                    f"{self._at(tok[1])}"
+                    f"{_JQL_PREFIX}Expecting either 'ASC' or 'DESC' but got"
+                    f" '{_jql_text(tok[0])}'.{self._at(tok[1])}"
                 )
             self._next()
             self._expect_field()

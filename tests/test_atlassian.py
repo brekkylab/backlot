@@ -6261,6 +6261,57 @@ _JQL_ROWS = [
             ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
         )
     ],
+    *[
+        row
+        for jql, refused in (
+            (
+                'labels = zzq "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq 'x'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x y"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq by zzq "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 21)"
+                ),
+            ),
+            (
+                'order by labels "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                "order by labels 'x'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
+        )
+    ],
     (
         "post",
         3,

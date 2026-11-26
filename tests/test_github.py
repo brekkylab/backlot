@@ -2250,9 +2250,6 @@ _CODE_SEARCH_Q_ANSWERS = {
     "?q=%1D": (200, 0),
     "?q=%1E": (200, 0),
     "?q=%1F": (200, 0),
-    # A separator beside a qualifier is searched as text, not dropped: with no term to
-    # match on a path, the code search answers nothing rather than every HEAD file.
-    "?q=%1C+extension:py": (200, 0),
     "?q=%C2%85": (200, 0),
     "?q=%C2%A0": (200, 0),
     "?q=%E2%80%83": (200, 0),
@@ -2280,13 +2277,12 @@ _ISSUE_SEARCH_Q_ANSWERS = {
     "?q=%1E": (200, 0),
     "?q=%1F": (200, 0),
     "?q=%E2%80%8B": (200, 0),
-    # A separator beside a qualifier is searched as text, not dropped: real answers
-    # `%1C+is:issue` with total_count 0, not the qualifier alone.
     "?q=%1C+is:issue": (200, 0),
     "?q=%1D+is:issue": (200, 0),
     "?q=%1E+is:issue": (200, 0),
     "?q=%1F+is:issue": (200, 0),
     "?q=is:issue+%1C": (200, 0),
+    "?q=is:issue%1C": (200, 0),
 }
 
 
@@ -2308,6 +2304,39 @@ def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h, m
         else:
             answered[qs] = (r.status_code, r.json()["total_count"])
     assert answered == _CODE_SEARCH_Q_ANSWERS
+
+
+def test_github_code_search_finds_a_separator_as_text(tmp_path):
+    """Stated in a corpus of its own, since the bundled ones hold no file with a separator
+    U+001C-U+001F in it. :func:`backlot.routers.github.search_code` records the measurement."""
+    sep = chr(0x1D)
+    files = {"notes.md": f"before{sep}after\n", "main.py": f"A = '{sep}'\n", "plain.md": "plain\n"}
+    records = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-sep-{i}",
+            "repo": "seps",
+            "subtype": "file",
+            "path": path,
+            "content": content,
+            "author_email": "owner@x.com",
+            "visibility": "public",
+        }
+        for i, (path, content) in enumerate(files.items())
+    ]
+    answers = {
+        "%1D": ["main.py", "notes.md"],
+        "%1D+extension:md": ["notes.md"],
+        "%1D+extension:py": ["main.py"],
+        "%1C+extension:md": [],
+    }
+    with corpus_client(tmp_path, records) as (c, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        answered = {}
+        for qs in answers:
+            body = c.get(f"/github/search/code?q={qs}", headers=h).json()
+            answered[qs] = sorted(i["path"] for i in body["items"])
+    assert answered == answers
 
 
 def test_github_issue_search_refuses_a_query_less_search(gh_client, gh_admin_h):

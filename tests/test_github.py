@@ -2250,6 +2250,9 @@ _CODE_SEARCH_Q_ANSWERS = {
     "?q=%1D": (200, 0),
     "?q=%1E": (200, 0),
     "?q=%1F": (200, 0),
+    # A separator beside a qualifier is searched as text, not dropped: with no term to
+    # match on a path, the code search answers nothing rather than every HEAD file.
+    "?q=%1C+extension:py": (200, 0),
     "?q=%C2%85": (200, 0),
     "?q=%C2%A0": (200, 0),
     "?q=%E2%80%83": (200, 0),
@@ -2277,6 +2280,13 @@ _ISSUE_SEARCH_Q_ANSWERS = {
     "?q=%1E": (200, 0),
     "?q=%1F": (200, 0),
     "?q=%E2%80%8B": (200, 0),
+    # A separator beside a qualifier is searched as text, not dropped: real answers
+    # `%1C+is:issue` with total_count 0, not the qualifier alone.
+    "?q=%1C+is:issue": (200, 0),
+    "?q=%1D+is:issue": (200, 0),
+    "?q=%1E+is:issue": (200, 0),
+    "?q=%1F+is:issue": (200, 0),
+    "?q=is:issue+%1C": (200, 0),
 }
 
 
@@ -2301,8 +2311,9 @@ def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h, m
 
 
 def test_github_issue_search_refuses_a_query_less_search(gh_client, gh_admin_h):
-    """A missing or empty `q` and the `q`s of whitespace or U+200B, each answered as
-    :func:`backlot.routers.github.search_issues` records real answering it."""
+    """A missing or empty `q`, the `q`s of whitespace or U+200B, and a separator U+001C-U+001F
+    beside a qualifier, each answered as :func:`backlot.routers.github.search_issues` records
+    real answering it."""
     c, _ = gh_client
     answered = {}
     for qs in _ISSUE_SEARCH_Q_ANSWERS:

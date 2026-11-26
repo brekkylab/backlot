@@ -2880,6 +2880,13 @@ def _repo_visibility_keeps(value: str | None) -> Callable[[bool], bool] | None:
     return None
 
 
+# The whitespace a search `q` is split on: Python's `\s` without the separators U+001C-U+001F,
+# which real searches as text rather than reading as a separator (see :func:`odata.is_blank`,
+# the same line .NET draws). Collapsing them dropped a separator beside a qualifier and the
+# search answered as if the qualifier stood alone; real answers such a `q` with `total_count`
+# 0 (measured against api.github.com on 2026-11-24, UTC). After the collapse every run is one
+# space, so the ends are stripped of spaces only — a separator at an end stays free text.
+_GH_Q_WS = re.compile(r"[^\S\x1c-\x1f]+")
 _GH_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 # The qualifiers each search endpoint honors. They differ because the resources do: an issue has a
 # state and an author, a file has a path and an extension. A key absent from the set stays as free
@@ -2890,7 +2897,9 @@ _GH_CODE_QUALS = {"repo", "path", "filename", "extension", "in"}
 
 def _parse_q(q: str, keys: set[str]) -> tuple[str, dict]:
     """Split a GitHub search `q` into (free_text, qualifiers), honoring the keys in `keys`.
-    Everything else is free text, matched full-text."""
+    Everything else is free text, matched full-text. A separator U+001C-U+001F stays free text:
+    real searches it, so a `q` of one beside a qualifier answers nothing, not the qualifier
+    alone (measured against api.github.com on 2026-11-24, UTC)."""
     quals: dict[str, list[str]] = {}
 
     def _take(m):
@@ -2900,7 +2909,7 @@ def _parse_q(q: str, keys: set[str]) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
-    free = re.sub(r"\s+", " ", _GH_OP.sub(_take, q)).strip()
+    free = _GH_Q_WS.sub(" ", _GH_OP.sub(_take, q)).strip(" ")
     return free, quals
 
 
@@ -2991,11 +3000,6 @@ async def search_issues(
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
-    # `_parse_q` collapses Unicode whitespace with regex \s, which includes U+001C-U+001F, so a
-    # q of only those would look qualifier-only and list every issue. Real searches them and
-    # answers total_count 0, as it does for U+200B.
-    if not free and not quals and (leftover := odata.strip_blanks(q)):
-        free = leftover
     # _org, not the setting directly: the owner a `repo:` is compared against, and the one in the
     # URLs these items carry, has to be the one the repo routes accept, or every link a client
     # follows out of a search hit 404s
@@ -3377,7 +3381,10 @@ async def search_code(
     if free and "file" in targets:
         for r in store.search_repo_files(conn, free, ids, repo=one):
             rows.setdefault((r["repo"], r["path"]), r)
-    if free and "path" in targets:
+    # No terms, no path to match on: free text of only U+001C-U+001F has none, and an empty
+    # `path_like` would otherwise list every HEAD file (`_parse_q` keeps those separators as
+    # free text). The content search above already answers such a `q` with nothing.
+    if free and terms and "path" in targets:
         for r in store.search_repo_files(conn, None, ids, repo=one, path_like=terms):
             rows.setdefault((r["repo"], r["path"]), r)
     if not free:  # qualifier-only, which real also serves

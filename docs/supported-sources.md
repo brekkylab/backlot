@@ -648,11 +648,20 @@ nothing at it, but a `[` or `]` in the path, escaped or bare, makes that 404 and
 path with no route or by a method a served route does not take — a `Content-Type` the operation does
 not take is its 415 for any caller the gateway lets through, and after that a caller with no
 credential gets Jira's 401 where the operation will not run anonymously
-(`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, an issue's or a
-project's 404 for a key that names nothing, and the no-route 404, or on a served route's path its
-405, is the gap the baseline acknowledges. That is under `/atlassian/rest` only: outside the two API
-mounts the site is its web app, `/browse` at 200, the root a redirect to log in or to
-`/jira/for-you`, and Jira's own not-found page for the rest.
+(`backlot/data/jira_unserved.json`); otherwise it is the operation's own answer, the body refusals
+below, an issue's or a project's 404 for a key that names nothing, and the no-route 404, or on a
+served route's path its 405, is the gap the baseline acknowledges. That is under `/atlassian/rest`
+only: outside the two API mounts the site is its web app, `/browse` at 200, the root a redirect to
+log in or to `/jira/for-you`, and Jira's own not-found page for the rest.
+
+Every `POST` Jira publishes, `search/jql` among them, is refused 403 `XSRF check failed` when its
+`User-Agent` reads as a browser's and neither `Origin` nor `Referer` names the site, after the 415
+and the 406 and ahead of everything else; `X-Atlassian-Token: no-check` does not pass it. No `PUT`
+or `DELETE` takes it, though from a browser an `Origin` with no host in it is Jira's 500 on those
+too, unless `Referer` names the site. Creating, editing, commenting on and transitioning an issue
+read the body before anything of their own, for any caller: bytes that are only whitespace are
+RFC 7807's `Failed to read request`, bytes that are not JSON the parse error, and JSON that is not
+an object `Invalid request payload`, while trailing bytes after the value are ignored.
 
 Every answer past the CDN carries `atl-request-id`, `atl-traceid`, `x-content-type-options` and
 `x-xss-protection` (the 400 for a bare `;` neither id), and Jira's own answers add `x-arequestid`,

@@ -63,7 +63,8 @@ def test_every_writable_source_gets_all_five_tables(sample_settings):
     overlay.attach(conn, "test_ov_five")
     for src in store.WRITABLE:
         names = overlay.table_names(src)
-        assert set(names) == {"doc", "patch", "tombstone", "acl", "fts"}
+        comments = {"comment", "comment_tombstone"} if store.comment_table(src) else set()
+        assert set(names) == {"doc", "patch", "tombstone", "acl", "fts", *comments}
         for kind, name in names.items():
             got = conn.execute("SELECT 1 FROM ov.sqlite_master WHERE name = ?", (name,)).fetchone()
             assert got is not None, f"{src}: overlay {kind} table {name} was not created"

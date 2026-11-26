@@ -2940,6 +2940,36 @@ def test_patching_an_unpatchable_column_is_refused(ov_db):
         )
 
 
+def test_a_created_jira_issue_takes_the_next_key_and_id_and_never_a_deleted_ones(ov_db):
+    # One above the highest ever held, a deleted issue's included (`store.jira_next_key`).
+    keys = [
+        r["key"] for r in ov_db.execute("SELECT key FROM jira_issues WHERE project = 'payments'")
+    ]
+    prefix = keys[0].rsplit("-", 1)[0]
+    top = max(int(k.rsplit("-", 1)[1]) for k in keys)
+    ids = [int(r[0]) for r in ov_db.execute("SELECT numeric_id FROM jira_issues")]
+    key, numeric = store.jira_next_key(ov_db, "payments", prefix)
+    assert (key, numeric) == (f"{prefix}-{top + 1}", str(max(ids) + 1))
+    store.insert_document(
+        ov_db,
+        "jira",
+        {
+            "key": key,
+            "numeric_id": numeric,
+            "project": "payments",
+            "author_email": "ava@acme.com",
+            "title": "created",
+            "content": "",
+            "created_ts": 4000000000,
+        },
+    )
+    store.tombstone_document(ov_db, "jira", (key,))
+    assert store.jira_next_key(ov_db, "payments", prefix) == (
+        f"{prefix}-{top + 2}",
+        str(max(ids) + 2),
+    )
+
+
 def test_writing_to_a_non_writable_source_is_refused(ov_db):
     # A source outside WRITABLE has no overlay tables at all, so this must fail loudly rather
     # than raise an opaque "no such table" from three frames down.

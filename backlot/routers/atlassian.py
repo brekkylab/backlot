@@ -23,7 +23,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from html.entities import codepoint2name
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Path as PathParameter
@@ -81,6 +81,8 @@ async def _checked_before_the_route(request: Request) -> None:
             _echoed_path(request), request.headers.get("accept"), jaxrs=jaxrs
         ),
     )
+    if not errors_atlassian.is_confluence(request.url.path):
+        _refuse_a_cross_site_write(request)
 
 
 def _refuse_the_accept(request: Request, refused: errors_atlassian.AtlassianError | None) -> None:
@@ -4266,6 +4268,193 @@ async def _jira_search_body(request: Request) -> dict:
     return parsed
 
 
+#: What Jira's XSRF check reads a `User-Agent` as a browser's by: one of these, anywhere in it, in
+#: this case. Measured on Jira Cloud 2026-11-16 over 70 values on `POST issue/{key}/comment`:
+#: `Chrome/`, `Safari/`, `Edge/`, `Opera/`, `Konqueror/`, `Netscape/`, `Googlebot/` and `Trident/`
+#: with their slash and `Firefox` and `MSIE` with or without one, where `Chrome`, `chrome/120`,
+#: `Edg/`, `OPR/`, `Chromium/`, `AppleWebKit/`, `Mozilla/5.0 (Macintosh)`, `curl/8` and
+#: `python-requests/2.31` were not. A token in a second `User-Agent` header counts: `curl/8` and
+#: then a browser's was the 403.
+_JIRA_BROWSER_TOKENS = (
+    "Chrome/",
+    "Firefox",
+    "Safari/",
+    "Edge/",
+    "MSIE",
+    "Trident/",
+    "Opera/",
+    "Konqueror/",
+    "Netscape/",
+    "Googlebot/",
+)
+
+
+def _from_the_site(request: Request, value: str) -> bool:
+    """Whether an `Origin` or `Referer` names the site itself: its scheme, and its host in any
+    case on its default port or that port named. Measured 2026-11-16: `https://SITE`,
+    `https://SITE/`, `https://SITE:443`, the host in capitals and `https://SITE/browse/X` passed,
+    and `http://SITE`, `ftp://SITE`, another site, another `*.atlassian.net` and an empty value did
+    not."""
+    site = urlsplit(_site(request))
+    try:
+        given = urlsplit(value.strip())
+        port = given.port
+    except ValueError:
+        return False
+    default = {"http": 80, "https": 443}.get(site.scheme)
+    return (
+        given.scheme.lower() == site.scheme
+        and (given.hostname or "") == (site.hostname or "").lower()
+        and (port or default) == (site.port or default)
+    )
+
+
+def _refuse_a_cross_site_write(request: Request) -> None:
+    """Jira's XSRF check, for a request whose `User-Agent` reads as a browser's
+    (:data:`_JIRA_BROWSER_TOKENS`) and whose method is not `GET`, `HEAD` or `OPTIONS`: a `Referer`
+    naming the site passes it; failing that, an `Origin` with no host in it is real's 500
+    (``errors.atlassian.xsrf_origin_unread``), on a `PUT` and a `DELETE` too, and one naming the site
+    passes it; failing both, a `POST` is the 403 ``errors.atlassian.xsrf_check_failed`` and any
+    other method goes on.
+
+    It comes after the 415 and the 406 and ahead of reading the body, a path variable's 400, the 401
+    for no credential and the issue's or the project's 404, and `X-Atlassian-Token: no-check` does
+    not pass it. Measured on Jira Cloud 2026-11-16 on `search/jql`, `issue`, `issue/bulk`,
+    `issue/{key}`, `issue/{key}/comment`, `issue/{key}/transitions`, `issue/{key}/worklog` and
+    `project/{key}/role/{id}`, under v2 and v3, with a credential and with none, and taken here for
+    every operation Jira publishes: `Origin: null` beside a `Referer` naming the site passed, and
+    beside another site's was the 500.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    agent = ", ".join(request.headers.getlist("user-agent"))
+    if not any(token in agent for token in _JIRA_BROWSER_TOKENS):
+        return
+    if any(_from_the_site(request, value) for value in request.headers.getlist("referer")):
+        return
+    origins = request.headers.getlist("origin")
+    for value in origins:
+        try:
+            hostless = not urlsplit(value.strip()).hostname
+        except ValueError:
+            hostless = True
+        if hostless:
+            raise errors_atlassian.xsrf_origin_unread()
+    if any(_from_the_site(request, value) for value in origins):
+        return
+    if request.method == "POST":
+        raise errors_atlassian.xsrf_check_failed()
+
+
+#: The operations whose body the reader below reads before anything else of theirs, and what each
+#: answers a body of no bytes or `null` with, where measured (`None` where the account's language
+#: words it). Measured on Jira Cloud 2026-11-16 under v2 and v3.
+_JIRA_WRITE_BODIES = {
+    f"{method} /rest/api/{version}/issue{tail}": empty
+    for version in ("2", "3")
+    for method, tail, empty in (
+        ("POST", "", "No Issue Create payload supplied"),
+        ("PUT", "/{}", errors_atlassian.BODY_EMPTY),
+        ("POST", "/{}/comment", errors_atlassian.BODY_EMPTY),
+        ("POST", "/{}/transitions", None),
+    )
+}
+
+
+def _jira_write_body(path: str, raw: bytes, empty: str | None) -> dict | None:
+    """The JSON object a write's body holds, or the refusal real gives one it will not read, ahead
+    of the operation's own. None for no bytes or `null` where ``empty`` is None, for the operation to
+    answer; ``empty`` otherwise.
+
+    Measured on Jira Cloud 2026-11-16 on `issue`, `issue/{key}`, `issue/{key}/comment` and
+    `issue/{key}/transitions`, which agree, and differ from `search/jql`
+    (:func:`_jira_search_body`):
+
+    - bytes that are only JSON's whitespace are the problem+json `Failed to read request`
+    - bytes that do not parse, or are not UTF-8, are the parse error; so are `NaN` and `Infinity`,
+      a raw control character in a string, a non-breaking space ahead of the value, and a body
+      nested a million deep with one bracket short
+    - a value that is not an object, a number of 1001 digits among them, is not-an-object
+    - after a complete value, trailing bytes are ignored, and so is a byte-order mark before it; a
+      number of 1001 digits, `1e400` and a lone surrogate in a member are read, and so is a body
+      nested a million deep
+    """
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    if not raw:
+        if empty is None:
+            return None
+        raise errors_atlassian.body_not_read(empty)
+    if not raw.strip(b" \t\r\n"):
+        raise errors_atlassian.failed_to_read_request(path)
+    try:
+        text = raw.decode("utf-8")
+        parsed, _end = json.JSONDecoder(
+            parse_constant=_reject_json_constant,
+            parse_int=lambda digits: int(digits) if len(digits) < 4300 else digits,
+        ).raw_decode(text.lstrip(" \t\r\n"))
+    except RecursionError:
+        if not _json_well_formed(text):
+            raise errors_atlassian.body_not_read(errors_atlassian.BODY_UNPARSEABLE) from None
+        parsed = {} if text.lstrip(" \t\r\n").startswith("{") else []
+    except ValueError:
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_UNPARSEABLE) from None
+    if parsed is None:
+        if empty is None:
+            return None
+        raise errors_atlassian.body_not_read(empty)
+    if not isinstance(parsed, dict):
+        raise errors_atlassian.body_not_read(errors_atlassian.BODY_NOT_AN_OBJECT)
+    return parsed
+
+
+_JSON_TOKEN = re.compile(
+    r'[ \t\r\n]*(?:([{}\[\]:,])|("(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[\da-fA-F]{4}))*")'
+    r"|(-?(?:0|(?!0)\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?)|(true|false|null))",
+    re.ASCII,
+)
+
+
+def _json_well_formed(text: str) -> bool:
+    """Whether ``text`` opens with one well-formed JSON value, read without recursing, for a body
+    nested past what Python's reader takes. Trailing text is ignored, as :func:`_jira_write_body`
+    ignores it."""
+    stack: list[str] = []
+    expect = "value"
+    at = 0
+    while True:
+        m = _JSON_TOKEN.match(text, at)
+        if m is None:
+            return False
+        at = m.end()
+        punct, string = m.group(1), m.group(2)
+        closes = punct == ("}" if stack and stack[-1] == "{" else "]")
+        if expect in ("value", "first value") and punct in ("{", "["):
+            stack.append(punct)
+            expect = "first key" if punct == "{" else "first value"
+            continue
+        if expect in ("first value", "first key") and closes:
+            stack.pop()
+        elif expect in ("value", "first value") and punct is None:
+            pass
+        elif expect in ("key", "first key") and string is not None:
+            expect = "colon"
+            continue
+        elif expect == "colon" and punct == ":":
+            expect = "value"
+            continue
+        elif expect == "comma" and punct == ",":
+            expect = "key" if stack[-1] == "{" else "value"
+            continue
+        elif expect == "comma" and closes:
+            stack.pop()
+        else:
+            return False
+        if not stack:
+            return True
+        expect = "comma"
+
+
 def _str_param(request: Request, name: str, default: str | None = None) -> str | None:
     """One query parameter as a string, comma-joined when it repeats.
 
@@ -6675,7 +6864,7 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     return Response(refused.body, status_code=refused.status_code)
 
 
-def _published_answer(request: Request, vendor_path: str) -> Response | None:
+def _published_answer(request: Request, vendor_path: str, body: bytes) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to
     give but the gap the baseline's `missing` operation acknowledges.
@@ -6683,9 +6872,11 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     Jira checks the request's media type where the operation does, for any caller the gateway lets
     through (:func:`_jira_media_refusal`), then `Accept` (``errors.atlassian.not_acceptable``, asked
     of no caller where the operation's entry says ``"accept": "unchecked"``, which was measured with
-    no credential), then refuses a caller with no credential it resolves where the operation will
-    not run anonymously, and any `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured
-    2026-09-30 and the `Accept` check's place 2026-10-13; where the operation runs and is one of
+    no credential), then runs its XSRF check (:func:`_refuse_a_cross_site_write`), then refuses a
+    caller with no credential it resolves where the operation will not run anonymously, and any
+    `OPTIONS` on one (:func:`_jira_unauthenticated`), each measured 2026-09-30 and the `Accept`
+    check's place 2026-10-13; where the operation runs, it reads the body first if it is one of
+    :data:`_JIRA_WRITE_BODIES` (:func:`_jira_write_body`), and if it is one of
     :data:`_JIRA_ISSUE_WRITES` or :data:`_JIRA_ROLE_WRITES`, its lookup of a key that names nothing
     the caller can see is its 404, and a role write's is followed by the 401
     :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.
@@ -6759,6 +6950,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
                 produces=tuple(entry.get("produces", errors_atlassian.JSON_ONLY)),
             ),
         )
+    if operation is not None:
+        _refuse_a_cross_site_write(request)
     if operation in _JIRA_ROLE_WRITES:
         _role_id(request, vendor_path.split("/")[7])
     if auth.atlassian_caller(request).is_anonymous and (
@@ -6766,6 +6959,8 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
         or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
     ):
         return _jira_unauthenticated(request)
+    if operation in _JIRA_WRITE_BODIES:
+        _jira_write_body(_echoed_path(request), body, _JIRA_WRITE_BODIES[operation])
     if operation in _JIRA_ISSUE_WRITES:
         _require_issue(request, auth.conn(request), vendor_path.split("/")[5])
     elif operation in _JIRA_ROLE_WRITES:
@@ -7166,7 +7361,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     served = _some_atlassian_route_matches(request)
     if served and request.method == "OPTIONS":
         return _options_answer(request)
-    published = _published_answer(request, vendor_path)
+    published = _published_answer(request, vendor_path, await request.body())
     if published is not None:
         return published
     if served and not _is(_CONFLUENCE_CONVERSION_WRITES, request.method, vendor_path):

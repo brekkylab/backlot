@@ -3,7 +3,7 @@
   "endpoints": [
     "https://api.linear.app/graphql"
   ],
-  "measured": "2026-11-19",
+  "measured": "2026-11-25",
   "root": {
     "query": "Query"
   },
@@ -62,7 +62,7 @@
         },
         "context": {
           "status": "missing",
-          "type": "JSON!",
+          "type": "JSONObject!",
           "kind": "missing_field",
           "severity": "gap"
         },
@@ -125,7 +125,7 @@
         },
         "plan": {
           "status": "missing",
-          "type": "JSON",
+          "type": "JSONObject",
           "kind": "missing_field",
           "severity": "gap"
         },
@@ -143,7 +143,7 @@
         },
         "sourceMetadata": {
           "status": "missing",
-          "type": "JSON",
+          "type": "JSONObject",
           "kind": "missing_field",
           "severity": "gap"
         },
@@ -845,6 +845,9 @@
         "documentContentId": {
           "status": "implemented"
         },
+        "generalAccess": {
+          "status": "implemented"
+        },
         "hiddenAt": {
           "status": "implemented"
         },
@@ -872,6 +875,9 @@
           "severity": "breaking",
           "detail": "Backlot serves parentDocument: Document; the vendor has no such field",
           "note": "Answered by api.linear.app but absent from introspection: measured 2026-11-10, `__type(name:\"Document\")` lists no `parentDocument`, and a query selecting it answers 200 without a validation error, while an unknown field answers 400 `GRAPHQL_VALIDATION_FAILED`. Backlot keeps serving it."
+        },
+        "personalUser": {
+          "status": "implemented"
         },
         "project": {
           "status": "implemented"
@@ -951,11 +957,7 @@
           "status": "implemented"
         },
         "workspaceAccess": {
-          "status": "missing",
-          "type": "DocumentShareRole",
-          "kind": "missing_field",
-          "severity": "gap",
-          "note": "The vendor lists `workspaceAccess: DocumentShareRole` on `Document`; Backlot does not serve it. Measured 2026-11-10 against api.linear.app: introspection lists it. A corpus carries no Linear documents, so `documents` answers an empty page and nothing reads the field."
+          "status": "implemented"
         }
       }
     },
@@ -1101,6 +1103,21 @@
           "status": "implemented"
         },
         "updatedAt": {
+          "status": "implemented"
+        }
+      }
+    },
+    "DocumentShareRole": {
+      "type_kind": "ENUM",
+      "status": "implemented",
+      "values": {
+        "comment": {
+          "status": "implemented"
+        },
+        "edit": {
+          "status": "implemented"
+        },
+        "view": {
           "status": "implemented"
         }
       }
@@ -2708,6 +2725,13 @@
           "type": "CyclePeriodComparator",
           "kind": "missing_field",
           "severity": "gap"
+        },
+        "addedToProjectAt": {
+          "status": "missing",
+          "type": "NullableDateComparator",
+          "kind": "missing_field",
+          "severity": "gap",
+          "note": "Linear describes it as \"Conditions on when the issue joined its current project. Changing projects resets this time; removing the project clears it. Issues added to a project before this time was recorded have none.\" Backlot answers `Issue.addedToProjectAt` null on every issue, one in a project included, so `IssueFilter` does not declare it and a filter naming it is refused with `GRAPHQL_VALIDATION_FAILED` rather than matched against that null. Measured against api.linear.app on 2026-11-25, with a key that reads eight issues, none in a project: `issues(first: 50, filter: {addedToProjectAt: {null: true}})` answers 200 with all eight, `{addedToProjectAt: {null: false}}` and `{addedToProjectAt: {gt: \"2000-01-01T00:00:00.000Z\"}}` answer 200 with an empty `nodes`, and `{zzBogus: {null: true}}` answers 400 `GRAPHQL_VALIDATION_FAILED`."
         },
         "ageTime": {
           "status": "missing",

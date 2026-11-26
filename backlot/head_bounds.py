@@ -140,16 +140,22 @@ def written(
     return f"{head}Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
 
 
-def s3_leading_line(leading: bytes, line: bytes) -> bytes | None:
-    """Amazon S3's parse 400 for a CRLF, LF or two CRLFs before a service-root GET over
-    HTTP/1.1, measured anonymously on 2026-11-02."""
-    if leading not in (b"\r\n", b"\n", b"\r\n\r\n"):
-        return None
-    match = re.fullmatch(rb"GET /s3/?(?:\?([^\s]*))? HTTP/1\.1\r", line)
-    if match is None:
-        return None
-    query = (match[1] or b"").decode("latin-1")
-    request_id, host_id = s3.request_ids("GET", "/", query)
+def s3_leading_line(line: bytes) -> bytes:
+    """Amazon S3's parse 400 to a head with empty lines ahead of its request line, ``line``, which
+    seeds its ids. Measured anonymously on s3.us-east-1.amazonaws.com on 2026-11-26 (UTC): a CRLF
+    or an LF, each pair of them and three, five and twenty CRLFs ahead of a service-root GET drew
+    it, and one CRLF drew it ahead of each of the other requests sent, among them HTTP/1.0, lines
+    ended by a bare LF, `HEAD` (with the body), `PUT`, `POST`, `DELETE`, `OPTIONS`, `FOOBAR`, a
+    missing bucket, a key in it and a signed request, and ahead of the second request on a
+    connection. Real answered once the head had ended, chunked, and closed the connection.
+    ``tests/test_head_bounds.py`` holds the requests."""
+    method, _, rest = line.rstrip(b"\r").partition(b" ")
+    path, _, query = rest.rpartition(b" ")[0].partition(b"?")
+    request_id, host_id = s3.request_ids(
+        method.decode("latin-1"),
+        (path.removeprefix(b"/s3") or b"/").decode("latin-1"),
+        query.decode("latin-1"),
+    )
     request_id = errors.s3.parse_request_id(request_id)
     body = (
         '<?xml version="1.0" encoding="UTF-8"?><Error><Code>BadRequest</Code>'

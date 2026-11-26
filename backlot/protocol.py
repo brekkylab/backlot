@@ -285,7 +285,6 @@ class _Head:
         self.request_line = bytearray()
         self.in_request_line = True
         self.blank = 0
-        self.leading = b""
         self.ended = False
         self.bound: head_bounds.Bound | None = None
         self.named = False
@@ -299,10 +298,9 @@ class _Head:
         self.read_to = 0
 
     def read(self, data: bytes) -> bytes | None:
-        """The front door's answer where ``data`` takes the head to its bound or completes a
-        head S3 refuses for leading empty lines, else None.
-        Nothing after the empty line that ends the head is read: :attr:`read_to` is how many bytes
-        of ``data`` were."""
+        """The front door's answer where ``data`` takes the head to its bound or ends a head
+        :func:`backlot.head_bounds.s3_leading_line` answers, else None. Nothing after the empty line
+        that ends the head is read: :attr:`read_to` is how many bytes of ``data`` were."""
         pos = 0
         self.read_to = len(data)
         while not self.ended and pos < len(data):
@@ -325,9 +323,6 @@ class _Head:
                 self._end_header()
             if self.in_request_line and empty:
                 self.blank = self.size
-                # Two CRLFs are the longest leading sequence measured for this S3 refusal.
-                if self.blank <= 4:
-                    self.leading += bytes(self.request_line) + b"\n"
                 self.request_line = bytearray()
             elif self.in_request_line:
                 self.in_request_line = False
@@ -372,8 +367,8 @@ class _Head:
 
     def _over(self) -> bytes | None:
         """The front door's bound answer, including a request line refused ahead of the bound
-        (:meth:`backlot.head_bounds.Bound.refused`), or S3's parse 400 for an HTTP/1.1 service-root
-        GET preceded by LF, CRLF or two CRLFs."""
+        (:meth:`backlot.head_bounds.Bound.refused`), or S3's parse 400
+        (:func:`backlot.head_bounds.s3_leading_line`)."""
         if not self.named and (
             not self.in_request_line or len(self.request_line) >= head_bounds.NAMED_WITHIN
         ):
@@ -387,15 +382,14 @@ class _Head:
         if answer is not None:
             line = bytes(self.request_line)
             return self.bound.refused(line, not self.in_request_line, self.blank) or answer
-        # The leading-line probes used short heads. Preserve existing behavior at the bound.
+        # The heads measured for this answer ended well within S3's bound.
         if (
             self.ended
             and self.bound.door == "s3"
-            and self.leading
-            and self.blank == len(self.leading)
+            and self.blank
             and self.size - self.bound.mount < self.bound.limit
         ):
-            return head_bounds.s3_leading_line(self.leading, bytes(self.request_line))
+            return head_bounds.s3_leading_line(bytes(self.request_line))
         return None
 
 

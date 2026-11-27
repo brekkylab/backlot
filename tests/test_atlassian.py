@@ -10086,40 +10086,87 @@ def test_confluence_answers_an_operation_before_it_runs(client):
     assert _failures(_operation_refusal, _OPERATION_REFUSALS, client) == {}
 
 
-#: An attachment upload whose `Content-Type` is `multipart/form-data` with no `boundary` is the
-#: 500 ``errors.atlassian.refuse_a_multipart_with_no_boundary`` carries the measurement for, ahead
-#: of the caller's refusal with a credential or without one; `"admin"` is the admin's token.
+_UPLOAD = "/wiki/rest/api/content/abc123/child/attachment"
+_ATTACHMENT_WRITES = (("POST", _UPLOAD), ("PUT", _UPLOAD), ("POST", f"{_UPLOAD}/att1/data"))
+_NO_BOUNDARY = (
+    b'{"errors":[{"status":500,"code":"INTERNAL_SERVER_ERROR","title":"Internal Server Error"}]}'
+)
+
+#: Rows for ``errors.atlassian.refuse_a_multipart_with_no_boundary``, each (method, path,
+#: `Authorization`, `Content-Type`, `Accept`, status, `content-type`) as real answered it;
+#: ``"admin"`` is the admin's token.
 _MULTIPART_NO_BOUNDARY = [
-    ("POST", "/wiki/rest/api/content/abc123/child/attachment", None, "multipart/form-data"),
-    ("POST", "/wiki/rest/api/content/abc123/child/attachment", "admin", "multipart/form-data"),
-    (
-        "POST",
-        "/wiki/rest/api/content/abc123/child/attachment",
-        None,
-        "multipart/form-data;charset=x-MacRoman",
+    *(
+        (method, path, caller, ctype, None, 500, "application/json")
+        for method, path in _ATTACHMENT_WRITES
+        for caller in (None, "admin")
+        for ctype in (
+            "multipart/form-data",
+            "multipart/form-data;charset=x-MacRoman",
+            "MULTIPART/FORM-DATA",
+            "multipart/mixed",
+            "multipart/",
+            "multipart/form-data; boundary=",
+            'multipart/form-data; boundary=""',
+            "multipart/form-data;charset=nope",
+            "multipart/form-data;q=2",
+        )
     ),
-    (
-        "POST",
-        "/wiki/rest/api/content/abc123/child/attachment",
-        "admin",
-        "multipart/form-data;charset=x-MacRoman",
+    *(
+        (method, path, None, "multipart/form-data", accept, 500, media_type)
+        for method, path in _ATTACHMENT_WRITES
+        for accept, media_type in (
+            ("text/html", None),
+            ("application/problem+json", "application/problem+json"),
+        )
     ),
+    *(
+        ("POST", _UPLOAD, None, "multipart/form-data", accept, 500, media_type)
+        for accept, media_type in (
+            ("text/plain", None),
+            ("text/*", None),
+            ("nope", None),
+            ("application/hal+json", "application/hal+json"),
+            ("*/*", "application/json"),
+            ("text/html, application/json", "application/json"),
+        )
+    ),
+    *(
+        ("POST", _UPLOAD, None, ctype, None, status, "application/json")
+        for ctype, status in (
+            ("multipart/form-data; boundary=x", 403),
+            ("multipart/form-data; BOUNDARY=x", 403),
+            ('multipart/form-data; boundary=" "', 403),
+            ("multipart/form-data; boundary=;boundary=x", 403),
+            ('multipart/form-data; a"=;boundary=x', 415),
+            ("multipart/form-data; boundary=x;charset=nope", 415),
+            ("multipart/mixed; boundary=x", 415),
+            ("multipartx/form-data", 415),
+            ("multipart/form-data; boundary=x;boundary=", 500),
+            ("multipart/form-data;boundary", 500),
+            ("multipart/form-data; xboundary=x", 500),
+        )
+    ),
+    # Tomcat's 401 for a Basic value it cannot read and the empty 500 for a charset Java cannot
+    # name come first
+    ("POST", _UPLOAD, "Basic !!!", "multipart/form-data", None, 401, "text/html;charset=utf-8"),
+    ("POST", _UPLOAD, None, "multipart/form-data;charset=", None, 500, None),
 ]
 
 
-def _multipart_no_boundary(client, admin_h, method, vendor_path, authorization, ctype):
+def _multipart_no_boundary(
+    client, admin_h, method, vendor_path, authorization, ctype, accept, status, media_type
+):
     headers = [("Content-Type", ctype)]
     if authorization is not None:
         token = admin_h["Authorization"] if authorization == "admin" else authorization
         headers.append(("Authorization", token))
+    if accept is not None:
+        headers.append(("Accept", accept))
     r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=b"x")
-    assert r.status_code == 500, r.text[:200]
-    assert r.headers.get("content-type") == "application/json"
-    assert r.json() == {
-        "errors": [
-            {"status": 500, "code": "INTERNAL_SERVER_ERROR", "title": "Internal Server Error"}
-        ]
-    }
+    assert (r.status_code, r.headers.get("content-type")) == (status, media_type), r.text[:200]
+    if status == 500:
+        assert r.content == (_NO_BOUNDARY if media_type else b"")
 
 
 def test_confluence_fails_a_multipart_upload_with_no_boundary(client, admin_h):

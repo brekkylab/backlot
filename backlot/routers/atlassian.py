@@ -6533,9 +6533,11 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     the caller can see is its 404, and a role write's is followed by the 401
     :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.
 
-    Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
-    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS operations their
-    own way, :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
+    Confluence answers a Basic value it cannot read with Tomcat's 401 first, then fails an
+    attachment write whose multipart type holds no boundary
+    (``errors.atlassian.refuse_a_multipart_with_no_boundary``), then checks the media type where the
+    operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS operations their own way,
+    :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
     :data:`_CONFLUENCE_REFUSED_BY_ACCEPT`, and with no body on the JAX-RS ones), then refuses a
     caller with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
     (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
@@ -6555,17 +6557,15 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
             _confluence_caller(request)  # Tomcat's 401, ahead of the media-type check too
         for verb, pattern, consumes in _CONFLUENCE_CONSUMES:
             if verb == method and pattern.fullmatch(vendor_path):
-                refused = errors_atlassian.refuse_a_confluence_media_type(request.headers, consumes)
-                if refused is not None:
-                    raise refused
-                # the multipart parser's failure, ahead of the caller's refusal: measured in
-                # ``errors.atlassian.refuse_a_multipart_with_no_boundary``
                 if "multipart/form-data" in consumes:
                     boundaryless = errors_atlassian.refuse_a_multipart_with_no_boundary(
                         request.headers
                     )
                     if boundaryless is not None:
                         raise boundaryless
+                refused = errors_atlassian.refuse_a_confluence_media_type(request.headers, consumes)
+                if refused is not None:
+                    raise refused
         accept = request.headers.get("accept")
         jaxrs = _confluence_jaxrs_media_refusal(request, vendor_path)
         # Jersey parses `Accept` after Tomcat reads the body's type and before it matches it: a

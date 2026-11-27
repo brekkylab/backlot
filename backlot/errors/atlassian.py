@@ -1379,37 +1379,35 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
 
 
 def refuse_a_multipart_with_no_boundary(headers) -> AtlassianError | None:
-    """The 500 Confluence answers an attachment upload whose `Content-Type` is `multipart/form-data`
-    carrying no `boundary` parameter, or None where it carries one, is no multipart type or is not
-    there at all: the multipart parser fails the request before the operation answers it, ahead of
-    the caller's refusal with a credential or without one. Measured on Confluence Cloud 2026-10-16
-    at `POST content/{id}/child/attachment` with the body `x`: `multipart/form-data` bare was the
-    500, `multipart/form-data;charset=x-MacRoman` the same (a charset is no boundary), and
-    `multipart/form-data; boundary=x` got past it to the XSRF refusal. The body is Spring's `errors`
-    list, the shape of :func:`refuse_a_confluence_media_type`'s 415, written in `application/json`."""
+    """The 500 Confluence answers an attachment write whose `Content-Type` starts `multipart/` in
+    any case and holds no boundary, or None where it holds one or is no multipart type: the parser
+    fails the request ahead of the media-type check and the caller's refusal, with a credential or
+    without one. The boundary is the last parameter named `boundary` in any case, its value trimmed
+    of :data:`_JAVA_WHITESPACE` and of one pair of quotes around it, and an empty one is none. The
+    body is Spring's `errors` list, under `application/json` where `Accept` admits JSON
+    (:func:`accepts`), under the first `+json` type it names where it admits none but names one, and
+    empty under no `content-type` where it names neither or cannot be read. Measured on Confluence
+    Cloud on 2026-10-16 at `POST content/{id}/child/attachment`, and on 2026-11-26 at each of the
+    attachment writes."""
     value = (headers.get("content-type") or "").strip(" \t")
-    if not value:
+    if value[:10].lower() != "multipart/":
         return None
-    parsed = _spring_media_type(value, charset_in_any_case=False)
-    if parsed is None:
+    boundary = ""
+    for parameter in value.split(";")[1:]:
+        name, _, given = parameter.partition("=")
+        if name.strip(_JAVA_WHITESPACE).lower() == "boundary":
+            given = given.strip(_JAVA_WHITESPACE)
+            boundary = given[1:-1] if len(given) >= 2 and given[0] == given[-1] == '"' else given
+    if boundary:
         return None
-    kind, subtype, parameters = parsed
-    if (kind, subtype) != ("multipart", "form-data"):
-        return None
-    if any(name.lower() == "boundary" for name, _ in parameters):
-        return None
-    return AtlassianError(
-        500,
-        {
-            "errors": [
-                {
-                    "status": 500,
-                    "code": "INTERNAL_SERVER_ERROR",
-                    "title": "Internal Server Error",
-                }
-            ]
-        },
-    )
+    accept = headers.get("accept")
+    takes = accepts(accept, reader="spring")
+    media_type = "application/json" if takes else _json_family(accept) if takes is False else None
+    if media_type is None:
+        return AtlassianError(500, b"")
+    body = {"status": 500, "code": "INTERNAL_SERVER_ERROR", "title": "Internal Server Error"}
+    encoded = json.dumps({"errors": [body]}, separators=(",", ":")).encode()
+    return AtlassianError(500, encoded, headers={"Content-Type": media_type})
 
 
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as

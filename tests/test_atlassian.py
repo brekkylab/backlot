@@ -2331,6 +2331,64 @@ def test_atlassian_errors_use_atlassian_envelope(client, admin_h):
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
 
 
+def _malformed_escape(client, admin_h, path, authorization, status, message):
+    headers = {} if authorization is None else admin_h
+    r = client.get(f"/atlassian{path}", headers=headers)
+    assert r.status_code == status, r.text[:200]
+    if message is not None:
+        assert r.json() == {"statusCode": 400, "message": message}
+        assert r.headers.get("content-type") == "application/json"
+
+
+def test_confluence_listings_refuse_a_query_holding_a_broken_escape(client, admin_h):
+    """The 400 ``errors.atlassian.malformed_escape_pair`` carries the measurement for, on the three
+    list routes it names: the message's index is the `%`'s in the request URI as sent, behind the
+    conversion 400, the anonymous 403 and each route's own refusals, where a whole escape and the
+    routes that build no paging `_links` answer as they would without it. None is no credential."""
+    pid = client.get("/atlassian/wiki/rest/api/content?limit=1", headers=admin_h).json()["results"][
+        0
+    ]["id"]
+    key = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=admin_h).json()["results"][
+        0
+    ]["key"]
+
+    def malformed(uri, index):
+        return f"java.lang.IllegalArgumentException: Malformed escape pair at index {index}: {uri}"
+
+    rows = [
+        # each broken shape the measurement names, in a value and in a parameter's name
+        ("/wiki/rest/api/space?x=%zz", "admin", 400, malformed("/wiki/rest/api/space?x=%zz", 23)),
+        ("/wiki/rest/api/space?x=%", "admin", 400, malformed("/wiki/rest/api/space?x=%", 23)),
+        ("/wiki/rest/api/space?x=%2", "admin", 400, malformed("/wiki/rest/api/space?x=%2", 23)),
+        ("/wiki/rest/api/space?%zz=1", "admin", 400, malformed("/wiki/rest/api/space?%zz=1", 21)),
+        (
+            "/wiki/rest/api/space?%u005c=1",
+            "admin",
+            400,
+            malformed("/wiki/rest/api/space?%u005c=1", 21),
+        ),
+        (
+            "/wiki/rest/api/content?limit=1&x=%zz",
+            "admin",
+            400,
+            malformed("/wiki/rest/api/content?limit=1&x=%zz", 33),
+        ),
+        (
+            f"/wiki/rest/api/content/{pid}/child/page?x=%zz",
+            "admin",
+            400,
+            malformed(f"/wiki/rest/api/content/{pid}/child/page?x=%zz", 37 + len(str(pid))),
+        ),
+        # behind the conversion 400 and the anonymous 403, as the measurement orders them
+        ("/wiki/rest/api/space?limit=abc&x=%zz", "admin", 400, None),
+        ("/wiki/rest/api/space?x=%zz", None, 403, None),
+        # a whole escape is served, and the routes that build no paging links answer their own
+        ("/wiki/rest/api/space?x=%20ab", "admin", 200, None),
+        (f"/wiki/rest/api/space/{key}?x=%zz", "admin", 200, None),
+    ]
+    assert _failures(_malformed_escape, rows, client, admin_h) == {}
+
+
 def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     """Measured against a live Confluence Cloud site on 2026-09-17: `space` reads `limit`/`start`
     and answers a page, with `_links.next`/`.prev` shaped like

@@ -1422,6 +1422,39 @@ def refuse_a_multipart_with_no_boundary(headers) -> AtlassianError | None:
     return AtlassianError(500, encoded, headers={"Content-Type": media_type})
 
 
+def malformed_escape_pair(uri: str) -> AtlassianError | None:
+    """The 400 a paged Confluence listing answers a query holding a `%` no two hex digits follow,
+    or None where every escape is whole: the listing builds its paging `_links` off the
+    request URI, which Java's decoder refuses before the page is written. Measured on Confluence
+    Cloud 2026-10-13 over `GET /wiki/rest/api/space`, `GET /wiki/rest/api/content` and
+    `GET /wiki/rest/api/content/{id}/child/page`: `x=%zz` in the query was
+    `{"statusCode":400,"message":"java.lang.IllegalArgumentException: Malformed escape pair at index <i>: <uri>"}`
+    in `application/json`, `<i>` the index of the `%` in the request URI as sent and the URI named
+    query and all, and `%`, `%2` and `%u005c` in a parameter's name were the same. The refusal comes
+    behind the conversion 400 a `limit=abc` draws, the 406, the unreadable-Basic 401 and the
+    anonymous 403, and a broken escape in the path is the CDN's 400 ahead of any of it, which
+    `backlot.routers.atlassian` answers before routing. `space/{key}` and `content/{id}`, whose
+    answers build no paging links, answer as they would without the escape."""
+    index = 0
+    while True:
+        index = uri.find("%", index)
+        if index == -1:
+            return None
+        pair = uri[index + 1 : index + 3]
+        if len(pair) < 2 or not all(c in "0123456789abcdefABCDEF" for c in pair):
+            return AtlassianError(
+                400,
+                {
+                    "statusCode": 400,
+                    "message": (
+                        "java.lang.IllegalArgumentException: Malformed escape pair at index "
+                        f"{index}: {uri}"
+                    ),
+                },
+            )
+        index += 1
+
+
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as
 #: `application/json`, byte for byte but for trailing whitespace: measured 2026-10-13 on
 #: `serverInfo` and its 401, where the same value respelled (upper-cased, `q=0.90`, `Q=0.9`, a space

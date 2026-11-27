@@ -2569,6 +2569,7 @@ async def confluence_spaces(request: Request):
         _space(request, conn, r["name"], expand, listed=True)
         for r in reachable[start : start + limit]
     ]
+    _refuse_a_malformed_escape(request)
     links = _confluence_envelope(
         request,
         "/rest/api/space",
@@ -3145,6 +3146,7 @@ async def confluence_content_list(request: Request):
             subtype=subtype,
         )
     results = [_confluence_page(conn, request, r, expand) for r in rows]
+    _refuse_a_malformed_escape(request)
     links = _confluence_envelope(
         request, "/rest/api/content", start=start, limit=limit, size=len(rows), total=total
     )
@@ -3190,6 +3192,7 @@ async def confluence_child_pages(content_id: str, request: Request):
     kids = store.children(conn, "confluence", content_id, visible_ids=ids)
     page = kids[start : start + limit]
     results = [_confluence_page(conn, request, k, expand) for k in page]
+    _refuse_a_malformed_escape(request)
     return {
         "results": results,
         "start": start,
@@ -6112,6 +6115,19 @@ def _confluence_envelope(
         )
     )
     return links
+
+
+def _refuse_a_malformed_escape(request: Request) -> None:
+    """The listing's 400 for a `%` in the query no two hex digits follow, which
+    ``errors.atlassian.malformed_escape_pair`` carries the measurement for, raised where the route
+    builds its paging `_links` — behind the caller's refusal, the conversion 400 and each refusal
+    the route answers first, as real's is. The URI the message names is the vendor's path and the
+    query as sent."""
+    query = request.scope["query_string"].decode("latin-1")
+    uri = f"{_vendor_path(_echoed_path(request))}?{query}"
+    refused = errors_atlassian.malformed_escape_pair(uri)
+    if refused is not None:
+        raise refused
 
 
 def _refuse_negative_page_params(limit: int, start: int) -> None:

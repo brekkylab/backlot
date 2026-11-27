@@ -523,11 +523,6 @@ def answer(scope: Scope) -> Response | None:
     answers such a target with."""
     door, prefix = front_door(scope["path"]) or (None, None)
     sent_path, _, sent_query = scope[SENT].partition(b"?")
-    in_path, in_query = _kinds(sent_path), _kinds(sent_query)
-    if sent_path.startswith(b"\\"):  # Drive's or Gmail's target, which :func:`encode_line` read
-        if (refused := _google(in_path, in_query)) is not None:
-            return refused
-        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
     # A `\` right after the mount is answered by :func:`printable_answer`, as it is without a raw
     # byte, on the mounts of :data:`_BACKSLASH_FIRST_PAGES`. On S3 the raw byte is read first:
     # :func:`_s3` answers a raw space with the 505 and otherwise renders the byte into the bucket
@@ -535,10 +530,15 @@ def answer(scope: Scope) -> Response | None:
     # api.github.com, slack.com, api.notion.com, graph.microsoft.com and S3.
     first = _backslash_first(sent_path)
     if first == b"/s3":
-        refused = _s3(scope, in_path, in_query)
+        refused = _s3(scope, _kinds(sent_path), _kinds(sent_query))
         return refused if refused is not None else printable_answer(scope)
     if first in _BACKSLASH_FIRST_PAGES:
         return printable_answer(scope)
+    in_path, in_query = _kinds(sent_path), _kinds(sent_query)
+    if sent_path.startswith(b"\\"):  # Drive's or Gmail's target, which :func:`encode_line` read
+        if (refused := _google(in_path, in_query)) is not None:
+            return refused
+        return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
     if door == "github":
         return _github()
     if door == "slack":
@@ -680,9 +680,9 @@ _MOUNTS_AHEAD_OF_THE_TARGET = (
     b"/s3",
     b"/msgraph",
 )
-#: The mounts whose page for a `\\` right after them :func:`answer` serves beside a raw byte as
-#: well, the ones measured that way. HubSpot, Linear and Fireflies are not measured with a raw
-#: byte after the `\\` and keep uvicorn's 400.
+#: The mounts whose page for a `\` right after them :func:`answer` serves beside a raw byte as well,
+#: the ones measured that way but S3, whose raw byte :func:`_s3` reads first. HubSpot, Linear and
+#: Fireflies are not measured with a raw byte after the `\` and keep uvicorn's 400.
 _BACKSLASH_FIRST_PAGES = (
     b"/github",
     b"/slack",

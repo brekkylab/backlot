@@ -7,11 +7,13 @@ see `backlot/overlay.py`.
 
 from __future__ import annotations
 
+import email.utils
 import json
 import logging
 import re
 import sys
 import threading
+import time
 import urllib.parse
 import uuid
 from collections.abc import Callable
@@ -2630,9 +2632,45 @@ async def answer_a_host_in_brackets_that_holds_no_ipv6_address(request: Request,
     return await call_next(request)
 
 
-# Registered after every middleware above, which makes it the outermost: it sees every answer,
-# including one a middleware gives without reaching a route.
+# Registered after every middleware above, which makes it outside each of them: it sees every
+# answer, including one a middleware gives without reaching a route.
 app.add_middleware(TelemetryMiddleware)
+
+
+class _Dated:
+    """Put a `Date` on every answer the app gives, from the clock when the answer starts.
+
+    Written here rather than left to uvicorn, which `backlot serve` starts with its own `Date` off
+    (``backlot.cli``): uvicorn formats that header from the clock once a second and reuses it, so an
+    answer to a request that arrived early in a second could carry the second before the one its
+    `x-github-request-id` names (``backlot.routers.github.request_id``). Real's `Date` was the id's
+    second or up to two past it on all 160 answers measured on api.github.com on 2026-10-18 and
+    2026-10-19. A server started as `uvicorn backlot.main:app` sends two `Date`s unless it is also
+    given `--no-date-header`. It wraps the stack Starlette builds, outside the
+    `ServerErrorMiddleware` Starlette puts around every middleware `add_middleware` registers, whose
+    500 for an exception no handler takes goes out past them: it dates every answer, a middleware's
+    and that 500 included, and reads the clock after any route or middleware inside it has."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_dated(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                date = email.utils.formatdate(time.time(), usegmt=True)
+                headers = [*message.get("headers", []), (b"date", date.encode("latin-1"))]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_dated)
+
+
+_build_middleware_stack = app.build_middleware_stack
+app.build_middleware_stack = lambda: _Dated(_build_middleware_stack())
 
 
 @app.get("/health")

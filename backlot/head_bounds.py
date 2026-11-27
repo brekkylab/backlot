@@ -8,10 +8,11 @@ arrived it answers and closes the connection, with a page that turns on whether 
 reached in the request line or in the headers, or with its refusal of a request line it refuses
 ahead of the bound (:meth:`Bound.refused`). A head whose last byte, the LF that ends it, is the
 bound's last gets past a head bound unless :attr:`Bound.refuses_its_end`; a line bound counts no LF,
-so a line holding that many bytes is refused whether its LF follows or not. The answer here is the
+so a line holding that many bytes is refused whether its LF follows or not. A bound answer is the
 front door's status line, `Content-Type` and body, with `Content-Length` and `Connection: close`,
 and none of the front door's other headers (`Server`, `Date`, `Via`, `Cache-Control`,
-`Referrer-Policy`, `X-Cache`, `X-Amz-Cf-Pop` and the request ids).
+`Referrer-Policy`, `X-Cache`, `X-Amz-Cf-Pop` and the request ids). The S3 leading-line refusal
+below carries request ids and a chunked body.
 
 Bytes are counted as the client sent them but for the prefix a path starts with here and real never
 receives (``backlot.request_target.front_door``): the head real gets is that much shorter. Where the
@@ -45,6 +46,7 @@ import re
 import urllib.parse
 
 from backlot import errors, request_target
+from backlot.routers import s3
 
 #: How much of the request line :func:`bound` is given, unless the line ends sooner: the longest
 #: method httptools reads (`UNSUBSCRIBE`), a space and the longest prefix a vendor is named by
@@ -116,15 +118,57 @@ class Bound:
 
 
 def written(
-    status_line: str, media_type: str | None, body: bytes, headers: dict[str, str] | None = None
+    status_line: str,
+    media_type: str | None,
+    body: bytes,
+    headers: dict[str, str] | None = None,
+    *,
+    chunked: bool = False,
 ) -> bytes:
-    """``body`` as a front door sends it here, with ``headers`` after `Content-Type`."""
+    """``body`` as a front door sends it here, with ``headers`` after `Content-Type`.
+    The framing header is `Transfer-Encoding: chunked` when ``chunked`` is set and
+    `Content-Length` otherwise."""
     head = f"{status_line}\r\n"
     if media_type is not None:
         head += f"Content-Type: {media_type}\r\n"
     for name, value in (headers or {}).items():
         head += f"{name}: {value}\r\n"
+    if chunked:
+        head += "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        chunk = f"{len(body):x}\r\n".encode() + body + b"\r\n" if body else b""
+        return head.encode() + chunk + b"0\r\n\r\n"
     return f"{head}Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
+
+
+def s3_leading_line(line: bytes) -> bytes:
+    """Amazon S3's parse 400 to a head with empty lines ahead of its request line, ``line``, which
+    seeds its ids. Measured anonymously on s3.us-east-1.amazonaws.com on 2026-11-26 (UTC): a CRLF
+    or an LF, each pair of them and three, five and twenty CRLFs ahead of a service-root GET drew
+    it, and one CRLF drew it ahead of each of the other requests sent, among them HTTP/1.0, lines
+    ended by a bare LF, `HEAD` (with the body), `PUT`, `POST`, `DELETE`, `OPTIONS`, `FOOBAR`, a
+    missing bucket, a key in it and a signed request, and ahead of the second request on a
+    connection. Real answered once the head had ended, chunked, and closed the connection.
+    ``tests/test_head_bounds.py`` holds the requests."""
+    method, _, rest = line.rstrip(b"\r").partition(b" ")
+    path, _, query = rest.rpartition(b" ")[0].partition(b"?")
+    request_id, host_id = s3.request_ids(
+        method.decode("latin-1"),
+        (path.removeprefix(b"/s3") or b"/").decode("latin-1"),
+        query.decode("latin-1"),
+    )
+    request_id = errors.s3.parse_request_id(request_id)
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?><Error><Code>BadRequest</Code>'
+        "<Message>An error occurred when parsing the HTTP request.</Message>"
+        f"<RequestId>{request_id}</RequestId><HostId>{host_id}</HostId></Error>"
+    ).encode()
+    return written(
+        "HTTP/1.1 400 Bad Request",
+        "application/xml",
+        body,
+        {"x-amz-request-id": request_id, "x-amz-id-2": host_id},
+        chunked=True,
+    )
 
 
 #: GitHub's two pages, `text/html` with no charset.

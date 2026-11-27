@@ -593,6 +593,18 @@ def cql_invalid_size_limit(value: str) -> AtlassianError:
     return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
 
 
+def cql_function_returns_no_single_value(name: str) -> AtlassianError:
+    """The CQL search's refusal of a function that returns more than one value where a single
+    value goes, worded as real answered `type = recentlyViewedContent(5)` (Confluence Cloud,
+    2026-11-24). Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_refusal``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unable to execute function '{name}', expecting a function that returns a single value",
+    )
+
+
 def cql_escaped_end_quote(text: str) -> AtlassianError:
     """The CQL search's refusal of a quoted value whose closing quote follows a backslash, named
     as sent with its quotes. On Confluence Cloud on 2026-10-30 `title ~ "a\\\\"` answered
@@ -2323,6 +2335,22 @@ def jql_parse_error(sentence: str) -> AtlassianError:
     return AtlassianError(
         400,
         {"errorMessages": [sentence], "errors": {}},
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
+def jql_stack_overflow() -> AtlassianError:
+    """Jira's 500 for a `search/jql` whose `jql` nests clause parentheses past
+    ``backlot.routers.atlassian._JQL_MAX_PARENS``, on the same `application/json;charset=UTF-8`
+    as the 400s (POST, 2026-11-24 and 2026-11-25).
+    """
+    return AtlassianError(
+        500,
+        {
+            "message": "Handler dispatch failed: java.lang.StackOverflowError",
+            "status-code": 500,
+            "stack-trace": "",
+        },
         media_type=JIRA_JSON_MEDIA_TYPE,
     )
 

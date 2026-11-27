@@ -2277,6 +2277,12 @@ _ISSUE_SEARCH_Q_ANSWERS = {
     "?q=%1E": (200, 0),
     "?q=%1F": (200, 0),
     "?q=%E2%80%8B": (200, 0),
+    "?q=%1C+is:issue": (200, 0),
+    "?q=%1D+is:issue": (200, 0),
+    "?q=%1E+is:issue": (200, 0),
+    "?q=%1F+is:issue": (200, 0),
+    "?q=is:issue+%1C": (200, 0),
+    "?q=is:issue%1C": (200, 0),
 }
 
 
@@ -2300,9 +2306,43 @@ def test_github_code_search_refuses_a_query_less_search(gh_client, gh_admin_h, m
     assert answered == _CODE_SEARCH_Q_ANSWERS
 
 
+def test_github_code_search_finds_a_separator_as_text(tmp_path):
+    """Stated in a corpus of its own, since the bundled ones hold no file with a separator
+    U+001C-U+001F in it. :func:`backlot.routers.github.search_code` records the measurement."""
+    sep = chr(0x1D)
+    files = {"notes.md": f"before{sep}after\n", "main.py": f"A = '{sep}'\n", "plain.md": "plain\n"}
+    records = [
+        {
+            "source_type": "github",
+            "doc_id": f"gh-sep-{i}",
+            "repo": "seps",
+            "subtype": "file",
+            "path": path,
+            "content": content,
+            "author_email": "owner@x.com",
+            "visibility": "public",
+        }
+        for i, (path, content) in enumerate(files.items())
+    ]
+    answers = {
+        "%1D": ["main.py", "notes.md"],
+        "%1D+extension:md": ["notes.md"],
+        "%1D+extension:py": ["main.py"],
+        "%1C+extension:md": [],
+    }
+    with corpus_client(tmp_path, records) as (c, settings):
+        h = {"Authorization": f"Bearer {settings.admin_token}"}
+        answered = {}
+        for qs in answers:
+            body = c.get(f"/github/search/code?q={qs}", headers=h).json()
+            answered[qs] = sorted(i["path"] for i in body["items"])
+    assert answered == answers
+
+
 def test_github_issue_search_refuses_a_query_less_search(gh_client, gh_admin_h):
-    """A missing or empty `q` and the `q`s of whitespace or U+200B, each answered as
-    :func:`backlot.routers.github.search_issues` records real answering it."""
+    """A missing or empty `q`, the `q`s of whitespace or U+200B, and a separator U+001C-U+001F
+    beside a qualifier, each answered as :func:`backlot.routers.github.search_issues` records
+    real answering it."""
     c, _ = gh_client
     answered = {}
     for qs in _ISSUE_SEARCH_Q_ANSWERS:
@@ -6074,11 +6114,60 @@ def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org,
         rid = r.headers["x-github-request-id"]
         assert shape.fullmatch(rid), rid
         assert before <= int(rid.rsplit(":", 1)[1], 16) <= after, rid
+        # one `Date`, the id's second or later, as on real (``backlot.main._Dated``)
+        (date,) = r.headers.get_list("date")
+        assert int(rid.rsplit(":", 1)[1], 16) <= _date_second(date) <= after, (rid, date)
     # seeded from the request: the same request gets the same first four fields
     first = c.get(repo, headers=gh_admin_h).headers["x-github-request-id"]
     again = c.get(repo, headers=gh_admin_h).headers["x-github-request-id"]
     assert first.rsplit(":", 1)[0] == again.rsplit(":", 1)[0]
     assert c.get("/health").headers.get("x-github-request-id") is None
+    assert len(c.get("/health").headers.get_list("date")) == 1
+    # Starlette's 500 for an exception no handler takes carries one `Date` too. No `with`: a second
+    # lifespan on the app would overwrite the state gh_client started.
+    from tests._helpers import TestClient
+
+    def crash(*_):
+        raise RuntimeError
+
+    monkeypatch.setattr(gh, "request_id", crash)
+    crashed = TestClient(c.app, raise_server_exceptions=False).get(repo, headers=gh_admin_h)
+    assert (crashed.status_code, len(crashed.headers.get_list("date"))) == (500, 1)
+
+
+def _date_second(date: str) -> int:
+    from email.utils import parsedate_to_datetime
+
+    return int(parsedate_to_datetime(date).timestamp())
+
+
+def test_github_answers_over_uvicorn_carry_one_date_no_earlier_than_their_request_id(live_server):
+    """The `/slack` and `/health` answers carry one `Date` as well."""
+    import httpx
+
+    base_url, settings = live_server
+    h = {"Authorization": f"Bearer {settings.admin_token}"}
+    rows = [
+        ("/github/rate_limit", h),
+        ("/github/nonexistent-route-zz", h),
+        ("/github/user/repos", {}),
+        ("/slack/api/api.test", {}),
+        ("/health", {}),
+    ]
+    got = {}
+    with httpx.Client(base_url=base_url, timeout=10) as client:
+        time.sleep(1 - time.time() % 1 + 0.02)  # just after a second starts
+        for path, headers in rows:
+            r = client.get(path, headers=headers)
+            dates = r.headers.get_list("date")
+            rid = r.headers.get("x-github-request-id")
+            behind = (
+                rid is not None
+                and len(dates) == 1
+                and (_date_second(dates[0]) < int(rid.rsplit(":", 1)[1], 16))
+            )
+            got[path] = (len(dates), behind)
+    assert got == {path: (1, False) for path, _ in rows}
 
 
 # --- a pull is a pull, not an issue with extra keys -------------

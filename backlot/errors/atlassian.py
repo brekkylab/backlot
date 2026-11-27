@@ -34,7 +34,7 @@ from xml.sax.saxutils import escape
 
 from fastapi import HTTPException, Request, Response
 
-from backlot import java_timsort, utf8_escapes
+from backlot import java_timsort, published, utf8_escapes
 
 PREFIX = "/atlassian"
 WIKI = f"{PREFIX}/wiki"
@@ -591,6 +591,18 @@ def cql_invalid_size_limit(value: str) -> AtlassianError:
     `id in recentlyViewedContent(1.5)` the same with `1.5` (Confluence Cloud, 2026-11-05). Where it
     falls among the search's other refusals is ``routers.atlassian._cql_cannot_run``'s."""
     return _service_refusal(400, "api.BadRequestException", f"Invalid size limit : {value}")
+
+
+def cql_function_returns_no_single_value(name: str) -> AtlassianError:
+    """The CQL search's refusal of a function that returns more than one value where a single
+    value goes, worded as real answered `type = recentlyViewedContent(5)` (Confluence Cloud,
+    2026-11-24). Where it falls among the search's other refusals is
+    ``routers.atlassian._cql_refusal``'s."""
+    return _service_refusal(
+        400,
+        "api.BadRequestException",
+        f"Unable to execute function '{name}', expecting a function that returns a single value",
+    )
 
 
 def cql_escaped_end_quote(text: str) -> AtlassianError:
@@ -1376,6 +1388,38 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
         },
         headers={"Accept": ", ".join(consumes)},
     )
+
+
+def refuse_a_multipart_with_no_boundary(headers) -> AtlassianError | None:
+    """The 500 Confluence answers an attachment write whose `Content-Type` starts `multipart/` in
+    any case and holds no boundary, or None where it holds one or is no multipart type: the parser
+    fails the request ahead of the media-type check and the caller's refusal, with a credential or
+    without one. The boundary is the last parameter named `boundary` in any case, its value trimmed
+    of :data:`_JAVA_WHITESPACE` and of one pair of quotes around it, and an empty one is none. The
+    body is Spring's `errors` list, under `application/json` where `Accept` admits JSON
+    (:func:`accepts`), under the first `+json` type it names where it admits none but names one, and
+    empty under no `content-type` where it names neither or cannot be read. Measured on Confluence
+    Cloud on 2026-10-16 at `POST content/{id}/child/attachment`, and on 2026-11-26 at each of the
+    attachment writes."""
+    value = (headers.get("content-type") or "").strip(" \t")
+    if value[:10].lower() != "multipart/":
+        return None
+    boundary = ""
+    for parameter in value.split(";")[1:]:
+        name, _, given = parameter.partition("=")
+        if name.strip(_JAVA_WHITESPACE).lower() == "boundary":
+            given = given.strip(_JAVA_WHITESPACE)
+            boundary = given[1:-1] if len(given) >= 2 and given[0] == given[-1] == '"' else given
+    if boundary:
+        return None
+    accept = headers.get("accept")
+    takes = accepts(accept, reader="spring")
+    media_type = "application/json" if takes else _json_family(accept) if takes is False else None
+    if media_type is None:
+        return AtlassianError(500, b"")
+    body = {"status": 500, "code": "INTERNAL_SERVER_ERROR", "title": "Internal Server Error"}
+    encoded = json.dumps({"errors": [body]}, separators=(",", ":")).encode()
+    return AtlassianError(500, encoded, headers={"Content-Type": media_type})
 
 
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as
@@ -2327,6 +2371,22 @@ def jql_parse_error(sentence: str) -> AtlassianError:
     )
 
 
+def jql_stack_overflow() -> AtlassianError:
+    """Jira's 500 for a `search/jql` whose `jql` nests clause parentheses past
+    ``backlot.routers.atlassian._JQL_MAX_PARENS``, on the same `application/json;charset=UTF-8`
+    as the 400s (POST, 2026-11-24 and 2026-11-25).
+    """
+    return AtlassianError(
+        500,
+        {
+            "message": "Handler dispatch failed: java.lang.StackOverflowError",
+            "status-code": 500,
+            "stack-trace": "",
+        },
+        media_type=JIRA_JSON_MEDIA_TYPE,
+    )
+
+
 def properties_null_element(index: int) -> AtlassianError:
     """Jira's 500 for a `search/jql` body whose `properties` list holds a ``null``, measured
     2026-10-10: the message names the first null's index (`["a", null]` names index 1), on the
@@ -2448,16 +2508,33 @@ def route_regex(template: str) -> re.Pattern[str]:
 _JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_ALLOW)
 
 
+#: (method, path pattern) for each operation Jira's documents publish, served here or not. Real's
+#: `Allow` names every method published on each template the path matches, measured on Jira Cloud
+#: 2026-11-24 under `/rest/api/3` and on the Connect, Forge and internal mounts: a `POST` on
+#: `dashboard/search`, `filter/favourite` and `issuetype/project` named the `GET` published there
+#: with the `PUT` and `DELETE` published where that segment is an id. The rows above claim every
+#: served path first, so what this adds are the baseline's `missing` operations.
+_JIRA_PUBLISHED_OPS = published.operations(
+    entry["operation"]
+    for entry in json.loads(
+        (_PACKAGE / "fidelity" / "baseline" / "jira.json").read_text(encoding="utf-8")
+    )["operations"]
+)
+
+
 def jira_allow(path: str) -> str | None:
-    """The `Allow` real sends on a 405 at ``path``, or ``None`` for a Jira route no row above
-    covers. ``path`` is Backlot's, prefix and all, and a trailing slash on it is dropped before
-    matching: it is the path a refusal echoes (``backlot.routers.atlassian._echoed_path``), and
-    no row above has one."""
+    """The `Allow` real sends on a 405 at ``path``: the methods of the row above that covers it,
+    else every method :data:`_JIRA_PUBLISHED_OPS` holds for a template it matches, else ``None``.
+    ``path`` is Backlot's, prefix and all, and a trailing slash on it is dropped before matching: it
+    is the path a refusal echoes (``backlot.routers.atlassian._echoed_path``), and no template above
+    has one. A path no route serves gets its 405 from
+    ``backlot.routers.atlassian.unmatched_path``."""
     vendor_path = _instance(path).rstrip("/")
     for pattern, methods in _JIRA_ALLOW_PATTERNS:
         if pattern.fullmatch(vendor_path):
             return ", ".join(methods)
-    return None
+    verbs = [verb for verb, pattern in _JIRA_PUBLISHED_OPS if pattern.fullmatch(vendor_path)]
+    return ", ".join(dict.fromkeys(verbs)) if verbs else None
 
 
 #: The methods each Confluence route here takes, as the `Allow` on its 405's page spells them

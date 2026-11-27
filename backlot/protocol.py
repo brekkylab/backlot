@@ -298,9 +298,9 @@ class _Head:
         self.read_to = 0
 
     def read(self, data: bytes) -> bytes | None:
-        """The vendor's answer where ``data`` takes the head to its front door's bound, else None.
-        Nothing after the empty line that ends the head is read: :attr:`read_to` is how many bytes
-        of ``data`` were."""
+        """The front door's answer where ``data`` takes the head to its bound or ends a head
+        :func:`backlot.head_bounds.s3_leading_line` answers, else None. Nothing after the empty line
+        that ends the head is read: :attr:`read_to` is how many bytes of ``data`` were."""
         pos = 0
         self.read_to = len(data)
         while not self.ended and pos < len(data):
@@ -366,9 +366,9 @@ class _Head:
         self.value = b""
 
     def _over(self) -> bytes | None:
-        """The answer once the head has reached its bound, the front door's refusal of the request
-        line where it refuses the line ahead of the bound
-        (:meth:`backlot.head_bounds.Bound.refused`)."""
+        """The front door's bound answer, including a request line refused ahead of the bound
+        (:meth:`backlot.head_bounds.Bound.refused`), or S3's parse 400
+        (:func:`backlot.head_bounds.s3_leading_line`)."""
         if not self.named and (
             not self.in_request_line or len(self.request_line) >= head_bounds.NAMED_WITHIN
         ):
@@ -379,10 +379,18 @@ class _Head:
         answer = self.bound.answer(
             self.size, self.blank, self.line, self.in_request_line, self.ended
         )
-        if answer is None:
-            return None
-        line = bytes(self.request_line)
-        return self.bound.refused(line, not self.in_request_line, self.blank) or answer
+        if answer is not None:
+            line = bytes(self.request_line)
+            return self.bound.refused(line, not self.in_request_line, self.blank) or answer
+        # The heads measured for this answer ended well within S3's bound.
+        if (
+            self.ended
+            and self.bound.door == "s3"
+            and self.blank
+            and self.size - self.bound.mount < self.bound.limit
+        ):
+            return head_bounds.s3_leading_line(bytes(self.request_line))
+        return None
 
 
 #: How much of a header line's name, and of a `Transfer-Encoding`'s value, :class:`_Head` keeps:

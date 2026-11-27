@@ -272,8 +272,9 @@ search), its 414 and 431 for a head that has not ended by its 68,552nd byte, and
 (2026-10-29) carry neither it nor the five `x-ratelimit-*`, on real as here. Its empty 400 for
 another control byte in a header value, from a request that sends no `Authorization`, carries the id
 with neither the five nor a `Date` (2026-10-29), on real as here. Real's `Date` is the second its
-answer left, the id's or one past it; under `backlot serve` it is uvicorn's, which reads the clock
-once a second, so it can be one behind the id's.
+answer left, the id's or up to two past it (2026-10-19); Backlot's is read from the clock when the
+answer starts, so it is the id's or a later one. `backlot serve` turns uvicorn's own `Date` off for
+it; a server started with `uvicorn` itself needs `--no-date-header`, or it sends two.
 
 An issue body and a pull body are the two distinct field sets real serves — a pull carries `_links`
 and its `*_url` siblings and none of the issue-only fields, `pull_request` included. A repository

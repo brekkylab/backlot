@@ -30,11 +30,12 @@ that does not resolve, and a 0x00 and an LF each ahead of a `Content-Length` and
 
 from __future__ import annotations
 
+import hashlib
 import urllib.parse
 from typing import Literal, NamedTuple
 
 from backlot import errors, head_bounds, request_target
-from backlot.routers import github
+from backlot.routers import github, s3
 
 #: Why httptools refused a request: a header value holding 0x00 (`nul`) or another byte it refuses
 #: there as `Invalid header value char`, 0x01 to 0x1F but the tab, the LF and the CR, and 0x7F
@@ -84,6 +85,43 @@ GRAPH_CODING_NOT_SUPPORTED = request_target.graph_page(
     "Not Implemented",
     "The request transfer encoding type is not supported.",
 )
+
+
+def _parse_id(ids: tuple[str, str]) -> str:
+    """The parse 400's request id for ``ids``, the pair ``backlot.routers.s3.request_ids`` gives
+    the request: the unpadded hex ``backlot.errors.s3.method_not_allowed`` writes."""
+    return f"{int.from_bytes(hashlib.shake_256(ids[0].encode()).digest(8)):X}"
+
+
+def s3_line_ahead(kind: str, method: str, path: str, query: str) -> bytes:
+    """S3's answer where a line of ``kind`` came ahead of the request line: for ``space`` the parse
+    400, `BadRequest` with "An error occurred when parsing the HTTP request.", chunked, carrying
+    the parse 400's request id and the extended id in its headers and in its body; for ``tab`` or
+    ``cr`` the empty 400, carrying the parse 400's request id alone and no `Content-Type`.
+
+    Measured 2026-11-26 on s3.us-east-1. The id's shape is the parse 400's, not the
+    shape ``backlot.routers.s3.request_ids`` gives S3's own answers
+    (``backlot.errors.s3.method_not_allowed`` has the measurement); the value itself was not
+    recorded for these three lines, only that each answer carries one. The parser refuses a space
+    or a tab there and reads past a CR, so :class:`backlot.protocol.Protocol` answers all three
+    before the parser sees them.
+    """
+    ids = s3.request_ids(method, path, query)
+    request_id = _parse_id(ids)
+    if kind == "space":
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?><Error><Code>BadRequest</Code>'
+            "<Message>An error occurred when parsing the HTTP request.</Message>"
+            f"<RequestId>{request_id}</RequestId><HostId>{ids[1]}</HostId></Error>"
+        ).encode()
+        return head_bounds.written(
+            _BAD_REQUEST,
+            "application/xml",
+            body,
+            {"x-amz-request-id": request_id, "x-amz-id-2": ids[1]},
+            chunked=True,
+        )
+    return head_bounds.written(_BAD_REQUEST, None, b"", {"x-amz-request-id": request_id})
 
 
 def _github(refused: Refused, path: str, query: str) -> bytes | None:

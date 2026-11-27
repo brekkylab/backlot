@@ -2327,15 +2327,35 @@ def unbounded_jql() -> AtlassianError:
     )
 
 
+#: A character :func:`jql_parse_error` writes as `\u` escapes of its UTF-16 code units in
+#: upper-case hex: a surrogate, paired or alone, and a character past U+FFFF.
+_JIRA_ESCAPED = re.compile(r"[\ud800-\udfff\U00010000-\U0010FFFF]")
+
+
 def jql_parse_error(sentence: str) -> AtlassianError:
     """Jira's 400 for a `search/jql` whose `jql` its parser cannot parse, on GET or POST:
     `sentence` is the `errorMessages` entry the router's JQL parser writes, on
     `application/json;charset=UTF-8` with an empty `errors` (Jira Cloud, 2026-11-22).
+
+    The body is the compact JSON ``JSONResponse`` writes, its `Content-Length` ahead of its
+    `Content-Type` as there, but for each character :data:`_JIRA_ESCAPED` matches, which goes out
+    escaped: real's sentence named `"\\uD83D\\uDE00"` and a raw U+1F600 alike as `\\uD83D\\uDE00`,
+    and `"\\uD83D"` as `\\uD83D` (Jira Cloud, 2026-11-27). A surrogate has no UTF-8 encoding, so
+    ``JSONResponse`` cannot write one.
     """
+    written = json.dumps(
+        {"errorMessages": [sentence], "errors": {}}, ensure_ascii=False, separators=(",", ":")
+    )
+
+    def escapes(match: re.Match[str]) -> str:
+        units = match.group().encode("utf-16-be", "surrogatepass").hex().upper()
+        return "".join(f"\\u{units[i : i + 4]}" for i in range(0, len(units), 4))
+
+    body = _JIRA_ESCAPED.sub(escapes, written).encode()
     return AtlassianError(
         400,
-        {"errorMessages": [sentence], "errors": {}},
-        media_type=JIRA_JSON_MEDIA_TYPE,
+        body,
+        headers={"Content-Length": str(len(body)), "Content-Type": JIRA_JSON_MEDIA_TYPE},
     )
 
 

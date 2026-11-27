@@ -5212,7 +5212,10 @@ LINEAR_TYPES = {
     "IssueFilter.id": "IssueIDComparator",
     "NullableProjectFilter.id": "EntityIdentifierIDComparator",
     "UserSortInput.name": "UserNameSort",
-    # selected by `@linear/sdk`'s own Team and Project fragments
+    # selected by `@linear/sdk`'s own Team, Project and Document fragments
+    "Document.generalAccess": "DocumentShareRole",
+    "Document.personalUser": "User",
+    "Document.workspaceAccess": "DocumentShareRole",
     "Team.initiativesEnabled": "Boolean!",
     "Team.viewerCanJoin": "Boolean!",
     "Team.viewerCanLeave": "Boolean!",
@@ -5290,6 +5293,7 @@ LINEAR_ENUMS = {
     "Day": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
     "ReleaseNoteGenerationStatus": ["pending", "completed"],
     "TeamVisibility": ["public", "restricted", "private"],
+    "DocumentShareRole": ["edit", "comment", "view"],
 }
 
 

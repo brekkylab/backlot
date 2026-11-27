@@ -567,17 +567,6 @@ def answer(scope: Scope) -> Response | None:
     answers such a target with."""
     door, prefix = front_door(scope["path"]) or (None, None)
     sent_path, _, sent_query = scope[SENT].partition(b"?")
-    # A `\` right after the mount is answered by :func:`printable_answer`, as it is without a raw
-    # byte, on the mounts of :data:`_BACKSLASH_FIRST_PAGES`. On S3 the raw byte is read first:
-    # :func:`_s3` answers a raw space with the 505 and otherwise renders the byte into the bucket
-    # name that `InvalidBucketName` repeats. Measured 2026-11-09 (UTC), no credential, on
-    # api.github.com, slack.com, api.notion.com, graph.microsoft.com and S3.
-    first = _backslash_first(sent_path)
-    if first == b"/s3":
-        refused = _s3(scope, _kinds(sent_path), _kinds(sent_query))
-        return refused if refused is not None else printable_answer(scope)
-    if first in _BACKSLASH_FIRST_PAGES:
-        return printable_answer(scope)
     in_path, in_query = _kinds(sent_path), _kinds(sent_query)
     if _backslash_first_at_google(sent_path):  # which :func:`encode_line` read
         if (refused := _google(in_path, in_query)) is not None:
@@ -587,6 +576,17 @@ def answer(scope: Scope) -> Response | None:
         return _page(GOOGLE_PAGE_1555, "text/html; charset=UTF-8", close=False)
     if not (in_path or in_query):  # a `\` first read as a `/` (:func:`_backslash_read_as_a_slash`)
         return None
+    # A `\` right after the mount is answered by :func:`printable_answer`, as it is without a raw
+    # byte, on the mounts of :data:`_BACKSLASH_FIRST_PAGES`. On S3 the raw byte is read first:
+    # :func:`_s3` answers a raw space with the 505 and otherwise renders the byte into the bucket
+    # name that `InvalidBucketName` repeats. Measured 2026-11-09 (UTC), no credential, on
+    # api.github.com, slack.com, api.notion.com, graph.microsoft.com and S3.
+    first = _backslash_first(sent_path)
+    if first == b"/s3":
+        refused = _s3(scope, in_path, in_query)
+        return refused if refused is not None else printable_answer(scope)
+    if first in _BACKSLASH_FIRST_PAGES:
+        return printable_answer(scope)
     if door == "github":
         return _github()
     if door == "slack":

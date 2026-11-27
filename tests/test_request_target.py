@@ -204,6 +204,13 @@ _BACKSLASH_FIRST_METHODS = [
     (b"POST", "/s3", b"\\nope", "s3 InvalidBucketName \\nope"),
     (b"POST", "", b"\\drive/v3/about", "google 1555 kept"),
     (b"HEAD", "", b"\\drive/v3/about", "google 1555 kept"),
+    (b"POST", "", b"\\batch/gmail/v1", "google 1555 kept"),
+    (b"POST", "", b"\\batch/calendar/v3", "google 1555 kept"),
+    (b"POST", "", b"\\batch/tasks/v1", "google 1555 kept"),
+    (b"POST", "", b"\\batch", "google batch kept"),
+    (b"POST", "", b"\\batch/", "google batch kept"),
+    (b"POST", "", b"\\batch/drive/v3", "as /batch/drive/v3"),
+    (b"POST", "", b"\\drive/v3x", "as /drive/v3x"),
 ]
 
 
@@ -885,6 +892,10 @@ _PRINTABLE = [
             b"drive/v3/about",
             b"drive/v3/files",
             b"drive/v3/nope",
+            b"drive/v2",
+            b"drive/v2/",
+            b"drive/v2/about",
+            b"drive/v2/nope",
             b"%64rive/v3/about",
             b"gmail",
             b"gmail/v1x",
@@ -903,6 +914,62 @@ _PRINTABLE = [
             (b"gmail/v1/users/me/profile\x01", "google 54"),
             (b"drive/v3/about\tx", "google 1555"),
             (b"drive/v3/about x", "google 1555"),
+        )
+    ),
+    # the batch endpoint, which is served at its own path: the paths under it
+    # ``request_target._backslash_first_at_google`` takes, and a raw byte beside one
+    *(
+        ("", b"\\" + rest, "google 1555 kept")
+        for rest in (
+            b"batch/gmail",
+            b"batch/gmail/",
+            b"batch/gmail/v1",
+            b"batch/gmail/v1/",
+            b"batch/gmail/v1/x",
+            b"batch/gmail/v1x",
+            b"batch/gmail/v2",
+            b"batch/%67mail/v1",
+            b"batch/calendar",
+            b"batch/calendar/",
+            b"batch/calendar/v2",
+            b"batch/calendar/v3",
+            b"batch/tasks/v1",
+            b"batch/tasks/v1/",
+            b"batch/tasks/v1/x",
+            b"batch/gmail/v1\x80x",
+        )
+    ),
+    *(("", b"\\" + rest, "google batch kept") for rest in (b"batch", b"batch/", b"%62atch")),
+    *(
+        ("", b"\\" + rest, answer)
+        for rest, answer in ((b"batch/gmail/v1\x01x", "google 54"), (b"batch?b=\tx", "google 1555"))
+    ),
+    # past those, under the prefixes of ``request_target._WWW_GOOGLEAPIS`` the `\` is read as a `/`
+    *(
+        ("", b"\\" + rest, "as /" + rest.decode())
+        for rest in (
+            b"drive/v3x",
+            b"drive",
+            b"drivex",
+            b"drive%2Fv3/about",
+            b"drive/v3%2Fabout",
+            b"drive/v2x",
+            b"drive/v1/about",
+            b"upload",
+            b"upload/drive/v3/files",
+            b"batch/x",
+            b"batch/gmailx",
+            b"batch/gmail%2Fv1",
+            b"batch/calendarx",
+            b"batch/tasks",
+            b"batch/tasks/",
+            b"batch/tasks/v1x",
+            b"batch/tasks/v2",
+            b"batch/drive/v3",
+            b"batch/drive/v3x",
+            b"batch/docs/v1",
+            b"batch/sheets/v4",
+            b"batch/slides/v1",
         )
     ),
     ("", b"\\_meta/overlay", "uvicorn"),
@@ -1285,6 +1352,7 @@ _KEEPS_THE_CONNECTION = {
     "cloudflare empty",
     "graph empty",
     "google 1555 kept",
+    "google batch kept",
     "slack 404 empty",
     "cloudfront 403",
     "cloudflare forbidden",
@@ -1319,6 +1387,7 @@ _PAGES = {
     "slack 404 empty": (404, None, b""),
     "google 54": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_54),
     "google 1555": (400, "text/html; charset=UTF-8", request_target.GOOGLE_PAGE_1555),
+    "google batch": (400, "text/plain; charset=utf-8", b"400 Bad Request"),
     "cloudflare page": (400, "text/html", request_target.CLOUDFLARE_PAGE),
     "cloudflare empty": (400, None, b""),
     "cloudflare forbidden": (403, "text/html", bracketed_host.CLOUDFLARE_FORBIDDEN),

@@ -27,6 +27,8 @@ import json
 import math
 import re
 import struct
+from email.message import Message
+from email.parser import BytesHeaderParser
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote
@@ -1390,27 +1392,67 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     )
 
 
-def refuse_a_multipart_with_no_boundary(headers) -> AtlassianError | None:
-    """The 500 Confluence answers an attachment write whose `Content-Type` starts `multipart/` in
-    any case and holds no boundary, or None where it holds one or is no multipart type: the parser
-    fails the request ahead of the media-type check and the caller's refusal, with a credential or
-    without one. The boundary is the last parameter named `boundary` in any case, its value trimmed
-    of :data:`_JAVA_WHITESPACE` and of one pair of quotes around it, and an empty one is none. The
-    body is Spring's `errors` list, under `application/json` where `Accept` admits JSON
-    (:func:`accepts`), under the first `+json` type it names where it admits none but names one, and
-    empty under no `content-type` where it names neither or cannot be read. Measured on Confluence
-    Cloud on 2026-10-16 at `POST content/{id}/child/attachment`, and on 2026-11-26 at each of the
-    attachment writes."""
-    value = (headers.get("content-type") or "").strip(" \t")
-    if value[:10].lower() != "multipart/":
-        return None
+def _multipart_boundary(value: str) -> str:
+    """The boundary the `Content-Type` ``value`` names: the last parameter named `boundary` in any
+    case, its value trimmed of :data:`_JAVA_WHITESPACE` and of one pair of quotes around it, and
+    empty where there is none."""
     boundary = ""
     for parameter in value.split(";")[1:]:
         name, _, given = parameter.partition("=")
         if name.strip(_JAVA_WHITESPACE).lower() == "boundary":
             given = given.strip(_JAVA_WHITESPACE)
             boundary = given[1:-1] if len(given) >= 2 and given[0] == given[-1] == '"' else given
-    if boundary:
+    return boundary
+
+
+def _multipart_parts(boundary: str, body: bytes) -> list[Message] | None:
+    """The header block of each part of ``body`` split at ``boundary``, or None where it does not
+    split: a delimiter is `--` and the boundary, the first one anywhere in the body and each later
+    one after a CRLF; after a delimiter, `--` ends the body and a CRLF opens a part, whose headers
+    end at an empty line and whose content, which is not read, at the next CRLF and delimiter. A
+    body holding no delimiter has no part. Measured on Confluence Cloud on 2026-11-27 at
+    `PUT content/{id}/child/attachment`: a `file` part reached the operation after `preamble` and a
+    CRLF, after `preamble` with nothing between, and with 1,100 `message/rfc822` headers as its
+    content, and a part whose lines ended in LF alone, one with no delimiter after it and one whose
+    headers ran into the closing delimiter were the parser's 500."""
+    delimiter = b"--" + boundary.encode("latin-1")
+    at = body.find(delimiter)
+    if at < 0:
+        return []
+    parts = []
+    while True:
+        at += len(delimiter)
+        if body[at : at + 2] == b"--":
+            return parts
+        if body[at : at + 2] != b"\r\n":
+            return None
+        end = body.find(b"\r\n\r\n", at)
+        if end < 0:
+            return None
+        parts.append(BytesHeaderParser().parsebytes(body[at + 2 : end + 4]))
+        at = body.find(b"\r\n" + delimiter, end + 4)
+        if at < 0:
+            return None
+        at += 2
+
+
+def refuse_a_multipart_it_cannot_read(headers, body: bytes) -> AtlassianError | None:
+    """The 500 Confluence answers an attachment write, with a credential or without one, whose
+    `Content-Type` starts `multipart/` in any case where its parser cannot read the request, or None
+    where it can or the type is no multipart type: the type holds no boundary
+    (:func:`_multipart_boundary`, an empty one being none), or the body does not split at it
+    (:func:`_multipart_parts`). The body is Spring's `errors` list, under `application/json` where
+    `Accept` admits JSON (:func:`accepts`), under the first `+json` type it names where it admits
+    none but names one, and empty under no `content-type` where it names neither or cannot be read.
+    Measured on Confluence Cloud on 2026-10-16 at `POST content/{id}/child/attachment`, on
+    2026-11-26 at each of the attachment writes, and with a body that does not split on 2026-11-27
+    at both writes to `content/{id}/child/attachment`. Which refusals come before it and after it is
+    ``backlot.routers.atlassian._published_answer``'s to say."""
+    value = (headers.get("content-type") or "").strip(" \t")
+    if value[:10].lower() != "multipart/":
+        return None
+    boundary = _multipart_boundary(value)
+    if boundary and _multipart_parts(boundary, body) is not None:
         return None
     accept = headers.get("accept")
     takes = accepts(accept, reader="spring")
@@ -1420,6 +1462,57 @@ def refuse_a_multipart_with_no_boundary(headers) -> AtlassianError | None:
     body = {"status": 500, "code": "INTERNAL_SERVER_ERROR", "title": "Internal Server Error"}
     encoded = json.dumps({"errors": [body]}, separators=(",", ":")).encode()
     return AtlassianError(500, encoded, headers={"Content-Type": media_type})
+
+
+def refuse_a_credentialled_attachment_write(
+    method: str, headers, body: bytes
+) -> AtlassianError | None:
+    """The answer Confluence gives a credentialled attachment write whose multipart body its parser
+    read (:func:`refuse_a_multipart_it_cannot_read`), or None where the operation runs: a `POST` is
+    the XSRF check's 403 unless its `X-Atlassian-Token`, lower-cased, is `nocheck` or `no-check`,
+    and a `PUT`, or a `POST` let past the check, is the 500 for a missing `file` part unless a part
+    is named `file` and has a `filename`, each `application/json` in the shape below. With no
+    credential the three are the caller's 403, which stands.
+
+    Measured on Confluence Cloud on 2026-11-26 and 2026-11-27 at `POST` and
+    `PUT content/{id}/child/attachment` and `POST content/{id}/child/attachment/{id}/data`,
+    `999999999` for every id, which names nothing on that site, and no `Accept`: with the body `x`,
+    each `POST` was the 403 and the `PUT` the 500, and each `POST` with an `X-Atlassian-Token` of
+    `nocheck` the 500; at `child/attachment`, a `POST` was the 500 with `NOCHECK` and `no-check` and
+    the 403 with `x` and an empty value, a `POST` with a `file` part was the 403 and with `nocheck`
+    reached the operation, as a `PUT` with one did, and a `PUT` whose `file` part had no `filename`
+    was the 500.
+    """
+    token = (headers.get("x-atlassian-token") or "").lower()
+    if method == "POST" and token not in ("nocheck", "no-check"):
+        return AtlassianError(
+            403,
+            {
+                "statusCode": 403,
+                "message": (
+                    "com.atlassian.confluence.mvc.rest.common.exception."
+                    'StacklessResponseStatusException: 403 FORBIDDEN "XSRF check failed"'
+                ),
+            },
+        )
+    boundary = _multipart_boundary(headers.get("content-type") or "")
+    if any(
+        part.get_param("name", header="content-disposition") == "file"
+        and part.get_param("filename", header="content-disposition") is not None
+        for part in _multipart_parts(boundary, body) or []
+    ):
+        return None
+    return AtlassianError(
+        500,
+        {
+            "statusCode": 500,
+            "message": (
+                "org.springframework.web.multipart.support."
+                "MissingServletRequestPartException: "
+                "Required request part 'file' is not present"
+            ),
+        },
+    )
 
 
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as

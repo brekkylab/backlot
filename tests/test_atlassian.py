@@ -10279,14 +10279,24 @@ def test_confluence_answers_an_operation_before_it_runs(client):
 
 _UPLOAD = "/wiki/rest/api/content/abc123/child/attachment"
 _ATTACHMENT_WRITES = (("POST", _UPLOAD), ("PUT", _UPLOAD), ("POST", f"{_UPLOAD}/att1/data"))
-_NO_BOUNDARY = (
+_PARSER_500 = (
     b'{"errors":[{"status":500,"code":"INTERNAL_SERVER_ERROR","title":"Internal Server Error"}]}'
 )
+_UNNAMED_UPLOAD = "/wiki/rest/api/content/999999999/child/attachment"
+#: A part named `file` with a `filename`, and that part with its lines ended in LF alone, with no
+#: delimiter after it, and with its first header running into the closing delimiter
+_FILE_PART = (
+    b'--x\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n'
+    b"Content-Type: text/plain\r\n\r\nhello\r\n--x--\r\n"
+)
+_LF_PART = _FILE_PART.replace(b"\r\n", b"\n")
+_UNCLOSED_PART = _FILE_PART.removesuffix(b"--x--\r\n")
+_UNENDED_PART = _FILE_PART.replace(b"Content-Type: text/plain\r\n\r\nhello\r\n", b"")
 
-#: Rows for ``errors.atlassian.refuse_a_multipart_with_no_boundary``, each (method, path,
-#: `Authorization`, `Content-Type`, `Accept`, status, `content-type`) as real answered it;
-#: ``"admin"`` is the admin's token.
-_MULTIPART_NO_BOUNDARY = [
+#: Rows for ``errors.atlassian.refuse_a_multipart_it_cannot_read``, each (method, path,
+#: `Authorization`, `Content-Type`, `Accept`, status, `content-type`) as real answered it with the
+#: body `x`, or with the body an eighth value names; ``"admin"`` is the admin's token.
+_MULTIPART_IT_CANNOT_READ = [
     *(
         (method, path, caller, ctype, None, 500, "application/json")
         for method, path in _ATTACHMENT_WRITES
@@ -10342,11 +10352,44 @@ _MULTIPART_NO_BOUNDARY = [
     # name come first
     ("POST", _UPLOAD, "Basic !!!", "multipart/form-data", None, 401, "text/html;charset=utf-8"),
     ("POST", _UPLOAD, None, "multipart/form-data;charset=", None, 500, None),
+    # a body that does not split at its boundary
+    *(
+        (method, _UNNAMED_UPLOAD, caller, "multipart/form-data; boundary=x", None, 500)
+        + ("application/json", body)
+        for method, caller, body in (
+            ("PUT", "admin", _LF_PART),
+            ("PUT", "admin", _UNCLOSED_PART),
+            ("POST", "admin", _LF_PART),
+            ("PUT", None, _LF_PART),
+            ("POST", None, _LF_PART),
+            ("PUT", None, _UNCLOSED_PART),
+            ("PUT", "admin", _UNENDED_PART),
+        )
+    ),
+    *(
+        ("PUT", _UNNAMED_UPLOAD, "admin", ctype, accept, 500, media_type, _LF_PART)
+        for ctype, accept, media_type in (
+            ("multipart/form-data; boundary=x", "text/html", None),
+            ("multipart/mixed; boundary=x", None, "application/json"),
+            ("multipart/form-data; boundary=x;charset=nope", None, "application/json"),
+        )
+    ),
+    ("PUT", _UNNAMED_UPLOAD, "Basic !!!", "multipart/form-data; boundary=x", None, 401)
+    + ("text/html;charset=utf-8", _LF_PART),
 ]
 
 
-def _multipart_no_boundary(
-    client, admin_h, method, vendor_path, authorization, ctype, accept, status, media_type
+def _multipart_it_cannot_read(
+    client,
+    admin_h,
+    method,
+    vendor_path,
+    authorization,
+    ctype,
+    accept,
+    status,
+    media_type,
+    body=b"x",
 ):
     headers = [("Content-Type", ctype)]
     if authorization is not None:
@@ -10354,14 +10397,128 @@ def _multipart_no_boundary(
         headers.append(("Authorization", token))
     if accept is not None:
         headers.append(("Accept", accept))
-    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=b"x")
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
     assert (r.status_code, r.headers.get("content-type")) == (status, media_type), r.text[:200]
     if status == 500:
-        assert r.content == (_NO_BOUNDARY if media_type else b"")
+        assert r.content == (_PARSER_500 if media_type else b"")
 
 
-def test_confluence_fails_a_multipart_upload_with_no_boundary(client, admin_h):
-    assert _failures(_multipart_no_boundary, _MULTIPART_NO_BOUNDARY, client, admin_h) == {}
+def test_confluence_fails_a_multipart_upload_it_cannot_read(client, admin_h):
+    assert _failures(_multipart_it_cannot_read, _MULTIPART_IT_CANNOT_READ, client, admin_h) == {}
+
+
+#: Rows for ``errors.atlassian.refuse_a_credentialled_attachment_write``, each (method, path,
+#: `Authorization`, a header it names, body, status, answer) as real answered it with the
+#: `Content-Type` `multipart/form-data; boundary=x`, the answer its JSON body or, for Tomcat's 406
+#: page, its `content-type`; ``"admin"`` is the admin's token. Where real ran the operation (its 404
+#: for the id), the answer is the one this server gives that operation, which it does not serve.
+_XSRF_403 = {
+    "statusCode": 403,
+    "message": (
+        "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
+        '403 FORBIDDEN "XSRF check failed"'
+    ),
+}
+_MISSING_FILE_PART_500 = {
+    "statusCode": 500,
+    "message": (
+        "org.springframework.web.multipart.support.MissingServletRequestPartException: "
+        "Required request part 'file' is not present"
+    ),
+}
+_CALLER_403 = {"statusCode": 403, "message": errors_atlassian.CONFLUENCE_FORBIDDEN}
+_POST_405 = {
+    "errors": [
+        {
+            "status": 405,
+            "code": "METHOD_NOT_ALLOWED",
+            "title": (
+                "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                "Request method 'POST' not supported"
+            ),
+        }
+    ]
+}
+_PUT_405 = {
+    "errors": [
+        {
+            "status": 405,
+            "code": "METHOD_NOT_ALLOWED",
+            "title": (
+                "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                "Request method 'PUT' not supported"
+            ),
+        }
+    ]
+}
+_UNNAMED_DATA = f"{_UNNAMED_UPLOAD}/att999999999/data"
+_NOCHECK = ("X-Atlassian-Token", "nocheck")
+#: A part named `file` with no `filename`, a `file` part whose content is 1,100 `message/rfc822`
+#: headers, and the `file` part after a preamble and a CRLF and after one with nothing between
+_NAME_ONLY_PART = _FILE_PART.replace(b'; filename="a.txt"', b"")
+_NESTED_PART = (
+    _FILE_PART.replace(b'"a.txt"', b'"a.eml"')
+    .replace(b"text/plain", b"message/rfc822")
+    .replace(b"hello", b"Content-Type: message/rfc822\r\n\r\n" * 1100 + b"x")
+)
+_PREAMBLED_PARTS = (b"preamble\r\n" + _FILE_PART, b"preamble" + _FILE_PART)
+_ATTACHMENT_WRITE_WITH_BOUNDARY = [
+    ("POST", _UNNAMED_UPLOAD, "admin", None, b"x", 403, _XSRF_403),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, b"x", 500, _MISSING_FILE_PART_500),
+    ("POST", _UNNAMED_DATA, "admin", None, b"x", 403, _XSRF_403),
+    ("POST", _UNNAMED_UPLOAD, None, None, b"x", 403, _CALLER_403),
+    ("PUT", _UNNAMED_UPLOAD, None, None, b"x", 403, _CALLER_403),
+    ("POST", _UNNAMED_DATA, None, None, b"x", 403, _CALLER_403),
+    ("POST", _UNNAMED_UPLOAD, "admin", _NOCHECK, b"x", 500, _MISSING_FILE_PART_500),
+    ("POST", _UNNAMED_DATA, "admin", _NOCHECK, b"x", 500, _MISSING_FILE_PART_500),
+    ("PUT", _UNNAMED_UPLOAD, "admin", _NOCHECK, b"x", 500, _MISSING_FILE_PART_500),
+    *(
+        ("POST", _UNNAMED_UPLOAD, "admin", ("X-Atlassian-Token", token), b"x", status, answer)
+        for token, status, answer in (
+            ("NOCHECK", 500, _MISSING_FILE_PART_500),
+            ("no-check", 500, _MISSING_FILE_PART_500),
+            ("x", 403, _XSRF_403),
+            ("", 403, _XSRF_403),
+        )
+    ),
+    ("POST", _UNNAMED_UPLOAD, "admin", None, _FILE_PART, 403, _XSRF_403),
+    ("POST", _UNNAMED_UPLOAD, "admin", _NOCHECK, _FILE_PART, 405, _POST_405),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, _FILE_PART, 405, _PUT_405),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, _NESTED_PART, 405, _PUT_405),
+    *(("PUT", _UNNAMED_UPLOAD, "admin", None, body, 405, _PUT_405) for body in _PREAMBLED_PARTS),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, _NAME_ONLY_PART, 500, _MISSING_FILE_PART_500),
+    # `Accept` comes first
+    *(
+        (method, _UNNAMED_UPLOAD, "admin", ("Accept", "text/html"), b"x", 406)
+        + ("text/html;charset=utf-8",)
+        for method in ("POST", "PUT")
+    ),
+]
+
+
+def _attachment_write_with_boundary(
+    client, admin_h, method, vendor_path, authorization, header, body, status, answer
+):
+    headers = [("Content-Type", "multipart/form-data; boundary=x")]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    if header is not None:
+        headers.append(header)
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    if isinstance(answer, str):
+        assert r.headers.get("content-type") == answer
+    else:
+        assert r.headers.get("content-type") == "application/json"
+        assert r.json() == answer
+
+
+def test_confluence_refuses_a_credentialled_attachment_write_with_a_boundary(client, admin_h):
+    assert (
+        _failures(_attachment_write_with_boundary, _ATTACHMENT_WRITE_WITH_BOUNDARY, client, admin_h)
+        == {}
+    )
 
 
 _EMPTY_CHARSET = "text/plain;charset="

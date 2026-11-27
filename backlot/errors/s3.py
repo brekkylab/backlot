@@ -58,6 +58,12 @@ def rendered(request: Request, status_code: int, body: dict, headers=None) -> Re
     return None
 
 
+def parse_request_id(request_id: str) -> str:
+    """Derive the unpadded uppercase hex id measured for the parse 400 in
+    :func:`method_not_allowed`."""
+    return f"{int.from_bytes(hashlib.shake_256(request_id.encode()).digest(8)):X}"
+
+
 def method_not_allowed(path: str, method: str) -> S3Error:
     """Real's answer to a method S3 defines nothing for: the parse 400, not a 405.
 
@@ -75,7 +81,7 @@ def method_not_allowed(path: str, method: str) -> S3Error:
     ids = REQUEST_IDS.get()
     headers, tail = {}, ""
     if ids is not None:
-        request_id = f"{int.from_bytes(hashlib.shake_256(ids[0].encode()).digest(8)):X}"
+        request_id = parse_request_id(ids[0])
         headers = {"x-amz-request-id": request_id}
         tail = f"<RequestId>{request_id}</RequestId><HostId>{ids[1]}</HostId>"
     return S3Error(

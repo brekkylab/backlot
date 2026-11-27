@@ -2508,17 +2508,46 @@ def route_regex(template: str) -> re.Pattern[str]:
 _JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_ALLOW)
 
 
-#: (method, path pattern) for each operation Jira's documents publish, served here or not. Real's
-#: `Allow` names every method published on each template the path matches, measured on Jira Cloud
-#: 2026-11-24 under `/rest/api/3` and on the Connect, Forge and internal mounts: a `POST` on
-#: `dashboard/search`, `filter/favourite` and `issuetype/project` named the `GET` published there
-#: with the `PUT` and `DELETE` published where that segment is an id. The rows above claim every
-#: served path first, so what this adds are the baseline's `missing` operations.
+_JIRA_BASELINE = json.loads(
+    (_PACKAGE / "fidelity" / "baseline" / "jira.json").read_text(encoding="utf-8")
+)["operations"]
+
+
+def _jira_v2_spellings() -> dict[str, str]:
+    """The `/rest/api/2` spelling of each operation the Jira baseline acknowledges ``missing``
+    under `/rest/api/3` and lists under `/rest/api/2` not at all, the `/rest/api/3` row it spells.
+
+    Jira serves under `/rest/api/2` what its v3 document alone publishes (the nine under `bulk/`
+    and the two under `agents/bulk/invoke/`), and answers it there as under `/rest/api/3`. Measured
+    on Jira Cloud 2026-10-13 under both versions: with no credential, the three `GET`s, the eight
+    `POST`s with `{}` as `application/json` and an `OPTIONS` on each path were the 401, and each
+    `POST` with a `text/plain` body the 415; with a non-administrator's credential,
+    `bulk/queue/999999999` was its 404, `bulk/issues/fields?issueIdsOrKeys=NOPE-1` its 400 and the
+    two agent invocations their 400, while `POST bulk/issues/nosuchthing` was the 404 of a path
+    neither document publishes. The baseline lists what each document publishes, so these spellings
+    are read here rather than written there.
+    """
+    listed = {e["operation"] for e in _JIRA_BASELINE}
+    spellings = {}
+    for e in _JIRA_BASELINE:
+        method, path = e["operation"].split(" ", 1)
+        if e["status"] == "missing" and path.startswith("/rest/api/3/"):
+            spelling = f"{method} /rest/api/2/{path.removeprefix('/rest/api/3/')}"
+            if spelling not in listed:
+                spellings[spelling] = e["operation"]
+    return spellings
+
+
+JIRA_V2_SPELLINGS = _jira_v2_spellings()
+#: (method, path pattern) for each operation Jira's documents publish, served here or not, and for
+#: each `/rest/api/2` spelling of :data:`JIRA_V2_SPELLINGS`. Real's `Allow` names every method
+#: published on each template the path matches, measured on Jira Cloud 2026-11-24 under
+#: `/rest/api/3` and on the Connect, Forge and internal mounts: a `POST` on `dashboard/search`,
+#: `filter/favourite` and `issuetype/project` named the `GET` published there with the `PUT` and
+#: `DELETE` published where that segment is an id. The rows above claim every served path first, so
+#: what this adds are the baseline's `missing` operations and those spellings.
 _JIRA_PUBLISHED_OPS = published.operations(
-    entry["operation"]
-    for entry in json.loads(
-        (_PACKAGE / "fidelity" / "baseline" / "jira.json").read_text(encoding="utf-8")
-    )["operations"]
+    [*(entry["operation"] for entry in _JIRA_BASELINE), *JIRA_V2_SPELLINGS]
 )
 
 

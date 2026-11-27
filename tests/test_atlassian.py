@@ -7591,6 +7591,12 @@ _WRONG_METHODS = [
         ("post", "/rest/api/3/dashboard/search", "DELETE, GET, PUT"),
         ("post", "/rest/api/3/filter/favourite", "DELETE, GET, PUT"),
         ("post", "/rest/api/3/issuetype/project", "DELETE, GET, PUT"),
+        # the `/rest/api/2` spelling of an operation only the v3 document publishes, as its
+        # `/rest/api/3` one (``errors.atlassian.JIRA_V2_SPELLINGS``)
+        ("delete", "/rest/api/2/bulk/issues/watch", "POST"),
+        ("delete", "/rest/api/3/bulk/issues/watch", "POST"),
+        ("put", "/rest/api/2/bulk/issues/fields", "GET, POST"),
+        ("put", "/rest/api/3/bulk/issues/fields", "GET, POST"),
         ("delete", "/rest/atlassian-connect/1/service-registry", "GET"),
         ("put", "/rest/atlassian-connect/1/app/module/dynamic", "DELETE, GET, POST"),
         ("put", "/rest/atlassian-connect/1/migration/x/y/task", "GET, POST"),
@@ -8194,6 +8200,19 @@ def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
     assert r.text == page
 
 
+#: The paths of the operations the v3 document publishes and the v2 document does not.
+_V3_ONLY_PATHS = (
+    "agents/bulk/invoke/batch",
+    "agents/bulk/invoke/uniform",
+    "bulk/issues/delete",
+    "bulk/issues/fields",
+    "bulk/issues/move",
+    "bulk/issues/transition",
+    "bulk/issues/unwatch",
+    "bulk/issues/watch",
+    "bulk/queue/999999999",
+)
+
 _CREDENTIALS = {
     "none": {},
     "none-text-html": {"Accept": "text/html"},
@@ -8230,6 +8249,23 @@ _CREDENTIALS = {
         ("DELETE", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
         ("POST", "/atlassian/rest/api/3/instance/license", "none", 405),
         ("PUT", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", 405),
+        # one only the v3 document publishes, which real answers under `/rest/api/2` as well
+        *(
+            ("GET", f"/atlassian/rest/api/{version}/{path}", "none", 401)
+            for version in ("2", "3")
+            for path in (
+                "bulk/issues/fields?issueIdsOrKeys=NOPE-1",
+                "bulk/issues/transition?issueIdsOrKeys=NOPE-1",
+                "bulk/queue/999999999",
+            )
+        ),
+        ("GET", "/atlassian/rest/api/2/bulk/queue/999999999", "admin", 404),
+        ("GET", "/atlassian/rest/api/3/bulk/queue/999999999", "admin", 404),
+        *(
+            ("OPTIONS", f"/atlassian/rest/api/{version}/{path}", "none", 401)
+            for version in ("2", "3")
+            for path in _V3_ONLY_PATHS
+        ),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "failed-pair", 401),
@@ -8337,6 +8373,23 @@ _JSON = "application/json"
         ("POST", _AGENTS, "none", None, None, 415, "null", _JSON),
         ("POST", _AGENTS, "none", _JSON, "{}", 401, None, None),
         ("POST", _AGENTS, "admin", _JSON, "{}", 404, None, None),
+        # and on each write only the v3 document publishes, under `/rest/api/2` as under
+        # `/rest/api/3`, where a path neither publishes is the URL's 404
+        *(
+            ("POST", f"/atlassian/rest/api/{version}/{path}", "none") + answer
+            for version in ("2", "3")
+            for path in _V3_ONLY_PATHS
+            if not path.startswith("bulk/queue/")
+            for answer in (
+                (_JSON, "{}", 401, None, None),
+                ("text/plain", "x", 415, "text/plain", _JSON),
+            )
+        ),
+        ("POST", _AGENTS.replace("/3/", "/2/"), "admin", _JSON, "{}", 404, None, None),
+        *(
+            ("POST", f"{api}/bulk/issues/nosuchthing", "none", _JSON, "{}", 404, None, None)
+            for api in ("/atlassian/rest/api/2", "/atlassian/rest/api/3")
+        ),
         (
             "POST",
             "/atlassian/rest/api/3/jql/parse",

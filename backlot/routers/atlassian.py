@@ -6196,13 +6196,22 @@ def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...
     return _operations(e["operation"] for e in entries if e["status"] == "missing")
 
 
-_JIRA_PUBLISHED = _published_not_served("jira")
+_JIRA_PUBLISHED = _published_not_served("jira") + _operations(errors_atlassian.JIRA_V2_SPELLINGS)
 _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
 #: What real answers before each Jira operation of those runs, operation by operation;
 #: ``scripts/gen_jira_unserved.py`` writes the file from Jira's documents and says how that was
-#: measured.
+#: measured. A `/rest/api/2` spelling of a ``refused`` row is refused as its row is; the generator
+#: sorts no row of ``errors.atlassian.JIRA_V2_SPELLINGS`` into ``run``, so ``run`` gets none.
 _JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text(encoding="utf-8"))
-_JIRA_ENTRIES = {**_JIRA_UNSERVED["refused"], **_JIRA_UNSERVED["run"]}
+_JIRA_REFUSED = {
+    **_JIRA_UNSERVED["refused"],
+    **{
+        spelling: _JIRA_UNSERVED["refused"][row]
+        for spelling, row in errors_atlassian.JIRA_V2_SPELLINGS.items()
+        if row in _JIRA_UNSERVED["refused"]
+    },
+}
+_JIRA_ENTRIES = {**_JIRA_REFUSED, **_JIRA_UNSERVED["run"]}
 _JIRA_OPERATIONS = tuple(
     (row, method, pattern)
     for row, (method, pattern) in zip(_JIRA_ENTRIES, _operations(_JIRA_ENTRIES), strict=True)
@@ -6770,7 +6779,7 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     if operation in _JIRA_ROLE_WRITES:
         _role_id(request, vendor_path.split("/")[7])
     if auth.atlassian_caller(request).is_anonymous and (
-        operation in _JIRA_UNSERVED["refused"]
+        operation in _JIRA_REFUSED
         or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
     ):
         return _jira_unauthenticated(request)

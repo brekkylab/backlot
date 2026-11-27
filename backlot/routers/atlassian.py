@@ -21,7 +21,6 @@ import time
 import unicodedata
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from functools import cache
 from html.entities import codepoint2name
 from pathlib import Path
 from urllib.parse import quote
@@ -6187,61 +6186,28 @@ def _operations(rows) -> tuple[tuple[str, re.Pattern[str]], ...]:
     return tuple(operations)
 
 
-@cache
-def _baseline_operations(source: str) -> tuple[dict, ...]:
-    baseline = _PACKAGE / "fidelity" / "baseline" / f"{source}.json"
-    return tuple(json.loads(baseline.read_text(encoding="utf-8"))["operations"])
-
-
-def _jira_v2_spellings() -> dict[str, str]:
-    """The `/rest/api/2` spelling of each operation the Jira baseline acknowledges ``missing``
-    under `/rest/api/3` and lists under `/rest/api/2` not at all, the `/rest/api/3` row it spells.
-
-    Jira serves under `/rest/api/2` what its v3 document alone publishes (the nine under `bulk/`
-    and the two under `agents/bulk/invoke/`), and answers it there as under `/rest/api/3`. Measured
-    on Jira Cloud 2026-10-13 under both versions: with no credential, the three `GET`s, the eight
-    `POST`s with `{}` as `application/json` and an `OPTIONS` on each path were the 401, and each
-    `POST` with a `text/plain` body the 415; with a non-administrator's credential,
-    `bulk/queue/999999999` was its 404, `bulk/issues/fields?issueIdsOrKeys=NOPE-1` its 400 and the
-    two agent invocations their 400, while `POST bulk/issues/nosuchthing` was the 404 of a path
-    neither document publishes. The baseline lists what each document publishes, so these spellings
-    are read here rather than written there.
-    """
-    entries = _baseline_operations("jira")
-    published = {e["operation"] for e in entries}
-    spellings = {}
-    for e in entries:
-        method, path = e["operation"].split(" ", 1)
-        if e["status"] == "missing" and path.startswith("/rest/api/3/"):
-            spelling = f"{method} /rest/api/2/{path.removeprefix('/rest/api/3/')}"
-            if spelling not in published:
-                spellings[spelling] = e["operation"]
-    return spellings
-
-
-def _published_not_served(source: str, also=()) -> tuple[tuple[str, re.Pattern[str]], ...]:
+def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
     """The operations the vendor publishes and no route here serves: the baseline's ``missing``
     operations, read off the file as ``backlot.published`` reads them, so an operation the vendor
     adds reaches :func:`unmatched_path` once the baseline acknowledges it; a route added here wins
-    over :func:`unmatched_path` whatever the file says. ``also`` adds rows the file has no row for,
-    as Jira's :func:`_jira_v2_spellings`."""
-    entries = _baseline_operations(source)
-    return _operations([*(e["operation"] for e in entries if e["status"] == "missing"), *also])
+    over :func:`unmatched_path` whatever the file says."""
+    baseline = _PACKAGE / "fidelity" / "baseline" / f"{source}.json"
+    entries = json.loads(baseline.read_text(encoding="utf-8"))["operations"]
+    return _operations(e["operation"] for e in entries if e["status"] == "missing")
 
 
-_JIRA_V2_SPELLINGS = _jira_v2_spellings()
-_JIRA_PUBLISHED = _published_not_served("jira", _JIRA_V2_SPELLINGS)
+_JIRA_PUBLISHED = _published_not_served("jira") + _operations(errors_atlassian.JIRA_V2_SPELLINGS)
 _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
 #: What real answers before each Jira operation of those runs, operation by operation;
 #: ``scripts/gen_jira_unserved.py`` writes the file from Jira's documents and says how that was
 #: measured. A `/rest/api/2` spelling of a ``refused`` row is refused as its row is; the generator
-#: sorts no row of :func:`_jira_v2_spellings` into ``run``, so ``run`` gets none.
+#: sorts no row of ``errors.atlassian.JIRA_V2_SPELLINGS`` into ``run``, so ``run`` gets none.
 _JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text(encoding="utf-8"))
 _JIRA_REFUSED = {
     **_JIRA_UNSERVED["refused"],
     **{
         spelling: _JIRA_UNSERVED["refused"][row]
-        for spelling, row in _JIRA_V2_SPELLINGS.items()
+        for spelling, row in errors_atlassian.JIRA_V2_SPELLINGS.items()
         if row in _JIRA_UNSERVED["refused"]
     },
 }

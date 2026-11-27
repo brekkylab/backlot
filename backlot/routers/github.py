@@ -2880,6 +2880,10 @@ def _repo_visibility_keeps(value: str | None) -> Callable[[bool], bool] | None:
     return None
 
 
+# The whitespace a search `q` is split on: Python's `\s` without the separators U+001C-U+001F,
+# the line :func:`odata.is_blank` draws. Every run collapses to one space, so the ends are
+# stripped of spaces only and a separator at an end stays free text.
+_GH_Q_WS = re.compile(r"[^\S\x1c-\x1f]+")
 _GH_OP = re.compile(r'(\w+):("[^"]*"|\S+)')
 # The qualifiers each search endpoint honors. They differ because the resources do: an issue has a
 # state and an author, a file has a path and an extension. A key absent from the set stays as free
@@ -2890,7 +2894,8 @@ _GH_CODE_QUALS = {"repo", "path", "filename", "extension", "in"}
 
 def _parse_q(q: str, keys: set[str]) -> tuple[str, dict]:
     """Split a GitHub search `q` into (free_text, qualifiers), honoring the keys in `keys`.
-    Everything else is free text, matched full-text."""
+    Everything else is free text, matched full-text, a separator U+001C-U+001F among it: real
+    searches for one beside a qualifier (see :func:`search_issues` and :func:`search_code`)."""
     quals: dict[str, list[str]] = {}
 
     def _take(m):
@@ -2900,7 +2905,7 @@ def _parse_q(q: str, keys: set[str]) -> tuple[str, dict]:
             return " "
         return m.group(0)
 
-    free = re.sub(r"\s+", " ", _GH_OP.sub(_take, q)).strip()
+    free = _GH_Q_WS.sub(" ", _GH_OP.sub(_take, q)).strip(" ")
     return free, quals
 
 
@@ -2984,18 +2989,15 @@ async def search_issues(
     :func:`backlot.odata.strip_blanks` leaves nothing of it: a space, a tab, LF, VT, FF, CR,
     U+0085, U+00A0, U+2000 and U+3000 were each the 422, where U+001C, U+001D, U+001E, U+001F and
     U+200B were each the search's 200 with `total_count` 0 (measured against api.github.com on
-    2026-11-21 and 2026-11-24, UTC)."""
+    2026-11-21 and 2026-11-24, UTC). So was each of U+001C to U+001F followed by a space and
+    `is:issue`, and `is:issue` followed by U+001C with or without a space between (measured
+    2026-11-26, UTC)."""
     caller = _require(request)
     if not odata.strip_blanks(q):
         raise _search_validation_failed("q")
     conn = auth.conn(request)
     ids = auth.visible_ids(request, caller)
     free, quals = _parse_q(q, _GH_ISSUE_QUALS)
-    # `_parse_q` collapses Unicode whitespace with regex \s, which includes U+001C-U+001F, so a
-    # q of only those would look qualifier-only and list every issue. Real searches them and
-    # answers total_count 0, as it does for U+200B.
-    if not free and not quals and (leftover := odata.strip_blanks(q)):
-        free = leftover
     # _org, not the setting directly: the owner a `repo:` is compared against, and the one in the
     # URLs these items carry, has to be the one the repo routes accept, or every link a client
     # follows out of a search hit 404s
@@ -3320,7 +3322,8 @@ async def search_code(
     :func:`_search_query_parsing_fatal` answers. The other blanks measured were searched for as text
     with spaces and tabs trimmed from their ends: `%1D` found 69 files, `%1E` 48 and `%0A%0A`
     4,009,754,624, where `%0A`, `+%0A`, `%0A+` and `%09%0A%09` found 6,652,166,144 each (measured
-    against api.github.com on 2026-11-21 and 2026-11-24, UTC).
+    against api.github.com on 2026-11-21 and 2026-11-24, UTC). `%1D extension:md`, a separator
+    beside a qualifier, found 45 files (measured 2026-11-26, UTC).
 
     A `page` / `per_page` that is not an unsigned 32-bit integer, or a `q`, `page` or `per_page`
     given twice, is refused once the credential is, and in text/plain: of the ten GitHub surfaces
@@ -3374,12 +3377,20 @@ async def search_code(
     # double-count a file both of them found. Insertion order is the result order: FTS relevance
     # first, then the paths that matched on their name alone.
     rows: dict = {}
-    if free and "file" in targets:
+    # No free text, or separators U+001C-U+001F with nothing but spaces among them (`str.strip`
+    # takes them as whitespace): no term to search the index or a path for.
+    blanks = not free.strip()
+    if not blanks and "file" in targets:
         for r in store.search_repo_files(conn, free, ids, repo=one):
             rows.setdefault((r["repo"], r["path"]), r)
-    if free and "path" in targets:
+    if not blanks and "path" in targets:
         for r in store.search_repo_files(conn, None, ids, repo=one, path_like=terms):
             rows.setdefault((r["repo"], r["path"]), r)
+    if blanks and free:  # separators, searched for as text (see the docstring)
+        text = free if quals else q.strip(" \t")
+        for r in store.search_repo_files(conn, None, ids, repo=one):
+            if text in (r["content"] or ""):
+                rows.setdefault((r["repo"], r["path"]), r)
     if not free:  # qualifier-only, which real also serves
         for r in store.search_repo_files(conn, None, ids, repo=one):
             rows.setdefault((r["repo"], r["path"]), r)

@@ -6196,13 +6196,22 @@ def _published_not_served(source: str) -> tuple[tuple[str, re.Pattern[str]], ...
     return _operations(e["operation"] for e in entries if e["status"] == "missing")
 
 
-_JIRA_PUBLISHED = _published_not_served("jira")
+_JIRA_PUBLISHED = _published_not_served("jira") + _operations(errors_atlassian.JIRA_V2_SPELLINGS)
 _CONFLUENCE_PUBLISHED = _published_not_served("confluence")
 #: What real answers before each Jira operation of those runs, operation by operation;
 #: ``scripts/gen_jira_unserved.py`` writes the file from Jira's documents and says how that was
-#: measured.
+#: measured. A `/rest/api/2` spelling of a ``refused`` row is refused as its row is; the generator
+#: sorts no row of ``errors.atlassian.JIRA_V2_SPELLINGS`` into ``run``, so ``run`` gets none.
 _JIRA_UNSERVED = json.loads((_PACKAGE / "data" / "jira_unserved.json").read_text(encoding="utf-8"))
-_JIRA_ENTRIES = {**_JIRA_UNSERVED["refused"], **_JIRA_UNSERVED["run"]}
+_JIRA_REFUSED = {
+    **_JIRA_UNSERVED["refused"],
+    **{
+        spelling: _JIRA_UNSERVED["refused"][row]
+        for spelling, row in errors_atlassian.JIRA_V2_SPELLINGS.items()
+        if row in _JIRA_UNSERVED["refused"]
+    },
+}
+_JIRA_ENTRIES = {**_JIRA_REFUSED, **_JIRA_UNSERVED["run"]}
 _JIRA_OPERATIONS = tuple(
     (row, method, pattern)
     for row, (method, pattern) in zip(_JIRA_ENTRIES, _operations(_JIRA_ENTRIES), strict=True)
@@ -6406,6 +6415,18 @@ _CONFLUENCE_CONSUMES = tuple(
         ),
     )
     for method, pattern in _operations(rows)
+)
+
+#: The three Confluence attachment writes a credentialled caller reaches past the caller's refusal,
+#: which ``errors.atlassian.refuse_a_credentialled_attachment_write`` answers. They are the
+#: `multipart/form-data` rows of :data:`_CONFLUENCE_CONSUMES`, named here because the refusal is
+#: theirs alone, not every operation that consumes the type.
+_CONFLUENCE_ATTACHMENT_WRITES = _operations(
+    [
+        "POST /wiki/rest/api/content/{}/child/attachment",
+        "PUT /wiki/rest/api/content/{}/child/attachment",
+        "POST /wiki/rest/api/content/{}/child/attachment/{}/data",
+    ]
 )
 
 
@@ -6675,7 +6696,7 @@ def refuse_a_spring_confluence_charset(request: Request) -> Response | None:
     return Response(refused.body, status_code=refused.status_code)
 
 
-def _published_answer(request: Request, vendor_path: str) -> Response | None:
+async def _published_answer(request: Request, vendor_path: str) -> Response | None:
     """What real answers before an operation it publishes at ``vendor_path`` and no route here
     serves runs for this caller, or None where it would run, which is where Backlot has nothing to
     give but the gap the baseline's `missing` operation acknowledges.
@@ -6690,14 +6711,17 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     the caller can see is its 404, and a role write's is followed by the 401
     :func:`_require_project_admin` gives. The operation is the one :func:`_jira_operation` names.
 
-    Confluence answers a Basic value it cannot read with Tomcat's 401 first, then checks the media
-    type where the operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS operations their
-    own way, :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
+    Confluence answers a Basic value it cannot read with Tomcat's 401 first, then fails an
+    attachment write whose multipart request its parser cannot read
+    (``errors.atlassian.refuse_a_multipart_it_cannot_read``), then checks the media type where the
+    operation does (:data:`_CONFLUENCE_CONSUMES`, and its JAX-RS operations their own way,
+    :func:`_confluence_jaxrs_media_refusal`), then `Accept` (on every operation but
     :data:`_CONFLUENCE_REFUSED_BY_ACCEPT`, and with no body on the JAX-RS ones), then refuses a
     caller with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
     (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
     and with one holding no colon, each with a body of a type the operation does not take, and the
-    `Accept` check's 2026-10-13.
+    `Accept` check's 2026-10-13. A credentialled caller's attachment write is then checked before
+    it runs (``errors.atlassian.refuse_a_credentialled_attachment_write``).
     """
     method = request.method
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
@@ -6712,6 +6736,12 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
             _confluence_caller(request)  # Tomcat's 401, ahead of the media-type check too
         for verb, pattern, consumes in _CONFLUENCE_CONSUMES:
             if verb == method and pattern.fullmatch(vendor_path):
+                if "multipart/form-data" in consumes:
+                    unreadable = errors_atlassian.refuse_a_multipart_it_cannot_read(
+                        request.headers, await request.body()
+                    )
+                    if unreadable is not None:
+                        raise unreadable
                 refused = errors_atlassian.refuse_a_confluence_media_type(request.headers, consumes)
                 if refused is not None:
                     raise refused
@@ -6742,7 +6772,16 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
                     produces=produces,
                 ),
             )
-        return _confluence_refusal(request, vendor_path)
+        refusal = _confluence_refusal(request, vendor_path)
+        if refusal is not None:
+            return refusal
+        if _is(_CONFLUENCE_ATTACHMENT_WRITES, method, vendor_path):
+            refused = errors_atlassian.refuse_a_credentialled_attachment_write(
+                method, request.headers, await request.body()
+            )
+            if refused is not None:
+                raise refused
+        return None
     if not errors_atlassian.serves_the_jira_api(request.url.path):
         return None
     operation = _jira_operation(method, vendor_path)
@@ -6762,7 +6801,7 @@ def _published_answer(request: Request, vendor_path: str) -> Response | None:
     if operation in _JIRA_ROLE_WRITES:
         _role_id(request, vendor_path.split("/")[7])
     if auth.atlassian_caller(request).is_anonymous and (
-        operation in _JIRA_UNSERVED["refused"]
+        operation in _JIRA_REFUSED
         or (method == "OPTIONS" and _is(_JIRA_PUBLISHED, None, vendor_path))
     ):
         return _jira_unauthenticated(request)
@@ -7166,7 +7205,7 @@ async def unmatched_path(request: Request, rest: str) -> Response:
     served = _some_atlassian_route_matches(request)
     if served and request.method == "OPTIONS":
         return _options_answer(request)
-    published = _published_answer(request, vendor_path)
+    published = await _published_answer(request, vendor_path)
     if published is not None:
         return published
     if served and not _is(_CONFLUENCE_CONVERSION_WRITES, request.method, vendor_path):

@@ -7744,19 +7744,6 @@ _CREDENTIALS = {
 @pytest.mark.parametrize(
     "method,path,credential,status",
     [
-        # an operation Jira publishes and no route here serves, which will not run anonymously
-        ("GET", "/atlassian/rest/api/3/myself", "none", 401),
-        ("GET", "/atlassian/rest/api/3/myself", "failed-pair", 401),
-        ("GET", "/atlassian/rest/api/3/myself", "unknown-scheme", 401),
-        ("DELETE", "/atlassian/rest/api/3/screens/999999999", "none", 401),
-        ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "none", 401),
-        # the controls: one that runs anonymously on real, where Backlot has no operation to run,
-        # and the same refused path with a credential, both the baseline's gap; and a bearer it
-        # cannot read on a GET, which is the Connect-token 403 before any of this
-        ("GET", "/atlassian/rest/api/3/dashboard", "none", 404),
-        ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
-        ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "admin", 404),
-        ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
         # one only the v3 document publishes, which real answers under `/rest/api/2` as well
         *(
             ("GET", f"/atlassian/rest/api/{version}/{path}", "none", 401)
@@ -7774,6 +7761,19 @@ _CREDENTIALS = {
             for version in ("2", "3")
             for path in _V3_ONLY_PATHS
         ),
+        # an operation Jira publishes and no route here serves, which will not run anonymously
+        ("GET", "/atlassian/rest/api/3/myself", "none", 401),
+        ("GET", "/atlassian/rest/api/3/myself", "failed-pair", 401),
+        ("GET", "/atlassian/rest/api/3/myself", "unknown-scheme", 401),
+        ("DELETE", "/atlassian/rest/api/3/screens/999999999", "none", 401),
+        ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "none", 401),
+        # the controls: one that runs anonymously on real, where Backlot has no operation to run,
+        # and the same refused path with a credential, both the baseline's gap; and a bearer it
+        # cannot read on a GET, which is the Connect-token 403 before any of this
+        ("GET", "/atlassian/rest/api/3/dashboard", "none", 404),
+        ("GET", "/atlassian/rest/api/3/myself", "admin", 404),
+        ("GET", "/atlassian/rest/api/2/policies/project/NOPE/rules", "admin", 404),
+        ("GET", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "failed-pair", 401),
@@ -7889,12 +7889,10 @@ _JSON = "application/json"
                 ("text/plain", "x", 415, "text/plain", _JSON),
             )
         ),
-        ("POST", "/atlassian/rest/api/2/agents/bulk/invoke/batch", "admin", _JSON, "{}", 404)
-        + (None, None),
+        ("POST", _AGENTS.replace("/3/", "/2/"), "admin", _JSON, "{}", 404, None, None),
         *(
-            ("POST", f"/atlassian/rest/api/{version}/bulk/issues/nosuchthing", "none", _JSON)
-            + ("{}", 404, None, None)
-            for version in ("2", "3")
+            ("POST", f"{api}/bulk/issues/nosuchthing", "none", _JSON, "{}", 404, None, None)
+            for api in ("/atlassian/rest/api/2", "/atlassian/rest/api/3")
         ),
         (
             "POST",

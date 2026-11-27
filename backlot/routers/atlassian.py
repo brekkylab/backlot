@@ -1611,6 +1611,13 @@ def _jql_text(text: str) -> str:
     )
 
 
+def _jql_got(text: str) -> str:
+    """A token as `_JqlParser._or_and` and `_JqlParser._parse_order_by` name it after `but got`:
+    the text `_jql_text` reads, with each CR and each LF a space, sent raw or escaped alike
+    (`"x\\r\\ny"` is `x  y`, where `"x\\ty"` keeps its tab; Jira Cloud, 2026-11-27)."""
+    return _jql_text(text).translate({0x0D: " ", 0x0A: " "})
+
+
 def _jql_operand(text: str) -> str:
     """A value in `_JqlParser._refuse_history`'s sentence: `EMPTY` for an unquoted `empty` or
     `null`, an unquoted whole number that fits a Java `long` as that number (`05` is `5`, `-0` is
@@ -1752,7 +1759,8 @@ class _JqlParser:
     def _or_and(self, tok: tuple[str, int, bool]) -> _JqlParseError:
         self._reserved_word(tok)
         return _JqlParseError(
-            f"{_JQL_PREFIX}Expecting either 'OR' or 'AND' but got '{tok[0]}'.{self._at(tok[1])}"
+            f"{_JQL_PREFIX}Expecting either 'OR' or 'AND' but got '{_jql_got(tok[0])}'."
+            f"{self._at(tok[1])}"
         )
 
     def parse(self) -> None:
@@ -2026,8 +2034,8 @@ class _JqlParser:
             elif tok[0] != ",":
                 self._reserved_word(tok)
                 raise _JqlParseError(
-                    f"{_JQL_PREFIX}Expecting either 'ASC' or 'DESC' but got '{tok[0]}'."
-                    f"{self._at(tok[1])}"
+                    f"{_JQL_PREFIX}Expecting either 'ASC' or 'DESC' but got"
+                    f" '{_jql_got(tok[0])}'.{self._at(tok[1])}"
                 )
             self._next()
             self._expect_field()

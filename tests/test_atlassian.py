@@ -6107,13 +6107,19 @@ def _jql_error(sentence):
     return {"errorMessages": [sentence], "errors": {}}
 
 
-# Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page
-# and the 400's body otherwise, or a `(status, body)` pair where real answers another status.
-# No `jql` where the method reads one (POST reads it from the body alone, so one in its query
-# string is none) and a `jql` with nothing before its `ORDER BY` are the unbounded refusal; a
-# `jql` the parser cannot read is the parse error, whose sentence names what the parser expected
-# and, unless it reached the end of the query, the line and the character in UTF-16 units. Both
-# refusals are on `application/json;charset=UTF-8`.
+def _jql_written(sentence):
+    """The parse error's body byte for byte as real wrote it, `sentence` its message as it
+    stands between the quotes of the JSON string."""
+    return b'{"errorMessages":["' + sentence + b'"],"errors":{}}'
+
+
+# Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page and
+# the 400's body otherwise, as its bytes (`_jql_written`) where real wrote `\u` escapes in it, or a
+# `(status, body)` pair where real answers another status. No `jql` where the method reads one (POST
+# reads it from the body alone, so one in its query string is none) and a `jql` with nothing before
+# its `ORDER BY` are the unbounded refusal; a `jql` the parser cannot read is the parse error, whose
+# sentence names what the parser expected and, unless it reached the end of the query, the line and
+# the character in UTF-16 units. Both refusals are on `application/json;charset=UTF-8`.
 _JQL_ROWS = [
     ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
     ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
@@ -6207,6 +6213,20 @@ _JQL_ROWS = [
                     ("labels = zzq by zzq order bykey", 'by "zzq"'),
                 )
             ],
+            (
+                'labels = zzq by "\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in JQL Query: The EQUALS operator does not support the use of the by "
+                    b'\\"\\uD83D\\uDE00\\" predicate.'
+                ),
+            ),
+            (
+                'labels = zzq by "\\uD83D"',
+                _jql_written(
+                    b"Error in JQL Query: The EQUALS operator does not support the use of the by "
+                    b'\\"\\uD83D\\" predicate.'
+                ),
+            ),
             *[
                 (
                     jql,
@@ -6255,6 +6275,245 @@ _JQL_ROWS = [
             ),
             ("labels = \\u0074he", None),
             ("labels = \\u0064uring", None),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
+        )
+    ],
+    *[
+        row
+        for jql, refused in (
+            (
+                'labels = zzq "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq 'x'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x y"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq by zzq "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 21)"
+                ),
+            ),
+            (
+                'order by labels "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                "order by labels 'x'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\u0079"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'xy'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq x\\u0079",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'xy'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "a\\"b"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'a\"b'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq 'a\\'b'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'a'b'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\ty"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x\ty'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\\\y"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x\\y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq x\\ y",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq ""',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ''. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\ny"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\ry"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\r\\ny"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x  y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\ny"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\ry"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\U0001f600"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq x\\uD83D\\uDE00",
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'x\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uD83D"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got '\\uD83D'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got '\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uDE00\\uD83D"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uDE00\\uD83D'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uD83D\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uD83D\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'order by labels "x\\u0079"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'xy'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                "order by labels x\\u0079",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'xy'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels "x\\ry"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x y'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels "\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got "
+                    b"'\\uD83D\\uDE00'. "
+                    b"(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels "\\uD83D"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got '\\uD83D'. "
+                    b"(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels ""',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got ''. "
+                    "(line 1, character 17)"
+                ),
+            ),
         )
         for row in (
             ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
@@ -6879,11 +7138,11 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
         assert r.status_code == 200, r.text
     else:
         status, answer = refused if isinstance(refused, tuple) else (400, refused)
-        assert (r.status_code, r.headers["content-type"], r.json()) == (
-            status,
-            "application/json;charset=UTF-8",
-            answer,
-        ), r.text
+        assert (
+            r.status_code,
+            r.headers["content-type"],
+            r.content if isinstance(answer, bytes) else r.json(),
+        ) == (status, "application/json;charset=UTF-8", answer), r.text
 
 
 def test_jira_search_reads_a_jql_as_real_does(client, admin_h):

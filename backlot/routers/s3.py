@@ -538,14 +538,23 @@ def _xml(
     *,
     prolog: str = _DECLARATION + "\n",
     media_type: str | None = "application/xml",
+    chunked: bool = True,
 ) -> Response:
     """An XML answer. ``prolog`` and ``media_type`` are what real sends before the body and as its
     type, which is the declaration and a newline as `application/xml` for most answers and something
-    else for a few (``_ANSWERED``, ``_NO_PROLOG`` and ``_CONFIGURATION_LISTS`` name which). Real
-    frames an XML answer with a body chunked, with no `Content-Length` — the 405, the 400, a
-    `NoSuchBucket` 404 and a listing alike, measured 2026-11-26 against `s3.us-east-1.amazonaws.com`
-    — so the document is streamed rather than answered whole, which is what names the framing.
-    Starlette writes a `Content-Length` on a whole-document answer."""
+    else for a few (``_ANSWERED``, ``_NO_PROLOG`` and ``_CONFIGURATION_LISTS`` name which).
+
+    ``chunked`` is how real frames it: chunked, with no `Content-Length`, unless the answer is a 200
+    of `?ownershipControls`, of one of the four configuration lists, or of an object's `?attributes`
+    or `?annotation`, or an `<Error>` real sends with no prolog (``_error``), each of which carries
+    its `Content-Length`. Measured against `s3.us-east-1.amazonaws.com` on 2026-11-26, anonymous, at
+    the service root and a bucket nobody has, and on 2026-11-27, signed, on a new bucket and an
+    object in it. Starlette writes a `Content-Length` on a whole document, so a chunked answer is
+    streamed."""
+    if not chunked:
+        return Response(
+            content=prolog + body, media_type=media_type, status_code=status, headers=headers
+        )
     return StreamingResponse(
         iter([prolog + body]), media_type=media_type, status_code=status, headers=headers
     )
@@ -658,7 +667,13 @@ def _error(
     # `PreconditionFailed` and `AccessForbidden`).
     tail = f"<RequestId>{ids[0]}</RequestId><HostId>{ids[1]}</HostId>" if ids else ""
     body = f"<Error><Code>{code}</Code><Message>{_xml_text(message)}</Message>{extra}{tail}</Error>"
-    return _xml(body, status=_ERR_STATUS.get(code, 400), headers=headers, prolog=prolog)
+    return _xml(
+        body,
+        status=_ERR_STATUS.get(code, 400),
+        headers=headers,
+        prolog=prolog,
+        chunked=bool(prolog),
+    )
 
 
 def _no_such_bucket(bucket: str) -> Response:
@@ -1927,7 +1942,7 @@ def _bucket_configuration(request: Request, bucket: str, selector: str) -> Respo
     if selector == "acl":
         return _xml(_access_control_policy(request))
     body, media_type = _ANSWERED[selector]
-    return _xml(body, media_type=media_type)
+    return _xml(body, media_type=media_type, chunked=selector != "ownershipControls")
 
 
 def _access_control_policy(request: Request) -> str:
@@ -1968,6 +1983,7 @@ def _configuration_list(q, selector: str) -> Response:
         f'<{root} xmlns="{NS}"><IsTruncated>false</IsTruncated>{echo}</{root}>',
         prolog=prolog,
         media_type=None,
+        chunked=False,
     )
 
 
@@ -2471,7 +2487,12 @@ def _object_subresource(request: Request, bucket: str, key: str, row, selector: 
         root = "GetObjectAttributesResponse"
         body = f'<{root} xmlns="{NS}">{inner}</{root}>' if inner else f'<{root} xmlns="{NS}"/>'
         ts = row["updated_ts"] or row["created_ts"]
-        return _xml(body, media_type=None, headers={"Last-Modified": synth.s3_http_date(ts)})
+        return _xml(
+            body,
+            media_type=None,
+            headers={"Last-Modified": synth.s3_http_date(ts)},
+            chunked=False,
+        )
     name = _first(q, "annotationName", None)
     if name is not None:
         return _error(
@@ -2499,6 +2520,7 @@ def _object_subresource(request: Request, bucket: str, key: str, row, selector: 
         f'<{root} xmlns="{NS}"><Annotations/><Bucket>{escape(bucket)}</Bucket>'
         f"<Key>{escape(key)}</Key>{echo}<AnnotationCount>0</AnnotationCount></{root}>",
         media_type=None,
+        chunked=False,
     )
 
 

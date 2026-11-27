@@ -46,9 +46,8 @@ def rendered(request: Request, status_code: int, body: dict, headers=None) -> Re
 
     The handler hands a body of ``{"detail": exc.detail}`` here when no envelope shaped one, so the
     document this module built arrives as that one string, and nothing else under ``/s3`` reaches
-    the handler with an `<Error>` document in it. Real frames it chunked, with no `Content-Length`
-    (measured 2026-11-26 against `s3.us-east-1.amazonaws.com`, as for every XML answer with a
-    body), so the document is streamed rather than answered whole."""
+    the handler with an `<Error>` document in it. It goes out with the prolog, so it is streamed as
+    ``backlot.routers.s3._xml`` streams an `<Error>` that has one."""
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, str) and detail.startswith("<Error>"):
         return StreamingResponse(

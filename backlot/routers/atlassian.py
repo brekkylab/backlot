@@ -6408,11 +6408,10 @@ _CONFLUENCE_CONSUMES = tuple(
     for method, pattern in _operations(rows)
 )
 
-#: The three Confluence attachment writes whose `multipart/form-data` upload a credentialled
-#: caller reaches past the caller's refusal: the `POST`s are refused by the XSRF check and the
-#: `PUT` fails for its missing `file` part (``errors.atlassian.refuse_a_credentialled_attachment_write``).
-#: They are the `multipart/form-data` rows of :data:`_CONFLUENCE_CONSUMES`, named here because
-#: the refusal is theirs alone, not every operation that consumes the type.
+#: The three Confluence attachment writes a credentialled caller reaches past the caller's refusal,
+#: which ``errors.atlassian.refuse_a_credentialled_attachment_write`` answers. They are the
+#: `multipart/form-data` rows of :data:`_CONFLUENCE_CONSUMES`, named here because the refusal is
+#: theirs alone, not every operation that consumes the type.
 _CONFLUENCE_ATTACHMENT_WRITES = _operations(
     [
         "POST /wiki/rest/api/content/{}/child/attachment",
@@ -6710,9 +6709,8 @@ async def _published_answer(request: Request, vendor_path: str) -> Response | No
     caller with no credential it resolves on every operation but :data:`_CONFLUENCE_RUN_ANONYMOUSLY`
     (:func:`_confluence_refusal`); the 401's place was measured 2026-10-12 with an undecodable value
     and with one holding no colon, each with a body of a type the operation does not take, and the
-    `Accept` check's 2026-10-13. A credentialled caller on an attachment write with a boundary is
-    then refused before the operation runs
-    (``errors.atlassian.refuse_a_credentialled_attachment_write``).
+    `Accept` check's 2026-10-13. A credentialled caller's attachment write is then checked before
+    it runs (``errors.atlassian.refuse_a_credentialled_attachment_write``).
     """
     method = request.method
     # `request.url.path` here classifies the path by product and mount only; nothing echoes it (the
@@ -6760,9 +6758,6 @@ async def _published_answer(request: Request, vendor_path: str) -> Response | No
         refusal = _confluence_refusal(request, vendor_path)
         if refusal is not None:
             return refusal
-        # a credentialled caller from here: an attachment write with a boundary is refused
-        # before the operation runs, the `POST`s by the XSRF check and the `PUT` for its
-        # missing `file` part (``errors.atlassian.refuse_a_credentialled_attachment_write``)
         if _is(_CONFLUENCE_ATTACHMENT_WRITES, method, vendor_path):
             refused = errors_atlassian.refuse_a_credentialled_attachment_write(
                 method, request.headers, await request.body()

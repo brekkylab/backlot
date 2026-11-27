@@ -27,7 +27,8 @@ import json
 import math
 import re
 import struct
-from email.parser import BytesParser
+from email.message import Message
+from email.parser import BytesHeaderParser
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote
@@ -1394,34 +1395,24 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
 def refuse_a_credentialled_attachment_write(
     method: str, headers, body: bytes
 ) -> AtlassianError | None:
-    """The answer Confluence gives a credentialled attachment write whose `Content-Type` is
-    `multipart/form-data` carrying a `boundary`, or None where it carries none, is no multipart
-    type or is not there at all, and for a `PUT` where the body carries a part named `file`: the
-    `POST`s are the XSRF check's 403 and the `PUT` the 500 for the missing part, each
-    `application/json` in the shape below.
+    """The answer Confluence gives a credentialled attachment write whose multipart body its parser
+    read (:func:`refuse_a_multipart_it_cannot_read`), or None where the operation runs: a `POST` is
+    the XSRF check's 403 unless its `X-Atlassian-Token`, lower-cased, is `nocheck` or `no-check`,
+    and a `PUT`, or a `POST` let past the check, is the 500 for a missing `file` part unless a part
+    is named `file` and has a `filename`, each `application/json` in the shape below. With no
+    credential the three are the caller's 403, which stands.
 
-    Measured on Confluence Cloud on 2026-11-26 at `POST` and `PUT content/{id}/child/attachment`
-    and `POST content/{id}/child/attachment/{id}/data` with the body `x`, `999999999` for every
-    id, which names nothing on that site, no `Accept`, and a working credential: the two `POST`s
-    were 403 `{"statusCode":403,"message":"com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: 403 FORBIDDEN \\"XSRF check failed\\""}`
-    and the `PUT` 500 `{"statusCode":500,"message":"org.springframework.web.multipart.support.MissingServletRequestPartException: Required request part 'file' is not present"}`.
-    With no credential the three are the caller's 403, which stands, so this runs only where the
-    caller resolves. A `POST` with no `Content-Type` is not this answer: it is the 415, ahead of
-    the caller's refusal either way. A `PUT` whose body carries a part named `file` is not the missing-part 500:
-    the check fails for the part that is not there, so one that is there reaches the operation.
+    Measured on Confluence Cloud on 2026-11-26 and 2026-11-27 at `POST` and
+    `PUT content/{id}/child/attachment` and `POST content/{id}/child/attachment/{id}/data`,
+    `999999999` for every id, which names nothing on that site, and no `Accept`: with the body `x`,
+    each `POST` was the 403 and the `PUT` the 500, and each `POST` with an `X-Atlassian-Token` of
+    `nocheck` the 500; at `child/attachment`, a `POST` was the 500 with `NOCHECK` and `no-check` and
+    the 403 with `x` and an empty value, a `POST` with a `file` part was the 403 and with `nocheck`
+    reached the operation, as a `PUT` with one did, and a `PUT` whose `file` part had no `filename`
+    was the 500.
     """
-    value = (headers.get("content-type") or "").strip(" \t")
-    if not value:
-        return None
-    parsed = _spring_media_type(value, charset_in_any_case=False)
-    if parsed is None:
-        return None
-    kind, subtype, parameters = parsed
-    if (kind, subtype) != ("multipart", "form-data"):
-        return None
-    if not any(name.lower() == "boundary" for name, _ in parameters):
-        return None
-    if method == "POST":
+    token = (headers.get("x-atlassian-token") or "").lower()
+    if method == "POST" and token not in ("nocheck", "no-check"):
         return AtlassianError(
             403,
             {
@@ -1432,13 +1423,11 @@ def refuse_a_credentialled_attachment_write(
                 ),
             },
         )
-    if method != "PUT":
-        return None
-    # the email parser needs the Content-Type (with the boundary) as a header to split the parts
-    message = BytesParser().parsebytes(b"Content-Type: " + value.encode() + b"\r\n\r\n" + body)
-    if message.is_multipart() and any(
+    boundary = _multipart_boundary(headers.get("content-type") or "")
+    if any(
         part.get_param("name", header="content-disposition") == "file"
-        for part in message.get_payload()
+        and part.get_param("filename", header="content-disposition") is not None
+        for part in _multipart_parts(boundary, body) or []
     ):
         return None
     return AtlassianError(

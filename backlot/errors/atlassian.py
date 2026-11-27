@@ -1515,6 +1515,46 @@ def refuse_a_credentialled_attachment_write(
     )
 
 
+def refuse_a_multipart_write_with_no_boundary(
+    headers, accept: str | None, *, v2: bool = False
+) -> AtlassianError | None:
+    """The 500 Confluence answers a write whose `Content-Type` is `multipart/form-data` carrying
+    no `boundary` parameter, or None where it carries one, is no multipart type or is not there
+    at all: the multipart parser fails the request before the operation answers it, ahead of the
+    caller's refusal with a credential or without one and ahead of Spring's 415. Measured on
+    Confluence Cloud on 2026-11-26 at `POST space/{key}/permission`, `POST content/{id}/version`
+    and `POST content` with the body `x`: `multipart/form-data` bare was the 500
+    `application/json`
+    `{"errors":[{"status":500,"code":"INTERNAL_SERVER_ERROR","title":"Internal Server Error"}]}`
+    with a credential or without one, and `multipart/form-data; boundary=x` got past it to the
+    415 or the caller's refusal; `POST /wiki/api/v2/pages` drew the same 500 with `"detail":null`
+    in its member. Under an `Accept` admitting no JSON (`text/html` on `POST content`, with no
+    credential) the 500 carries no body and no `content-type`. The type is read as Spring reads
+    it; a charset or another parameter beside it is no boundary.
+    """
+    value = (headers.get("content-type") or "").strip(" \t")
+    if not value:
+        return None
+    parsed = _spring_media_type(value, charset_in_any_case=False)
+    if parsed is None:
+        return None
+    kind, subtype, parameters = parsed
+    if (kind, subtype) != ("multipart", "form-data"):
+        return None
+    if any(name.lower() == "boundary" for name, _ in parameters):
+        return None
+    if accepts(accept, reader="spring") is not True:
+        return AtlassianError(500, b"")
+    member: dict = {
+        "status": 500,
+        "code": "INTERNAL_SERVER_ERROR",
+        "title": "Internal Server Error",
+    }
+    if v2:
+        member["detail"] = None
+    return AtlassianError(500, {"errors": [member]})
+
+
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as
 #: `application/json`, byte for byte but for trailing whitespace: measured 2026-10-13 on
 #: `serverInfo` and its 401, where the same value respelled (upper-cased, `q=0.90`, `Q=0.9`, a space

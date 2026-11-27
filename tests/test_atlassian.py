@@ -10921,6 +10921,159 @@ def test_confluence_fails_a_charset_java_cannot_name_where_spring_answers(client
     }
 
 
+#: A write whose `Content-Type` is `multipart/form-data` with no `boundary`, outside the
+#: attachment writes (``errors.atlassian.refuse_a_multipart_write_with_no_boundary``): the 500
+#: real fails it with, ahead of the caller's refusal and of Spring's 415, with a credential or
+#: without one, and the v2 API's member carrying `"detail":null`. Under an `Accept` admitting no
+#: JSON the 500 carries no body and no `content-type`, and a `boundary` beside the type gets past
+#: it exactly as before. A `GET` or a `DELETE` under the same header answers no 500. ``"admin"``
+#: is the admin's token; ``"v1"`` and ``"v2"`` are the 500's JSON body in each API's shape, a
+#: string the reason of a 415, bytes the exact body, and None the status alone.
+_MULTIPART_NO_BOUNDARY = [
+    # the writes the issue measures, with a credential or without one
+    ("POST", "/wiki/rest/api/space/ZZQ/permission", None, "multipart/form-data", None, 500, "v1"),
+    (
+        "POST",
+        "/wiki/rest/api/space/ZZQ/permission",
+        "admin",
+        "multipart/form-data",
+        None,
+        500,
+        "v1",
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/999999999/version",
+        None,
+        "multipart/form-data",
+        None,
+        500,
+        "v1",
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/999999999/version",
+        "admin",
+        "multipart/form-data",
+        None,
+        500,
+        "v1",
+    ),
+    ("POST", "/wiki/rest/api/content", None, "multipart/form-data", None, 500, "v1"),
+    ("POST", "/wiki/rest/api/content", "admin", "multipart/form-data", None, 500, "v1"),
+    ("POST", "/wiki/api/v2/pages", None, "multipart/form-data", None, 500, "v2"),
+    ("POST", "/wiki/api/v2/pages", "admin", "multipart/form-data", None, 500, "v2"),
+    # `Accept: text/html` leaves the 500 with no body and no `content-type`
+    ("POST", "/wiki/rest/api/content", None, "multipart/form-data", "text/html", 500, b""),
+    ("POST", "/wiki/rest/api/content", "admin", "multipart/form-data", "text/html", 500, b""),
+    (
+        "POST",
+        "/wiki/rest/api/space/ZZQ/permission",
+        None,
+        "multipart/form-data",
+        "text/html",
+        500,
+        b"",
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/999999999/version",
+        None,
+        "multipart/form-data",
+        "text/html",
+        500,
+        b"",
+    ),
+    ("POST", "/wiki/api/v2/pages", None, "multipart/form-data", "text/html", 500, b""),
+    # a `boundary` beside the type gets past it exactly as before
+    (
+        "POST",
+        "/wiki/rest/api/space/ZZQ/permission",
+        None,
+        "multipart/form-data; boundary=x",
+        None,
+        415,
+        "'multipart/form-data;boundary=x'",
+    ),
+    (
+        "POST",
+        "/wiki/rest/api/content/999999999/version",
+        None,
+        "multipart/form-data; boundary=x",
+        None,
+        415,
+        "'multipart/form-data;boundary=x'",
+    ),
+    ("POST", "/wiki/rest/api/content", None, "multipart/form-data; boundary=x", None, 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    # a `GET` or a `DELETE` under the same header answers no 500
+    ("GET", "/wiki/rest/api/space", None, "multipart/form-data", None, 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    (
+        "GET",
+        "/wiki/rest/api/content/abc123/child/attachment",
+        None,
+        "multipart/form-data",
+        None,
+        403,
+    )
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    ("GET", "/wiki/api/v2/pages", None, "multipart/form-data", None, 302, None),
+    ("DELETE", "/wiki/rest/api/content/999999999", None, "multipart/form-data", None, 403)
+    + (errors_atlassian.CONFLUENCE_FORBIDDEN_BODY,),
+    ("DELETE", "/wiki/rest/api/content/999999999", "admin", "multipart/form-data", None, 405, None),
+]
+
+
+def _multipart_no_boundary(
+    client, admin_h, method, vendor_path, authorization, ctype, accept, status, body
+):
+    headers = [("Content-Type", ctype)]
+    if accept is not None:
+        headers.append(("Accept", accept))
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    content = b"x" if method in ("POST", "DELETE") else None
+    r = sent_as(
+        client, method, f"/atlassian{vendor_path}", headers, content=content, bare=accept is None
+    )
+    assert r.status_code == status, r.text[:200]
+    if body in ("v1", "v2"):
+        member: dict = {
+            "status": 500,
+            "code": "INTERNAL_SERVER_ERROR",
+            "title": "Internal Server Error",
+        }
+        if body == "v2":
+            member["detail"] = None
+        assert r.headers.get("content-type") == "application/json"
+        assert r.json() == {"errors": [member]}
+    elif isinstance(body, str):
+        assert r.json() == {
+            "errors": [
+                {
+                    "status": 415,
+                    "code": "UNSUPPORTED_MEDIA_TYPE",
+                    "title": _SPRING_415 + f"Content type {body} not supported",
+                }
+            ]
+        }
+    elif body is not None:
+        assert r.content == body
+        assert r.headers.get("content-type") == (
+            None
+            if body == b""
+            else errors_atlassian.TOMCAT_MEDIA_TYPE
+            if status in (400, 401)
+            else _JSON_TYPE
+        )
+
+
+def test_confluence_fails_a_multipart_write_with_no_boundary(client, admin_h):
+    assert _failures(_multipart_no_boundary, _MULTIPART_NO_BOUNDARY, client, admin_h) == {}
+
+
 def _plugins_mount(client, admin_h, method, vendor_path, authorization, status, media, body):
     headers = {} if authorization is None else admin_h
     r = client.request(method, f"/atlassian{vendor_path}", headers=headers)

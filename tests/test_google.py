@@ -4761,6 +4761,7 @@ _NO_CREDENTIAL_ROWS = [
     ("POST", "/drive/v3/files/{doc}/download", 403, 404),
     ("GET", "/drive/v3/apps", 403, 404),
     ("GET", "/drive/v3/apps/a1", 401, 404),
+    ("GET", "/drive/v2/about", 401, 404),
     ("PATCH", "/drive/v3/files/{doc}", 401, 405),
     ("DELETE", "/drive/v3/files/{doc}", 401, 405),
     ("POST", "/drive/v3/files/{doc}/copy", 401, 404),
@@ -5907,6 +5908,94 @@ def test_a_family_path_with_no_route_is_not_answered_by_calling_an_unchecked_nam
                 client.get(path.split("?")[0]).text,
             )
     assert got == expected
+
+
+# What www.googleapis.com answered, with no credential and one connection per request, to targets
+# no route here serves (``routers.google.front_end_not_found`` dates it): (method, target, answer).
+# A page is the front end's 404 as (the echoed target, its length in bytes); the uploads' 405 is
+# `upload`.
+# fmt: off
+_FRONT_END_ROWS = [
+    ("GET", "/drive", ("/drive", 1566)),
+    ("GET", "/drive/", ("/drive/", 1567)),
+    ("GET", "/drive/v3x", ("/drive/v3x", 1570)),
+    ("GET", "/batch/drive/v3", ("/batch/drive/v3", 1575)),
+    ("GET", "/batch/drive/v3/", ("/batch/drive/v3/", 1576)),
+    ("GET", "/upload/drive", "upload"),
+    ("GET", "/upload/drive/v3", "upload"),
+    ("GET", "/upload/drive/v3/files", "upload"),
+    ("GET", "/upload/drive/v3/files?uploadType=media", "upload"),
+    ("GET", "/upload/drive/v3/files/x", "upload"),
+    ("HEAD", "/upload/drive/v3/files", "upload"),
+]
+# fmt: on
+
+
+def test_a_target_the_front_end_answers_is_answered_as_it_does(client):
+    """The rows `_FRONT_END_ROWS` records, each as the front end of www.googleapis.com answered it:
+    Google's 404 page for `/drive`, for a path that runs on from a mount (`/drive/v3x`) and for a
+    `GET` on the Drive batch mount, and the uploads' own 405 under `/upload/drive`. Each length is
+    the one real sent."""
+
+    def answer(method, target):
+        r = client.request(method, target)
+        if r.status_code == 405:
+            ident = r.headers["x-guploader-uploadid"]
+            return (
+                405,
+                r.headers["content-type"],
+                r.headers["server"],
+                re.fullmatch(r"AFy3sg[A-Za-z0-9_-]{66}", ident) is not None,
+                r.content,
+            )
+        echoed = re.search(rb"<code>(.*?)</code>", r.content)
+        return (
+            r.status_code,
+            r.headers["content-type"],
+            r.headers["server"],
+            echoed.group(1).decode() if echoed else None,
+            len(r.content),
+        )
+
+    def expected(method, want):
+        if want == "upload":
+            body = b"" if method == "HEAD" else b"Method Not Allowed"
+            return 405, "text/plain; charset=utf-8", "UploadServer", True, body
+        return 404, "text/html; charset=UTF-8", "ESF", *want
+
+    assert {(m, t): answer(m, t) for m, t, _ in _FRONT_END_ROWS} == {
+        (m, t): expected(m, want) for m, t, want in _FRONT_END_ROWS
+    }
+    # a `POST` is the batch endpoint's own, and what is not a `GET` there is not the page
+    posted = client.post("/batch/drive/v3", content=b"x", headers={"Content-Type": "text/plain"})
+    assert (posted.status_code, posted.text) == (400, "expected multipart/mixed")
+    # the uploads' 405 has an id of its own on each answer
+    ids = {client.get("/upload/drive/v3/files").headers["x-guploader-uploadid"] for _ in range(3)}
+    assert len(ids) == 3
+
+
+def test_drive_v2_about_is_the_401_of_an_operation_with_no_credential(client, admin_h):
+    """Drive v2's `about` answered 401 with the ErrorInfo naming `google.apps.drive.v2.DriveAbout.Get`
+    on www.googleapis.com, where `/drive/v2/nope` was the 404 page. No route here serves it, so a
+    credential that resolves reaches the router's 404."""
+    r = client.get("/drive/v2/about")
+    assert r.status_code == 401
+    assert r.headers["www-authenticate"] == 'Bearer realm="https://accounts.google.com/"'
+    error = r.json()["error"]
+    assert error["message"] == gerr.MISSING_CREDENTIALS_MESSAGE
+    assert error["status"] == "UNAUTHENTICATED"
+    assert error["details"] == [
+        {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "CREDENTIALS_MISSING",
+            "domain": "googleapis.com",
+            "metadata": {
+                "method": "google.apps.drive.v2.DriveAbout.Get",
+                "service": "drive.googleapis.com",
+            },
+        }
+    ]
+    assert client.get("/drive/v2/about", headers=admin_h).status_code == 404
 
 
 def test_a_post_ignores_a_callback_the_way_real_does(base, admin_h, sheet_id):

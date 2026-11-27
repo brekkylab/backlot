@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import http.client
 import re
 import select
 import socket
@@ -327,6 +328,129 @@ def _status(base_url: str, head: bytes) -> int:
         return int(c.makefile("rb").readline().split()[1])
 
 
+_S3_PARSE_400 = (
+    400,
+    "Bad Request",
+    None,
+    "application/xml",
+    True,
+    None,
+    r"[1-9A-F][0-9A-F]{0,15}",
+    '<?xml version="1.0" encoding="UTF-8"?><Error><Code>BadRequest</Code>'
+    "<Message>An error occurred when parsing the HTTP request.</Message>"
+    "<RequestId>{request_id}</RequestId><HostId>{host_id}</HostId></Error>",
+)
+
+
+_S3_TAIL = b"Host: x\r\nUser-Agent: backlot-test\r\nConnection: close\r\n\r\n"
+_S3_GET = b"GET /s3/?_=probe HTTP/1.1\r\n" + _S3_TAIL
+
+
+@pytest.mark.parametrize(
+    "leading, head, expected",
+    [
+        (
+            b"",
+            _S3_GET,
+            (
+                307,
+                "Temporary Redirect",
+                "https://aws.amazon.com/s3/",
+                None,
+                False,
+                "0",
+                r"[0-9A-HJKMNP-TV-Z]{16}",
+                "",
+            ),
+        ),
+        (b"\r\n", _S3_GET, _S3_PARSE_400),
+        (b"\n", _S3_GET, _S3_PARSE_400),
+        (b"\r\n\r\n", _S3_GET, _S3_PARSE_400),
+        (b"\n\n", _S3_GET, _S3_PARSE_400),
+        (b"\r\n\n", _S3_GET, _S3_PARSE_400),
+        (b"\n\r\n", _S3_GET, _S3_PARSE_400),
+        (b"\r\n" * 3, _S3_GET, _S3_PARSE_400),
+        (b"\r\n" * 5, _S3_GET, _S3_PARSE_400),
+        (b"\r\n" * 20, _S3_GET, _S3_PARSE_400),
+        (b"\r\n", b"GET /s3/?_=probe HTTP/1.0\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (
+            b"\r\n",
+            b"GET /s3/?_=probe HTTP/1.1\nHost: x\nUser-Agent: backlot-test\nConnection: close\n\n",
+            _S3_PARSE_400,
+        ),
+        (b"\r\n", b"HEAD /s3/?_=probe HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"PUT /s3/?_=probe HTTP/1.1\r\nContent-Length: 0\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"POST /s3/?_=probe HTTP/1.1\r\nContent-Length: 0\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"DELETE /s3/?_=probe HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"OPTIONS /s3/?_=probe HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"FOOBAR /s3/?_=probe HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"GET /s3/ HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"GET /s3/backlot-nope HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"GET /s3/backlot-nope/k HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (b"\r\n", b"GET /s3/backlot-nope?list-type=2 HTTP/1.1\r\n" + _S3_TAIL, _S3_PARSE_400),
+        (
+            b"\r\n",
+            b"GET /s3/?_=probe HTTP/1.1\r\nAuthorization: AWS4-HMAC-SHA256 "
+            b"Credential=AKIAIOSFODNN7EXAMPLE/20261126/us-east-1/s3/aws4_request, "
+            b"SignedHeaders=host, Signature=00\r\nx-amz-date: 20261126T000000Z\r\n" + _S3_TAIL,
+            _S3_PARSE_400,
+        ),
+        (
+            b"\r\n",
+            b"GET /s3/?_=probe HTTP/1.1\r\nHost: x\r\nUser-Agent: backlot-test\r\n\r\n",
+            _S3_PARSE_400,
+        ),
+    ],
+    ids=[
+        "clean",
+        "crlf",
+        "lf",
+        "two-crlfs",
+        "two-lfs",
+        "crlf-lf",
+        "lf-crlf",
+        "three-crlfs",
+        "five-crlfs",
+        "twenty-crlfs",
+        "http-1.0",
+        "bare-lf",
+        "head",
+        "put",
+        "post",
+        "delete",
+        "options",
+        "foobar",
+        "no-query",
+        "bucket",
+        "key",
+        "bucket-list",
+        "signed",
+        "no-connection-close",
+    ],
+)
+def test_s3_refuses_an_empty_line_ahead_of_the_request_line(live_server, leading, head, expected):
+    base_url, _ = live_server
+    # The requests measured in head_bounds.s3_leading_line.
+    with _connect(base_url) as c:
+        c.sendall(leading + head)
+        with http.client.HTTPResponse(c) as response:
+            response.begin()
+            status, reason, location, media_type, chunked, length, id_pattern, body = expected
+            assert (
+                response.status,
+                response.reason,
+                response.getheader("Location"),
+                response.getheader("Content-Type"),
+                response.chunked,
+                response.getheader("Content-Length"),
+            ) == (status, reason, location, media_type, chunked, length)
+            request_id = response.getheader("x-amz-request-id")
+            host_id = response.getheader("x-amz-id-2")
+            assert request_id and re.fullmatch(id_pattern, request_id)
+            assert host_id
+            assert response.read() == body.format(request_id=request_id, host_id=host_id).encode()
+
+
 def _short_id(value: object) -> str | None:
     """A path of more than 200 characters named by its first 40 and its length."""
     if isinstance(value, str) and len(value) > 200:
@@ -514,7 +638,7 @@ def _named(answer: bytes) -> str:
     for line in lines:
         name, _, value = line.partition(":")
         headers[name.strip().lower()] = value.strip()
-    if "connection" in headers:
+    if "connection" in headers and "transfer-encoding" not in headers:
         shape = _as_real((status_line, headers, body))
         return next((name for name, real in _REAL.items() if real == shape), status_line)
     return status_line
@@ -570,6 +694,9 @@ _MARKDOWN_CHUNKED = (
 #: closes the connection or one the parser refuses is answered, as on api.github.com (2026-11-02).
 #: A head whose earlier read held 0x01 in a header value is answered at its bound once a header
 #: after it passes the bound, as slack.com, api.linear.app and S3 answered it (2026-11-03).
+#: A CRLF ahead of a second head on S3, a service-root GET, draws its parse 400 and closes the
+#: connection, in the read that holds the head or in one before it
+#: (``backlot.head_bounds.s3_leading_line``).
 _CONNECTIONS = [
     (
         "s3 heads in reads of their own",
@@ -639,6 +766,20 @@ _CONNECTIONS = [
         [_CHUNKED[:-1], _CHUNKED[-1:] + _s3(20_000, ended=False)],
         ["POST /s3/b/k 6 False"],
         [[], ["HTTP/1.1 200 OK", "s3"]],
+        True,
+    ),
+    (
+        "s3 a CRLF ahead of the second head in the same read",
+        [_s3(100) + b"\r\n" + _S3_GET],
+        ["GET /s3/b/k 0 False"],
+        [["HTTP/1.1 200 OK", "HTTP/1.1 400 Bad Request"]],
+        True,
+    ),
+    (
+        "s3 a CRLF ahead of the second head in a read of its own",
+        [_s3(100), b"\r\n", _S3_GET],
+        ["GET /s3/b/k 0 False"],
+        [["HTTP/1.1 200 OK"], [], ["HTTP/1.1 400 Bad Request"]],
         True,
     ),
     (

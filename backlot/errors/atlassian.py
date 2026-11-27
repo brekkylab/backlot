@@ -1392,6 +1392,78 @@ def refuse_a_confluence_media_type(headers, consumes: tuple[str, ...]) -> Atlass
     )
 
 
+def _multipart_boundary(value: str) -> str:
+    """The boundary the `Content-Type` ``value`` names: the last parameter named `boundary` in any
+    case, its value trimmed of :data:`_JAVA_WHITESPACE` and of one pair of quotes around it, and
+    empty where there is none."""
+    boundary = ""
+    for parameter in value.split(";")[1:]:
+        name, _, given = parameter.partition("=")
+        if name.strip(_JAVA_WHITESPACE).lower() == "boundary":
+            given = given.strip(_JAVA_WHITESPACE)
+            boundary = given[1:-1] if len(given) >= 2 and given[0] == given[-1] == '"' else given
+    return boundary
+
+
+def _multipart_parts(boundary: str, body: bytes) -> list[Message] | None:
+    """The header block of each part of ``body`` split at ``boundary``, or None where it does not
+    split: a delimiter is `--` and the boundary, the first one anywhere in the body and each later
+    one after a CRLF; after a delimiter, `--` ends the body and a CRLF opens a part, whose headers
+    end at an empty line and whose content, which is not read, at the next CRLF and delimiter. A
+    body holding no delimiter has no part. Measured on Confluence Cloud on 2026-11-27 at
+    `PUT content/{id}/child/attachment`: a `file` part reached the operation after `preamble` and a
+    CRLF, after `preamble` with nothing between, and with 1,100 `message/rfc822` headers as its
+    content, and a part whose lines ended in LF alone, one with no delimiter after it and one whose
+    headers ran into the closing delimiter were the parser's 500."""
+    delimiter = b"--" + boundary.encode("latin-1")
+    at = body.find(delimiter)
+    if at < 0:
+        return []
+    parts = []
+    while True:
+        at += len(delimiter)
+        if body[at : at + 2] == b"--":
+            return parts
+        if body[at : at + 2] != b"\r\n":
+            return None
+        end = body.find(b"\r\n\r\n", at)
+        if end < 0:
+            return None
+        parts.append(BytesHeaderParser().parsebytes(body[at + 2 : end + 4]))
+        at = body.find(b"\r\n" + delimiter, end + 4)
+        if at < 0:
+            return None
+        at += 2
+
+
+def refuse_a_multipart_it_cannot_read(headers, body: bytes) -> AtlassianError | None:
+    """The 500 Confluence answers an attachment write, with a credential or without one, whose
+    `Content-Type` starts `multipart/` in any case where its parser cannot read the request, or None
+    where it can or the type is no multipart type: the type holds no boundary
+    (:func:`_multipart_boundary`, an empty one being none), or the body does not split at it
+    (:func:`_multipart_parts`). The body is Spring's `errors` list, under `application/json` where
+    `Accept` admits JSON (:func:`accepts`), under the first `+json` type it names where it admits
+    none but names one, and empty under no `content-type` where it names neither or cannot be read.
+    Measured on Confluence Cloud on 2026-10-16 at `POST content/{id}/child/attachment`, on
+    2026-11-26 at each of the attachment writes, and with a body that does not split on 2026-11-27
+    at both writes to `content/{id}/child/attachment`. Which refusals come before it and after it is
+    ``backlot.routers.atlassian._published_answer``'s to say."""
+    value = (headers.get("content-type") or "").strip(" \t")
+    if value[:10].lower() != "multipart/":
+        return None
+    boundary = _multipart_boundary(value)
+    if boundary and _multipart_parts(boundary, body) is not None:
+        return None
+    accept = headers.get("accept")
+    takes = accepts(accept, reader="spring")
+    media_type = "application/json" if takes else _json_family(accept) if takes is False else None
+    if media_type is None:
+        return AtlassianError(500, b"")
+    body = {"status": 500, "code": "INTERNAL_SERVER_ERROR", "title": "Internal Server Error"}
+    encoded = json.dumps({"errors": [body]}, separators=(",", ":")).encode()
+    return AtlassianError(500, encoded, headers={"Content-Type": media_type})
+
+
 def refuse_a_credentialled_attachment_write(
     method: str, headers, body: bytes
 ) -> AtlassianError | None:
@@ -2529,17 +2601,46 @@ def route_regex(template: str) -> re.Pattern[str]:
 _JIRA_ALLOW_PATTERNS = tuple((route_regex(t), methods) for t, methods in _JIRA_ALLOW)
 
 
-#: (method, path pattern) for each operation Jira's documents publish, served here or not. Real's
-#: `Allow` names every method published on each template the path matches, measured on Jira Cloud
-#: 2026-11-24 under `/rest/api/3` and on the Connect, Forge and internal mounts: a `POST` on
-#: `dashboard/search`, `filter/favourite` and `issuetype/project` named the `GET` published there
-#: with the `PUT` and `DELETE` published where that segment is an id. The rows above claim every
-#: served path first, so what this adds are the baseline's `missing` operations.
+_JIRA_BASELINE = json.loads(
+    (_PACKAGE / "fidelity" / "baseline" / "jira.json").read_text(encoding="utf-8")
+)["operations"]
+
+
+def _jira_v2_spellings() -> dict[str, str]:
+    """The `/rest/api/2` spelling of each operation the Jira baseline acknowledges ``missing``
+    under `/rest/api/3` and lists under `/rest/api/2` not at all, the `/rest/api/3` row it spells.
+
+    Jira serves under `/rest/api/2` what its v3 document alone publishes (the nine under `bulk/`
+    and the two under `agents/bulk/invoke/`), and answers it there as under `/rest/api/3`. Measured
+    on Jira Cloud 2026-10-13 under both versions: with no credential, the three `GET`s, the eight
+    `POST`s with `{}` as `application/json` and an `OPTIONS` on each path were the 401, and each
+    `POST` with a `text/plain` body the 415; with a non-administrator's credential,
+    `bulk/queue/999999999` was its 404, `bulk/issues/fields?issueIdsOrKeys=NOPE-1` its 400 and the
+    two agent invocations their 400, while `POST bulk/issues/nosuchthing` was the 404 of a path
+    neither document publishes. The baseline lists what each document publishes, so these spellings
+    are read here rather than written there.
+    """
+    listed = {e["operation"] for e in _JIRA_BASELINE}
+    spellings = {}
+    for e in _JIRA_BASELINE:
+        method, path = e["operation"].split(" ", 1)
+        if e["status"] == "missing" and path.startswith("/rest/api/3/"):
+            spelling = f"{method} /rest/api/2/{path.removeprefix('/rest/api/3/')}"
+            if spelling not in listed:
+                spellings[spelling] = e["operation"]
+    return spellings
+
+
+JIRA_V2_SPELLINGS = _jira_v2_spellings()
+#: (method, path pattern) for each operation Jira's documents publish, served here or not, and for
+#: each `/rest/api/2` spelling of :data:`JIRA_V2_SPELLINGS`. Real's `Allow` names every method
+#: published on each template the path matches, measured on Jira Cloud 2026-11-24 under
+#: `/rest/api/3` and on the Connect, Forge and internal mounts: a `POST` on `dashboard/search`,
+#: `filter/favourite` and `issuetype/project` named the `GET` published there with the `PUT` and
+#: `DELETE` published where that segment is an id. The rows above claim every served path first, so
+#: what this adds are the baseline's `missing` operations and those spellings.
 _JIRA_PUBLISHED_OPS = published.operations(
-    entry["operation"]
-    for entry in json.loads(
-        (_PACKAGE / "fidelity" / "baseline" / "jira.json").read_text(encoding="utf-8")
-    )["operations"]
+    [*(entry["operation"] for entry in _JIRA_BASELINE), *JIRA_V2_SPELLINGS]
 )
 
 

@@ -17,7 +17,7 @@ import hashlib
 
 from fastapi import HTTPException
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
 _XML_DECL = '<?xml version="1.0" encoding="UTF-8"?>\n'
 _UNPARSEABLE = "An error occurred when parsing the HTTP request."
@@ -46,11 +46,12 @@ def rendered(request: Request, status_code: int, body: dict, headers=None) -> Re
 
     The handler hands a body of ``{"detail": exc.detail}`` here when no envelope shaped one, so the
     document this module built arrives as that one string, and nothing else under ``/s3`` reaches
-    the handler with an `<Error>` document in it."""
+    the handler with an `<Error>` document in it. It goes out with the prolog, so it is streamed as
+    ``backlot.routers.s3._xml`` streams an `<Error>` that has one."""
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, str) and detail.startswith("<Error>"):
-        return Response(
-            content=_XML_DECL + detail,
+        return StreamingResponse(
+            iter([_XML_DECL + detail]),
             media_type="application/xml",
             status_code=status_code,
             headers=headers,

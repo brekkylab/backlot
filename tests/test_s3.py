@@ -332,6 +332,37 @@ def test_s3_a_head_at_the_service_root_is_the_405_without_its_body(live_server, 
     assert _signed(base_url, path, settings.admin_token).status_code == 200
 
 
+# How real framed each answer: chunked, as ``backlot.routers.s3._xml`` records, but for the 307 a
+# `GET` of the service root gets, which carried `Content-Length: 0` (2026-11-27). `LINK` and
+# `PROPFIND` were not sent to real; each gets the parse 400 that ``backlot.errors.s3.rendered``
+# answers.
+_FRAMING_ROWS = [
+    # method, target, signed, status, framing
+    ("GET", "/s3/", False, 307, "length"),
+    ("PUT", "/s3/", False, 405, "chunked"),
+    ("OPTIONS", "/s3/", False, 400, "chunked"),
+    ("GET", "/s3/backlot-nope", False, 404, "chunked"),
+    ("GET", "/s3/backlot-nope/k", False, 404, "chunked"),
+    ("LINK", "/s3/backlot-nope", False, 400, "chunked"),
+    ("PROPFIND", "/s3/backlot-nope/k", False, 400, "chunked"),
+    ("GET", "/s3/eng-artifacts?list-type=2&max-keys=1", True, 200, "chunked"),
+]
+
+
+def test_s3_frames_an_answer_as_real_frames_it(live_server):
+    import httpx
+
+    base_url, settings = live_server
+    got = {}
+    for method, target, signed, _, _ in _FRAMING_ROWS:
+        if signed:
+            r = _signed(base_url, target, settings.admin_token, method=method)
+        else:
+            r = httpx.request(method, f"{base_url}{target}")
+        got[method, target] = (r.status_code, _framing(r))
+    assert got == {(m, t): (status, framing) for m, t, _, status, framing in _FRAMING_ROWS}
+
+
 # What real answered alike at a bucket's path with and without a trailing slash: the same status,
 # header names and body once the request ids are set aside (s3.amazonaws.com, us-east-1; the GET and
 # HEAD rows on 2026-10-11, the others on 2026-10-13). On the second date no pair differed among the
@@ -1761,58 +1792,59 @@ def test_list_objects_v2_delimiter_common_prefixes(live_server):
 # case-sensitive, two selectors conflict, and HEAD with a selector is 405.
 
 # What real answered each selector's GET with on a bucket nobody configured: status, Content-Type
-# and the body as sent, request ids aside (2026-09-29, us-east-1).
+# and the body as sent, request ids aside (2026-09-29, us-east-1), and the framing
+# ``backlot.routers.s3._xml`` records.
 # fmt: off
 _CONFIGURATION_ROWS = [
-    ("abac", 200, None,
+    ("abac", 200, None, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<AbacStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Disabled</Status></AbacStatus>'),
-    ("accelerate", 200, None,
+    ("accelerate", 200, None, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<AccelerateConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
-    ("acl", 200, "application/xml",
+    ("acl", 200, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<AccessControlPolicy xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>{owner}</ID></Owner><AccessControlList><Grant><Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser"><ID>{owner}</ID></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>'),
-    ("analytics", 200, None,
+    ("analytics", 200, None, "length",
      '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketAnalyticsConfigurationsResult>'),
-    ("cors", 404, "application/xml",
+    ("cors", 404, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchCORSConfiguration</Code><Message>The CORS configuration does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
-    ("encryption", 200, None,
+    ("encryption", 200, None, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><BucketKeyEnabled>false</BucketKeyEnabled><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm></ApplyServerSideEncryptionByDefault><BlockedEncryptionTypes><EncryptionType>SSE-C</EncryptionType></BlockedEncryptionTypes></Rule></ServerSideEncryptionConfiguration>'),
-    ("intelligent-tiering", 200, None,
+    ("intelligent-tiering", 200, None, "length",
      '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListIntelligentTieringConfigurationsResult>'),
-    ("inventory", 200, None,
+    ("inventory", 200, None, "length",
      '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListInventoryConfigurationsResult>'),
-    ("lifecycle", 404, "application/xml",
+    ("lifecycle", 404, "application/xml", "length",
      "<Error><Code>NoSuchLifecycleConfiguration</Code><Message>The lifecycle configuration does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>"),
-    ("location", 200, "application/xml",
+    ("location", 200, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
-    ("logging", 200, "application/xml",
+    ("logging", 200, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n\n<BucketLoggingStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/">\n  <!--<LoggingEnabled><TargetBucket>myLogsBucket</TargetBucket><TargetPrefix>add/this/prefix/to/my/log/files/access_log-</TargetPrefix></LoggingEnabled>-->\n</BucketLoggingStatus>\n'),
-    ("metadataConfiguration", 404, "application/xml",
+    ("metadataConfiguration", 404, "application/xml", "length",
      "<Error><Code>MetadataConfigurationNotFound</Code><Message>The metadata configuration was not found</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>"),
-    ("metadataTable", 405, "application/xml",
+    ("metadataTable", 405, "application/xml", "length",
      "<Error><Code>V1APIsNotAllowed</Code><Message>The V1 GetBucketMetadataTableConfiguration API operation isn't available for this account. Use the corresponding V2 GetBucketMetadataConfiguration API operation instead.</Message><Method>GET</Method><RequestId/><HostId/></Error>"),
-    ("metrics", 200, None,
+    ("metrics", 200, None, "length",
      '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListMetricsConfigurationsResult>'),
-    ("notification", 200, None,
+    ("notification", 200, None, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<NotificationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
-    ("object-lock", 404, "application/xml",
+    ("object-lock", 404, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>ObjectLockConfigurationNotFoundError</Code><Message>Object Lock configuration does not exist for this bucket</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
-    ("ownershipControls", 200, None,
+    ("ownershipControls", 200, None, "length",
      '<?xml version="1.0" encoding="UTF-8"?>\n<OwnershipControls xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule></OwnershipControls>'),
-    ("policy", 404, "application/xml",
+    ("policy", 404, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchBucketPolicy</Code><Message>The bucket policy does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
-    ("policyStatus", 404, "application/xml",
+    ("policyStatus", 404, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchBucketPolicy</Code><Message>The bucket policy does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
-    ("publicAccessBlock", 200, None,
+    ("publicAccessBlock", 200, None, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<PublicAccessBlockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>true</IgnorePublicAcls><BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>true</RestrictPublicBuckets></PublicAccessBlockConfiguration>'),
-    ("replication", 404, "application/xml",
+    ("replication", 404, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>ReplicationConfigurationNotFoundError</Code><Message>The replication configuration was not found</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
-    ("requestPayment", 200, None,
+    ("requestPayment", 200, None, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<RequestPaymentConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Payer>BucketOwner</Payer></RequestPaymentConfiguration>'),
-    ("tagging", 404, "application/xml",
+    ("tagging", 404, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchTagSet</Code><Message>The TagSet does not exist</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
-    ("versioning", 200, None,
+    ("versioning", 200, None, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>'),
-    ("website", 404, "application/xml",
+    ("website", 404, "application/xml", "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchWebsiteConfiguration</Code><Message>The specified bucket does not have a website configuration</Message><BucketName>{bucket}</BucketName><RequestId/><HostId/></Error>'),
 ]
 # fmt: on
@@ -1822,28 +1854,40 @@ def _without_request_ids(body: str) -> str:
     return re.sub(r"<(RequestId|HostId)>[^<]*</\1>", r"<\1/>", body)
 
 
+def _framing(r) -> object:
+    """``"chunked"`` for an answer sent chunked with no `Content-Length`, ``"length"`` for one whose
+    `Content-Length` is its body's, and the two headers as sent for anything else."""
+    sent = (r.headers.get("transfer-encoding"), r.headers.get("content-length"))
+    if sent == ("chunked", None):
+        return "chunked"
+    if sent == (None, str(len(r.content))):
+        return "length"
+    return sent
+
+
 def test_a_bucket_configuration_is_what_real_answers_for_a_bucket_nobody_configured(live_server):
-    """Each configuration a bucket has, at the bucket's path, byte for byte what real sent for one
-    nobody configured, the prolog and the `Content-Type` among them; and a HEAD naming it is the
-    405 whose `Allow` names the GET that answers it."""
+    """Each configuration a bucket has, at the bucket's path, byte for byte and framed as real sent
+    it for one nobody configured, the prolog and the `Content-Type` among them; and a HEAD naming it
+    is the 405 whose `Allow` names the GET that answers it."""
     base_url, settings = live_server
     owner = _get_xml(base_url, "/s3/eng-artifacts", settings.admin_token).findtext(
         f"{NS}Contents/{NS}Owner/{NS}ID"
     )
     answers, expected = {}, {}
-    for selector, status, content_type, body in _CONFIGURATION_ROWS:
+    for selector, status, content_type, framing, body in _CONFIGURATION_ROWS:
         path = f"/s3/eng-artifacts?{selector}"
         r = _signed(base_url, path, settings.admin_token)
         head = _signed(base_url, path, settings.admin_token, method="HEAD")
         answers[selector] = (
             r.status_code,
             r.headers.get("content-type"),
+            _framing(r),
             _without_request_ids(r.text),
             head.status_code,
             head.headers.get("allow"),
         )
         body = body.format(bucket="eng-artifacts", owner=owner)
-        expected[selector] = (status, content_type, body, 405, "GET")
+        expected[selector] = (status, content_type, framing, body, 405, "GET")
     assert len(answers) == len(_CONFIGURATION_ROWS)
     assert answers == expected
 
@@ -1864,7 +1908,7 @@ _KEY_BUCKET_ROWS = [
 
 
 def test_a_bucket_selector_at_a_key_is_the_buckets_own_answer(live_server):
-    """The bucket's own answer, byte for byte, at a key it has and one it does not
+    """The bucket's own answer, byte for byte and framed alike, at a key it has and one it does not
     (``backlot.routers.s3._KEY_BUCKET_SELECTORS``), the bucket named where the answer names one."""
     base_url, settings = live_server
     answers = {}
@@ -1874,6 +1918,7 @@ def test_a_bucket_selector_at_a_key_is_the_buckets_own_answer(live_server):
             answers[selector, path] = (
                 r.status_code,
                 r.headers.get("content-type"),
+                _framing(r),
                 _without_request_ids(r.text),
             )
     assert answers == {
@@ -1902,7 +1947,8 @@ _TORRENT = (
 )
 # An object's sub-resources as real answered them on a GET (2026-09-29, us-east-1), at a key the
 # bucket has and at one it does not: the query, the headers sent, the status, the Content-Type and
-# the body with the request ids aside. `{owner}`, `{etag}` and `{size}` are the object's own.
+# the body with the request ids aside, and the framing of the two answers as
+# ``backlot.routers.s3._xml`` records it. `{owner}`, `{etag}` and `{size}` are the object's own.
 # fmt: off
 _OBJECT_SUBRESOURCE_ROWS = [
     (
@@ -1915,6 +1961,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     (
         "tagging",
@@ -1925,11 +1972,13 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{bucket}/{missing}</Key><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     ("attributes", {}, 400, "application/xml",
      "<Error><Code>InvalidRequest</Code><Message>The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty</Message><RequestId/><HostId/></Error>",
      400,
-     "<Error><Code>InvalidRequest</Code><Message>The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty</Message><RequestId/><HostId/></Error>"),
+     "<Error><Code>InvalidRequest</Code><Message>The x-amz-object-attributes header specifying the attributes to be retrieved is either missing or empty</Message><RequestId/><HostId/></Error>",
+     ("length", "length")),
     (
         "attributes",
         {"x-amz-object-attributes": "ETag,Checksum,ObjectParts,StorageClass,ObjectSize"},
@@ -1939,6 +1988,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         + '<GetObjectAttributesResponse xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ETag>{etag}</ETag><Checksum><ChecksumCRC64NVME>{crc}</ChecksumCRC64NVME><ChecksumType>FULL_OBJECT</ChecksumType></Checksum><StorageClass>STANDARD</StorageClass><ObjectSize>{size}</ObjectSize></GetObjectAttributesResponse>',
         404,
         "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("length", "length"),
     ),
     *[
         (
@@ -1950,6 +2000,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
             + '<GetObjectAttributesResponse xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Checksum><ChecksumCRC64NVME>{crc}</ChecksumCRC64NVME><ChecksumType>FULL_OBJECT</ChecksumType></Checksum></GetObjectAttributesResponse>',
             404,
             "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+            ("length", "length"),
         )
         for names in ("Checksum", "Checksum,ObjectParts")
     ],
@@ -1962,6 +2013,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         + '<GetObjectAttributesResponse xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ETag>{etag}</ETag><ObjectSize>{size}</ObjectSize></GetObjectAttributesResponse>',
         404,
         "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("length", "length"),
     ),
     (
         "attributes",
@@ -1972,13 +2024,18 @@ _OBJECT_SUBRESOURCE_ROWS = [
         + '<GetObjectAttributesResponse xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ETag>{etag}</ETag></GetObjectAttributesResponse>',
         404,
         "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("length", "length"),
     ),
     ("attributes", {"x-amz-object-attributes": "ObjectParts"}, 200, None,
      _DECL + '<GetObjectAttributesResponse xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>', 404,
-     "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>"),
-    ("legal-hold", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
-    ("retention", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK),
-    ("torrent", {}, 405, "application/xml", _TORRENT, 405, _TORRENT),
+     "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+     ("length", "length")),
+    ("legal-hold", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK,
+     ("chunked", "chunked")),
+    ("retention", {}, 400, "application/xml", _OBJECT_LOCK, 400, _OBJECT_LOCK,
+     ("chunked", "chunked")),
+    ("torrent", {}, 405, "application/xml", _TORRENT, 405, _TORRENT,
+     ("chunked", "chunked")),
     *[
       (
         query,
@@ -1990,6 +2047,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("length", "chunked"),
     )
         for query in ("annotation", "annotation=&annotation=x")
     ],
@@ -2003,6 +2061,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("length", "chunked"),
     ),
     (
         "annotation&annotation-prefix=",
@@ -2014,6 +2073,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("length", "chunked"),
     ),
     (
         "annotation&max-annotation-results=",
@@ -2025,6 +2085,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("length", "chunked"),
     ),
     (
         "annotation&continuation-token=",
@@ -2036,6 +2097,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     (
         "annotation&annotationName=x",
@@ -2047,6 +2109,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchKey</Code><Message>The specified key does not exist.</Message><Key>{missing}</Key><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     (
         "annotation&annotationName=",
@@ -2058,6 +2121,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         400,
         _DECL
         + "<Error><Code>UserAnnotationNameMustBeSpecified</Code><Message>You must specify a user annotation name.</Message><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     (
         "tagging&versionId=null",
@@ -2068,6 +2132,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         404,
         _DECL
         + "<Error><Code>NoSuchVersion</Code><Message>The specified version does not exist.</Message><Key>{bucket}/{missing}</Key><VersionId>null</VersionId><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     (
         "acl&versionId=garbage",
@@ -2079,6 +2144,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         400,
         _DECL
         + "<Error><Code>InvalidArgument</Code><Message>Invalid version id specified</Message><ArgumentName>versionId</ArgumentName><ArgumentValue>garbage</ArgumentValue><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     (
         "versionId=garbage",
@@ -2090,6 +2156,7 @@ _OBJECT_SUBRESOURCE_ROWS = [
         400,
         _DECL
         + "<Error><Code>InvalidArgument</Code><Message>Invalid version id specified</Message><ArgumentName>versionId</ArgumentName><ArgumentValue>garbage</ArgumentValue><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
     (
         "versionId=NULL",
@@ -2101,16 +2168,17 @@ _OBJECT_SUBRESOURCE_ROWS = [
         400,
         _DECL
         + "<Error><Code>InvalidArgument</Code><Message>Invalid version id specified</Message><ArgumentName>versionId</ArgumentName><ArgumentValue>NULL</ArgumentValue><RequestId/><HostId/></Error>",
+        ("chunked", "chunked"),
     ),
 ]
 # fmt: on
 
 
 def test_an_objects_subresource_is_what_real_answers_for_an_object_with_none_of_it(live_server):
-    """Each byte for byte, the prolog and the `Content-Type` among them, and the same at a key the
-    bucket does not hold; a HEAD naming the selector is the 405 whose `Allow` names the GET that
-    answers it, `?torrent`'s none, and a HEAD naming `versionId` is a HEAD of the object, with the
-    GET's status (same date)."""
+    """Each byte for byte and framed as real framed it, the prolog and the `Content-Type` among
+    them, and the same at a key the bucket does not hold; a HEAD naming the selector is the 405
+    whose `Allow` names the GET that answers it, `?torrent`'s none, and a HEAD naming `versionId`
+    is a HEAD of the object, with the GET's status (same date)."""
     from backlot.routers import s3 as s3_router
 
     base_url, settings = live_server
@@ -2128,7 +2196,7 @@ def test_an_objects_subresource_is_what_real_answers_for_an_object_with_none_of_
     )
     answers, expected = {}, {}
     for row in _OBJECT_SUBRESOURCE_ROWS:
-        query, headers, status, content_type, body, missing_status, missing_body = row
+        query, headers, status, content_type, body, missing_status, missing_body, framing = row
         token = settings.admin_token
         r = _signed(base_url, f"{OBJECT_PATH}?{query}", token, extra_headers=headers)
         missing = _signed(
@@ -2145,6 +2213,7 @@ def test_an_objects_subresource_is_what_real_answers_for_an_object_with_none_of_
             head.status_code,
             head.headers.get("allow"),
             head.content,
+            (_framing(r), _framing(missing)),
         )
         selector = query.split("&")[0].split("=")[0]
         expected[key] = (
@@ -2159,6 +2228,7 @@ def test_an_objects_subresource_is_what_real_answers_for_an_object_with_none_of_
                 else (405, None if selector == "torrent" else "GET")
             ),
             b"",
+            framing,
         )
     assert len(answers) == len(_OBJECT_SUBRESOURCE_ROWS)
     assert answers == expected
@@ -3457,48 +3527,49 @@ def test_s3_a_refusal_names_what_it_refused_with_the_member_real_uses_for_its_co
     assert answers == expected
 
 
-# The four configuration lists' own parameters, as real answered them (2026-09-29).
+# The four configuration lists' own parameters, as real answered them (2026-09-29) and framed them
+# (``backlot.routers.s3._xml``).
 # fmt: off
 _CONFIGURATION_LIST_ROWS = [
-    ("analytics&id=x", 404,
+    ("analytics&id=x", 404, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
-    ("analytics&id=", 200,
+    ("analytics&id=", 200, "length",
      '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListBucketAnalyticsConfigurationsResult>'),
-    ("analytics&continuation-token=garbage", 400,
+    ("analytics&continuation-token=garbage", 400, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>'),
-    ("analytics&continuation-token=", 200,
+    ("analytics&continuation-token=", 200, "length",
      '<ListBucketAnalyticsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListBucketAnalyticsConfigurationsResult>'),
-    ("analytics&id=x&continuation-token=garbage", 404,
+    ("analytics&id=x&continuation-token=garbage", 404, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
-    ("intelligent-tiering&id=x", 404,
+    ("intelligent-tiering&id=x", 404, "length",
      "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
-    ("intelligent-tiering&id=", 200,
+    ("intelligent-tiering&id=", 200, "length",
      '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListIntelligentTieringConfigurationsResult>'),
-    ("intelligent-tiering&continuation-token=garbage", 400,
+    ("intelligent-tiering&continuation-token=garbage", 400, "length",
      "<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>"),
-    ("intelligent-tiering&continuation-token=", 200,
+    ("intelligent-tiering&continuation-token=", 200, "length",
      '<ListIntelligentTieringConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListIntelligentTieringConfigurationsResult>'),
-    ("intelligent-tiering&id=x&continuation-token=garbage", 404,
+    ("intelligent-tiering&id=x&continuation-token=garbage", 404, "length",
      "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
-    ("inventory&id=x", 404,
+    ("inventory&id=x", 404, "length",
      "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
-    ("inventory&id=", 200,
+    ("inventory&id=", 200, "length",
      '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListInventoryConfigurationsResult>'),
-    ("inventory&continuation-token=garbage", 400,
+    ("inventory&continuation-token=garbage", 400, "length",
      "<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>"),
-    ("inventory&continuation-token=", 200,
+    ("inventory&continuation-token=", 200, "length",
      '<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListInventoryConfigurationsResult>'),
-    ("inventory&id=x&continuation-token=garbage", 404,
+    ("inventory&id=x&continuation-token=garbage", 404, "length",
      "<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>"),
-    ("metrics&id=x", 404,
+    ("metrics&id=x", 404, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
-    ("metrics&id=", 200,
+    ("metrics&id=", 200, "length",
      '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></ListMetricsConfigurationsResult>'),
-    ("metrics&continuation-token=garbage", 400,
+    ("metrics&continuation-token=garbage", 400, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>MalformedContinuationToken</Code><Message>The continuation-token you provided invalid.</Message><RequestId/><HostId/></Error>'),
-    ("metrics&continuation-token=", 200,
+    ("metrics&continuation-token=", 200, "length",
      '<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfigurationsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated><ContinuationToken></ContinuationToken></ListMetricsConfigurationsResult>'),
-    ("metrics&id=x&continuation-token=garbage", 404,
+    ("metrics&id=x&continuation-token=garbage", 404, "chunked",
      '<?xml version="1.0" encoding="UTF-8"?>\n<Error><Code>NoSuchConfiguration</Code><Message>The specified configuration does not exist.</Message><RequestId/><HostId/></Error>'),
 ]
 # fmt: on
@@ -3509,10 +3580,12 @@ def test_a_configuration_list_reads_its_id_and_token_as_real_does(live_server):
     none of, a token is one it never handed out, and each is refused with the prolog real sent."""
     base_url, settings = live_server
     answers = {}
-    for query, _, _ in _CONFIGURATION_LIST_ROWS:
+    for query, _, _, _ in _CONFIGURATION_LIST_ROWS:
         r = _signed(base_url, f"/s3/eng-artifacts?{query}", settings.admin_token)
-        answers[query] = (r.status_code, _without_request_ids(r.text))
-    assert answers == {query: (status, body) for query, status, body in _CONFIGURATION_LIST_ROWS}
+        answers[query] = (r.status_code, _framing(r), _without_request_ids(r.text))
+    assert answers == {
+        query: (status, framing, body) for query, status, framing, body in _CONFIGURATION_LIST_ROWS
+    }
 
 
 # The answers the rows below repeat.

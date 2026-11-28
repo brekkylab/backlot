@@ -2331,6 +2331,89 @@ def test_atlassian_errors_use_atlassian_envelope(client, admin_h):
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
 
 
+def _malformed_escape(client, admin_h, path, authorization, status, body):
+    headers = {} if authorization is None else admin_h
+    r = client.get(f"/atlassian{path}", headers=headers)
+    assert r.status_code == status, r.text[:200]
+    if body is not None:
+        assert r.headers["content-type"] == "application/json"
+        assert r.json() == body
+
+
+def test_confluence_listings_refuse_a_query_holding_a_broken_escape(client, admin_h):
+    """Each row as Confluence Cloud answered it, `999999999` naming no content and an
+    ``authorization`` of None sending no credential."""
+    key = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=admin_h).json()["results"][
+        0
+    ]["key"]
+
+    def broken(path, index, site=""):
+        message = f"java.lang.IllegalArgumentException: Malformed escape pair at index {index}: "
+        return path, "admin", *_bare(400, message + site + path)
+
+    content = "/wiki/rest/api/content"
+    missing = f"{content}/999999999"
+    abc = _bare(
+        400,
+        "org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: "
+        "Failed to convert value of type 'java.lang.String' to required type 'int'; "
+        'nested exception is java.lang.NumberFormatException: For input string: "abc"',
+    )
+    rows = [
+        # the broken shapes, in a value and in a parameter's name
+        broken("/wiki/rest/api/space?x=%zz", 23),
+        broken("/wiki/rest/api/space?x=%", 23),
+        broken("/wiki/rest/api/space?x=%2", 23),
+        broken("/wiki/rest/api/space?%zz=1", 21),
+        broken("/wiki/rest/api/space?%u005c=1", 21),
+        # each paged listing, `child/attachment` naming the site
+        broken(f"{content}?limit=1&x=%zz", 33),
+        broken(f"{missing}/child/page?x=%zz", 46),
+        broken(f"{missing}/child/comment?x=%zz", 49),
+        broken(f"{missing}/child/attachment?x=%zz", 69, site="http://testserver"),
+        broken(f"{missing}/label?x=%zz", 41),
+        # ahead of a negative or zero page, a page past Java's `int`, a type and a missing key or id
+        broken("/wiki/rest/api/space?limit=-1&x=%zz", 32),
+        broken("/wiki/rest/api/space?spaceKey=NOSUCHZZ&x=%zz", 41),
+        broken(f"{content}?start=-1&x=%zz", 34),
+        broken(f"{content}?type=comment&x=%zz", 38),
+        broken(f"{content}?type=nope&x=%zz", 35),
+        broken(f"{content}?type=attachment&x=%zz", 41),
+        broken(f"{content}?spaceKey=NOSUCHZZ&x=%zz", 43),
+        broken(f"{missing}/child/page?limit=-1&x=%zz", 55),
+        broken(f"{missing}/child/comment?limit=-1&x=%zz", 58),
+        broken(
+            f"{missing}/child/attachment?start=2147482648&limit=1001&x=%zz",
+            97,
+            site="http://testserver",
+        ),
+        broken(f"{missing}/label?limit=0&x=%zz", 49),
+        # behind the conversion, the bound on `start`, the label prefix and the anonymous 403
+        ("/wiki/rest/api/space?limit=abc&x=%zz", "admin", *abc),
+        (f"{missing}/child/attachment?limit=abc&x=%zz", "admin", *abc),
+        (f"{content}?start=100001&x=%zz", "admin", *_START),
+        (
+            f"{missing}/label?prefix=bogus&x=%zz",
+            "admin",
+            *_service(400, "api.BadRequestException", "Could not convert label prefixes :[bogus]"),
+        ),
+        (
+            "/wiki/rest/api/space?x=%zz",
+            None,
+            *_bare(
+                403,
+                "com.atlassian.confluence.mvc.rest.common.exception."
+                "StacklessResponseStatusException: 403 FORBIDDEN "
+                '"Request rejected because caller cannot access Confluence"',
+            ),
+        ),
+        # a whole escape, and a route that pages nothing
+        ("/wiki/rest/api/space?x=%20ab", "admin", 200, None),
+        (f"/wiki/rest/api/space/{key}?x=%zz", "admin", 200, None),
+    ]
+    assert _failures(_malformed_escape, rows, client, admin_h) == {}
+
+
 def test_confluence_spaces_are_paged_not_served_whole(client, admin_h, tokens):
     """Measured against a live Confluence Cloud site on 2026-09-17: `space` reads `limit`/`start`
     and answers a page, with `_links.next`/`.prev` shaped like

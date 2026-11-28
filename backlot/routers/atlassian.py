@@ -3114,6 +3114,7 @@ async def confluence_content_list(request: Request):
     answer = _CONTENT_TYPES.get(content_type)
     if answer is not None and start > _CONTENT_START_BOUND:
         raise errors_atlassian.start_too_large()
+    _refuse_a_malformed_escape(request)
     space_key = _str_param(request, "spaceKey")
     container = _content_space(conn, ids, space_key) if space_key else None
     if answer == "unfetchable":
@@ -3278,7 +3279,7 @@ async def confluence_attachments(content_id: str, request: Request):
     caller = _confluence_caller(request)
     requested_id = content_id
     content_id, _ = _content_id(content_id)
-    limit, start = _confluence_page_params(request, default=50)
+    limit, start = _confluence_page_params(request, default=50, absolute_uri=True)
     _refuse_a_start_past_java_int(limit, start)
     ids = auth.visible_ids(request, caller)
     if store.get_document(conn, "confluence", content_id, visible_ids=ids) is None:
@@ -3326,13 +3327,14 @@ async def confluence_labels(content_id: str, request: Request):
     caller = _confluence_caller(request)
     requested_id = content_id
     content_id, attachment = _content_id(content_id)
-    # Real converts `limit` and `start`, then reads `prefix`, before it looks the page up, and
-    # refuses a negative or zero one after it: on an id naming nothing, `?limit=abc` and
-    # `?prefix=bogus` are their 400s and `?limit=-1` and `?limit=0` the 404 (Confluence Cloud,
-    # 2026-10-14, 2026-10-16 and 2026-10-21).
+    # Real converts `limit` and `start`, then reads `prefix`, then refuses a broken escape in the
+    # query, before it looks the page up, and refuses a negative or zero one after it: on an id
+    # naming nothing, `?limit=abc` and `?prefix=bogus` are their 400s and `?limit=-1` and
+    # `?limit=0` the 404 (Confluence Cloud, 2026-10-14, 2026-10-16, 2026-10-21 and 2026-11-27).
     _int_param(request, "limit", 200)
     _int_param(request, "start", 0)
     _refuse_a_label_prefix(request)
+    _refuse_a_malformed_escape(request)
     ids = auth.visible_ids(request, caller)
     row = store.get_document(conn, "confluence", content_id, visible_ids=ids)
     if row is None or attachment:
@@ -4296,6 +4298,7 @@ def _confluence_page_params(
     default: int = 25,
     cap: int | None = None,
     refuse_zero: bool = False,
+    absolute_uri: bool = False,
 ) -> tuple[int, int]:
     """Confluence's `limit` and `start`, which refuse a negative where Jira's clamp one.
 
@@ -4313,7 +4316,9 @@ def _confluence_page_params(
     Order is measured too, because both parameters can be wrong at once. Conversion comes first for
     BOTH — `?limit=-1&start=abc` is the conversion failure about `abc`, not the negative about
     `limit` — and among two negatives `start` is the one named: `?limit=-1&start=-1` reports
-    `start cannot be less than zero`.
+    `start cannot be less than zero`. A broken escape in the query is refused after the conversion
+    and ahead of the negatives (:func:`_refuse_a_malformed_escape`), in the absolute URI where
+    ``absolute_uri`` is set, as `child/attachment` sets it.
 
     The CQL search reads its own pair (:func:`_cql_page_param`), JAX-RS-bound rather than Spring's,
     and shares :func:`_refuse_negative_page_params`, which is measured on that route too.
@@ -4332,6 +4337,7 @@ def _confluence_page_params(
     """
     limit = _int_param(request, "limit", default)
     start = _int_param(request, "start", 0)
+    _refuse_a_malformed_escape(request, absolute_uri=absolute_uri)
     _refuse_negative_page_params(limit, start)
     if refuse_zero and limit == 0:
         raise errors_atlassian.zero_limit_not_allowed()
@@ -5993,12 +5999,13 @@ _CONTENT_START_BOUND = 100_000
 # 2026-10-10, each type alone, beside a known space, an unknown one and a title, and beside a
 # `limit` or `start` below zero and a `start` past `_CONTENT_START_BOUND`, matched as sent (`Page`,
 # `Blogpost` and `COMMENT` are no type). After the conversion 400, a known type refuses a `start`
-# past the bound, where a type Confluence does not have never reads it; then an unknown space is the
-# 404; then `comment` and `folder` are `content_finder_cannot_fetch`'s 501; then a negative `limit`
-# or `start` is the 400; then `whiteboard`, `database` and `embed` are `not_a_custom_content_type`'s
-# 400 and `attachment` is `attachment_without_container`'s 500, beside a space or a title as alone.
-# A type not in this table is `unknown_content_type`'s 501 alone, and an empty page beside a known
-# space or a title, whatever `start` is.
+# past the bound, where a type Confluence does not have never reads it; then a broken escape in the
+# query is `_refuse_a_malformed_escape`'s 400 (2026-11-27); then an unknown space is the 404; then
+# `comment` and `folder` are `content_finder_cannot_fetch`'s 501; then a negative `limit` or `start`
+# is the 400; then `whiteboard`, `database` and `embed` are `not_a_custom_content_type`'s 400 and
+# `attachment` is `attachment_without_container`'s 500, beside a space or a title as alone. A type
+# not in this table is `unknown_content_type`'s 501 alone, and an empty page beside a known space or
+# a title, whatever `start` is.
 _CONTENT_TYPES = {
     "page": "listed",
     "blogpost": "listed",
@@ -6120,6 +6127,25 @@ def _confluence_envelope(
         )
     )
     return links
+
+
+def _refuse_a_malformed_escape(request: Request, *, absolute_uri: bool = False) -> None:
+    """Raise :func:`backlot.errors.atlassian.malformed_escape_pair` for this request's URI, with
+    :func:`_site` before it where ``absolute_uri`` is set.
+
+    Measured on Confluence Cloud on 2026-11-27 with `x=%zz` beside each: on `space`, the anonymous
+    403, the 406 and the 401 for an unreadable Basic credential came ahead of the escape's 400, and
+    so did a `limit` or `start` it could not convert on each listing, `content?start=100001` and
+    `label?prefix=bogus`; a negative `limit` or `start` on each listing, a page ending past Java's
+    `int` on the `child` ones and an id naming nothing on those and `label` came behind it.
+    `_confluence_page_params`, `confluence_content_list` and `confluence_labels` raise it there."""
+    query = request.scope["query_string"].decode("latin-1")
+    uri = f"{_vendor_path(_echoed_path(request))}?{query}"
+    if absolute_uri:
+        uri = _site(request) + uri
+    refused = errors_atlassian.malformed_escape_pair(uri)
+    if refused is not None:
+        raise refused
 
 
 def _refuse_negative_page_params(limit: int, start: int) -> None:

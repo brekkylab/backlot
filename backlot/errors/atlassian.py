@@ -1515,6 +1515,34 @@ def refuse_a_credentialled_attachment_write(
     )
 
 
+def malformed_escape_pair(uri: str) -> AtlassianError | None:
+    """The 400 a paged Confluence listing answers a query holding a `%` no two hex digits follow,
+    or None where every escape is whole. `uri` is the URI the message names: the vendor's path and
+    the query as sent, after the site on `child/attachment`.
+
+    Measured on Confluence Cloud on 2026-10-13 over `space`, `content` and
+    `content/{id}/child/page`, and on 2026-11-27 over those, `child/comment`, `child/attachment`
+    and `label`: `x=%zz` in the query was a 400 in `application/json`, its body `statusCode` and a
+    `message` of `java.lang.IllegalArgumentException: Malformed escape pair at index <i>: <uri>`,
+    `<i>` the index in `<uri>` of the first `%` no two hex digits follow. On `space`, `x=%`,
+    `x=%2`, and `%zz` or `%u005c` as a parameter's name were the same. `space/{key}` and
+    `content/{id}` answer as they would without the escape. A broken escape in the path is the
+    CDN's 400, which `backlot.routers.atlassian` answers before routing."""
+    broken = re.search(r"%(?![0-9A-Fa-f]{2})", uri)
+    if broken is None:
+        return None
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "message": (
+                "java.lang.IllegalArgumentException: Malformed escape pair at index "
+                f"{broken.start()}: {uri}"
+            ),
+        },
+    )
+
+
 #: The one `Accept` holding a member Jira cannot read that it reads all the same, as
 #: `application/json`, byte for byte but for trailing whitespace: measured 2026-10-13 on
 #: `serverInfo` and its 401, where the same value respelled (upper-cased, `q=0.90`, `Q=0.9`, a space

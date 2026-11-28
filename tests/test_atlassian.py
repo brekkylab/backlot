@@ -6190,13 +6190,19 @@ def _jql_error(sentence):
     return {"errorMessages": [sentence], "errors": {}}
 
 
-# Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page
-# and the 400's body otherwise, or a `(status, body)` pair where real answers another status.
-# No `jql` where the method reads one (POST reads it from the body alone, so one in its query
-# string is none) and a `jql` with nothing before its `ORDER BY` are the unbounded refusal; a
-# `jql` the parser cannot read is the parse error, whose sentence names what the parser expected
-# and, unless it reached the end of the query, the line and the character in UTF-16 units. Both
-# refusals are on `application/json;charset=UTF-8`.
+def _jql_written(sentence):
+    """The parse error's body byte for byte as real wrote it, `sentence` its message as it
+    stands between the quotes of the JSON string."""
+    return b'{"errorMessages":["' + sentence + b'"],"errors":{}}'
+
+
+# Method, API version, query string, body and what real answers on Jira Cloud, `None` for a page and
+# the 400's body otherwise, as its bytes (`_jql_written`) where real wrote `\u` escapes in it, or a
+# `(status, body)` pair where real answers another status. No `jql` where the method reads one (POST
+# reads it from the body alone, so one in its query string is none) and a `jql` with nothing before
+# its `ORDER BY` are the unbounded refusal; a `jql` the parser cannot read is the parse error, whose
+# sentence names what the parser expected and, unless it reached the end of the query, the line and
+# the character in UTF-16 units. Both refusals are on `application/json;charset=UTF-8`.
 _JQL_ROWS = [
     ("get", 3, {"maxResults": 5}, None, _UNBOUNDED_JQL),
     ("post", 3, {"jql": "project = payments", "maxResults": 1}, {}, _UNBOUNDED_JQL),
@@ -6290,6 +6296,20 @@ _JQL_ROWS = [
                     ("labels = zzq by zzq order bykey", 'by "zzq"'),
                 )
             ],
+            (
+                'labels = zzq by "\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in JQL Query: The EQUALS operator does not support the use of the by "
+                    b'\\"\\uD83D\\uDE00\\" predicate.'
+                ),
+            ),
+            (
+                'labels = zzq by "\\uD83D"',
+                _jql_written(
+                    b"Error in JQL Query: The EQUALS operator does not support the use of the by "
+                    b'\\"\\uD83D\\" predicate.'
+                ),
+            ),
             *[
                 (
                     jql,
@@ -6338,6 +6358,245 @@ _JQL_ROWS = [
             ),
             ("labels = \\u0074he", None),
             ("labels = \\u0064uring", None),
+        )
+        for row in (
+            ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
+            ("get", 3, {"jql": jql, "maxResults": 1}, None, refused),
+        )
+    ],
+    *[
+        row
+        for jql, refused in (
+            (
+                'labels = zzq "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq 'x'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x y"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq by zzq "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x'. "
+                    "(line 1, character 21)"
+                ),
+            ),
+            (
+                'order by labels "x"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                "order by labels 'x'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\u0079"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'xy'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq x\\u0079",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'xy'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "a\\"b"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'a\"b'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq 'a\\'b'",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'a'b'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\ty"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x\ty'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\\\y"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x\\y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq x\\ y",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq ""',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got ''. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\ny"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\ry"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\\r\\ny"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x  y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\ny"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "x\ry"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'x y'. "
+                    "(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\U0001f600"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                "labels = zzq x\\uD83D\\uDE00",
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'x\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uD83D"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got '\\uD83D'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got '\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uDE00\\uD83D"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uDE00\\uD83D'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'labels = zzq "\\uD83D\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'OR' or 'AND' but got "
+                    b"'\\uD83D\\uD83D\\uDE00'. "
+                    b"(line 1, character 14)"
+                ),
+            ),
+            (
+                'order by labels "x\\u0079"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'xy'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                "order by labels x\\u0079",
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'xy'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels "x\\ry"',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got 'x y'. "
+                    "(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels "\\uD83D\\uDE00"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got "
+                    b"'\\uD83D\\uDE00'. "
+                    b"(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels "\\uD83D"',
+                _jql_written(
+                    b"Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got '\\uD83D'. "
+                    b"(line 1, character 17)"
+                ),
+            ),
+            (
+                'order by labels ""',
+                _jql_error(
+                    "Error in the JQL Query: Expecting either 'ASC' or 'DESC' but got ''. "
+                    "(line 1, character 17)"
+                ),
+            ),
         )
         for row in (
             ("post", 3, {}, {"jql": jql, "maxResults": 1}, refused),
@@ -6962,11 +7221,11 @@ def _jql_search(client, admin_h, method, version, query, body, refused):
         assert r.status_code == 200, r.text
     else:
         status, answer = refused if isinstance(refused, tuple) else (400, refused)
-        assert (r.status_code, r.headers["content-type"], r.json()) == (
-            status,
-            "application/json;charset=UTF-8",
-            answer,
-        ), r.text
+        assert (
+            r.status_code,
+            r.headers["content-type"],
+            r.content if isinstance(answer, bytes) else r.json(),
+        ) == (status, "application/json;charset=UTF-8", answer), r.text
 
 
 def test_jira_search_reads_a_jql_as_real_does(client, admin_h):
@@ -7674,6 +7933,12 @@ _WRONG_METHODS = [
         ("post", "/rest/api/3/dashboard/search", "DELETE, GET, PUT"),
         ("post", "/rest/api/3/filter/favourite", "DELETE, GET, PUT"),
         ("post", "/rest/api/3/issuetype/project", "DELETE, GET, PUT"),
+        # the `/rest/api/2` spelling of an operation only the v3 document publishes, as its
+        # `/rest/api/3` one (``errors.atlassian.JIRA_V2_SPELLINGS``)
+        ("delete", "/rest/api/2/bulk/issues/watch", "POST"),
+        ("delete", "/rest/api/3/bulk/issues/watch", "POST"),
+        ("put", "/rest/api/2/bulk/issues/fields", "GET, POST"),
+        ("put", "/rest/api/3/bulk/issues/fields", "GET, POST"),
         ("delete", "/rest/atlassian-connect/1/service-registry", "GET"),
         ("put", "/rest/atlassian-connect/1/app/module/dynamic", "DELETE, GET, POST"),
         ("put", "/rest/atlassian-connect/1/migration/x/y/task", "GET, POST"),
@@ -8277,6 +8542,19 @@ def test_jira_answers_a_bracket_with_a_page_of_its_web_app(
     assert r.text == page
 
 
+#: The paths of the operations the v3 document publishes and the v2 document does not.
+_V3_ONLY_PATHS = (
+    "agents/bulk/invoke/batch",
+    "agents/bulk/invoke/uniform",
+    "bulk/issues/delete",
+    "bulk/issues/fields",
+    "bulk/issues/move",
+    "bulk/issues/transition",
+    "bulk/issues/unwatch",
+    "bulk/issues/watch",
+    "bulk/queue/999999999",
+)
+
 _CREDENTIALS = {
     "none": {},
     "none-text-html": {"Accept": "text/html"},
@@ -8313,6 +8591,23 @@ _CREDENTIALS = {
         ("DELETE", "/atlassian/rest/api/3/myself", "unreadable-bearer", 403),
         ("POST", "/atlassian/rest/api/3/instance/license", "none", 405),
         ("PUT", "/atlassian/rest/api/2/invalid-jqls-access-log", "none", 405),
+        # one only the v3 document publishes, which real answers under `/rest/api/2` as well
+        *(
+            ("GET", f"/atlassian/rest/api/{version}/{path}", "none", 401)
+            for version in ("2", "3")
+            for path in (
+                "bulk/issues/fields?issueIdsOrKeys=NOPE-1",
+                "bulk/issues/transition?issueIdsOrKeys=NOPE-1",
+                "bulk/queue/999999999",
+            )
+        ),
+        ("GET", "/atlassian/rest/api/2/bulk/queue/999999999", "admin", 404),
+        ("GET", "/atlassian/rest/api/3/bulk/queue/999999999", "admin", 404),
+        *(
+            ("OPTIONS", f"/atlassian/rest/api/{version}/{path}", "none", 401)
+            for version in ("2", "3")
+            for path in _V3_ONLY_PATHS
+        ),
         # an `OPTIONS` on a path Jira publishes something at, served here or not
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "none", 401),
         ("OPTIONS", "/atlassian/rest/api/3/serverInfo", "failed-pair", 401),
@@ -8420,6 +8715,23 @@ _JSON = "application/json"
         ("POST", _AGENTS, "none", None, None, 415, "null", _JSON),
         ("POST", _AGENTS, "none", _JSON, "{}", 401, None, None),
         ("POST", _AGENTS, "admin", _JSON, "{}", 404, None, None),
+        # and on each write only the v3 document publishes, under `/rest/api/2` as under
+        # `/rest/api/3`, where a path neither publishes is the URL's 404
+        *(
+            ("POST", f"/atlassian/rest/api/{version}/{path}", "none") + answer
+            for version in ("2", "3")
+            for path in _V3_ONLY_PATHS
+            if not path.startswith("bulk/queue/")
+            for answer in (
+                (_JSON, "{}", 401, None, None),
+                ("text/plain", "x", 415, "text/plain", _JSON),
+            )
+        ),
+        ("POST", _AGENTS.replace("/3/", "/2/"), "admin", _JSON, "{}", 404, None, None),
+        *(
+            ("POST", f"{api}/bulk/issues/nosuchthing", "none", _JSON, "{}", 404, None, None)
+            for api in ("/atlassian/rest/api/2", "/atlassian/rest/api/3")
+        ),
         (
             "POST",
             "/atlassian/rest/api/3/jql/parse",
@@ -10309,14 +10621,24 @@ def test_confluence_answers_an_operation_before_it_runs(client):
 
 _UPLOAD = "/wiki/rest/api/content/abc123/child/attachment"
 _ATTACHMENT_WRITES = (("POST", _UPLOAD), ("PUT", _UPLOAD), ("POST", f"{_UPLOAD}/att1/data"))
-_NO_BOUNDARY = (
+_PARSER_500 = (
     b'{"errors":[{"status":500,"code":"INTERNAL_SERVER_ERROR","title":"Internal Server Error"}]}'
 )
+_UNNAMED_UPLOAD = "/wiki/rest/api/content/999999999/child/attachment"
+#: A part named `file` with a `filename`, and that part with its lines ended in LF alone, with no
+#: delimiter after it, and with its first header running into the closing delimiter
+_FILE_PART = (
+    b'--x\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n'
+    b"Content-Type: text/plain\r\n\r\nhello\r\n--x--\r\n"
+)
+_LF_PART = _FILE_PART.replace(b"\r\n", b"\n")
+_UNCLOSED_PART = _FILE_PART.removesuffix(b"--x--\r\n")
+_UNENDED_PART = _FILE_PART.replace(b"Content-Type: text/plain\r\n\r\nhello\r\n", b"")
 
-#: Rows for ``errors.atlassian.refuse_a_multipart_with_no_boundary``, each (method, path,
-#: `Authorization`, `Content-Type`, `Accept`, status, `content-type`) as real answered it;
-#: ``"admin"`` is the admin's token.
-_MULTIPART_NO_BOUNDARY = [
+#: Rows for ``errors.atlassian.refuse_a_multipart_it_cannot_read``, each (method, path,
+#: `Authorization`, `Content-Type`, `Accept`, status, `content-type`) as real answered it with the
+#: body `x`, or with the body an eighth value names; ``"admin"`` is the admin's token.
+_MULTIPART_IT_CANNOT_READ = [
     *(
         (method, path, caller, ctype, None, 500, "application/json")
         for method, path in _ATTACHMENT_WRITES
@@ -10372,11 +10694,44 @@ _MULTIPART_NO_BOUNDARY = [
     # name come first
     ("POST", _UPLOAD, "Basic !!!", "multipart/form-data", None, 401, "text/html;charset=utf-8"),
     ("POST", _UPLOAD, None, "multipart/form-data;charset=", None, 500, None),
+    # a body that does not split at its boundary
+    *(
+        (method, _UNNAMED_UPLOAD, caller, "multipart/form-data; boundary=x", None, 500)
+        + ("application/json", body)
+        for method, caller, body in (
+            ("PUT", "admin", _LF_PART),
+            ("PUT", "admin", _UNCLOSED_PART),
+            ("POST", "admin", _LF_PART),
+            ("PUT", None, _LF_PART),
+            ("POST", None, _LF_PART),
+            ("PUT", None, _UNCLOSED_PART),
+            ("PUT", "admin", _UNENDED_PART),
+        )
+    ),
+    *(
+        ("PUT", _UNNAMED_UPLOAD, "admin", ctype, accept, 500, media_type, _LF_PART)
+        for ctype, accept, media_type in (
+            ("multipart/form-data; boundary=x", "text/html", None),
+            ("multipart/mixed; boundary=x", None, "application/json"),
+            ("multipart/form-data; boundary=x;charset=nope", None, "application/json"),
+        )
+    ),
+    ("PUT", _UNNAMED_UPLOAD, "Basic !!!", "multipart/form-data; boundary=x", None, 401)
+    + ("text/html;charset=utf-8", _LF_PART),
 ]
 
 
-def _multipart_no_boundary(
-    client, admin_h, method, vendor_path, authorization, ctype, accept, status, media_type
+def _multipart_it_cannot_read(
+    client,
+    admin_h,
+    method,
+    vendor_path,
+    authorization,
+    ctype,
+    accept,
+    status,
+    media_type,
+    body=b"x",
 ):
     headers = [("Content-Type", ctype)]
     if authorization is not None:
@@ -10384,14 +10739,128 @@ def _multipart_no_boundary(
         headers.append(("Authorization", token))
     if accept is not None:
         headers.append(("Accept", accept))
-    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=b"x")
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
     assert (r.status_code, r.headers.get("content-type")) == (status, media_type), r.text[:200]
     if status == 500:
-        assert r.content == (_NO_BOUNDARY if media_type else b"")
+        assert r.content == (_PARSER_500 if media_type else b"")
 
 
-def test_confluence_fails_a_multipart_upload_with_no_boundary(client, admin_h):
-    assert _failures(_multipart_no_boundary, _MULTIPART_NO_BOUNDARY, client, admin_h) == {}
+def test_confluence_fails_a_multipart_upload_it_cannot_read(client, admin_h):
+    assert _failures(_multipart_it_cannot_read, _MULTIPART_IT_CANNOT_READ, client, admin_h) == {}
+
+
+#: Rows for ``errors.atlassian.refuse_a_credentialled_attachment_write``, each (method, path,
+#: `Authorization`, a header it names, body, status, answer) as real answered it with the
+#: `Content-Type` `multipart/form-data; boundary=x`, the answer its JSON body or, for Tomcat's 406
+#: page, its `content-type`; ``"admin"`` is the admin's token. Where real ran the operation (its 404
+#: for the id), the answer is the one this server gives that operation, which it does not serve.
+_XSRF_403 = {
+    "statusCode": 403,
+    "message": (
+        "com.atlassian.confluence.mvc.rest.common.exception.StacklessResponseStatusException: "
+        '403 FORBIDDEN "XSRF check failed"'
+    ),
+}
+_MISSING_FILE_PART_500 = {
+    "statusCode": 500,
+    "message": (
+        "org.springframework.web.multipart.support.MissingServletRequestPartException: "
+        "Required request part 'file' is not present"
+    ),
+}
+_CALLER_403 = {"statusCode": 403, "message": errors_atlassian.CONFLUENCE_FORBIDDEN}
+_POST_405 = {
+    "errors": [
+        {
+            "status": 405,
+            "code": "METHOD_NOT_ALLOWED",
+            "title": (
+                "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                "Request method 'POST' not supported"
+            ),
+        }
+    ]
+}
+_PUT_405 = {
+    "errors": [
+        {
+            "status": 405,
+            "code": "METHOD_NOT_ALLOWED",
+            "title": (
+                "org.springframework.web.HttpRequestMethodNotSupportedException: "
+                "Request method 'PUT' not supported"
+            ),
+        }
+    ]
+}
+_UNNAMED_DATA = f"{_UNNAMED_UPLOAD}/att999999999/data"
+_NOCHECK = ("X-Atlassian-Token", "nocheck")
+#: A part named `file` with no `filename`, a `file` part whose content is 1,100 `message/rfc822`
+#: headers, and the `file` part after a preamble and a CRLF and after one with nothing between
+_NAME_ONLY_PART = _FILE_PART.replace(b'; filename="a.txt"', b"")
+_NESTED_PART = (
+    _FILE_PART.replace(b'"a.txt"', b'"a.eml"')
+    .replace(b"text/plain", b"message/rfc822")
+    .replace(b"hello", b"Content-Type: message/rfc822\r\n\r\n" * 1100 + b"x")
+)
+_PREAMBLED_PARTS = (b"preamble\r\n" + _FILE_PART, b"preamble" + _FILE_PART)
+_ATTACHMENT_WRITE_WITH_BOUNDARY = [
+    ("POST", _UNNAMED_UPLOAD, "admin", None, b"x", 403, _XSRF_403),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, b"x", 500, _MISSING_FILE_PART_500),
+    ("POST", _UNNAMED_DATA, "admin", None, b"x", 403, _XSRF_403),
+    ("POST", _UNNAMED_UPLOAD, None, None, b"x", 403, _CALLER_403),
+    ("PUT", _UNNAMED_UPLOAD, None, None, b"x", 403, _CALLER_403),
+    ("POST", _UNNAMED_DATA, None, None, b"x", 403, _CALLER_403),
+    ("POST", _UNNAMED_UPLOAD, "admin", _NOCHECK, b"x", 500, _MISSING_FILE_PART_500),
+    ("POST", _UNNAMED_DATA, "admin", _NOCHECK, b"x", 500, _MISSING_FILE_PART_500),
+    ("PUT", _UNNAMED_UPLOAD, "admin", _NOCHECK, b"x", 500, _MISSING_FILE_PART_500),
+    *(
+        ("POST", _UNNAMED_UPLOAD, "admin", ("X-Atlassian-Token", token), b"x", status, answer)
+        for token, status, answer in (
+            ("NOCHECK", 500, _MISSING_FILE_PART_500),
+            ("no-check", 500, _MISSING_FILE_PART_500),
+            ("x", 403, _XSRF_403),
+            ("", 403, _XSRF_403),
+        )
+    ),
+    ("POST", _UNNAMED_UPLOAD, "admin", None, _FILE_PART, 403, _XSRF_403),
+    ("POST", _UNNAMED_UPLOAD, "admin", _NOCHECK, _FILE_PART, 405, _POST_405),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, _FILE_PART, 405, _PUT_405),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, _NESTED_PART, 405, _PUT_405),
+    *(("PUT", _UNNAMED_UPLOAD, "admin", None, body, 405, _PUT_405) for body in _PREAMBLED_PARTS),
+    ("PUT", _UNNAMED_UPLOAD, "admin", None, _NAME_ONLY_PART, 500, _MISSING_FILE_PART_500),
+    # `Accept` comes first
+    *(
+        (method, _UNNAMED_UPLOAD, "admin", ("Accept", "text/html"), b"x", 406)
+        + ("text/html;charset=utf-8",)
+        for method in ("POST", "PUT")
+    ),
+]
+
+
+def _attachment_write_with_boundary(
+    client, admin_h, method, vendor_path, authorization, header, body, status, answer
+):
+    headers = [("Content-Type", "multipart/form-data; boundary=x")]
+    if authorization is not None:
+        token = admin_h["Authorization"] if authorization == "admin" else authorization
+        headers.append(("Authorization", token))
+    if header is not None:
+        headers.append(header)
+    r = sent_as(client, method, f"/atlassian{vendor_path}", headers, content=body)
+    assert r.status_code == status, r.text[:200]
+    if isinstance(answer, str):
+        assert r.headers.get("content-type") == answer
+    else:
+        assert r.headers.get("content-type") == "application/json"
+        assert r.json() == answer
+
+
+def test_confluence_refuses_a_credentialled_attachment_write_with_a_boundary(client, admin_h):
+    assert (
+        _failures(_attachment_write_with_boundary, _ATTACHMENT_WRITE_WITH_BOUNDARY, client, admin_h)
+        == {}
+    )
 
 
 _EMPTY_CHARSET = "text/plain;charset="

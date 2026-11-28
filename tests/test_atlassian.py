@@ -4334,6 +4334,39 @@ def _page(paged, **params):
     return r, r.json()
 
 
+def test_jira_get_issue_converts_boolean_query_parameters(paged):
+    client, headers = paged
+    instance = "/rest/api/3/issue/PAY-7"
+    cases = [
+        ({}, 200),
+        ({"updateHistory": "abc"}, 400),
+        ({"fieldsByKeys": "abc"}, 400),
+        ({"updateHistory": ""}, 400),
+        ({"updateHistory": "true"}, 200),
+        ({"updateHistory": "yes"}, 200),
+        ({"fieldsByKeys": "true"}, 200),
+        ({"fieldsByKeys": "1"}, 200),
+    ]
+
+    def check(params, status):
+        r = client.get(f"/atlassian{instance}", headers=headers, params=params)
+        assert r.status_code == status
+        if status == 200:
+            assert r.json()["key"] == "PAY-7"
+        else:
+            ((name, value),) = params.items()
+            assert r.headers["content-type"] == "application/problem+json;charset=UTF-8"
+            assert r.json() == {
+                "type": "about:blank",
+                "title": "Bad Request",
+                "status": 400,
+                "detail": f"Failed to convert '{name}' with value: '{value}'",
+                "instance": instance,
+            }
+
+    assert _failures(check, cases) == {}
+
+
 def _bodies(d):
     return [c["body"]["content"][0]["content"][0]["text"] for c in d["comments"]]
 

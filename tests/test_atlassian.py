@@ -9523,8 +9523,9 @@ def test_atlassian_answers_by_which_mount_the_path_is_under(
 
 @pytest.mark.parametrize("version", [2, 3])
 def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, tokens, version):
-    """An issue's numeric id reads as its key does, for the admin and each scoped token, and with a
-    leading zero is a 404 (see store.jira_by_numeric_id).
+    """An issue's numeric id, and its key in lower or mixed case, read as its key does, for the
+    admin and each scoped token; the id with a leading zero is a 404 (see
+    store.jira_by_numeric_id).
     """
     issues = client.get(
         "/atlassian/rest/api/3/search/jql?jql=project+%3D+payments&maxResults=50", headers=admin_h
@@ -9538,6 +9539,9 @@ def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, toke
             by_id = client.get(path + numeric + suffix, headers=admin_h)
             assert by_id.status_code == by_key.status_code == 200
             assert by_id.json() == by_key.json()
+            for spelling in (key.lower(), key.capitalize()):
+                respelled = client.get(path + spelling + suffix, headers=admin_h)
+                assert (respelled.status_code, respelled.json()) == (200, by_key.json())
             assert client.get(path + "0" + numeric + suffix, headers=admin_h).status_code == 404
             for token in tokens.values():
                 h = {"Authorization": "Bearer " + token}
@@ -9545,6 +9549,8 @@ def test_jira_numeric_ids_resolve_exactly_and_preserve_acl(client, admin_h, toke
                 numbered = client.get(path + numeric + suffix, headers=h)
                 assert numbered.status_code == keyed.status_code
                 assert numbered.json() == keyed.json()
+                lowered = client.get(path + key.lower() + suffix, headers=h)
+                assert (lowered.status_code, lowered.json()) == (keyed.status_code, keyed.json())
 
 
 def test_jira_issue_ids_that_hash_alike_each_read_back_their_own_issue(tmp_path):

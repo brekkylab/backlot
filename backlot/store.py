@@ -4372,9 +4372,8 @@ def jira_by_key(conn, key, visible_ids=None) -> sqlite3.Row | None:
     composed at import (see importer.byo's ``resolve_jira_keys``) and stored, so serving it needs
     neither the project's prefix nor a suffix to recombine.
 
-    Case-SENSITIVE, deliberately: real Jira keys are uppercase and the schema enforces it, and the
-    one time this resolved case-insensitively it was an accident of reusing the JQL project
-    token's tolerance. There is no prefix resolution here for that tolerance to leak through.
+    The comparison is exact: stored keys are uppercase, as the schema enforces, and the router
+    upper-cases a request's key (routers.atlassian's `_resolve_jira_key`).
     """
     clause, cp = _acl_clause("jira", visible_ids=visible_ids)
     return conn.execute(f"SELECT * FROM jira_issues WHERE key = ?{clause}", [key, *cp]).fetchone()
@@ -4678,8 +4677,8 @@ def jira_project_key(conn, project: str) -> str | None:
 def jira_project_by_key(conn, key: str) -> str | None:
     """The project a key names, the reverse of :func:`jira_project_key`. Case-insensitive, because
     this answers the JQL project TOKEN (`project = pay`), which real Jira's pickers accept in any
-    case — deliberately unlike issue-key resolution, which is exact (see routers.atlassian's
-    `_resolve_jira_key` for what mixing the two cost)."""
+    case. Issue keys must not resolve through this (see routers.atlassian's
+    `_resolve_jira_key`)."""
     row = conn.execute(
         "SELECT project FROM jira_projects WHERE UPPER(key) = ?", (key.upper(),)
     ).fetchone()

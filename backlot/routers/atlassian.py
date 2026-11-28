@@ -391,13 +391,16 @@ def _resolve_jira_key(request: Request, conn, key: str, ids):
     """One issue by its served key or its numeric id, ACL-scoped (see store.jira_by_key and
     store.jira_by_numeric_id).
 
-    The key is matched whole, as it is stored. Resolving it in parts instead — split the key, map
-    the prefix to a project through `_jira_container_for_key`, look the suffix up scoped to it —
-    lets that function's three-way tolerance into the ISSUE-KEY namespace. The tolerance is a
-    deliberate and correct affordance for the JQL project TOKEN, where real Jira pickers accept a
-    key OR a name, but here it makes `payments-7` resolve to `PAY-7`'s issue and issue-key lookup
-    case-insensitive. Matching the stored key directly has no seam for either to enter."""
-    row = store.jira_by_key(conn, key, visible_ids=ids)
+    The key is matched whole, in any letter case. Measured on Jira Cloud 2026-11-28:
+    `issue/{key}` and `issue/{key}/comment` under v3 are the 200 for the lower- and mixed-case
+    spellings, and the issue's `key` stays upper case. Stored keys are upper case (the jira
+    schema's pattern), so upper-casing the request's key is enough. Only an ASCII key is
+    upper-cased, since `str.upper` turns some other letters into ASCII ones.
+
+    It is not resolved in parts: splitting the key and mapping the prefix to a project through
+    `_jira_container_for_key` would also take a project NAME there, making `payments-7` resolve to
+    `PAY-7`'s issue."""
+    row = store.jira_by_key(conn, key.upper() if key.isascii() else key, visible_ids=ids)
     if row is None and key.isascii() and key.isdigit():
         return store.jira_by_numeric_id(conn, key, visible_ids=ids)
     return row

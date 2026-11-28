@@ -3834,11 +3834,8 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
       `j-provider` even though its project's SERVED prefix is `PAY` -- two alias NAMESPACES per
       project. Both 404, same as real Jira's `/issue/PAYDF384A-101` would for a project that
       answers at `PAY`.
-    - **Any case but the stored one.** That same tolerance matches case-INSENSITIVELY
-      (`token.upper()`), which is right for the JQL token; reused for an issue key it lets
-      `pay-<n>`/`Pay-<n>` resolve `j-provider` right alongside `PAY-<n>`, even though every stated
-      key's prefix is schema-enforced uppercase (`jira.schema.json`'s `key` pattern). Matching the
-      stored key directly is exact, and that is asserted below rather than assumed.
+    A lower- or mixed-case spelling of the served key is not an alias of this kind: it reads the
+    same issue (see routers.atlassian's `_resolve_jira_key`), which is asserted below.
     """
     from backlot import synth
     from tests._helpers import build_corpus, client_for
@@ -3902,14 +3899,11 @@ def test_byo_a_displaced_jira_key_moves_and_stays_reachable(tmp_path):
             resp = c.get(f"/atlassian/rest/api/3/issue/{alt_key}", headers=hdr)
             assert resp.status_code == 404, alt_key
 
-        # Review round 2: a lowercase or mixed-case spelling of the SAME served key must also
-        # 404 -- issue-key resolution is case-sensitive (real Jira's own behaviour, and this
-        # project's pre-task-8 one), even though the project TOKEN/picker `_jira_container_
-        # for_key` backs is deliberately case-insensitive.
+        # A lower- or mixed-case spelling of the served key reads the same issue.
         for cased_key in (stolen.lower(), stolen[0] + stolen[1:].lower()):
             assert cased_key != stolen  # sanity: an actually different spelling
             resp = c.get(f"/atlassian/rest/api/3/issue/{cased_key}", headers=hdr)
-            assert resp.status_code == 404, cased_key
+            assert (resp.status_code, resp.json()["key"]) == (200, stolen), cased_key
 
 
 def test_byo_a_tracker_id_is_read_from_the_field_its_schema_declares(tmp_path):

@@ -2331,58 +2331,83 @@ def test_atlassian_errors_use_atlassian_envelope(client, admin_h):
     assert r3.status_code == 404 and "detail" in r3.json() and "message" not in r3.json()
 
 
-def _malformed_escape(client, admin_h, path, authorization, status, message):
+def _malformed_escape(client, admin_h, path, authorization, status, body):
     headers = {} if authorization is None else admin_h
     r = client.get(f"/atlassian{path}", headers=headers)
     assert r.status_code == status, r.text[:200]
-    if message is not None:
-        assert r.json() == {"statusCode": 400, "message": message}
-        assert r.headers.get("content-type") == "application/json"
+    if body is not None:
+        assert r.headers["content-type"] == "application/json"
+        assert r.json() == body
 
 
 def test_confluence_listings_refuse_a_query_holding_a_broken_escape(client, admin_h):
-    """The 400 ``errors.atlassian.malformed_escape_pair`` carries the measurement for, on the three
-    list routes it names: the message's index is the `%`'s in the request URI as sent, behind the
-    conversion 400, the anonymous 403 and each route's own refusals, where a whole escape and the
-    routes that build no paging `_links` answer as they would without it. None is no credential."""
-    pid = client.get("/atlassian/wiki/rest/api/content?limit=1", headers=admin_h).json()["results"][
-        0
-    ]["id"]
+    """Each row as Confluence Cloud answered it, `999999999` naming no content and an
+    ``authorization`` of None sending no credential."""
     key = client.get("/atlassian/wiki/rest/api/space?limit=1", headers=admin_h).json()["results"][
         0
     ]["key"]
 
-    def malformed(uri, index):
-        return f"java.lang.IllegalArgumentException: Malformed escape pair at index {index}: {uri}"
+    def broken(path, index, site=""):
+        message = f"java.lang.IllegalArgumentException: Malformed escape pair at index {index}: "
+        return path, "admin", *_bare(400, message + site + path)
 
+    content = "/wiki/rest/api/content"
+    missing = f"{content}/999999999"
+    abc = _bare(
+        400,
+        "org.springframework.web.method.annotation.MethodArgumentTypeMismatchException: "
+        "Failed to convert value of type 'java.lang.String' to required type 'int'; "
+        'nested exception is java.lang.NumberFormatException: For input string: "abc"',
+    )
     rows = [
-        # each broken shape the measurement names, in a value and in a parameter's name
-        ("/wiki/rest/api/space?x=%zz", "admin", 400, malformed("/wiki/rest/api/space?x=%zz", 23)),
-        ("/wiki/rest/api/space?x=%", "admin", 400, malformed("/wiki/rest/api/space?x=%", 23)),
-        ("/wiki/rest/api/space?x=%2", "admin", 400, malformed("/wiki/rest/api/space?x=%2", 23)),
-        ("/wiki/rest/api/space?%zz=1", "admin", 400, malformed("/wiki/rest/api/space?%zz=1", 21)),
+        # the broken shapes, in a value and in a parameter's name
+        broken("/wiki/rest/api/space?x=%zz", 23),
+        broken("/wiki/rest/api/space?x=%", 23),
+        broken("/wiki/rest/api/space?x=%2", 23),
+        broken("/wiki/rest/api/space?%zz=1", 21),
+        broken("/wiki/rest/api/space?%u005c=1", 21),
+        # each paged listing, `child/attachment` naming the site
+        broken(f"{content}?limit=1&x=%zz", 33),
+        broken(f"{missing}/child/page?x=%zz", 46),
+        broken(f"{missing}/child/comment?x=%zz", 49),
+        broken(f"{missing}/child/attachment?x=%zz", 69, site="http://testserver"),
+        broken(f"{missing}/label?x=%zz", 41),
+        # ahead of a negative or zero page, a page past Java's `int`, a type and a missing key or id
+        broken("/wiki/rest/api/space?limit=-1&x=%zz", 32),
+        broken("/wiki/rest/api/space?spaceKey=NOSUCHZZ&x=%zz", 41),
+        broken(f"{content}?start=-1&x=%zz", 34),
+        broken(f"{content}?type=comment&x=%zz", 38),
+        broken(f"{content}?type=nope&x=%zz", 35),
+        broken(f"{content}?type=attachment&x=%zz", 41),
+        broken(f"{content}?spaceKey=NOSUCHZZ&x=%zz", 43),
+        broken(f"{missing}/child/page?limit=-1&x=%zz", 55),
+        broken(f"{missing}/child/comment?limit=-1&x=%zz", 58),
+        broken(
+            f"{missing}/child/attachment?start=2147482648&limit=1001&x=%zz",
+            97,
+            site="http://testserver",
+        ),
+        broken(f"{missing}/label?limit=0&x=%zz", 49),
+        # behind the conversion, the bound on `start`, the label prefix and the anonymous 403
+        ("/wiki/rest/api/space?limit=abc&x=%zz", "admin", *abc),
+        (f"{missing}/child/attachment?limit=abc&x=%zz", "admin", *abc),
+        (f"{content}?start=100001&x=%zz", "admin", *_START),
         (
-            "/wiki/rest/api/space?%u005c=1",
+            f"{missing}/label?prefix=bogus&x=%zz",
             "admin",
-            400,
-            malformed("/wiki/rest/api/space?%u005c=1", 21),
+            *_service(400, "api.BadRequestException", "Could not convert label prefixes :[bogus]"),
         ),
         (
-            "/wiki/rest/api/content?limit=1&x=%zz",
-            "admin",
-            400,
-            malformed("/wiki/rest/api/content?limit=1&x=%zz", 33),
+            "/wiki/rest/api/space?x=%zz",
+            None,
+            *_bare(
+                403,
+                "com.atlassian.confluence.mvc.rest.common.exception."
+                "StacklessResponseStatusException: 403 FORBIDDEN "
+                '"Request rejected because caller cannot access Confluence"',
+            ),
         ),
-        (
-            f"/wiki/rest/api/content/{pid}/child/page?x=%zz",
-            "admin",
-            400,
-            malformed(f"/wiki/rest/api/content/{pid}/child/page?x=%zz", 37 + len(str(pid))),
-        ),
-        # behind the conversion 400 and the anonymous 403, as the measurement orders them
-        ("/wiki/rest/api/space?limit=abc&x=%zz", "admin", 400, None),
-        ("/wiki/rest/api/space?x=%zz", None, 403, None),
-        # a whole escape is served, and the routes that build no paging links answer their own
+        # a whole escape, and a route that pages nothing
         ("/wiki/rest/api/space?x=%20ab", "admin", 200, None),
         (f"/wiki/rest/api/space/{key}?x=%zz", "admin", 200, None),
     ]

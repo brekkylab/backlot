@@ -1603,6 +1603,63 @@ def test_slack_search_all_answers_both_blocks_and_search_files_only_its_own(clie
     assert set(f) == {"ok", "query", "files"}
 
 
+def test_slack_search_warns_past_the_last_page_and_above_page_100(client, admin_h):
+    """The rule on `_search_page`, at the default `count` of 20. `the` matches one SAMPLE message,
+    so page 2 is past the last and page 101 serves that message again."""
+    past = ["max_total_pages"]
+    limit = ["max_page_limit"]
+
+    def messages(n, page, first, last, warnings=None):
+        paging = {"count": 20, "total": 1, "page": page, "pages": 1}
+        pagination = {
+            "total_count": 1,
+            "page": page,
+            "per_page": 20,
+            "page_count": 1,
+            "first": first,
+            "last": last,
+        }
+        if warnings:
+            paging["warnings"] = pagination["warnings"] = warnings
+        return n, paging, pagination
+
+    def files(page, warnings=None):
+        paging = {"count": 20, "total": 0, "page": page, "pages": 0}
+        if warnings:
+            paging["warnings"] = warnings
+        return 0, paging
+
+    rows = [
+        *(
+            row
+            for method in ("search.messages", "search.all")
+            for row in (
+                (method, "1", messages(1, 1, 1, 1)),
+                (method, "2", messages(0, 2, 21, 20, past)),
+                (method, "100", messages(0, 100, 1981, 1980, past)),
+                (method, "101", messages(1, 1, 1, 1, limit)),
+                (method, "102", messages(1, 1, 1, 1, limit)),
+            )
+        ),
+        ("search.files", "1", files(1)),
+        ("search.files", "2", files(2, past)),
+        ("search.files", "101", files(1, limit)),
+    ]
+    got, expected = {}, {}
+    for method, page, want in rows:
+        j = client.get(
+            f"/slack/api/{method}", headers=admin_h, params={"query": "the", "page": page}
+        ).json()
+        if method == "search.files":
+            b = j["files"]
+            got[f"{method}?page={page}"] = (len(b["matches"]), b["paging"])
+        else:
+            b = j["messages"]
+            got[f"{method}?page={page}"] = (len(b["matches"]), b["paging"], b["pagination"])
+        expected[f"{method}?page={page}"] = want
+    assert got == expected
+
+
 def test_slack_replies_answer_a_reply_ts_with_that_reply(client, admin_h):
     # A search hit that lands on a REPLY yields that reply's ts, and `conversations_replies` answers
     # it with the reply alone. The SAMPLE 'incidents' 502 thread's replies include "Rolled back;

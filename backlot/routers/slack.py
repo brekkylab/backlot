@@ -1941,6 +1941,22 @@ def _parse_slack_query(raw: str) -> tuple[str, str | None, bool]:
     return text.strip(), container, phrase
 
 
+def _search_page(sent: int, pages: int) -> tuple[int, list[str]]:
+    """The page a search serves for `page` sent as ``sent`` over ``pages`` pages of hits, and the
+    `warnings` it answers with. Measured against slack.com/api on 2026-11-28 at the default `count`
+    of 20. On search.messages and search.all, 0 and below and 1 serve page 1 with no warning, a
+    page above 100 serves page 1 with `max_page_limit`, and any other page past the last serves
+    that page, empty, with `max_total_pages`, each warning in both `paging` and `pagination`. On
+    search.files, with one page of hits, `page=2` answered `paging.page` 2 with `max_total_pages`
+    and `page=101` answered `paging.page` 1 with `max_page_limit`, both read in `paging`."""
+    page = max(1, sent)
+    if page > 100:
+        return 1, ["max_page_limit"]
+    if page > max(pages, 1):
+        return page, ["max_total_pages"]
+    return page, []
+
+
 def _messages_block(request: Request, *, empty_sort_dir_ok: bool):
     """Shared message-search core for search.messages and search.all. Returns (query, block) or
     (error_dict, None). `empty_sort_dir_ok` is search.messages' half of the rule on `_SORT_DIRS`."""
@@ -1962,7 +1978,9 @@ def _messages_block(request: Request, *, empty_sort_dir_ok: bool):
     terms, container, phrase = _parse_slack_query(query)
     ids = auth.visible_ids(request, caller)  # results are scoped to the caller's ACL
     count = counts["count"]
-    page = max(1, counts["page"])
+    total = store.count_search(conn, terms, "slack", ids, container=container, phrase=phrase)
+    pages = (total + count - 1) // count if count else 1
+    page, warnings = _search_page(counts["page"], pages)
     offset = (page - 1) * count
     # Honor Slack's sort: "score" (default) = relevance; "timestamp" = by message time. sort_dir
     # defaults to desc (newest first). Previously Backlot always ranked by relevance regardless.
@@ -1982,9 +2000,7 @@ def _messages_block(request: Request, *, empty_sort_dir_ok: bool):
         phrase=phrase,
         order_by=order_by,
     )
-    total = store.count_search(conn, terms, "slack", ids, container=container, phrase=phrase)
     matches = [_search_match(conn, r) for r in rows]
-    pages = (total + count - 1) // count if count else 1
     block = {
         "total": total,
         "pagination": {
@@ -1998,6 +2014,8 @@ def _messages_block(request: Request, *, empty_sort_dir_ok: bool):
         "paging": {"count": count, "total": total, "page": page, "pages": pages},
         "matches": matches,
     }
+    if warnings:
+        block["pagination"]["warnings"] = block["paging"]["warnings"] = warnings
     return query, block
 
 
@@ -2039,6 +2057,7 @@ async def search_files(request: Request):
     if not query.strip(_QUERY_BLANKS):
         return _err("no_query")
     count = counts["count"]
+    page, warnings = _search_page(counts["page"], 0)
     empty = {
         "total": 0,
         "matches": [],
@@ -2050,8 +2069,10 @@ async def search_files(request: Request):
             "first": 0,
             "last": 0,
         },
-        "paging": {"count": count, "total": 0, "page": 1, "pages": 0},
+        "paging": {"count": count, "total": 0, "page": page, "pages": 0},
     }
+    if warnings:
+        empty["paging"]["warnings"] = warnings
     return {"ok": True, "query": query, "files": empty}
 
 

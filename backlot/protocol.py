@@ -23,11 +23,19 @@ or a `#` after its path (:data:`backlot.request_target.FOLLOWED`).
 What else httptools refuses, uvicorn answers with that 400 as well; where the front door has an
 answer of its own, :class:`Protocol` writes that answer in its place
 (:mod:`backlot.parser_refusals`).
+
+A line of a space, a tab or a CR ahead of the request line is answered where the front door
+answers it (:func:`backlot.parser_refusals.s3_line_ahead`): the parser refuses a space or a tab
+there, and reads past a CR, so :class:`Protocol` reads the lines ahead of the request line itself,
+before the parser sees them. A head whose lines end in a bare LF, on S3, is read as CRLFs
+(:attr:`Protocol._bare_lf`), which is how S3 reads one, measured 2026-11-26 on s3.us-east-1.
 """
 
 from __future__ import annotations
 
+import re
 import sys
+import urllib.parse
 
 import httptools
 from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
@@ -62,6 +70,8 @@ class Protocol(HttpToolsProtocol):
         self._sent: bytes | None = None
         self._with_a_fragment: bytes | None = None
         self._no_version = False
+        self._bare_lf = False
+        self._prev_cr = False
         self._head = _Head()
         self._body: _Body | None = None
         self._refusal: bytes | None = None
@@ -100,16 +110,42 @@ class Protocol(HttpToolsProtocol):
         if self._between_requests:
             data = self._held + data
             self._held = b""
+            junk, request, seen = _junk_and_request(data)
+            if junk is not None and request is not None:
+                method, target = request
+                door, path, query = _door_of(target)
+                if door == "s3":
+                    self._hold(
+                        parser_refusals.s3_line_ahead(junk, method.decode("latin-1"), path, query)
+                    )
+                    return b""
+            elif junk is not None and not seen and not self._head.ended:
+                self._held = data
+                self._unset_keepalive_if_required()
+                return b""
             at = len(data) - len(data.lstrip(b"\r\n"))
             end = data.find(b"\n", at)
             if end >= 0:
-                self._with_a_fragment = request_target.with_a_fragment(data[at : end + 1])
-                line, self._sent = request_target.encode_line(data[at : end + 1])
+                first = data[at : end + 1]
+                bare = not first.endswith(b"\r\n")
+                self._with_a_fragment = request_target.with_a_fragment(first)
+                line, self._sent = request_target.encode_line(first)
                 self._no_version = _has_no_version(line)
                 data = data[:at] + line + data[end + 1 :]
+                if (
+                    junk is None
+                    and request is not None
+                    and bare
+                    and _door_of(request[1])[0] == "s3"
+                ):
+                    self._bare_lf = True
             elif _starts_a_request_line(data[at:]):
                 data, self._held = data[:at], data[at:]
                 self._unset_keepalive_if_required()
+        if self._bare_lf:
+            data, self._prev_cr = _to_crlf(data, self._prev_cr)
+        else:
+            self._prev_cr = data.endswith(b"\r")
         super().data_received(data)
         if self.parser is None or self.parser.should_upgrade():
             return b""
@@ -151,6 +187,8 @@ class Protocol(HttpToolsProtocol):
         self._handed_on = False
         self._head = _Head()
         self._body = None
+        self._bare_lf = False
+        self._prev_cr = False
 
     def on_response_complete(self) -> None:
         super().on_response_complete()
@@ -397,6 +435,64 @@ class _Head:
 #: enough for the names it reads (`authorization`, `content-length`) and the codings
 #: (``backlot.parser_refusals.Cause``) to be told from any longer one.
 _NAMES_READ = 32
+
+
+#: The line a request can carry ahead of its request line that httptools refuses the request on,
+#: or, for a CR, reads past: a line of a single space, a tab or a CR.
+_JUNK_LINES = {b" ": "space", b"\t": "tab", b"\r": "cr"}
+
+
+def _junk_and_request(data: bytes) -> tuple[str | None, tuple[bytes, bytes] | None, bool]:
+    """The kind of line ahead of the request line in ``data``, the request line's method and
+    target, and whether a line ahead of it was seen that is neither.
+
+    ``data`` is the head so far. Blank lines ahead of the request line are skipped, as the parser
+    skips them, and so is a line of a space, a tab or a CR, whose kind is the first of those seen.
+    The request line is the first line after them that is neither blank nor one of those, where it
+    holds its method, its target and its version; a line that holds none of those is not a request
+    line, and the third value says one was seen, so the request is the parser's to refuse rather
+    than a line still arriving. Only complete lines count: a line with no LF yet is neither.
+    """
+    junk = None
+    for line in data.split(b"\n")[:-1]:
+        content = line[:-1] if line.endswith(b"\r") else line
+        if content == b"":
+            continue
+        if content in _JUNK_LINES:
+            if junk is None:
+                junk = _JUNK_LINES[content]
+            continue
+        parts = content.split(b" ")
+        if len(parts) >= 3 and parts[2].startswith(b"HTTP/"):
+            return junk, (parts[0], parts[1]), True
+        return junk, None, True
+    return junk, None, False
+
+
+def _door_of(target: bytes) -> tuple[str | None, str, str]:
+    """The front door the request line's ``target`` names, and the path and query
+    ``backlot.routers.s3.request_ids`` seeds its pair from: the path with its escapes decoded, as
+    the app reads it, and the query as sent."""
+    path = urllib.parse.unquote(target.partition(b"?")[0].decode("latin-1"))
+    door = request_target.front_door(path)
+    return (
+        (door[0] if door is not None else None),
+        path,
+        target.partition(b"?")[2].decode("latin-1"),
+    )
+
+
+#: An LF not after a CR: the line ending a head of bare-LF lines is written with.
+_BARE_LF = re.compile(rb"(?<!\r)\n")
+
+
+def _to_crlf(data: bytes, after_cr: bool) -> tuple[bytes, bool]:
+    """``data`` with each bare LF turned into a CRLF, where ``after_cr`` says the byte ahead of
+    ``data`` was a CR, so a leading LF of ``data`` is the second half of one; and whether ``data``
+    ends in a CR, which the next read's first byte follows."""
+    if data.startswith(b"\n") and after_cr:
+        return data[:1] + _BARE_LF.sub(b"\r\n", data[1:]), data.endswith(b"\r")
+    return _BARE_LF.sub(b"\r\n", data), data.endswith(b"\r")
 
 
 def _has_no_version(line: bytes) -> bool:

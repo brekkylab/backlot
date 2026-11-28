@@ -33,7 +33,7 @@ from backlot.sigv4 import (
     sign,
     split_credential,
 )
-from tests._helpers import client_for, complete, tiny_corpus
+from tests._helpers import client_for, complete, raw_exchange, tiny_corpus
 
 # ------------------------------------------------------------------------ S3 (SigV4/404/416 edges)
 
@@ -198,6 +198,63 @@ def test_s3_a_path_outside_the_mount_carries_no_request_id(live_server):
     base_url, _ = live_server
     r = httpx.get(f"{base_url}/s3x")
     assert r.status_code == 404 and "x-amz-request-id" not in r.headers
+
+
+#: A line of a space, a tab or a CR ahead of the request line, and what S3 answers each.
+_JUNK_AHEAD_ROWS = [
+    ("space", b" \r\n", "chunked"),
+    ("tab", b"\t\r\n", "empty"),
+    ("cr", b"\r\r\n", "empty"),
+]
+
+
+@pytest.mark.parametrize(
+    "kind, ahead, shape", _JUNK_AHEAD_ROWS, ids=[row[0] for row in _JUNK_AHEAD_ROWS]
+)
+def test_s3_a_line_ahead_of_the_request_line_is_answered_as_s3_answers_it(
+    live_server, kind, ahead, shape
+):
+    """A line of a space ahead of the request line is the parse 400, chunked, carrying the parse
+    400's request id and the extended id in its headers and in its body; a line of a tab or a CR
+    is the empty 400 with the parse 400's request id alone
+    (``backlot.parser_refusals.s3_line_ahead`` holds the measurement, answered by
+    ``backlot.protocol`` before the parser sees the line, which reads past a CR)."""
+    base_url, _ = live_server
+    tail = b"Host: x\r\nUser-Agent: repro\r\nConnection: close\r\n\r\n"
+    code, headers, body = raw_exchange(base_url, ahead + b"GET /s3/?_=1 HTTP/1.1\r\n" + tail)
+    assert code == 400
+    assert headers["connection"] == "close"
+    assert re.fullmatch(_PARSE_ID, headers["x-amz-request-id"])
+    if shape == "chunked":
+        assert headers["content-type"] == "application/xml"
+        assert headers["transfer-encoding"] == "chunked"
+        assert len(headers["x-amz-id-2"]) == 96
+        expected = (
+            '<?xml version="1.0" encoding="UTF-8"?><Error><Code>BadRequest</Code>'
+            "<Message>An error occurred when parsing the HTTP request.</Message>"
+            f"<RequestId>{headers['x-amz-request-id']}</RequestId>"
+            f"<HostId>{headers['x-amz-id-2']}</HostId></Error>"
+        ).encode()
+        assert body == expected
+        return
+    assert "content-type" not in headers
+    assert "x-amz-id-2" not in headers
+    assert headers["content-length"] == "0"
+    assert body == b""
+
+
+def test_s3_a_head_of_bare_lf_lines_is_answered_as_its_crlf_twin(live_server):
+    """A head whose lines end in a bare LF is answered as the same request with CRLFs is, the 307
+    to the product page with no body (``backlot.protocol`` reads the bare LFs as CRLFs; the
+    measurement is the one its module docstring records)."""
+    base_url, _ = live_server
+    code, headers, body = raw_exchange(
+        base_url, b"GET /s3/?_=1 HTTP/1.1\nHost: x\nUser-Agent: repro\nConnection: close\n\n"
+    )
+    assert code == 307
+    assert headers["location"] == "https://aws.amazon.com/s3/"
+    assert headers["content-length"] == "0"
+    assert body == b""
 
 
 def test_s3_the_same_request_gets_the_same_pair_and_another_request_a_different_one(live_server):

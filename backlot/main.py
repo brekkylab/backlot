@@ -1160,9 +1160,15 @@ def _google_route_match(scope: Scope) -> Match:
 
 def _google_path_not_routed_as_sent(scope: Scope) -> bool:
     """Whether this scope's path is a Google family path whose raw path ends in a slash, or that no
-    Google route serves under its method."""
+    Google route serves under its method. Drive's and Gmail's mounts alone and a path that runs on
+    from one (`/drive/v3x`) are family paths too, where the editor APIs' are those under their
+    mount."""
     path = scope["path"]
-    if not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES):
+    family = errors.google.family(path)
+    if family is None or (
+        family == errors.google.EDITOR
+        and not any(path.startswith(f"{p}/") for p in errors.google.PREFIXES)
+    ):
         return False
     raw = scope.get("raw_path") or path.encode()
     return raw.endswith(b"/") or _google_route_match(scope) is not Match.FULL
@@ -1209,6 +1215,47 @@ async def route_a_google_path_the_way_google_does(request: Request, call_next):
             return await _http_exception_handler(request, exc)
         if match is Match.NONE:
             return await _http_exception_handler(request, StarletteHTTPException(status_code=404))
+    return await call_next(request)
+
+
+#: The batch mount of www.googleapis.com that answers a `GET` with the front end's 404 page.
+_BATCH_MOUNTS = ("/batch/drive/v3",)
+
+
+def _a_www_googleapis_target_the_front_end_answers(scope: Scope) -> bool:
+    """Whether this scope's path is one of www.googleapis.com that no route here serves and the
+    front end answers itself: a path under `/drive` that is no family path, a `GET` on a batch
+    mount (:data:`_BATCH_MOUNTS`, which a `POST` serves) and a `GET` or a `HEAD` under
+    `/upload/drive`."""
+    path = _url_path(scope).rstrip("/")
+    method = scope["method"]
+    if errors.google.family(path) is not None:
+        return False
+    if path.startswith("/upload/drive"):
+        return path == "/upload/drive" or path.startswith("/upload/drive/")
+    if path.startswith("/drive"):
+        return True
+    return method == "GET" and path in _BATCH_MOUNTS
+
+
+@_middleware(_a_www_googleapis_target_the_front_end_answers)
+async def answer_a_www_googleapis_target_no_route_serves_as_the_front_end_does(
+    request: Request, call_next
+):
+    """Answer a `/drive` path of www.googleapis.com that is no Drive family path
+    (`/drive`, `/drive/`, `/drive/v1/about`, `/drivex`), and a `GET` on `/batch/drive/v3`, with the
+    front end's 404 page (``google.front_end_not_found``), where Starlette answered a JSON 404 or a JSON 405, and a
+    `GET` or a `HEAD` under `/upload/drive` with the uploads' 405 (``google.upload_server_refusal``).
+    Measured on www.googleapis.com, 2026-11-27 (UTC), with no credential and one connection per
+    request: `GET /drive`, `/drive/v3x`, `/drive/v2x`, `/drive/v1/about`, `/batch/drive/v3`
+    and `/batch/drive/v3/` were that page, echoing the target. A `POST` to `/batch/drive/v3` is the batch endpoint's own, and a method but the five
+    ``route_a_google_path_the_way_google_does`` takes is left as it was."""
+    if request.url.path.startswith("/upload/"):
+        if request.method in ("GET", "HEAD"):
+            return google.upload_server_refusal()
+        return await call_next(request)
+    if request.method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        return google.front_end_not_found(request)
     return await call_next(request)
 
 

@@ -71,6 +71,7 @@ DRIVE, GMAIL, EDITOR = "drive", "gmail", "editor"
 # condition.
 _PREFIX_FAMILY = (
     ("/drive/v3", DRIVE),
+    ("/drive/v2", DRIVE),
     ("/gmail/v1", GMAIL),
     ("/docs/v1", EDITOR),
     ("/sheets/v4", EDITOR),
@@ -614,10 +615,16 @@ _UNREGISTERED_CALLER_OPERATIONS = tuple(
 
 # The RPC each operation's missing-credential 401 names, by its HTTP method and path, measured
 # 2026-10-26 on `sheets.googleapis.com`, on 2026-10-27 for the last three, which are not served
-# and answer this 401 all the same, and on 2026-10-28 and 2026-10-29 on `docs.googleapis.com`.
+# and answer this 401 all the same, and on 2026-10-28 and 2026-10-29 on `docs.googleapis.com`; on
+# 2026-11-27 (UTC) on `www.googleapis.com` for Drive v2's `about`, which is not served either.
 _SHEETS_RPC = "google.apps.sheets.v4.SpreadsheetsService"
 _DOCS_RPC = "google.apps.docs.v1.DocumentsService"
 _RPC_METHODS = (
+    (
+        "GET",
+        re.compile(r"/drive/v2/about"),
+        ("google.apps.drive.v2.DriveAbout.Get", "drive.googleapis.com"),
+    ),
     (
         "POST",
         re.compile(r"/docs/v1/documents"),

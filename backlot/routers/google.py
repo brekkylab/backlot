@@ -18,6 +18,7 @@ import html
 import json
 import quopri
 import re
+import secrets
 import string
 import time
 import unicodedata
@@ -477,8 +478,8 @@ _EDITOR_MOUNTS = (("/v4/", "/sheets"), ("/v1/documents", "/docs"), ("/v1/present
 
 
 def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
-    """The two Google baselines' `missing` operations as (method, path pattern), each at the
-    path Backlot mounts it on and each `{}` one path segment."""
+    """The two Google baselines' `missing` operations, and Drive v2's `about`, as (method, path
+    pattern), each at the path Backlot mounts it on and each `{}` one path segment."""
     operations = []
     for source in ("gmail", "google_drive"):
         entries = json.loads((_BASELINES / f"{source}.json").read_text(encoding="utf-8"))[
@@ -491,6 +492,9 @@ def _published_not_served() -> tuple[tuple[str, re.Pattern[str]], ...]:
             mount = next((m for spelled, m in _EDITOR_MOUNTS if path.startswith(spelled)), "")
             pattern = "[^/]+".join(re.escape(part) for part in (mount + path).split("{}"))
             operations.append((method, re.compile(pattern)))
+    # Drive v2's `about`, which no baseline lists: with no credential it answered the 401 of an
+    # operation on 2026-11-27 (UTC), where `/drive/v2/nope` was the front end's 404 page.
+    operations.append(("GET", re.compile(r"/drive/v2/about")))
     return tuple(operations)
 
 
@@ -538,6 +542,26 @@ def front_end_not_found(request: Request) -> Response:
         body,
         status_code=404,
         headers={"content-type": "text/html; charset=UTF-8", "server": "ESF"},
+    )
+
+
+def upload_server_refusal() -> Response:
+    """The uploads' front end's answer to a `GET` or a `HEAD` under `/upload/drive`, where only a
+    `POST`, a `PUT` or a `PATCH` is an upload: a 405 with its own `text/plain` body, `Server` and
+    `X-GUploader-UploadID`, a 72-character id that starts `AFy3sg` and differs on each answer.
+    Measured on www.googleapis.com, 2026-11-27 (UTC), with no credential and one connection per
+    request: `/upload/drive`, `/upload/drive/v3`, `/upload/drive/v3/files`,
+    `/upload/drive/v3/files/x` and `/upload/drive/v2/files` each, and a `HEAD` on `files` with no
+    body. Elsewhere under `/upload` it answered a 404 of the same kind (`Not Found`), which this
+    server does not answer."""
+    return Response(
+        b"Method Not Allowed",
+        status_code=405,
+        headers={
+            "content-type": "text/plain; charset=utf-8",
+            "x-guploader-uploadid": "AFy3sg" + secrets.token_urlsafe(50)[:66],
+            "server": "UploadServer",
+        },
     )
 
 

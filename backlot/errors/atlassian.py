@@ -1321,34 +1321,6 @@ def _tomcat_charset(value: str) -> str | None:
     return None if found is False else charset
 
 
-def malformed_escape_pair(uri: str) -> AtlassianError | None:
-    """The 400 a paged Confluence listing answers a query holding a `%` no two hex digits follow,
-    or None where every escape is whole. `uri` is the URI the message names: the vendor's path and
-    the query as sent, after the site on `child/attachment`.
-
-    Measured on Confluence Cloud on 2026-10-13 over `space`, `content` and
-    `content/{id}/child/page`, and on 2026-11-27 over those, `child/comment`, `child/attachment`
-    and `label`: `x=%zz` in the query was a 400 in `application/json`, its body `statusCode` and a
-    `message` of `java.lang.IllegalArgumentException: Malformed escape pair at index <i>: <uri>`,
-    `<i>` the index in `<uri>` of the first `%` no two hex digits follow. On `space`, `x=%`,
-    `x=%2`, and `%zz` or `%u005c` as a parameter's name were the same. `space/{key}` and
-    `content/{id}` answer as they would without the escape. A broken escape in the path is the
-    CDN's 400, which `backlot.routers.atlassian` answers before routing."""
-    broken = re.search(r"%(?![0-9A-Fa-f]{2})", uri)
-    if broken is None:
-        return None
-    return AtlassianError(
-        400,
-        {
-            "statusCode": 400,
-            "message": (
-                "java.lang.IllegalArgumentException: Malformed escape pair at index "
-                f"{broken.start()}: {uri}"
-            ),
-        },
-    )
-
-
 def refuse_a_confluence_charset(headers) -> AtlassianError | None:
     """The empty 500 Confluence's Spring application answers a `Content-Type` whose charset Tomcat
     reads (:func:`_tomcat_charset`) that is no name Java takes (:data:`_JAVA_CHARSET_NAME`), an
@@ -1538,6 +1510,34 @@ def refuse_a_credentialled_attachment_write(
                 "org.springframework.web.multipart.support."
                 "MissingServletRequestPartException: "
                 "Required request part 'file' is not present"
+            ),
+        },
+    )
+
+
+def malformed_escape_pair(uri: str) -> AtlassianError | None:
+    """The 400 a paged Confluence listing answers a query holding a `%` no two hex digits follow,
+    or None where every escape is whole. `uri` is the URI the message names: the vendor's path and
+    the query as sent, after the site on `child/attachment`.
+
+    Measured on Confluence Cloud on 2026-10-13 over `space`, `content` and
+    `content/{id}/child/page`, and on 2026-11-27 over those, `child/comment`, `child/attachment`
+    and `label`: `x=%zz` in the query was a 400 in `application/json`, its body `statusCode` and a
+    `message` of `java.lang.IllegalArgumentException: Malformed escape pair at index <i>: <uri>`,
+    `<i>` the index in `<uri>` of the first `%` no two hex digits follow. On `space`, `x=%`,
+    `x=%2`, and `%zz` or `%u005c` as a parameter's name were the same. `space/{key}` and
+    `content/{id}` answer as they would without the escape. A broken escape in the path is the
+    CDN's 400, which `backlot.routers.atlassian` answers before routing."""
+    broken = re.search(r"%(?![0-9A-Fa-f]{2})", uri)
+    if broken is None:
+        return None
+    return AtlassianError(
+        400,
+        {
+            "statusCode": 400,
+            "message": (
+                "java.lang.IllegalArgumentException: Malformed escape pair at index "
+                f"{broken.start()}: {uri}"
             ),
         },
     )

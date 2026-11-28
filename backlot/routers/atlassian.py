@@ -1194,6 +1194,12 @@ async def jira_search(request: Request):
 async def jira_get_issue(key: str, request: Request):
     conn = auth.conn(request)
     row = _require_issue(request, conn, key)
+    # Jira Cloud, GET /rest/api/3/issue/{key}, 2026-11-28: both parameters reject `abc`
+    # with a conversion error, and `updateHistory=` is a conversion error too. The issue
+    # is served with `updateHistory=true` or `yes` and `fieldsByKeys=true` or `1`.
+    if _vendor_path(request.url.path).startswith("/rest/api/3/"):
+        _bool_param(request, "updateHistory", empty_as_default=False)
+        _bool_param(request, "fieldsByKeys")
     return _jira_issue(conn, request, row, expand=_str_param(request, "expand", ""))
 
 
@@ -4111,7 +4117,9 @@ _JIRA_QUERY_BOOLEANS = {
 }
 
 
-def _bool_param(request: Request, name: str, default: bool | None = None) -> bool | None:
+def _bool_param(
+    request: Request, name: str, default: bool | None = None, *, empty_as_default: bool = True
+) -> bool | None:
     """One query parameter as a boolean, read the way Jira reads `search/jql`'s `fieldsByKeys` and
     `failFast` (Jira Cloud, 2026-10-12 and 2026-10-13).
 
@@ -4119,11 +4127,12 @@ def _bool_param(request: Request, name: str, default: bool | None = None) -> boo
     up to U+0020 at either end (`%01true` is read), and no character past U+0020 does (`%C2%A0true`
     and `%E2%80%80true` are refused). What is left matches a key of :data:`_JIRA_QUERY_BOOLEANS` in
     any case, compared the way Java's `equalsIgnoreCase` compares, which also reads `ſ` (U+017F) as
-    `s`. A lone empty value is the default. A value the trim empties is refused (`%20`, `%01`), and
-    so is an empty first value of a repeated parameter (`?fieldsByKeys=&fieldsByKeys=yes`).
+    `s`. A lone empty value is the default when `empty_as_default` is set. A value the trim empties
+    is refused (`%20`, `%01`), as is an empty first value of a repeated parameter
+    (`?fieldsByKeys=&fieldsByKeys=yes`).
     """
     values = request.query_params.getlist(name)
-    if not values or values == [""]:
+    if not values or (empty_as_default and values == [""]):
         return default
     word = values[0].strip(_JAVA_TRIMMED).lower().replace("\u017f", "s")
     if word not in _JIRA_QUERY_BOOLEANS:
